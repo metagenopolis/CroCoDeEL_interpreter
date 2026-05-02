@@ -8006,7 +8006,12 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
         toRow: e.b.row,
         toCol: e.b.col,
         color,
-        opacity: anyHover ? (isHovered ? 1 : 0.2) : 0.75,
+        // Default alpha kept low (0.55) so on dense plates the heavier
+        // arrows don't completely hide thinner ones underneath — overlap
+        // reads as additive colour mixing rather than occlusion. Hover
+        // promotes the focused arrow to full opacity and dims the rest
+        // to 0.18 so the focus is unambiguous.
+        opacity: anyHover ? (isHovered ? 1 : 0.18) : 0.55,
         width: baseWidth + (isHovered ? 1.5 : 0),
       });
     });
