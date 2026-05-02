@@ -3155,8 +3155,8 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
         {!compact && <span className="mt-0.5 w-2 h-2 shrink-0" />}
         <div className="flex-1 min-w-0">
           <div className="flex justify-between gap-2" style={{ textAlign: "center" }}>
-            <span className="flex-1" title="probability">prob</span>
             <span className="flex-1" title="rate">rate</span>
+            <span className="flex-1" title="probability">prob</span>
             <span className="flex-1" title="introduced">intro</span>
           </div>
         </div>
@@ -3199,11 +3199,11 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
                   textAlign: "center",
                 }}
               >
-                <span className="flex-1" title="probability">
-                  {e.score.toFixed(2)}
-                </span>
                 <span className="flex-1" title="rate">
                   {(e.rate * 100).toFixed(1)}%
+                </span>
+                <span className="flex-1" title="probability">
+                  {e.score.toFixed(2)}
                 </span>
                 <span className="flex-1" title="introduced">
                   {e.introducedPct == null
@@ -7022,8 +7022,8 @@ const ScatterTab = ({
           Sort by
         </span>
         {[
-          { id: "score", label: "probability" },
           { id: "rate", label: "rate" },
+          { id: "score", label: "probability" },
           { id: "introducedPct", label: "introduced" },
           { id: "pending", label: "verdict" },
           ...(actionEnabled ? [{ id: "action", label: "action" }] : []),
@@ -8574,7 +8574,7 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
 
 /* ---------- BULK APPLY BY CRITERIA DIALOG ----------
    Modal that lets the user bulk-apply a verdict (TP / FP / Uncertain /
-   Reset) to every event matching a probability range, a rate range and
+   Reset) to every event matching a rate range, a probability range and
    a per-criterion pass/fail filter. The 6 criteria mirror the
    data-driven checks displayed inline in the Guided validation panel —
    they're computed here on demand for every event using the abundance
@@ -8892,7 +8892,7 @@ const BulkApplyByCriteriaDialog = ({
           Bulk apply verdict by criteria
         </h3>
         <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 16 }}>
-          Match every event whose probability, rate, introduced % and
+          Match every event whose rate, probability, introduced % and
           6-criteria status fit the filters below, then apply a single
           verdict (and an optional shared note).
         </p>
@@ -8990,7 +8990,7 @@ const BulkApplyByCriteriaDialog = ({
           </div>
         )}
 
-        {/* Score / rate sliders */}
+        {/* Rate / probability / introduced sliders */}
         <div
           style={{
             display: "grid",
@@ -8999,78 +8999,6 @@ const BulkApplyByCriteriaDialog = ({
             marginBottom: 16,
           }}
         >
-          <div>
-            <div
-              style={{
-                fontSize: 11,
-                color: "var(--ink-muted)",
-                fontWeight: 700,
-                fontFamily: '"Raleway", sans-serif',
-                marginBottom: 4,
-                letterSpacing: "0.05em",
-                textTransform: "uppercase",
-              }}
-            >
-              Probability ({minScore.toFixed(2)} – {maxScore.toFixed(2)})
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.01}
-                value={minScoreDraft}
-                onChange={(e) => setMinScoreDraft(e.target.value)}
-                onBlur={commitMinScore}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                }}
-                style={{
-                  width: 80,
-                  padding: "4px 6px",
-                  fontSize: 12,
-                  border: "1px solid var(--border-strong)",
-                  borderRadius: 2,
-                  background: "var(--bg-card)",
-                  color: "var(--ink)",
-                }}
-              />
-              <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>to</span>
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.01}
-                value={maxScoreDraft}
-                onChange={(e) => setMaxScoreDraft(e.target.value)}
-                onBlur={commitMaxScore}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                }}
-                style={{
-                  width: 80,
-                  padding: "4px 6px",
-                  fontSize: 12,
-                  border: "1px solid var(--border-strong)",
-                  borderRadius: 2,
-                  background: "var(--bg-card)",
-                  color: "var(--ink)",
-                }}
-              />
-            </div>
-            <div style={{ marginTop: 12, padding: "0 8px" }}>
-              <DualRange
-                min={0}
-                max={1}
-                step={0.01}
-                values={[minScore, maxScore]}
-                onChange={([lo, hi]) => {
-                  setMinScore(lo);
-                  setMaxScore(hi);
-                }}
-              />
-            </div>
-          </div>
           <div>
             <div
               style={{
@@ -9152,6 +9080,78 @@ const BulkApplyByCriteriaDialog = ({
                 <span>10%</span>
                 <span>100%</span>
               </div>
+            </div>
+          </div>
+          <div>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--ink-muted)",
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+                marginBottom: 4,
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+              }}
+            >
+              Probability ({minScore.toFixed(2)} – {maxScore.toFixed(2)})
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.01}
+                value={minScoreDraft}
+                onChange={(e) => setMinScoreDraft(e.target.value)}
+                onBlur={commitMinScore}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                style={{
+                  width: 80,
+                  padding: "4px 6px",
+                  fontSize: 12,
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: 2,
+                  background: "var(--bg-card)",
+                  color: "var(--ink)",
+                }}
+              />
+              <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>to</span>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.01}
+                value={maxScoreDraft}
+                onChange={(e) => setMaxScoreDraft(e.target.value)}
+                onBlur={commitMaxScore}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                style={{
+                  width: 80,
+                  padding: "4px 6px",
+                  fontSize: 12,
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: 2,
+                  background: "var(--bg-card)",
+                  color: "var(--ink)",
+                }}
+              />
+            </div>
+            <div style={{ marginTop: 12, padding: "0 8px" }}>
+              <DualRange
+                min={0}
+                max={1}
+                step={0.01}
+                values={[minScore, maxScore]}
+                onChange={([lo, hi]) => {
+                  setMinScore(lo);
+                  setMaxScore(hi);
+                }}
+              />
             </div>
           </div>
           <div>
@@ -9582,7 +9582,8 @@ const ValidateTab = ({
     score: "desc",
     rate: "desc",
     introducedPct: "desc",
-    pending: "asc",
+    verdict: "asc",
+    action: "asc",
     source: "asc",
   };
   const [queueSortDir, setQueueSortDir] = useState(
@@ -9611,7 +9612,7 @@ const ValidateTab = ({
           ((b.introducedPct ?? -Infinity) - (a.introducedPct ?? -Infinity)) *
           flip,
       );
-    } else if (queueSortBy === "pending") {
+    } else if (queueSortBy === "verdict") {
       const rank = (v) =>
         v === "pending"
           ? 0
@@ -9623,6 +9624,25 @@ const ValidateTab = ({
       copy.sort(
         (a, b) =>
           (rank(a.verdict) - rank(b.verdict)) * flip ||
+          (b.score - a.score) * flip,
+      );
+    } else if (queueSortBy === "action") {
+      // Group by EFFECTIVE action (defaults apply: TP→suppress, FP→keep)
+      // since the default is what will actually happen on export. Events
+      // with no resolvable action sort last; ties break by descending
+      // probability so the most-confident calls bubble up inside each
+      // bucket.
+      const eff = (e) =>
+        e.action ||
+        (e.verdict === "true_positive"
+          ? "suppress"
+          : e.verdict === "false_positive"
+            ? "keep"
+            : null);
+      const rank = (v) => (v === "keep" ? 0 : v === "suppress" ? 1 : 2);
+      copy.sort(
+        (a, b) =>
+          (rank(eff(a)) - rank(eff(b))) * flip ||
           (b.score - a.score) * flip,
       );
     } else if (queueSortBy === "source") {
@@ -9847,10 +9867,11 @@ const ValidateTab = ({
         </div>
         <div className="flex flex-wrap gap-1 mb-2">
           {[
-            { id: "score", label: "prob" },
             { id: "rate", label: "rate" },
+            { id: "score", label: "prob" },
             { id: "introducedPct", label: "intro" },
-            { id: "pending", label: "pending" },
+            { id: "verdict", label: "verdict" },
+            ...(actionEnabled ? [{ id: "action", label: "action" }] : []),
             { id: "source", label: "source" },
           ].map((opt) => {
             const active = queueSortBy === opt.id;
@@ -10057,14 +10078,14 @@ const ValidateTab = ({
             )}
             <div className="mt-4 grid grid-cols-3 gap-2">
               <Diag
-                label="Probability"
-                value={sel.score.toFixed(3)}
-                tone={metricTone(sel.score, "probability")}
-              />
-              <Diag
                 label="Rate"
                 value={`${(sel.rate * 100).toFixed(2)}%`}
                 tone={metricTone(sel.rate, "rate")}
+              />
+              <Diag
+                label="Probability"
+                value={sel.score.toFixed(3)}
+                tone={metricTone(sel.score, "probability")}
               />
               <Diag
                 label="Introduced"
@@ -13285,7 +13306,7 @@ const HelpTab = ({ onStartTour }) => {
                 the suppress/keep feature
                 is enabled in Configuration, a Keep / Suppress chip
                 pair appears inline next to the verdict row. The event
-                queue in the sidebar is sortable (prob / rate / intro /
+                queue in the sidebar is sortable (rate / prob / intro /
                 pending / source) and auto-scrolls to keep the active
                 row in view as you navigate. See the Keyboard shortcuts
                 and Bulk actions sections for faster workflows.
@@ -13660,8 +13681,8 @@ const HelpTab = ({ onStartTour }) => {
             </li>
             <li>
               <strong>Bulk apply by criteria…</strong> — opens a dialog
-              that lets you compose an arbitrary filter (probability
-              range, rate range in %, introduced % range, and pass /
+              that lets you compose an arbitrary filter (rate range
+              in %, probability range, introduced % range, and pass /
               fail / any per criterion: shape, n on line, decade range,
               missing source species, above-line points, Spearman
               profile dissimilarity), then apply one verdict (TP / FP
@@ -15426,7 +15447,7 @@ export default function App() {
         title: "Events table — sort and filter",
         body:
           "The Events table lists every flagged contamination event.\n\n" +
-          "Filter by probability / rate / introduced %, by verdict, by action, or by sample context (related, adjacent). Every column except Context is sortable — including Verdict and Action. Click a row to inspect that event in Guided validation.",
+          "Filter by rate / probability / introduced %, by verdict, by action, or by sample context (related, adjacent). Every column except Context is sortable — including Verdict and Action. Click a row to inspect that event in Guided validation.",
         action: "tabTable",
         highlight: '[data-tutorial="tab-table"]',
       },
