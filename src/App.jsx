@@ -4165,7 +4165,7 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
           <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
           <div className="text-[13px] leading-relaxed">
             <strong>No abundance table loaded.</strong> You can still sort events by
-            probability and rate, but scatterplots and the 5-criteria diagnostic checks
+            probability and rate, but scatterplots and the diagnostic checks
             require <code>species_abundance.tsv</code>.
           </div>
         </div>
@@ -4230,6 +4230,19 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
 };
 
 /* ---------- shared filter bar (Events tab + Scatter gallery) ---------- */
+// Single source of truth for the verdict options. The filter bar pulls
+// labels from here, the App-level filter init clones VERDICT_IDS as the
+// default "all selected" set, and the filter logic checks
+// `filter.verdicts.length < VERDICT_IDS.length` instead of a hard-coded
+// number — so adding a verdict only needs to touch this constant.
+const VERDICT_OPTIONS = [
+  { id: "pending", label: "pending" },
+  { id: "true_positive", label: "true positive" },
+  { id: "false_positive", label: "false positive" },
+  { id: "uncertain", label: "uncertain" },
+];
+const VERDICT_IDS = VERDICT_OPTIONS.map((v) => v.id);
+
 const FILTER_CHIP_BG = "var(--bg-card)";
 const FILTER_CHIP_BORDER = "1px solid var(--border)";
 const FILTER_PANEL_BG = "var(--bg-soft)";
@@ -4419,12 +4432,6 @@ const EventFilterBar = ({
     return () => document.removeEventListener("mousedown", handle);
   }, [verdictPopoverOpen]);
 
-  const VERDICT_OPTIONS = [
-    { id: "pending", label: "pending" },
-    { id: "true_positive", label: "true positive" },
-    { id: "false_positive", label: "false positive" },
-    { id: "uncertain", label: "uncertain" },
-  ];
   const selectedVerdicts = Array.isArray(filter.verdicts)
     ? filter.verdicts
     : VERDICT_OPTIONS.map((v) => v.id);
@@ -4960,7 +4967,7 @@ const EventsTable = ({
   // jump the user back to page 1 each time they curate.
   useEffect(() => {
     setPage(1);
-  }, [filter.q, filter.minScore, filter.minRate, filter.minIntroduced, filter.verdicts, filter.subject, filter.group, filter.adjacent, sort.by, sort.dir, total]);
+  }, [filter.q, filter.minScore, filter.minRate, filter.minIntroduced, filter.verdicts, filter.action, filter.subject, filter.group, filter.adjacent, sort.by, sort.dir, total]);
   const totalPages = Math.max(1, Math.ceil(events.length / PAGE_SIZE));
   const safePage = Math.min(Math.max(1, page), totalPages);
   const startIdx = (safePage - 1) * PAGE_SIZE;
@@ -6849,9 +6856,24 @@ const ScatterTab = ({
   };
   const PAGE_SIZE = pageSize || 100;
   const [page, setPage] = useState(1);
+  // Reset to page 1 when sort or filter changes. Watch filter fields
+  // explicitly — `filtered` is a fresh array on every verdict toggle,
+  // which would jump the user back to page 1 each time they curate.
   useEffect(() => {
     setPage(1);
-  }, [sortBy, sortDir, filtered]);
+  }, [
+    sortBy,
+    sortDir,
+    filter.q,
+    filter.minScore,
+    filter.minRate,
+    filter.minIntroduced,
+    filter.verdicts,
+    filter.action,
+    filter.subject,
+    filter.group,
+    filter.adjacent,
+  ]);
 
   // Set of existing pairs (source\u0000target) to prevent duplicates when
   // adding manual events. Built once per events change.
@@ -8548,9 +8570,10 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
 /* ---------- BULK APPLY BY CRITERIA DIALOG ----------
    Modal that lets the user bulk-apply a verdict (TP / FP / Uncertain /
    Reset) to every event matching a probability range, a rate range and
-   a per-criterion pass/fail filter. The 5 criteria mirror the ones
-   displayed inline in the Guided validation panel — they're computed
-   here on demand for every event using the abundance table.
+   a per-criterion pass/fail filter. The 6 criteria mirror the
+   data-driven checks displayed inline in the Guided validation panel —
+   they're computed here on demand for every event using the abundance
+   table.
 
    Comment behaviour: if the textarea is empty, existing notes on each
    matched event are preserved untouched. If non-empty, the comment is
@@ -8748,9 +8771,9 @@ const BulkApplyByCriteriaDialog = ({
   // feature is enabled in Configuration.
   const [bulkAction, setBulkAction] = useState(null);
 
-  // Compute the 5-criteria pass/fail status for every event once. Each
-  // entry is { shape, nOnLine, decade, missing, above } where each
-  // value is true (pass), false (fail), or null (not evaluable).
+  // Compute the 6-criteria pass/fail status for every event once. Each
+  // entry is { shape, nOnLine, decade, missing, above, spearman } where
+  // each value is true (pass), false (fail), or null (not evaluable).
   const eventCriteria = useMemo(() => {
     if (!ab) return null;
     return events.map((e) => {
@@ -8864,8 +8887,8 @@ const BulkApplyByCriteriaDialog = ({
           Bulk apply verdict by criteria
         </h3>
         <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 16 }}>
-          Match every event whose probability, rate, introduced %  and
-          5-criteria status fit the filters below, then apply a single
+          Match every event whose probability, rate, introduced % and
+          6-criteria status fit the filters below, then apply a single
           verdict (and an optional shared note).
         </p>
 
@@ -9646,18 +9669,21 @@ const ValidateTab = ({
   const goNext = () => {
     if (idx >= 0 && idx < queue.length - 1) onSelect(queue[idx + 1].id);
   };
+  // Walk the queue, not the full events list — the prev/next-pending
+  // buttons navigate the visible queue and their disabled state must
+  // agree with goPrevPending / goNextPending above.
   const hasPrevPending = useMemo(() => {
     for (let i = idx - 1; i >= 0; i--) {
-      if (events[i].verdict === "pending") return true;
+      if (queue[i].verdict === "pending") return true;
     }
     return false;
-  }, [events, idx]);
+  }, [queue, idx]);
   const hasNextPending = useMemo(() => {
-    for (let i = idx + 1; i < events.length; i++) {
-      if (events[i].verdict === "pending") return true;
+    for (let i = idx + 1; i < queue.length; i++) {
+      if (queue[i].verdict === "pending") return true;
     }
     return false;
-  }, [events, idx]);
+  }, [queue, idx]);
 
   /* ---- Keyboard shortcuts ---- */
   // Hotkeys are active globally on this tab, EXCEPT when the user is
@@ -9665,8 +9691,8 @@ const ValidateTab = ({
   // normally). We attach the listener to window and check the focused
   // element on each keypress.
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
-  // The 5 detailed criteria are hidden by default — the score card above
-  // already conveys the headline. Click the toggle to expand.
+  // The detailed criteria rows are hidden by default — the score card
+  // above already conveys the headline. Click the toggle to expand.
   const [showCriteriaDetails, setShowCriteriaDetails] = useState(false);
   // Other supporting panels are also collapsed by default to keep the
   // validation column compact; the user can pop each open as needed.
@@ -12069,15 +12095,11 @@ const CASE_L = [
 /* Aliases for backward compatibility with the LearnTab card refs.
    Each SHAPE_* name corresponds to one of the CASE_* arrays above. */
 const SHAPE_TP_LOW_RATE = CASE_A;
-const SHAPE_TP_BIDIR_MAIN = CASE_B;
-const SHAPE_TP_BIDIR_SECONDARY = []; // case B is its own complete plot
 const SHAPE_TP_CLEAR = CASE_C;
 const SHAPE_TP_HEAVY = CASE_D;
 const SHAPE_FP_DIFFUSE_BIO = CASE_E;
 const SHAPE_FP_DIFFUSE_BIO_2 = CASE_F;
 const SHAPE_FP_DIFFUSE_BIO_3 = CASE_G;
-const SHAPE_FP_FAKE_LINE = CASE_H;
-const SHAPE_FN_VERY_LOW = CASE_I;
 const SHAPE_FN_LOW_2 = CASE_J;
 const SHAPE_FN_CASCADE = CASE_K;
 const SHAPE_FN_CLEAR_MISSED = CASE_L;
@@ -13249,12 +13271,13 @@ const HelpTab = ({ onStartTour }) => {
                 Guided validation
               </h4>
               <p>
-                One event at a time, with the scatterplot, six diagnostic
-                criteria (see below) plus two contextual checks
-                (related samples, plate proximity), the plate position
-                and a sample-context panel showing every metadata flag
-                for both source and target. Assign a verdict (T / F / U
-                / P) in a single click; when the suppress/keep feature
+                One event at a time, with the scatterplot, six
+                data-driven criteria plus same-individual (scored when
+                metadata is loaded) and an informational plate-proximity
+                check, the plate position and a sample-context panel
+                showing every metadata flag for both source and target.
+                Assign a verdict (T / F / U / P) in a single click; when
+                the suppress/keep feature
                 is enabled in Configuration, a Keep / Suppress chip
                 pair appears inline next to the verdict row. The event
                 queue in the sidebar is sortable (prob / rate / intro /
@@ -13294,13 +13317,17 @@ const HelpTab = ({ onStartTour }) => {
           title="Validation criteria"
         >
           <p>
-            Each event is scored against eight criteria — six data-driven
-            (computed from the abundance table) shown as the headline 6/6
-            score, plus two context-driven (metadata + plate map) shown
-            below as informative checks. Each criterion passes (cyan),
-            fails (salmon) or is inconclusive (neutral). The Guided
-            validation panel summarizes the score and lists the
-            individual reasons.
+            Each event is scored against eight criteria. Six are
+            data-driven (computed from the abundance table) and always
+            count toward the headline score. The seventh — same
+            individual — joins the score when{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>metadata.tsv</code>{" "}
+            is loaded, so the headline reads <strong>6 / 6</strong>{" "}
+            without metadata and <strong>7 / 7</strong> with it. The
+            eighth — plate proximity — is purely informational and never
+            counted. Each criterion passes (cyan), fails (salmon) or is
+            inconclusive (neutral). The Guided validation panel
+            summarizes the score and lists the individual reasons.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -13383,13 +13410,14 @@ const HelpTab = ({ onStartTour }) => {
               </tr>
               <tr style={{ borderBottom: "1px solid var(--border-soft)" }}>
                 <td className="py-2.5 pr-3 align-top text-[12px]" style={{ color: "var(--ink-muted)", fontWeight: 700 }}>07</td>
-                <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Related samples (contextual)</td>
+                <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Same individual</td>
                 <td className="py-2.5 align-top text-[13px]">
                   Source and target sharing a <code style={{ fontFamily: "ui-monospace, monospace" }}>subject_id</code> (longitudinal pair)
                   or <code style={{ fontFamily: "ui-monospace, monospace" }}>group_id</code> (siblings, cage, household) is a classic
                   false-positive trigger because the samples legitimately
-                  share microbes. Informational — not counted in the 6/6
-                  score. Requires <code style={{ fontFamily: "ui-monospace, monospace" }}>metadata.tsv</code>.
+                  share microbes. Passes when source and target are
+                  different individuals. Joins the headline score
+                  (6/6 → 7/7) when <code style={{ fontFamily: "ui-monospace, monospace" }}>metadata.tsv</code> is loaded.
                 </td>
               </tr>
               <tr>
@@ -15331,11 +15359,10 @@ export default function App() {
     // Verdict went from a single string ("all" | "pending" | ...) to a
     // multi-select array; promote the old shape if found.
     const f = initial?.filter || {};
-    const ALL_VERDICTS = ["pending", "true_positive", "false_positive", "uncertain"];
     let verdicts;
     if (Array.isArray(f.verdicts)) verdicts = f.verdicts;
     else if (f.verdict && f.verdict !== "all") verdicts = [f.verdict];
-    else verdicts = ALL_VERDICTS;
+    else verdicts = [...VERDICT_IDS];
     return {
       q: f.q ?? "",
       minScore: f.minScore ?? 0,
@@ -15448,7 +15475,7 @@ export default function App() {
         title: "Guided validation — make verdicts",
         body:
           "This is where you decide each event: True positive (real contamination), False positive (biological signal), or Uncertain.\n\n" +
-          "Six diagnostic criteria summarise the evidence (line shape, spread, missing source species, above-line points, Spearman ρ between source and target). Plate position and sample context sit alongside, plus the introduced-species list — everything you need on one screen.",
+          "Six data-driven criteria summarise the evidence (line shape, species count on line, decade span, missing source species, above-line points, Spearman ρ between full source/target profiles), with same-individual joining the score when metadata is loaded. Plate position and sample context sit alongside, plus the introduced-species list — everything you need on one screen.",
         action: "tabValidate",
         highlight: '[data-tutorial="tab-validate"]',
       },
@@ -15700,7 +15727,7 @@ export default function App() {
         if (e.introducedPct == null) return false;
         if (e.introducedPct < minIntro) return false;
       }
-      if (filter.verdicts && filter.verdicts.length < 4) {
+      if (filter.verdicts && filter.verdicts.length < VERDICT_IDS.length) {
         if (!filter.verdicts.includes(e.verdict || "pending")) return false;
       }
       if (filter.action) {
@@ -15995,7 +16022,21 @@ export default function App() {
           prev.map((e) => {
             if (!idSet.has(e.id)) return e;
             const next = { ...e, verdict };
-            if (actionEnabled && overrideAction) next.action = action;
+            // Mirror per-event setVerdict's action defaulting so the bulk
+            // pathway doesn't leave stale actions behind: an explicit bulk
+            // action wins; otherwise reset to the verdict's default
+            // (TP→suppress, FP→keep, others→none).
+            if (actionEnabled) {
+              if (overrideAction) {
+                next.action = action;
+              } else if (verdict === "true_positive") {
+                next.action = "suppress";
+              } else if (verdict === "false_positive") {
+                next.action = "keep";
+              } else {
+                next.action = null;
+              }
+            }
             if (comment) {
               const tag = `[bulk ${stamp}] ${comment}`;
               next.notes = e.notes ? `${tag}\n\n${e.notes}` : tag;
@@ -16285,7 +16326,7 @@ export default function App() {
           e.introduced.join(","),
           e.verdict,
           e.action || "",
-          e.notes.replace(/\t/g, " "),
+          (e.notes || "").replace(/\t/g, " "),
         ].join("\t"),
       );
     });
@@ -16391,7 +16432,7 @@ export default function App() {
   /** Generate a self-contained, comprehensive HTML report styled for
       printing. Includes summary stats, run parameters, an overview
       curation table, AND a detailed page per event with the scatterplot
-      (inline SVG), the 5 diagnostic checks, the introduced species
+      (inline SVG), the diagnostic checks, the introduced species
       list, and the cascade chain when relevant. The user opens the
       file and uses their browser's "Save as PDF" (Ctrl+P or Cmd+P) to
       get a PDF without any external dependency. */
@@ -16557,15 +16598,25 @@ export default function App() {
       svg += `<line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${pad.t + plotH}" stroke="#275662" stroke-width="1"/>`;
       // y = x diagonal
       svg += `<line x1="${sx(LMIN)}" y1="${sy(LMIN)}" x2="${sx(LMAX)}" y2="${sy(LMAX)}" stroke="#000" stroke-width="0.7" stroke-dasharray="2 4" opacity="0.6"/>`;
-      // Contamination line: source = target / rate, i.e. log_y = log_x - logC
+      // Contamination line: target = source / rate (i.e. log_y = log_x − logC).
+      // Intersect the infinite line with the [LMIN, LMAX]² plot box so the
+      // dashed segment keeps its true slope when one endpoint falls outside.
+      // Compute Y at each X edge and X at each Y edge, then keep the two
+      // entries that land on the box boundary.
       if (sc.logC != null) {
-        const x1 = LMIN;
-        const y1 = LMIN - sc.logC;
-        const x2 = LMAX;
-        const y2 = LMAX - sc.logC;
-        // Clip if outside plot range
-        const clip = (a, b) => Math.max(LMIN, Math.min(LMAX, b - sc.logC));
-        svg += `<line x1="${sx(x1)}" y1="${sy(Math.max(LMIN, Math.min(LMAX, y1)))}" x2="${sx(x2)}" y2="${sy(Math.max(LMIN, Math.min(LMAX, y2)))}" stroke="#ed6e6c" stroke-width="1.2" stroke-dasharray="5 3"/>`;
+        const candidates = [
+          { x: LMIN, y: LMIN - sc.logC },
+          { x: LMAX, y: LMAX - sc.logC },
+          { x: LMIN + sc.logC, y: LMIN },
+          { x: LMAX + sc.logC, y: LMAX },
+        ].filter(
+          (p) => p.x >= LMIN && p.x <= LMAX && p.y >= LMIN && p.y <= LMAX,
+        );
+        if (candidates.length >= 2) {
+          const a = candidates[0];
+          const b = candidates[candidates.length - 1];
+          svg += `<line x1="${sx(a.x)}" y1="${sy(a.y)}" x2="${sx(b.x)}" y2="${sy(b.y)}" stroke="#ed6e6c" stroke-width="1.2" stroke-dasharray="5 3"/>`;
+        }
       }
       // Off-line points (deep teal, small)
       sc.points
@@ -17080,7 +17131,7 @@ export default function App() {
     <div class="item"><div class="k">Abundance table</div><div class="v">${ab ? `${ab.species?.length || 0} species · ${ab.samples?.length || 0} samples` : "<em style='font-weight:400;color:#797870;'>not loaded</em>"}</div></div>
     <div class="item"><div class="k">Sample metadata</div><div class="v">${
       metadata
-        ? `${metadata.nSamples} samples${metadata.hasGroupIdCol ? " · group_id" : ""}${metadata.hasBiomeCol ? " · biome" : ""}${metadata.hasLowBiomassCol ? " · low_biomass" : ""}`
+        ? `${metadata.nSamples} samples${metadata.hasGroupIdCol ? " · group_id" : ""}${metadata.hasBiomeCol ? " · biome" : ""}${metadata.hasLowBiomassCol ? " · low_biomass" : ""}${metadata.hasLowSequencingDepthCol ? " · low_seq_depth" : ""}`
         : "<em style='font-weight:400;color:#797870;'>not loaded</em>"
     }</div></div>
     <div class="item"><div class="k">Plate map</div><div class="v">${plateMap ? `${Object.keys(plateMap.bySample).length} samples · ${plateMap.format.rows}×${plateMap.format.cols}` : "<em style='font-weight:400;color:#797870;'>not loaded</em>"}</div></div>
