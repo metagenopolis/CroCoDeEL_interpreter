@@ -14443,6 +14443,7 @@ const ExportTab = ({
   runMetadata,
   hasAb,
   actionEnabled,
+  onBulkApply,
   onExportTSV,
   onExportHTML,
 }) => {
@@ -14502,6 +14503,7 @@ const ExportTab = ({
             events={events}
             actionEnabled={actionEnabled}
             hasAb={hasAb}
+            onBulkApply={onBulkApply}
           >
             <div className="ml-auto flex items-center gap-2.5">
               <VerdictDistribution events={filteredEvents} />
@@ -15457,11 +15459,6 @@ export default function App() {
           "Then ← / → jump to the previous/next pending event automatically; ↑ / ↓ step through the queue regardless of verdict.\n\n" +
           "Press ? in the app to see all shortcuts.",
         highlight: '[data-tutorial="verdict-buttons"]',
-      },
-      {
-        title: "Suppress / keep — optional action layer",
-        body:
-          "Enable the suppress/keep feature in Configuration (gear icon, top right) to add a small Save / Trash chip next to each TP and FP verdict. Useful when a small contamination shouldn't cost you a whole study — flip individual TPs from \"suppress\" to \"keep\" to retain them. Default actions follow the verdict (TP → suppress, FP → keep) and the action lands in the exported TSV.",
       },
       {
         title: "Export your curated report",
@@ -17052,7 +17049,12 @@ export default function App() {
       list.length === events.length
         ? "curated"
         : `in this report (out of ${events.length} loaded)`
-    }
+    } ·
+    Console build ${
+      __APP_VERSION__.hash === "dev"
+        ? `<code>dev</code>`
+        : `<a href="https://github.com/metagenopolis/CroCoDeEL_interpreter/commit/${__APP_VERSION__.hash}" style="color:#275662;text-decoration:none;border-bottom:1px dotted #797870;"><code>${__APP_VERSION__.hash}</code></a>`
+    } · ${__APP_VERSION__.date}
   </div>
 
   <h2>Summary</h2>
@@ -17968,6 +17970,9 @@ export default function App() {
               runMetadata={runMetadata}
               hasAb={!!ab}
               actionEnabled={actionEnabled}
+              onBulkApply={
+                bulkApplyToEvents ? () => setBulkApplyOpen(true) : undefined
+              }
               onExportTSV={exportReport}
               onExportHTML={exportHTMLReport}
             />
