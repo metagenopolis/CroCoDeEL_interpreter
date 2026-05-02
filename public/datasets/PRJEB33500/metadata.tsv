@@ -1,0 +1,245 @@
+sample_id	subject_id	timepoint	host_sex	biome
+ERS4277259	D1	baseline	Male	gut
+ERS4277260	D2	baseline	Female	gut
+ERS4277261	D3	baseline	Male	gut
+ERS4277262	D4	baseline	Male	gut
+ERS4277263	D5	baseline	Female	gut
+ERS4277264	D6	baseline	Male	gut
+ERS4277265	D7	baseline	Female	gut
+ERS4277266	D8	baseline	Male	gut
+ERS4277267	D9	baseline	Male	gut
+ERS4277268	D10	baseline	Male	gut
+ERS4277269	D11	baseline	Female	gut
+ERS4277270	D12	baseline	Female	gut
+ERS4277271	D13	baseline	Female	gut
+ERS4277272	D14	baseline	Male	gut
+ERS4277273	D15	baseline	Male	gut
+ERS4277274	D16	baseline	Female	gut
+ERS4277275	D17	baseline	Female	gut
+ERS4277276	D18	baseline	Female	gut
+ERS4277277	D19	baseline	Female	gut
+ERS4277278	D20	baseline	Female	gut
+ERS4277279	D21	baseline	Female	gut
+ERS4277280	D22	baseline	Female	gut
+ERS4277281	D24	baseline	Female	gut
+ERS4277282	D25	baseline	Male	gut
+ERS4277283	D26	baseline	Male	gut
+ERS4277284	D27	baseline	Female	gut
+ERS4277285	D28	baseline	Male	gut
+ERS4277286	D29	baseline	Female	gut
+ERS4277287	D30	baseline	Male	gut
+ERS4277288	D31	baseline	Female	gut
+ERS4277289	D32	baseline	Female	gut
+ERS4277290	D33	baseline	Male	gut
+ERS4277291	D34	baseline	Female	gut
+ERS4277292	D35	baseline	Female	gut
+ERS4277293	D36	baseline	Male	gut
+ERS4277294	D37	baseline	Female	gut
+ERS4277295	D38	baseline	Female	gut
+ERS4277296	D39	baseline	Male	gut
+ERS4277297	D40	baseline	Male	gut
+ERS4277298	D41	baseline	Male	gut
+ERS4277299	D42	baseline	Male	gut
+ERS4277300	D43	baseline	Female	gut
+ERS4277301	D44	baseline	Female	gut
+ERS4277302	D46	baseline	Male	gut
+ERS4277303	D47	baseline	Female	gut
+ERS4277304	D48	baseline	Male	gut
+ERS4277305	D49	baseline	Male	gut
+ERS4277306	D50	baseline	Female	gut
+ERS4277307	D51	baseline	Female	gut
+ERS4277308	D52	baseline	Male	gut
+ERS4277309	D53	baseline	Male	gut
+ERS4277310	D54	baseline	Female	gut
+ERS4277311	D55	baseline	Male	gut
+ERS4277312	P1	baseline	Male	gut
+ERS4277313	P2	baseline	Male	gut
+ERS4277314	P3	baseline	Male	gut
+ERS4277315	P4	baseline	Female	gut
+ERS4277316	P5	baseline	Male	gut
+ERS4277317	P6	baseline	Male	gut
+ERS4277318	P8	baseline	Female	gut
+ERS4277319	P9	baseline	Female	gut
+ERS4277320	P10	baseline	Male	gut
+ERS4277321	P11	baseline	Female	gut
+ERS4277322	P12	baseline	Female	gut
+ERS4277323	P13	baseline	Male	gut
+ERS4277324	P14	baseline	Female	gut
+ERS4277325	P15	baseline	Male	gut
+ERS4277326	P16	baseline	Female	gut
+ERS4277327	P17	baseline	Female	gut
+ERS4277328	P18	baseline	Female	gut
+ERS4277329	P19	baseline	Female	gut
+ERS4277330	P20	baseline	Male	gut
+ERS4277331	P21	baseline	Female	gut
+ERS4277332	P22	baseline	Female	gut
+ERS4277333	P23	baseline	Female	gut
+ERS4277334	P25	baseline	Female	gut
+ERS4277335	P26	baseline	Male	gut
+ERS4277336	P27	baseline	Female	gut
+ERS4277337	P28	baseline	Male	gut
+ERS4277338	P29	baseline	Male	gut
+ERS4277339	P30	baseline	Male	gut
+ERS4277340	P31	baseline	Male	gut
+ERS4277341	D1	4 weeks	Male	gut
+ERS4277342	D2	4 weeks	Female	gut
+ERS4277343	D3	4 weeks	Male	gut
+ERS4277344	D4	4 weeks	Male	gut
+ERS4277345	D5	4 weeks	Female	gut
+ERS4277346	D6	4 weeks	Male	gut
+ERS4277347	D7	4 weeks	Female	gut
+ERS4277348	D8	4 weeks	Male	gut
+ERS4277349	D9	4 weeks	Male	gut
+ERS4277350	D10	4 weeks	Male	gut
+ERS4277351	D11	4 weeks	Female	gut
+ERS4277352	D12	4 weeks	Female	gut
+ERS4277353	D13	4 weeks	Female	gut
+ERS4277354	D14	4 weeks	Male	gut
+ERS4277355	D15	4 weeks	Male	gut
+ERS4277356	D16	4 weeks	Female	gut
+ERS4277357	D17	4 weeks	Female	gut
+ERS4277358	D18	4 weeks	Female	gut
+ERS4277359	D19	4 weeks	Female	gut
+ERS4277360	D20	4 weeks	Female	gut
+ERS4277361	D21	4 weeks	Female	gut
+ERS4277362	D22	4 weeks	Female	gut
+ERS4277363	D24	4 weeks	Female	gut
+ERS4277364	D25	4 weeks	Male	gut
+ERS4277365	D26	4 weeks	Male	gut
+ERS4277366	D27	4 weeks	Female	gut
+ERS4277367	D28	4 weeks	Male	gut
+ERS4277368	D29	4 weeks	Female	gut
+ERS4277369	D30	4 weeks	Male	gut
+ERS4277370	D31	4 weeks	Female	gut
+ERS4277371	D32	4 weeks	Female	gut
+ERS4277372	D33	4 weeks	Male	gut
+ERS4277373	D34	4 weeks	Female	gut
+ERS4277374	D35	4 weeks	Female	gut
+ERS4277375	D36	4 weeks	Male	gut
+ERS4277376	D37	4 weeks	Female	gut
+ERS4277377	D38	4 weeks	Female	gut
+ERS4277378	D39	4 weeks	Male	gut
+ERS4277379	D40	4 weeks	Male	gut
+ERS4277380	D41	4 weeks	Male	gut
+ERS4277381	D42	4 weeks	Male	gut
+ERS4277382	D43	4 weeks	Female	gut
+ERS4277383	D44	4 weeks	Female	gut
+ERS4277384	D46	4 weeks	Male	gut
+ERS4277385	D47	4 weeks	Female	gut
+ERS4277386	D48	4 weeks	Male	gut
+ERS4277387	D49	4 weeks	Male	gut
+ERS4277388	D50	4 weeks	Female	gut
+ERS4277389	D51	4 weeks	Female	gut
+ERS4277390	D52	4 weeks	Male	gut
+ERS4277391	D53	4 weeks	Male	gut
+ERS4277392	D54	4 weeks	Female	gut
+ERS4277393	D55	4 weeks	Male	gut
+ERS4277394	P1	4 weeks	Male	gut
+ERS4277395	P2	4 weeks	Male	gut
+ERS4277396	P3	4 weeks	Male	gut
+ERS4277397	P4	4 weeks	Female	gut
+ERS4277398	P5	4 weeks	Male	gut
+ERS4277399	P6	4 weeks	Male	gut
+ERS4277400	P8	4 weeks	Female	gut
+ERS4277401	P9	4 weeks	Female	gut
+ERS4277402	P10	4 weeks	Male	gut
+ERS4277403	P11	4 weeks	Female	gut
+ERS4277404	P12	4 weeks	Female	gut
+ERS4277405	P13	4 weeks	Male	gut
+ERS4277406	P14	4 weeks	Female	gut
+ERS4277407	P15	4 weeks	Male	gut
+ERS4277408	P16	4 weeks	Female	gut
+ERS4277409	P17	4 weeks	Female	gut
+ERS4277410	P18	4 weeks	Female	gut
+ERS4277412	P20	4 weeks	Male	gut
+ERS4277413	P21	4 weeks	Female	gut
+ERS4277414	P22	4 weeks	Female	gut
+ERS4277415	P23	4 weeks	Female	gut
+ERS4277416	P25	4 weeks	Female	gut
+ERS4277417	P26	4 weeks	Male	gut
+ERS4277418	P27	4 weeks	Female	gut
+ERS4277419	P28	4 weeks	Male	gut
+ERS4277420	P29	4 weeks	Male	gut
+ERS4277421	P30	4 weeks	Male	gut
+ERS4277423	D1	8 weeks	Male	gut
+ERS4277424	D2	8 weeks	Female	gut
+ERS4277425	D3	8 weeks	Male	gut
+ERS4277426	D4	8 weeks	Male	gut
+ERS4277427	D5	8 weeks	Female	gut
+ERS4277428	D6	8 weeks	Male	gut
+ERS4277429	D7	8 weeks	Female	gut
+ERS4277430	D8	8 weeks	Male	gut
+ERS4277431	D9	8 weeks	Male	gut
+ERS4277432	D10	8 weeks	Male	gut
+ERS4277433	D11	8 weeks	Female	gut
+ERS4277434	D12	8 weeks	Female	gut
+ERS4277435	D13	8 weeks	Female	gut
+ERS4277436	D14	8 weeks	Male	gut
+ERS4277437	D15	8 weeks	Male	gut
+ERS4277438	D16	8 weeks	Female	gut
+ERS4277439	D17	8 weeks	Female	gut
+ERS4277440	D18	8 weeks	Female	gut
+ERS4277441	D19	8 weeks	Female	gut
+ERS4277442	D20	8 weeks	Female	gut
+ERS4277443	D21	8 weeks	Female	gut
+ERS4277444	D22	8 weeks	Female	gut
+ERS4277445	D24	8 weeks	Female	gut
+ERS4277446	D25	8 weeks	Male	gut
+ERS4277447	D26	8 weeks	Male	gut
+ERS4277448	D27	8 weeks	Female	gut
+ERS4277449	D28	8 weeks	Male	gut
+ERS4277450	D29	8 weeks	Female	gut
+ERS4277451	D30	8 weeks	Male	gut
+ERS4277453	D31	8 weeks	Female	gut
+ERS4277454	D32	8 weeks	Female	gut
+ERS4277455	D33	8 weeks	Male	gut
+ERS4277456	D34	8 weeks	Female	gut
+ERS4277457	D35	8 weeks	Female	gut
+ERS4277458	D36	8 weeks	Male	gut
+ERS4277459	D37	8 weeks	Female	gut
+ERS4277460	D38	8 weeks	Female	gut
+ERS4277461	D39	8 weeks	Male	gut
+ERS4277462	D40	8 weeks	Male	gut
+ERS4277463	D41	8 weeks	Male	gut
+ERS4277464	D42	8 weeks	Male	gut
+ERS4277465	D43	8 weeks	Female	gut
+ERS4277466	D44	8 weeks	Female	gut
+ERS4277467	D46	8 weeks	Male	gut
+ERS4277468	D47	8 weeks	Female	gut
+ERS4277469	D48	8 weeks	Male	gut
+ERS4277470	D49	8 weeks	Male	gut
+ERS4277471	D50	8 weeks	Female	gut
+ERS4277472	D51	8 weeks	Female	gut
+ERS4277473	D52	8 weeks	Male	gut
+ERS4277474	D53	8 weeks	Male	gut
+ERS4277475	D54	8 weeks	Female	gut
+ERS4277476	D55	8 weeks	Male	gut
+ERS4277477	P1	8 weeks	Male	gut
+ERS4277478	P2	8 weeks	Male	gut
+ERS4277479	P3	8 weeks	Male	gut
+ERS4277480	P4	8 weeks	Female	gut
+ERS4277481	P5	8 weeks	Male	gut
+ERS4277482	P6	8 weeks	Male	gut
+ERS4277483	P8	8 weeks	Female	gut
+ERS4277484	P9	8 weeks	Female	gut
+ERS4277485	P10	8 weeks	Male	gut
+ERS4277486	P11	8 weeks	Female	gut
+ERS4277487	P12	8 weeks	Female	gut
+ERS4277488	P13	8 weeks	Male	gut
+ERS4277489	P14	8 weeks	Female	gut
+ERS4277490	P15	8 weeks	Male	gut
+ERS4277491	P16	8 weeks	Female	gut
+ERS4277492	P17	8 weeks	Female	gut
+ERS4277493	P18	8 weeks	Female	gut
+ERS4277494	P19	8 weeks	Female	gut
+ERS4277495	P20	8 weeks	Male	gut
+ERS4277496	P21	8 weeks	Female	gut
+ERS4277497	P22	8 weeks	Female	gut
+ERS4277498	P23	8 weeks	Female	gut
+ERS4277499	P25	8 weeks	Female	gut
+ERS4277500	P26	8 weeks	Male	gut
+ERS4277501	P27	8 weeks	Female	gut
+ERS4277502	P28	8 weeks	Male	gut
+ERS4277503	P29	8 weeks	Male	gut
+ERS4277504	P30	8 weeks	Male	gut
+ERS4277505	P31	8 weeks	Male	gut

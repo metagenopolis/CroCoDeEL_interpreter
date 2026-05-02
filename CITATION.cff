@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: Goulet
+    given-names: Lindsay
+    email: lindsay.goulet@inrae.fr
+    affiliation: INRAE
+  - family-names: Plaza Oñate
+    given-names: Florian
+    email: florian.plaza-onate@inrae.fr
+    affiliation: INRAE
+  - family-names: Prifti
+    given-names: Edi
+    email: edi.prifti@ird.fr
+    affiliation: IRD
+  - family-names: Belda
+    given-names: Eugeni
+    email: eugeni.belda@ird.fr
+    affiliation: IRD
+  - family-names: Le Chatelier
+    given-names: Emmanuelle
+    email: emmanuelle.le-chatelier@inrae.fr
+    affiliation: INRAE
+  - family-names: Gautreau
+    given-names: Guillaume
+    email: guillaume.gautreau@inrae.fr
+    affiliation: INRAE
+title: "CroCoDeEL: Cross-sample Contamination Detection and Estimation of Its Level"
+version: 1.2.1
+doi: 10.1101/2025.01.15.633153
+date-released: 2026-03-19

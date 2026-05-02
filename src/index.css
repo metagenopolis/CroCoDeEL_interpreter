@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ----- Theme tokens -----
+   Single source of truth for surface, border, and ink colors.
+   App.jsx now references these via `var(--name)` in inline styles, so
+   flipping the data-theme attribute on <html> swaps the entire palette
+   without touching the component tree. Brand accents (#00a3a6 teal,
+   #ed6e6c salmon, #d97a3c amber, #423089 violet) intentionally stay
+   hardcoded — they should look identical in both modes. */
+:root,
+html[data-theme="light"] {
+  --bg-card: #fff;
+  --bg-soft: #f6f7f7;
+  --bg-softer: #fafbfb;
+  --border: #e6e8e8;
+  --border-strong: #c4c0b3;
+  --border-soft: #f0f2f2;
+  --ink: #275662;
+  --ink-muted: #797870;
+  --ink-soft: #5a5550;
+  --bg-alert: #fdeceb;
+  --bg-alert-soft: #fdf2f1;
+  --bg-info: #eef8f8;
+}
+
+html[data-theme="dark"] {
+  --bg-card: #1a2226;
+  --bg-soft: #141a1d;
+  --bg-softer: #10161a;
+  --border: #2a3438;
+  --border-strong: #3a4347;
+  --border-soft: #1f262a;
+  --ink: #d6dde0;
+  --ink-muted: #969c9d;
+  --ink-soft: #b0afaa;
+  --bg-alert: #321614;
+  --bg-alert-soft: #261411;
+  --bg-info: #0f2426;
+  background: #0f1518;
+  color: var(--ink);
+}
+html[data-theme="dark"] body {
+  background: #0f1518;
+  color: var(--ink);
+}
+
+/* Tailwind utility overrides — App.jsx still uses a handful of these
+   utility classes (bg-white, text-stone-*, border-stone-*); without
+   these overrides the static Tailwind output keeps the light values
+   in dark mode. */
+html[data-theme="dark"] .bg-white { background-color: var(--bg-card) !important; }
+html[data-theme="dark"] .bg-stone-50 { background-color: var(--bg-softer) !important; }
+html[data-theme="dark"] .bg-stone-100 { background-color: var(--bg-soft) !important; }
+html[data-theme="dark"] .bg-stone-200 { background-color: var(--bg-soft) !important; }
+html[data-theme="dark"] .text-stone-500 { color: var(--ink-muted) !important; }
+html[data-theme="dark"] .text-stone-600 { color: var(--ink-soft) !important; }
+html[data-theme="dark"] .text-stone-700 { color: var(--ink) !important; }
+html[data-theme="dark"] .border-stone-200,
+html[data-theme="dark"] .border-stone-300 { border-color: var(--border) !important; }

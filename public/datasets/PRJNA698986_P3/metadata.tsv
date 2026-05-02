@@ -1,0 +1,92 @@
+sample_id	subject_id	timepoint	biome	low_biomass	group_id	ncbi_code
+40D89	40	D89	infant gut	false		L2_040_089G1
+58D36	58	D36	infant gut	false	G_058_059_060	L3_058_036G1
+58D382	58	D382	infant gut	false	G_058_059_060	L3_058_382G1
+60D43	60	D43	infant gut	false	G_058_059_060	L3_060_043G1
+63D17	63	D17	infant gut	false		L3_063_017G1
+63D368	63	D368	infant gut	false		L3_063_368G1
+69M	M69	D0	maternal gut	false		L3_069_000M1
+69D51	69	D51	infant gut	false		L3_069_051G1
+72D11	72	D11	infant gut	false		L3_072_011G1
+72D63	72	D63	infant gut	false		L3_072_063G1
+79D127	79	D127	infant gut	false		L3_079_127G1
+82D243	82	D243	infant gut	false		L3_082_243G1
+40M	M40	D0	maternal gut	false		L2_040_000M1
+58D43	58	D43	infant gut	false	G_058_059_060	L3_058_043G1
+83D366	83	D366	infant gut	false		L3_083_366G1
+60D52	60	D52	infant gut	false	G_058_059_060	L3_060_052G1
+63D23	63	D23	infant gut	false		L3_063_023G1
+68M	M68	D0	maternal gut	false		L3_068_000M1
+69D4	69	D4	infant gut	true		L3_069_004G1
+69D61	69	D61	infant gut	false		L3_069_061G1
+72D17	72	D17	infant gut	false		L3_072_017G1
+72D123	72	D123	infant gut	false		L3_072_123G1
+79D234	79	D234	infant gut	false		L3_079_234G1
+82D361	82	D361	infant gut	false		L3_082_361G1
+58M	M58	D0	maternal gut	false	G_058_059_060	L3_058_000M1
+58D47	58	D47	infant gut	false	G_058_059_060	L3_058_047G1
+60D8	60	D8	infant gut	false	G_058_059_060	L3_060_008G1
+60D57	60	D57	infant gut	false	G_058_059_060	L3_060_057G1
+63D29	63	D29	infant gut	false		L3_063_029G1
+68D32	68	D32	infant gut	false		L3_068_032G1
+69D73	69	D73	infant gut	false		L3_069_073G1
+72D243	72	D243	infant gut	false		L3_072_243G1
+79D363	79	D363	infant gut	false		L3_079_363G1
+83D38	83	D38	infant gut	false		L3_083_038G1
+58D7	58	D7	infant gut	false	G_058_059_060	L3_058_007G1
+58D52	58	D52	infant gut	false	G_058_059_060	L3_058_052G1
+60D13	60	D13	infant gut	false	G_058_059_060	L3_060_013G1
+60D144	60	D144	infant gut	false	G_058_059_060	L3_060_144G1
+63D40	63	D40	infant gut	false		L3_063_040G1
+68D63	68	D63	infant gut	false		L3_068_063G1
+69D15	69	D15	infant gut	false		L3_069_015G1
+69D115	69	D115	infant gut	false		L3_069_115G1
+72D25	72	D25	infant gut	false		L3_072_025G1
+72D362	72	D362	infant gut	false		L3_072_362G1
+82M	M82	D0	maternal gut	false		L3_082_000M1
+83D59	83	D59	infant gut	false		L3_083_059G1
+58D63	58	D63	infant gut	false	G_058_059_060	L3_058_063G1
+60D19	60	D19	infant gut	false	G_058_059_060	L3_060_019G1
+60D256	60	D256	infant gut	false	G_058_059_060	L3_060_256G1
+63D52	63	D52	infant gut	false		L3_063_052G1
+68D90	68	D90	infant gut	false		L3_068_090G1
+69D24	69	D24	infant gut	false		L3_069_024G1
+69D242	69	D242	infant gut	false		L3_069_242G1
+72D32	72	D32	infant gut	false		L3_072_032G1
+79M	M79	D0	maternal gut	false		L3_079_000M1
+82D33	82	D33	infant gut	false		L3_082_033G1
+83D88	83	D88	infant gut	false		L3_083_088G1
+58D13	58	D13	infant gut	false	G_058_059_060	L3_058_013G1
+58D72	58	D72	infant gut	false	G_058_059_060	L3_058_072G1
+60D22	60	D22	infant gut	false	G_058_059_060	L3_060_022G1
+60D382	60	D382	infant gut	false	G_058_059_060	L3_060_382G1
+63D61	63	D61	infant gut	false		L3_063_061G1
+68D122	68	D122	infant gut	false		L3_068_122G1
+69D33	69	D33	infant gut	false		L3_069_033G1
+69D375	69	D375	infant gut	false		L3_069_375G1
+72D39	72	D39	infant gut	false		L3_072_039G1
+79D29	79	D29	infant gut	false		L3_079_029G1
+82D90	82	D90	infant gut	false		L3_082_090G1
+83D119	83	D119	infant gut	false		L3_083_119G1
+58D22	58	D22	infant gut	false	G_058_059_060	L3_058_022G1
+58D144	58	D144	infant gut	false	G_058_059_060	L3_058_144G1
+60D31	60	D31	infant gut	false	G_058_059_060	L3_060_031G1
+63D126	63	D126	infant gut	false		L3_063_126G1
+68D243	68	D243	infant gut	false		L3_068_243G1
+69D36	69	D36	infant gut	false		L3_069_036G1
+72M	M72	D0	maternal gut	false		L3_072_000M1
+72D48	72	D48	infant gut	false		L3_072_048G1
+79D62	79	D62	infant gut	false		L3_079_062G1
+82D121	82	D121	infant gut	false		L3_082_121G1
+83D239	83	D239	infant gut	false		L3_083_239G1
+58D28	58	D28	infant gut	false	G_058_059_060	L3_058_028G1
+58D256	58	D256	infant gut	false	G_058_059_060	L3_058_256G1
+60D38	60	D38	infant gut	false	G_058_059_060	L3_060_038G1
+63D9	63	D9	infant gut	false		L3_063_009G1
+63D250	63	D250	infant gut	false		L3_063_250G1
+68D368	68	D368	infant gut	false		L3_068_368G1
+69D49	69	D49	infant gut	false		L3_069_049G1
+72D6	72	D6	infant gut	true		L3_072_006G1
+72D57	72	D57	infant gut	false		L3_072_057G1
+79D88	79	D88	infant gut	false		L3_079_088G1
+NC3	NC3		control	true		L3_EC_001P1
