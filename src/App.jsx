@@ -6844,7 +6844,7 @@ const ScatterTab = ({
   const [sortBy, setSortBy] = useState("score");
   // Direction per sort key — defaults match what most users expect
   // (descending for numeric severity, ascending for alphabetical).
-  const SORT_DEFAULT_DIR = { score: "desc", rate: "desc", introducedPct: "desc", source: "asc", pending: "asc", action: "asc" };
+  const SORT_DEFAULT_DIR = { score: "desc", rate: "desc", introducedPct: "desc", source: "asc", target: "asc", pending: "asc", action: "asc" };
   const [sortDir, setSortDir] = useState(SORT_DEFAULT_DIR.score);
   const handleSortClick = (id) => {
     if (sortBy === id) {
@@ -6924,6 +6924,8 @@ const ScatterTab = ({
       );
     } else if (sortBy === "source") {
       copy.sort((a, b) => a.source.localeCompare(b.source) * flip);
+    } else if (sortBy === "target") {
+      copy.sort((a, b) => a.target.localeCompare(b.target) * flip);
     } else if (sortBy === "action") {
       // Group by action — keep / suppress / none — and break ties by
       // descending probability so the most-confident calls bubble up
@@ -7028,6 +7030,7 @@ const ScatterTab = ({
           { id: "pending", label: "verdict" },
           ...(actionEnabled ? [{ id: "action", label: "action" }] : []),
           { id: "source", label: "source" },
+          { id: "target", label: "target" },
         ].map((opt) => {
           const active = sortBy === opt.id;
           return (
@@ -9867,18 +9870,15 @@ const ValidateTab = ({
         </div>
         <div className="flex flex-wrap gap-1 mb-2">
           {[
-            // Labels are deliberately short so all buttons fit on a
-            // single row in the narrow sidebar; tooltips carry the full
-            // name. When suppress/keep is on, the action button joins
-            // the row without wrapping.
+            // Labels stay short (prob / intro) to keep the row on one
+            // line in the narrow sidebar; tooltips carry the full name.
             { id: "rate", label: "rate", full: "rate" },
             { id: "score", label: "prob", full: "probability" },
             { id: "introducedPct", label: "intro", full: "introduced" },
-            { id: "verdict", label: "verd", full: "verdict" },
+            { id: "verdict", label: "verdict", full: "verdict" },
             ...(actionEnabled
-              ? [{ id: "action", label: "act", full: "action" }]
+              ? [{ id: "action", label: "action", full: "action" }]
               : []),
-            { id: "source", label: "src", full: "source" },
           ].map((opt) => {
             const active = queueSortBy === opt.id;
             return (
