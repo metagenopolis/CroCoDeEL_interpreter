@@ -9867,12 +9867,18 @@ const ValidateTab = ({
         </div>
         <div className="flex flex-wrap gap-1 mb-2">
           {[
-            { id: "rate", label: "rate" },
-            { id: "score", label: "prob" },
-            { id: "introducedPct", label: "intro" },
-            { id: "verdict", label: "verdict" },
-            ...(actionEnabled ? [{ id: "action", label: "action" }] : []),
-            { id: "source", label: "source" },
+            // Labels are deliberately short so all buttons fit on a
+            // single row in the narrow sidebar; tooltips carry the full
+            // name. When suppress/keep is on, the action button joins
+            // the row without wrapping.
+            { id: "rate", label: "rate", full: "rate" },
+            { id: "score", label: "prob", full: "probability" },
+            { id: "introducedPct", label: "intro", full: "introduced" },
+            { id: "verdict", label: "verd", full: "verdict" },
+            ...(actionEnabled
+              ? [{ id: "action", label: "act", full: "action" }]
+              : []),
+            { id: "source", label: "src", full: "source" },
           ].map((opt) => {
             const active = queueSortBy === opt.id;
             return (
@@ -9882,8 +9888,8 @@ const ValidateTab = ({
                 onClick={() => handleQueueSortClick(opt.id)}
                 title={
                   active
-                    ? `Click to switch to ${queueSortDir === "desc" ? "ascending" : "descending"} order`
-                    : `Sort by ${opt.label}`
+                    ? `Sort by ${opt.full} — click to switch to ${queueSortDir === "desc" ? "ascending" : "descending"} order`
+                    : `Sort by ${opt.full}`
                 }
                 className="px-2 py-0.5 text-[10px] rounded-sm"
                 style={{
