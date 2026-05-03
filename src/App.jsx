@@ -1448,7 +1448,12 @@ const sup = (n) => {
    ============================================================================ */
 
 /* ---------- SCATTERPLOT ---------- */
-const Scatterplot = ({ scatter, width = 560, height = 500 }) => {
+const Scatterplot = ({
+  scatter,
+  width = 560,
+  height = 500,
+  pickedSpecies = [],
+}) => {
   const [hover, setHover] = useState(null);
   if (!scatter) return null;
   if (scatter.error) {
@@ -1637,6 +1642,49 @@ const Scatterplot = ({ scatter, width = 560, height = 500 }) => {
             style={{ cursor: "pointer" }}
           />
         ))}
+        {/* Violet rings + tiny labels on points the user has pinned via
+            the "Introduced species" chip list. Drawn after the points so
+            they sit on top, but before the diagonal so the line still
+            reads through. Each pinned point shows its species name and
+            target / source abundance in very small text next to the ring. */}
+        {pickedSpecies.length > 0 &&
+          pickedSpecies.map((sp) => {
+            const p = pts.find((q) => q.species === sp);
+            if (!p) return null;
+            const cx = sx(p.lx);
+            const cy = sy(p.ly);
+            const fmt = (v) =>
+              v > 0 ? v.toExponential(2) : "0";
+            return (
+              <g key={`pick-${sp}`} pointerEvents="none">
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={7}
+                  fill="none"
+                  stroke="#423089"
+                  strokeWidth="2"
+                  strokeOpacity="0.9"
+                />
+                <text
+                  x={cx + 9}
+                  y={cy + 3}
+                  fontSize="8"
+                  style={{
+                    fill: "#423089",
+                    fontFamily:
+                      'ui-monospace, "SF Mono", Menlo, monospace',
+                    fontWeight: 700,
+                    paintOrder: "stroke",
+                    stroke: "var(--bg-card)",
+                    strokeWidth: 3,
+                  }}
+                >
+                  {`${sp}  ·  tgt ${fmt(p.x)}  ·  src ${fmt(p.y)}`}
+                </text>
+              </g>
+            );
+          })}
         {diagLine}
       </svg>
       {hover && (
@@ -9663,6 +9711,20 @@ const ValidateTab = ({
   const related = areRelated(metadata, sel.source, sel.target);
   const pd = plateDistance(plateMap, sel.source, sel.target);
 
+  // Picked species — clicking a chip in the "Introduced species" list
+  // pins the matching point in the scatterplot with a violet ring.
+  // Reset whenever the focused event changes since the species set is
+  // event-scoped.
+  const [pickedSpecies, setPickedSpecies] = useState([]);
+  useEffect(() => {
+    setPickedSpecies([]);
+  }, [sel?.id]);
+  const togglePickedSpecies = (sp) => {
+    setPickedSpecies((prev) =>
+      prev.includes(sp) ? prev.filter((s) => s !== sp) : [...prev, sp],
+    );
+  };
+
   // Count events that have either a verdict or a note — used to decide
   // whether to show the "Reset all" button.
   const decidedCount = useMemo(
@@ -10072,7 +10134,12 @@ const ValidateTab = ({
         <div className="grid md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-6 mt-6">
           <div>
             {hasAb ? (
-              <Scatterplot scatter={scatter} width={520} height={450} />
+              <Scatterplot
+                scatter={scatter}
+                width={520}
+                height={450}
+                pickedSpecies={pickedSpecies}
+              />
             ) : (
               <div
                 className="p-4 text-[13px] rounded-sm"
@@ -10616,19 +10683,36 @@ const ValidateTab = ({
                   className="flex flex-wrap gap-1 max-h-28 overflow-auto p-2 rounded-sm mt-3"
                   style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
                 >
-                  {sel.introduced.slice(0, 80).map((s, i) => (
-                    <span
-                      key={i}
-                      className="text-[11px] px-1.5 py-0.5 rounded-sm"
-                      style={{
-                        background: "var(--bg-soft)",
-                        color: "var(--ink)",
-                        fontFamily: "system-ui, monospace",
-                      }}
-                    >
-                      {s}
-                    </span>
-                  ))}
+                  {sel.introduced.slice(0, 80).map((s, i) => {
+                    const active = pickedSpecies.includes(s);
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => togglePickedSpecies(s)}
+                        title={
+                          active
+                            ? "Click to unpin this species in the plot"
+                            : "Click to pin this species in the plot"
+                        }
+                        className="text-[11px] px-1.5 py-0.5 rounded-sm"
+                        style={{
+                          background: active
+                            ? "rgba(66,48,137,0.12)"
+                            : "var(--bg-soft)",
+                          color: active ? "#423089" : "var(--ink)",
+                          border: active
+                            ? "1px solid #423089"
+                            : "1px solid transparent",
+                          fontFamily: "system-ui, monospace",
+                          fontWeight: active ? 700 : 400,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {s}
+                      </button>
+                    );
+                  })}
                   {sel.introduced.length > 80 && (
                     <span
                       className="text-[11px] px-1.5 py-0.5"
