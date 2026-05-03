@@ -11034,14 +11034,16 @@ const PatternMiniPlot = ({
       {/* Axes — deep teal #275662, matching the main Scatterplot */}
       <line x1={padL} y1={padT + h} x2={padL + w} y2={padT + h} stroke="#275662" strokeWidth={1} />
       <line x1={padL} y1={padT} x2={padL} y2={padT + h} stroke="#275662" strokeWidth={1} />
-      {/* y = x diagonal — black dashed, matching the main Scatterplot */}
+      {/* y = x diagonal — theme-neutral mid-grey #7d8b91 so it stays
+         readable in both light and dark mode (pure black disappeared on
+         the dark background). Matches the gallery card's identity line. */}
       {diagonal && (
         <line
           x1={toX(0)}
           y1={toY(0)}
           x2={toX(1)}
           y2={toY(1)}
-          stroke="#000"
+          stroke="#7d8b91"
           strokeWidth={1}
           strokeDasharray="2 4"
           opacity={0.75}
@@ -11079,15 +11081,17 @@ const PatternMiniPlot = ({
         />
       )}
       {/* Regular points — coords already in the [0,1]² axis space
-          (1e-6..1e-1 per decade × 5). */}
+          (1e-6..1e-1 per decade × 5). Mid-grey #7d8b91 (matching the
+          main Scatterplot) so they stay visible against both the light
+          and dark theme card backgrounds. */}
       {points.map(([x, y], i) => (
         <circle
           key={`p-${i}`}
           cx={toX(x)}
           cy={toY(y)}
           r={2}
-          fill="#275662"
-          fillOpacity={0.4}
+          fill="#7d8b91"
+          fillOpacity={0.55}
         />
       ))}
       {/* Highlighted points (e.g. cluster of interest) */}
