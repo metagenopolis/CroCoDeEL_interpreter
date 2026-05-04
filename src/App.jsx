@@ -5262,7 +5262,7 @@ const EventsTable = ({
                             {
                               id: "keep",
                               Icon: Save,
-                              color: "#00a3a6",
+                              color: "#e0b13a",
                               title: "Keep this sample (acknowledged contamination, but small enough to retain)",
                             },
                             {
@@ -5757,7 +5757,7 @@ const GalleryCard = ({
               {
                 id: "keep",
                 Icon: Save,
-                color: "#00a3a6",
+                color: "#e0b13a",
                 title: "Keep this sample",
               },
               {
