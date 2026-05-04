@@ -1,6 +1,6 @@
-# CroCoDeEL Interpretation Console
+# CroCoDeEL Interpretation Interface
 
-A browser-based curation interface for [CroCoDeEL](https://github.com/metagenopolis/CroCoDeEL) contamination calls. Load a `contamination_events.tsv` and the matching `species_abundance.tsv` (and optionally a sample metadata file and a plate map), walk every flagged event through a scatterplot and seven diagnostic criteria with full sample/plate context, then commit a verdict (true positive / false positive / uncertain / pending) and an optional **suppress / keep** action. Export a curated TSV, a self-contained HTML report, or a full session JSON.
+A browser-based curation interface for [CroCoDeEL](https://github.com/metagenopolis/CroCoDeEL) contamination calls. Load a `contamination_events.tsv` and the matching `species_abundance.tsv` (and optionally a sample metadata file and a plate map), walk every flagged event through a scatterplot and seven diagnostic criteria with full sample/plate context, then commit a verdict (true positive / false positive / uncertain / pending) and, for true positives, an optional **keep / suppress** action. Export a curated TSV, a self-contained HTML report, or a full session JSON.
 
 > **Live:** https://metagenopolis.github.io/CroCoDeEL_interpreter/
 >
@@ -10,7 +10,7 @@ A browser-based curation interface for [CroCoDeEL](https://github.com/metagenopo
 
 - **Overview** &mdash; run parameters, headline counts (events, mean rate, mean introduced %), connected-components count, optional **To suppress / To keep** cards, top events by probability, rate, and species impact.
 - **Events table** &mdash; every column sortable. Filter bar (shared across all event-centric tabs) for text search, log-scaled rate slider, probability slider, introduced-% slider, multi-select verdict popover, action popover, sample-context filters (same/different subject, same/different group, plate adjacency).
-- **Guided validation** &mdash; per-event scatterplot in log-log space with the contamination line drawn at `log10(rate)`, the seven diagnostic criteria with PASS/FAIL + numerical values, plate position, sample relatedness, cascade chain when detected, and an aggregate FP-suggestion banner when the event is most likely a longitudinal pair.
+- **Guided validation** &mdash; per-event scatterplot in log-log space with the contamination line drawn at `log10(rate)`, the seven diagnostic criteria with PASS/FAIL + numerical values, plate position, sample relatedness, cascade chain when detected, and an aggregate FP-suggestion banner when the event is most likely a longitudinal pair. Click an introduced-species chip to pin the matching point on the plot (violet ring + name / target / source readout); a checkbox under the metric tiles toggles the salmon highlight on contamination-line points so the line shape can be read on its own.
 - **Network** &mdash; force-directed graph of events; arrow thickness scales with rate, color encodes verdict, salmon nodes mark cascade samples; click a plate panel to jump straight to the corresponding event in Validate.
 - **Plate** &mdash; visualize events on the physical plate layout (when `plate_map.tsv` is provided); adjacent-well events are highlighted as suspect well-to-well leakage.
 - **Explore pairs** &mdash; pick any pair of samples (even pairs CroCoDeEL did not flag) to inspect their scatterplot; add the pair as a manually-curated event to catch false negatives.
@@ -28,7 +28,7 @@ Each event is scored against seven criteria; the aggregate verdict (`X / 7`) is 
 | 01 | Straight contamination line | R&sup2; > 0.8 of the linear fit on log-log | abundance |
 | 02 | Enough species on the line | n > 10 species | abundance |
 | 03 | Line spans many decades | decade range &ge; 1.5 | abundance |
-| 04 | Abundant source species present in target | &le; 2 missing out of evaluated set | abundance |
+| 04 | Abundant source species present in target | &le; 2 missing out of evaluated set (per-target empirical LOD) | abundance |
 | 05 | No points clearly above the line | max distance < 0.5 decade above (cascade-aware) | abundance |
 | 06 | Source / target profiles are distinct | Spearman &rho; < 0.7 across full profiles | abundance |
 | 07 | Source and target are different individuals | `subject_id` (or `group_id`) mismatch | metadata |
@@ -37,10 +37,10 @@ Criterion 07 is only scored when sample metadata is loaded (denominator becomes 
 
 ## Suppress / keep action layer (opt-in)
 
-Beyond the verdict, the curator can attach a downstream action:
+Beyond the verdict, true-positive events can carry a downstream action. Actions only apply to TP &mdash; FP / Uncertain / Pending events have no action.
 
-- **Suppress** &mdash; drop the contaminated sample from the analysis (default for TP).
-- **Keep** &mdash; verdict stands but the sample is acceptable (default for FP, e.g. when the contamination rate is small).
+- **Suppress** &mdash; drop the contaminated sample from the analysis (default for TP without an explicit action).
+- **Keep** &mdash; acknowledge the contamination but leave the sample in the study (small enough to ignore).
 
 Enable in **Configuration** (gear icon, top right). The action lands in the exported TSV (`action` column) and the HTML report.
 
@@ -87,7 +87,7 @@ Header lines starting with `#` are parsed as run metadata (e.g. `# crocodeel ver
 
 ### `species_abundance.tsv` (required)
 
-Wide format: first column is the species ID, remaining columns are sample IDs. Values are absolute or relative abundances (auto-normalized per sample). The console can boot without it &mdash; the events table will render and verdicts can be entered &mdash; but the scatterplots and six of the seven diagnostic criteria depend on it, so curation without an abundance table reduces to taking CroCoDeEL's call at face value.
+Wide format: first column is the species ID, remaining columns are sample IDs. Values are absolute or relative abundances (auto-normalized per sample). The interface can boot without it &mdash; the events table will render and verdicts can be entered &mdash; but the scatterplots, the Decontaminate tab and six of the seven diagnostic criteria depend on it, so curation without an abundance table reduces to taking CroCoDeEL's call at face value.
 
 ### `metadata.tsv` (optional, unlocks criterion 07 and sample-context filters)
 
@@ -145,7 +145,7 @@ The repository ships with `.github/workflows/deploy.yml` &mdash; pushing to `mai
 
 ## Citing
 
-If the console contributes to a publication, please cite both CroCoDeEL itself and this interpreter (see `CITATION.cff`).
+If the interface contributes to a publication, please cite CroCoDeEL itself (see `CITATION.cff`).
 
 ## License
 

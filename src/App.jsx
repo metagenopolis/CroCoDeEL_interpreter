@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 
 /* ============================================================================
-   CroCoDeEL — Interpretation Console
+   CroCoDeEL — Interpretation Interface
    INRAE graphic charter v4.3 · December 2024
    --------------------------------------------------------------------------
    Typography   Raleway (titles) · Nunito Sans (body, web fallback for Avenir)
@@ -1453,6 +1453,7 @@ const Scatterplot = ({
   width = 560,
   height = 500,
   pickedSpecies = [],
+  colorOnLine = true,
 }) => {
   const [hover, setHover] = useState(null);
   if (!scatter) return null;
@@ -1618,30 +1619,37 @@ const Scatterplot = ({
           Source — {scatter.source}
         </text>
         {lineEls}
-        {pts.map((p, i) => (
-          <circle
-            key={i}
-            cx={sx(p.lx)}
-            cy={sy(p.ly)}
-            r={p.onLine ? 4 : 2.8}
-            fill={p.onLine ? "#ed6e6c" : "#7d8b91"}
-            fillOpacity={p.onLine ? 0.9 : 0.55}
-            stroke={p.onLine ? "#b84442" : "none"}
-            strokeWidth="0.7"
-            onMouseEnter={() =>
-              setHover({
-                species: p.species,
-                x: p.x,
-                y: p.y,
-                sx: sx(p.lx),
-                sy: sy(p.ly),
-                onLine: p.onLine,
-              })
-            }
-            onMouseLeave={() => setHover(null)}
-            style={{ cursor: "pointer" }}
-          />
-        ))}
+        {pts.map((p, i) => {
+          // `colorOnLine` toggles the salmon highlight on points sitting
+          // on the contamination line. When off, every point renders in
+          // the same neutral grey so the curator can read the line shape
+          // without the model's introduced-species highlight.
+          const highlight = p.onLine && colorOnLine;
+          return (
+            <circle
+              key={i}
+              cx={sx(p.lx)}
+              cy={sy(p.ly)}
+              r={highlight ? 4 : 2.8}
+              fill={highlight ? "#ed6e6c" : "#7d8b91"}
+              fillOpacity={highlight ? 0.9 : 0.55}
+              stroke={highlight ? "#b84442" : "none"}
+              strokeWidth="0.7"
+              onMouseEnter={() =>
+                setHover({
+                  species: p.species,
+                  x: p.x,
+                  y: p.y,
+                  sx: sx(p.lx),
+                  sy: sy(p.ly),
+                  onLine: p.onLine,
+                })
+              }
+              onMouseLeave={() => setHover(null)}
+              style={{ cursor: "pointer" }}
+            />
+          );
+        })}
         {/* Violet rings + tiny labels on points the user has pinned via
             the "Introduced species" chip list. Drawn after the points so
             they sit on top, but before the diagonal so the line still
@@ -4030,13 +4038,10 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
     let supp = 0;
     if (actionEnabled) {
       events.forEach((e) => {
+        // Action only applies to TP — FP / Uncertain / Pending don't
+        // contribute to the keep / suppress tally.
         const a =
-          e.action ||
-          (e.verdict === "true_positive"
-            ? "suppress"
-            : e.verdict === "false_positive"
-              ? "keep"
-              : null);
+          e.verdict === "true_positive" ? e.action || "suppress" : null;
         if (a === "keep") keep++;
         else if (a === "suppress") supp++;
       });
@@ -5255,8 +5260,7 @@ const EventsTable = ({
                   </td>
                   {actionEnabled && (
                     <td className="px-3 py-2.5">
-                      {e.verdict === "true_positive" ||
-                      e.verdict === "false_positive" ? (
+                      {e.verdict === "true_positive" ? (
                         <div className="flex gap-1">
                           {[
                             {
@@ -5272,9 +5276,7 @@ const EventsTable = ({
                               title: "Suppress this contaminated sample from downstream analyses",
                             },
                           ].map((opt) => {
-                            const defaultAction =
-                              e.verdict === "false_positive" ? "keep" : "suppress";
-                            const active = (e.action || defaultAction) === opt.id;
+                            const active = (e.action || "suppress") === opt.id;
                             const Icon = opt.Icon;
                             return (
                               <button
@@ -5587,10 +5589,7 @@ const GalleryCard = ({
     cancelCloseTimer();
     const next = event.verdict === target ? "pending" : target;
     setVerdict(event.id, next);
-    if (
-      actionEnabled &&
-      (next === "true_positive" || next === "false_positive")
-    ) {
+    if (actionEnabled && next === "true_positive") {
       setActionPopover(next);
     } else {
       setActionPopover(null);
@@ -5681,12 +5680,15 @@ const GalleryCard = ({
               // committed an action (keep / suppress), draw a colored
               // ring around the verdict button so the action is visible
               // at a glance from the gallery without expanding the card.
+              // Slightly brighter yellow for the ring than the chip body
+              // color so the halo reads against the teal-active TP button
+              // (the muted #e0b13a was disappearing into the background).
+              // Action is only available for TP — FP keeps no halo even
+              // if a legacy action is recorded in the data.
               const actionRingColor =
-                active &&
-                (id === "true_positive" || id === "false_positive") &&
-                event.action
+                active && id === "true_positive" && event.action
                   ? event.action === "keep"
-                    ? "#e0b13a"
+                    ? "#f5c324"
                     : event.action === "suppress"
                       ? "#ed6e6c"
                       : null
@@ -5706,7 +5708,7 @@ const GalleryCard = ({
                       actionEnabled &&
                       event.action &&
                       event.verdict === id &&
-                      (id === "true_positive" || id === "false_positive")
+                      id === "true_positive"
                     ) {
                       cancelCloseTimer();
                       setActionPopover(id);
@@ -5730,7 +5732,7 @@ const GalleryCard = ({
                       : "1px solid #c4c0b3",
                     backdropFilter: active ? "none" : "blur(4px)",
                     boxShadow: actionRingColor
-                      ? `0 0 0 1px var(--bg-card), 0 0 0 2.5px ${actionRingColor}, 0 0 8px 1px ${actionRingColor}b3`
+                      ? `0 0 0 1px var(--bg-card), 0 0 0 3px ${actionRingColor}, 0 0 10px 2px ${actionRingColor}`
                       : "none",
                     transition: "background 0.12s, color 0.12s, box-shadow 0.12s",
                   }}
@@ -5784,9 +5786,8 @@ const GalleryCard = ({
                 title: "Suppress this sample",
               },
             ].map((opt) => {
-              const defaultAction =
-                actionPopover === "false_positive" ? "keep" : "suppress";
-              const active = (event.action || defaultAction) === opt.id;
+              // Popover only opens for TP, so the default is "suppress".
+              const active = (event.action || "suppress") === opt.id;
               const Icon = opt.Icon;
               return (
                 <button
@@ -6169,16 +6170,16 @@ const ExplorePairs = ({
   const [rateLog, setRateLog] = useState(-2);
   const [probability, setProbability] = useState(0.9);
   const [verdict, setVerdict] = useState("true_positive");
-  // Action override for the manual event when actionEnabled. Mirrors
-  // setVerdict's defaults: TP → suppress, FP → keep.
+  // Action override for the manual event when actionEnabled. Action is
+  // only applicable to TP — FP / Uncertain / Pending carry no action.
   const [action, setAction] = useState("suppress");
   const [notes, setNotes] = useState("Manually added by user");
   const [feedback, setFeedback] = useState(null);
 
-  // Reset action to the verdict's default whenever the verdict changes.
+  // Reset action whenever the verdict changes — TP defaults to suppress,
+  // everything else clears the action.
   useEffect(() => {
     if (verdict === "true_positive") setAction("suppress");
-    else if (verdict === "false_positive") setAction("keep");
     else setAction(null);
   }, [verdict]);
 
@@ -6507,9 +6508,8 @@ const ExplorePairs = ({
         </div>
 
         {/* Action picker — only when the suppress/keep feature is on
-            and the verdict is TP or FP. */}
-        {actionEnabled &&
-          (verdict === "true_positive" || verdict === "false_positive") && (
+            and the verdict is TP. FPs carry no action. */}
+        {actionEnabled && verdict === "true_positive" && (
             <div className="mb-3">
               <label
                 className="text-[10px] tracking-[0.1em] uppercase block mb-2"
@@ -9424,8 +9424,7 @@ const BulkApplyByCriteriaDialog = ({
           })}
         </div>
 
-        {actionEnabled &&
-          (verdict === "true_positive" || verdict === "false_positive") && (
+        {actionEnabled && verdict === "true_positive" && (
             <>
               <div
                 style={{
@@ -9699,14 +9698,10 @@ const ValidateTab = ({
       // since the default is what will actually happen on export. Events
       // with no resolvable action sort last; ties break by descending
       // probability so the most-confident calls bubble up inside each
-      // bucket.
+      // bucket. Action only applies to TP, so FP / Uncertain / Pending
+      // sort to the no-action bucket.
       const eff = (e) =>
-        e.action ||
-        (e.verdict === "true_positive"
-          ? "suppress"
-          : e.verdict === "false_positive"
-            ? "keep"
-            : null);
+        e.verdict === "true_positive" ? e.action || "suppress" : null;
       const rank = (v) => (v === "keep" ? 0 : v === "suppress" ? 1 : 2);
       copy.sort(
         (a, b) =>
@@ -9741,6 +9736,11 @@ const ValidateTab = ({
       prev.includes(sp) ? prev.filter((s) => s !== sp) : [...prev, sp],
     );
   };
+  // Whether to color the on-line points salmon. Off renders every point
+  // in the same neutral grey so the curator can judge the line shape
+  // without the model's "introduced" highlight biasing the eye. Persists
+  // across events; reset is on the user.
+  const [colorOnLine, setColorOnLine] = useState(true);
 
   // Count events that have either a verdict or a note — used to decide
   // whether to show the "Reset all" button.
@@ -10156,6 +10156,7 @@ const ValidateTab = ({
                 width={520}
                 height={450}
                 pickedSpecies={pickedSpecies}
+                colorOnLine={colorOnLine}
               />
             ) : (
               <div
@@ -10183,6 +10184,19 @@ const ValidateTab = ({
                 tone={metricTone(sel.introducedPct, "introduced")}
               />
             </div>
+            <label
+              className="mt-3 flex items-center gap-2 text-[12px] select-none cursor-pointer"
+              style={{ color: "var(--ink-muted)", fontFamily: '"Raleway", sans-serif' }}
+              title="Toggle off to render every point in the same neutral grey — useful to judge the line shape without the model's introduced-species highlight."
+            >
+              <input
+                type="checkbox"
+                checked={colorOnLine}
+                onChange={(e) => setColorOnLine(e.target.checked)}
+                style={{ accentColor: "#ed6e6c" }}
+              />
+              Color contamination-line points
+            </label>
 
           </div>
 
@@ -10800,9 +10814,7 @@ const ValidateTab = ({
             >
               Reset
             </VerdictBtn>
-            {actionEnabled &&
-              (sel.verdict === "true_positive" ||
-                sel.verdict === "false_positive") && (
+            {actionEnabled && sel.verdict === "true_positive" && (
                 <>
                   <span
                     aria-hidden="true"
@@ -10829,9 +10841,9 @@ const ValidateTab = ({
                       hint: "Drop this contaminated sample from downstream analyses.",
                     },
                   ].map((opt) => {
-                    const defaultAction =
-                      sel.verdict === "false_positive" ? "keep" : "suppress";
-                    const active = (sel.action || defaultAction) === opt.id;
+                    // The toolbar only renders for TP, so the default
+                    // is always "suppress".
+                    const active = (sel.action || "suppress") === opt.id;
                     const Icon = opt.Icon;
                     return (
                       <button
@@ -11844,61 +11856,6 @@ const CASE_E = [
   [0,0.293], [0,0.234]
 ];
 
-const CASE_F = [
-  [0,0.113], [0.661,0.647], [0.839,0.679], [0,0.221], [0.311,0.488], 
-  [0.555,0.839], [0.707,0.805], [0.671,0.311], [0.556,0.14], [0.901,0.261], 
-  [0.859,0.438], [0.677,0.751], [0.707,0.151], [0.849,0.295], [0,0.5], 
-  [0.504,0.139], [0.626,0], [0.763,0.326], [0.313,0], [1,0.22], [0,0.317], 
-  [0.966,0.272], [0.701,0], [0.337,0.12], [0.656,1], [0.492,0.33], [0,0.103], 
-  [0.298,0.23], [0.836,0.321], [0.648,0], [0,0.14], [0,0.237], [0.89,0.992], 
-  [0.679,0.292], [0.632,0], [0.463,0], [0.833,0.209], [0.289,0.389], [0.426,0], 
-  [0.615,0.938], [0.79,0], [0.73,0.147], [0,0.128], [0.409,0.714], 
-  [0.496,0.842], [0.754,0.297], [0.952,0.998], [0.707,0.152], [0.859,0.188], 
-  [0.6,0], [0.324,0], [0.83,0.144], [0.542,0.823], [0.631,0.966], [0,0.139], 
-  [0,0.361], [0.9,0.33], [0.591,0], [0.937,0.273], [0,0.159], [0.653,0], 
-  [0.741,0.175], [0.335,0.424], [0.878,0], [0.662,0.982], [0,0.574], [0.327,0], 
-  [0.564,0], [0,0.313], [0.706,0], [0.706,0.145], [0.528,0], [0.615,0], 
-  [0.53,0], [0.27,0], [0.554,0.194], [0.785,0], [0,0.154], [0.589,0], 
-  [0.321,0.216], [0,0.427], [0.598,0.942], [0.82,0], [0.696,0], [0.416,0.729], 
-  [0.506,0.17], [0.551,0.153], [0.342,0], [0.636,0], [0.372,0], [0.447,0], 
-  [0.676,0.808], [0.474,0], [0,0.167], [0.557,0], [0.623,0], [0.55,0], 
-  [0.708,0], [0.487,0], [0.695,0.196], [0.614,0], [0,0.093], [0,0.161], 
-  [0.62,0.207], [0.832,0], [0.59,0], [0,0.155], [0.315,0.312], [0.536,0.364], 
-  [0.778,0], [0,0.157], [0,0.231], [0.674,0], [0,0.124], [0,0.653], [0.28,0], 
-  [0.589,0.156], [0.405,0.129], [0.393,0], [0.54,0.84], [0.661,0], [0,0.329], 
-  [0.45,0], [0,0.535], [0.686,0], [0.737,0], [0,0.477], [0.397,0], [0.796,0], 
-  [0.528,0], [0.42,0], [0.929,0], [0.319,0], [0.426,0], [0.327,0], [0.587,0], 
-  [0,0.167], [0,0.164], [0,0.609], [0.578,0.731], [0,0.182], [0,0.152], 
-  [0.413,0], [0,0.488], [0.318,0.176], [0,0.535], [0.635,0.853], [0.967,0.163], 
-  [0,0.525], [0,0.142], [0,0.241], [0.643,0.71], [0,0.384], [0.652,0], 
-  [0.325,0], [0.553,0.553], [0.698,0.115], [0.396,0], [0.611,0.927], 
-  [0.728,0.125], [0.886,1], [0.751,0], [0.449,0], [0,0.22], [0.514,0], 
-  [0.498,0.718], [0.647,0.261], [0,0.289], [0,0.153], [0.418,0], [0.704,0], 
-  [0.722,0], [0.432,0], [0.597,0], [0.41,0], [0.625,0], [0.666,0.223], 
-  [0,0.234], [0,0.148], [0.75,0], [0.531,0.544], [0.488,0], [0.313,0.673], 
-  [0.563,0.699], [0,0.148], [0.471,0], [0.57,0.538], [0.508,0.16], [0,0.263], 
-  [0.433,0], [0.305,0], [0.404,0], [0.468,0], [0.399,0], [0,0.272], [0,0.219], 
-  [0.535,0], [0,0.315], [0,0.144], [0,0.419], [0.649,0.503], [0,0.204], 
-  [0,0.549], [0.606,0], [0,0.223], [0.325,0], [0.559,0], [0,0.305], [0.31,0], 
-  [0,0.155], [0.726,0.795], [0,0.457], [0.534,0], [0.494,0], [0.495,0.71], 
-  [0.622,0], [0,0.232], [0.339,0], [0,0.335], [0,0.115], [0.716,0], [0,0.247], 
-  [0,0.55], [0.544,0.66], [0.626,0], [0,0.217], [0.562,0.521], [0.721,0], 
-  [0.469,0], [0.43,0.126], [0.633,0], [0,0.468], [0,0.17], [0,0.513], 
-  [0,0.158], [0.476,0.616], [0.287,0], [0.716,0.976], [0.591,0.837], 
-  [0.808,0.194], [0.668,0], [0.717,0.157], [0.53,0], [0.456,0], [0.528,0.594], 
-  [0,0.313], [0.338,0], [0.397,0.14], [0.48,0], [0,0.218], [0,0.411], 
-  [0.559,0], [0,0.28], [0.57,0.424], [0.638,0], [0,0.248], [0.516,0], 
-  [0,0.189], [0.33,0], [0.518,0], [0,0.207], [0.434,0], [0,0.547], [0.376,0], 
-  [0,0.244], [0.529,0], [0.447,0], [0.454,0.178], [0.494,0], [0.517,0.506], 
-  [0,0.405], [0,0.381], [0.296,0.449], [0,0.216], [0.347,0], [0.324,0], 
-  [0,0.421], [0.366,0.586], [0.458,0], [0.413,0.384], [0,0.154], [0.383,0], 
-  [0.375,0.376], [0,0.387], [0,0.309], [0,0.367], [0.44,0], [0.621,0], 
-  [0.397,0], [0,0.16], [0,0.302], [0,0.283], [0,0.299], [0,0.359], [0,0.438], 
-  [0.345,0.346], [0,0.399], [0,0.462], [0,0.294], [0,0.309], [0,0.271], 
-  [0,0.242], [0.331,0.572], [0.403,0.394], [0,0.604], [0,0.492], [0,0.62], 
-  [0,0.351], [0,0.234]
-];
-
 const CASE_G = [
   [0.617,0.566], [0.723,0.733], [0.719,0.8], [0.747,0.32], [0.494,0.505], 
   [0.695,0.793], [0.758,0.607], [0.499,0.547], [0.412,0.126], [0,0.427], 
@@ -12076,46 +12033,6 @@ const CASE_I = [
   [0,0.221], [0,0.247], [0,0.533], [0,0.476], [0,0.27]
 ];
 
-const CASE_J = [
-  [0.541,0], [0.618,1], [0.791,0.627], [0.524,0.406], [0.504,0.708], [0.663,1], 
-  [0.768,0.606], [0.743,0.406], [0.302,0.376], [0.366,0.303], [1,0.519], 
-  [0.337,0.478], [0,0.411], [0.362,0], [0.619,1], [0.612,0], [0.644,0.432], 
-  [0.323,0.781], [0.651,0.35], [0.921,0.615], [0.541,0.988], [0.901,0.556], 
-  [0.239,0.333], [0.339,0.564], [0.5,0.415], [0.233,0.52], [0.425,0.438], 
-  [0.619,0.609], [1,0.576], [0.431,0], [0.809,0.37], [0.757,0.522], 
-  [0.947,0.337], [0.343,0], [0.519,0], [0.366,0], [0.401,0], [0,0.355], 
-  [0.522,0.938], [0.312,0.269], [0.489,0], [0.285,0.281], [0.501,0], [0.656,0], 
-  [0.409,0.464], [1,0.661], [0.847,0.347], [0.386,0.464], [0.306,0.446], 
-  [0.871,0.516], [0.53,0.409], [0,0.535], [0,0.282], [0.41,0], [0.538,0.595], 
-  [0.432,0.544], [0.651,0], [0.404,0.391], [0.283,0.302], [0.433,0.664], 
-  [0.548,0.282], [0.464,0], [0.678,0], [0,0.441], [0,0.421], [0.384,0], 
-  [0,0.338], [0.674,0], [0.589,0], [0,0.357], [0.859,0.41], [0.285,0], 
-  [0.728,0.514], [0.448,0], [0.496,0], [0,0.455], [0.296,0.888], [0.644,0], 
-  [0.709,0.312], [0.281,0.743], [0.611,0.328], [0.335,0], [0.409,0], 
-  [0.519,0.359], [0.262,0.447], [0.562,0.471], [0.582,0], [0.252,0], [0.391,0], 
-  [0.401,0], [0,0.451], [0.258,0], [0.26,0], [0.58,0], [0.231,0], 
-  [0.614,0.268], [0.257,0.372], [0.262,0.339], [0.53,0], [0.492,0.272], 
-  [0.248,0], [0.253,0.399], [0.701,0.53], [0.268,0], [0.326,0], [0.316,0.431], 
-  [0,0.31], [0.713,0], [0,0.496], [0,0.639], [0.254,0], [0.565,0], [0.502,0], 
-  [0,0.41], [0.279,0.302], [0.422,0.304], [0.225,0], [0.253,0], [0.625,0], 
-  [0.305,0], [0.838,0], [0.397,0.875], [0.469,0], [0.324,0], [0,0.381], 
-  [0.199,0.376], [0.633,0], [0.26,0], [0.254,0.327], [0,0.354], [0.478,0.727], 
-  [0.247,0], [0,0.338], [0.788,0.53], [0.671,0.4], [0.334,0], [0.288,0], 
-  [0.586,0.408], [0.418,0], [0.344,0], [0.492,0], [0,0.331], [0.474,0.366], 
-  [0.507,0], [0.368,0], [0,0.314], [0,0.333], [0,0.444], [0.419,0.287], 
-  [0.391,0], [0,0.306], [0.667,0], [0,0.352], [0,0.506], [0,0.572], 
-  [0.317,0.427], [0.489,0], [0,0.293], [0.706,0], [0.302,0], [0.429,0.436], 
-  [0,0.618], [0.347,0.685], [0.282,0], [0.347,0], [0.228,0.572], [0.491,0], 
-  [0.352,0.339], [0.239,0], [0.338,0], [0,0.42], [0,0.566], [0.478,0.905], 
-  [0.386,0.833], [0.352,0.442], [0,0.353], [0.702,0.322], [0.178,0], 
-  [0.198,0.362], [0,0.394], [0.269,0], [0.341,0], [0,0.587], [0,0.29], 
-  [0.513,0], [0,0.329], [0,0.653], [0.59,0], [0.428,0], [0.516,0], [0.405,0], 
-  [0.493,0.445], [0,0.381], [0.256,0.715], [0,0.68], [0.263,0], [0.429,0.592], 
-  [0.308,0.56], [0.356,0.615], [0.296,0], [0.444,0], [0,0.337], [0,0.428], 
-  [0,0.482], [0,0.57], [0,0.381], [0,0.572], [0,0.442], [0,0.374], [0,0.583], 
-  [0,0.672]
-];
-
 const CASE_K = [
   [0,0.43], [0.823,0.649], [0.986,0.666], [0.333,0.368], [0.612,0.452], 
   [0.784,0.532], [0.798,0.714], [0.795,0.75], [0.321,0.756], [0.587,0.778], 
@@ -12174,120 +12091,59 @@ const CASE_K = [
   [0.631,0.769], [0,0.441]
 ];
 
-const CASE_L = [
-  [0.967,0.827], [0.35,0], [0,0.22], [0.809,0.733], [0,0.351], [0.94,0.965], 
-  [0.946,0.966], [0.695,0.627], [0.658,0.564], [0,0.337], [0.376,0.355], 
-  [0.609,0.522], [0,0.153], [0.492,0.404], [0,0.237], [0.833,0.858], 
-  [0.605,0.578], [0.576,0.341], [0,0.235], [0,0.253], [0,0.156], [0.327,0.279], 
-  [0.645,0.595], [0.189,0.404], [1,1], [0.87,0.89], [0.681,0.57], [1,1], 
-  [0,0.308], [0,0.215], [0,0.256], [0.318,0.481], [0,0.306], [0.397,0.41], 
-  [0.844,0.832], [0.32,0.448], [0.671,0.62], [0.35,0.303], [0.746,0.62], 
-  [0.729,0.69], [0,0.338], [0.431,0.298], [0,0.184], [0.934,0.817], [0.996,1], 
-  [0.189,0.231], [0.676,0.594], [0.825,0.754], [0.743,0.699], [0.721,0.649], 
-  [0.639,0.641], [0.548,0.604], [0.881,0.913], [0.272,0.421], [0.581,0.496], 
-  [0.774,0.714], [0.287,0.199], [0.463,0.412], [0.305,0], [0,0.352], 
-  [0.83,0.731], [0.552,0.473], [0.811,0.779], [0.227,0], [0.652,0.541], 
-  [0.719,0.53], [0.143,0.179], [0.897,0.614], [0,0.304], [0.383,0.374], 
-  [0.623,0.568], [0.55,0.449], [0,0.325], [0.274,0.243], [0.763,0.744], 
-  [0.215,0.155], [0.348,0.25], [0.744,0.657], [0.644,0.546], [0.707,0.637], 
-  [0,0.196], [0.692,0.643], [0.737,0.755], [0.543,0.498], [0.321,0], 
-  [0.669,0.503], [0.446,0.206], [0.477,0], [0.544,0.468], [0.598,0.58], 
-  [0.421,0.306], [0.661,0.62], [0,0.25], [0.314,0.337], [0.207,0.38], [0.3,0], 
-  [0.713,0.668], [0.311,0.209], [0.637,0.474], [0.232,0], [0,0.158], 
-  [0.426,0.429], [0.63,0.639], [0.264,0.409], [0,0.207], [0.58,0.558], 
-  [0.66,0.654], [0.759,0.585], [0.822,0.78], [0,0.325], [0,0.257], 
-  [0.283,0.375], [0.236,0], [0,0.499], [0.393,0.372], [0,0.417], [0,0.372], 
-  [0,0.296], [0,0.256], [0.161,0], [0,0.237], [0.771,0.644], [0,0.401], 
-  [0.322,0.253], [0.39,0.361], [0.395,0.235], [0,0.264], [0,0.186], [0,0.38], 
-  [0.56,0.238], [0.691,0.642], [0.224,0.258], [0.433,0.418], [0.742,0.773], 
-  [0.757,0.761], [0,0.338], [0.24,0], [0.574,0.488], [0.19,0.38], [0.703,0.59], 
-  [0.556,0.479], [0,0.422], [0.857,0.742], [0.708,0.625], [0.646,0.633], 
-  [0.332,0.241], [0.364,0.346], [0,0.265], [0.609,0.645], [0.713,0.528], 
-  [0.649,0.622], [0.82,0.739], [0.418,0.382], [0,0.173], [0,0.179], 
-  [0.545,0.548], [0.624,0.548], [0.532,0.516], [0.829,0.849], [0.439,0.266], 
-  [0.272,0], [0,0.165], [0.673,0.427], [0.752,0.687], [0.427,0.216], [0,0.252], 
-  [0.434,0.44], [0.268,0.317], [0.502,0.386], [0.323,0.321], [0,0.449], 
-  [0,0.15], [0.647,0.605], [0.441,0.445], [0.45,0.431], [0.203,0.184], 
-  [0.638,0.576], [0.782,0.744], [0.692,0.701], [0,0.346], [0.592,0.576], 
-  [0,0.325], [0.569,0.525], [0.181,0], [0.642,0.594], [0,0.335], [0.574,0.574], 
-  [0.205,0], [0,0.283], [0.448,0.369], [0.849,0.843], [0,0.343], [0.301,0], 
-  [0.651,0.642], [0.597,0.575], [0.55,0.456], [0,0.218], [0.53,0.498], [0,0.2], 
-  [0.591,0.46], [0.427,0.371], [0.678,0.592], [0.323,0.261], [0.67,0.538], 
-  [0,0.188], [0.734,0.741], [0.166,0], [0.481,0.394], [0.34,0.347], 
-  [0.467,0.433], [0,0.36], [0.483,0.489], [0.453,0.443], [0.736,0.438], 
-  [0.288,0.182], [0.24,0], [0.255,0], [0.518,0.308], [0,0.154], [0.353,0.3], 
-  [0.349,0.326], [0,0.347], [0.652,0.605], [0.68,0.573], [0,0.306], 
-  [0.473,0.457], [0,0.267], [0.252,0.291], [0,0.26], [0,0.397], [0.317,0.368], 
-  [0,0.298], [0.256,0], [0.251,0], [0.199,0.222], [0.468,0.406], [0,0.25], 
-  [0.374,0.3], [0.194,0.266], [0,0.186], [0.444,0.342], [0.267,0.205], 
-  [0.309,0], [0.262,0], [0,0.326], [0.304,0.343], [0.593,0.535], [0.231,0.216], 
-  [0.501,0.448], [0,0.296], [0.298,0.302], [0.474,0.262], [0.265,0], 
-  [0.381,0.195], [0.462,0.46], [0.38,0], [0.233,0.19], [0.233,0], 
-  [0.602,0.623], [0.424,0.396], [0.26,0], [0.584,0.555], [0.209,0], 
-  [0.424,0.411], [0,0.241], [0.192,0], [0.332,0.351], [0.242,0.236], 
-  [0.259,0.232], [0.222,0.187], [0.397,0.291], [0.612,0.544], [0.651,0.614], 
-  [0.285,0.269]
-];
-
 /* Aliases for backward compatibility with the LearnTab card refs.
    Each SHAPE_* name corresponds to one of the CASE_* arrays above. */
 const SHAPE_TP_LOW_RATE = CASE_A;
 const SHAPE_TP_CLEAR = CASE_C;
 const SHAPE_TP_HEAVY = CASE_D;
 const SHAPE_FP_DIFFUSE_BIO = CASE_E;
-const SHAPE_FP_DIFFUSE_BIO_2 = CASE_F;
 const SHAPE_FP_DIFFUSE_BIO_3 = CASE_G;
-const SHAPE_FN_LOW_2 = CASE_J;
 const SHAPE_FN_CASCADE = CASE_K;
-const SHAPE_FN_CLEAR_MISSED = CASE_L;
 
-/* Synthetic correlated cloud — for the Same-subject longitudinal FP card.
-   Mirrors what two timepoints from one subject typically look like:
-   tight diagonal trend (rho ≈ 0.93) with mild scatter, plus a sprinkling
-   of axis points where one of the two samples has zero abundance. */
+/* Real same-subject longitudinal pair from the Mediterranean-diet
+   intervention cohort (Meslier et al. 2020, PRJEB33500). Subject D40,
+   ERS4277379 (4 weeks) → ERS4277462 (8 weeks). CroCoDeEL flags this as
+   contamination at 69.2% rate / probability 0.97 — but the metadata
+   says these are two timepoints from the same person, so the diagonal
+   is biological persistence, not a transfer event. The 162 species
+   present in either sample land along y = x with mild scatter, plus a
+   handful of axis points where one timepoint lost a species. Coords
+   are log10(relative_abundance) mapped onto [0, 1] over the [1e-6, 1e-1]
+   decade range used by PatternMiniPlot. */
 const SHAPE_FP_LONGITUDINAL = [
-  [0.657,0.705], [0.262,0.27], [0.75,0.693], [0.133,0.019], [0.451,0.492],
-  [0.53,0.538], [0.075,0.103], [0.568,0.65], [0.259,0.167], [0.056,0],
-  [0.816,0.798], [0.198,0.146], [0.959,0.946], [0.142,0.165], [0.855,0.769],
-  [0.743,0.677], [0.559,0.617], [0.574,0.565], [0.838,0.75], [0.598,0.518],
-  [0.719,0.761], [0.325,0.337], [0.126,0.129], [0.314,0.342], [0.654,0.616],
-  [0.249,0.292], [0.304,0.384], [0.629,0.595], [0.213,0.208], [0.41,0.375],
-  [0.99,0.941], [0.7,0.641], [0.851,0.858], [0.08,0.038], [0.35,0.345],
-  [0.946,0.987], [0.883,0.848], [0.426,0.506], [0.919,0.873], [0.284,0.296],
-  [0.583,0.577], [0.903,0.982], [0.429,0.469], [0.534,0.738], [0.136,0.164],
-  [0.646,0.655], [0.802,0.783], [0.413,0.423], [0.996,0.839], [0.868,0.839],
-  [0.061,0.044], [0.56,0.471], [0.303,0.285], [0.463,0.44], [0.481,0.598],
-  [0.3,0.265], [0.526,0.583], [0.877,0.996], [0.334,0.281], [0.195,0.132],
-  [0.774,0.673], [0.554,0.528], [0.051,0.045], [0.933,0.943], [0.885,0.91],
-  [0.105,0.06], [0.884,0.908], [0.512,0.503], [0.116,0.123], [0.172,0.07],
-  [0.502,0.457], [0.879,0.864], [0.452,0.47], [0.743,0.816], [0.241,0.167],
-  [0.667,0.849], [0.466,0.436], [0.263,0.26], [0.371,0.334], [0.259,0.236],
-  [0.117,0.088], [0.91,0.878], [0.867,0.907], [0.686,0.705], [0.254,0.348],
-  [0.592,0.696], [0.499,0.523], [0.231,0.125], [0.142,0.085], [0.494,0.52],
-  [0.743,0.663], [0.143,0], [0.432,0.369], [0.286,0.387], [0.231,0.171],
-  [0.315,0.335], [0.287,0.345], [0.868,0.838], [0.573,0.79], [0.844,0.916],
-  [0.971,1], [0.208,0.156], [0.511,0.525], [0.106,0.165], [0.41,0.457],
-  [0.795,0.791], [0.482,0.349], [0.996,1], [0.578,0.571], [0.332,0.298],
-  [0.97,0.904], [0.761,0.725], [0.104,0.043], [0.86,0.824], [0.2,0.223],
-  [0.227,0.221], [0.615,0.595], [0.164,0.125], [0.896,0.898], [0.638,0.719],
-  [0.448,0.385], [0.938,0.901], [0.244,0.235], [0.426,0.383], [0.688,0.672],
-  [0.764,0.814], [0.119,0], [0.996,1], [0.12,0.13], [0.937,0.982],
-  [0.887,0.929], [0.2,0.16], [0.842,0.818], [0.988,0.909], [0.671,0.782],
-  [0.334,0.34], [0.68,0.71], [0.16,0.148], [0.152,0.106], [0.625,0.609],
-  [0.732,0.756], [0.301,0.382], [0.514,0.61], [0.138,0.073], [0.452,0.452],
-  [0.783,0.788], [0.655,0.648], [0.574,0.672], [0.456,0.48], [0.889,0.89],
-  [0.909,0.8], [0.603,0.571], [0.191,0.227], [0.904,0.941], [0.806,0.889],
-  [0.25,0.151], [0.287,0.37], [0.89,0.953], [0.436,0.411], [0.933,0.909],
-  [0.871,0.98], [0.887,0.871], [0.074,0.069], [0.934,0.881], [0.812,0.884],
-  [0.303,0.221], [0.798,0.893], [0.866,0.942], [0.261,0.288], [0.34,0.279],
-  [0.806,0.807], [0.233,0.246], [0.362,0.465], [0.315,0.197], [0.659,0.523],
-  [0.559,0.659], [0.942,1], [0.22,0.325], [0.964,0.962], [0.463,0.491],
-  [0,0.364], [0,0.157], [0,0.303], [0,0.256], [0,0.193], [0,0.288],
-  [0,0.127], [0,0.354], [0,0.001], [0,0.463], [0,0.269], [0,0.36], [0,0.371],
-  [0,0.335], [0,0.182], [0,0.035], [0,0.332], [0,0.165], [0,0.157],
-  [0,0.424], [0.36,0], [0.15,0], [0.155,0], [0.204,0], [0.201,0], [0.148,0],
-  [0.064,0], [0.21,0], [0.47,0], [0.339,0], [0.451,0], [0.308,0], [0.15,0],
-  [0.274,0], [0,0], [0.143,0], [0.215,0], [0.29,0], [0.327,0], [0.232,0],
+  [0.973,0.977], [0.663,0.636], [0.478,0.486], [0.652,0.532], [0.837,0.844],
+  [0.978,1.000], [1.000,1.000], [0.622,0.517], [0.916,0.944], [0.510,0.505],
+  [0.574,0.613], [0.825,0.427], [0.985,1.000], [1.000,1.000], [0.799,0.792],
+  [0.341,0.000], [1.000,0.999], [1.000,1.000], [0.766,0.718], [0.472,0.000],
+  [0.527,0.413], [0.773,0.591], [0.357,0.392], [0.881,0.935], [0.833,0.863],
+  [0.864,0.857], [1.000,1.000], [1.000,1.000], [0.519,0.629], [0.872,0.832],
+  [0.800,0.775], [1.000,1.000], [0.810,0.813], [0.916,0.895], [0.415,0.424],
+  [0.870,0.861], [0.953,0.926], [0.788,0.830], [1.000,1.000], [0.978,0.966],
+  [0.872,0.842], [0.504,0.492], [0.585,0.590], [0.949,0.937], [0.464,0.498],
+  [0.706,0.721], [0.600,0.608], [0.732,0.705], [0.445,0.418], [0.873,0.900],
+  [0.581,0.992], [0.988,0.437], [0.821,0.841], [0.763,0.860], [0.496,0.454],
+  [0.457,0.607], [0.719,0.746], [0.749,0.740], [0.543,0.615], [0.365,0.546],
+  [0.874,0.864], [0.680,0.586], [0.346,0.340], [0.843,0.845], [0.695,0.734],
+  [0.982,1.000], [0.881,0.854], [0.721,0.735], [0.979,1.000], [0.770,0.741],
+  [0.756,0.729], [0.451,0.430], [0.878,0.908], [0.663,0.669], [0.394,0.401],
+  [0.797,0.814], [0.997,1.000], [0.686,0.650], [0.576,0.638], [0.654,0.618],
+  [0.722,0.000], [0.724,0.791], [0.643,0.628], [0.770,0.799], [0.822,0.843],
+  [0.971,0.850], [0.820,0.797], [0.704,0.679], [0.454,0.395], [0.350,0.818],
+  [0.716,0.713], [0.666,0.650], [0.683,0.638], [0.540,0.478], [0.616,0.617],
+  [0.393,0.000], [0.856,0.855], [0.568,0.518], [0.799,0.759], [0.655,0.644],
+  [0.000,0.359], [0.436,0.326], [0.869,0.877], [0.532,0.442], [0.610,0.585],
+  [0.344,0.000], [0.603,0.510], [0.451,0.407], [0.570,0.591], [0.914,0.910],
+  [0.633,0.645], [0.841,0.837], [0.818,0.801], [0.738,0.755], [0.421,0.000],
+  [0.525,0.484], [0.568,0.480], [0.681,0.630], [0.873,0.838], [0.861,0.851],
+  [0.771,0.751], [0.358,0.000], [0.858,0.814], [0.607,0.594], [0.757,0.767],
+  [0.596,0.554], [0.514,0.443], [0.518,0.573], [0.395,0.000], [0.836,0.837],
+  [0.836,0.784], [0.431,0.391], [0.702,0.749], [0.520,0.531], [0.584,0.610],
+  [0.644,0.602], [0.579,0.578], [0.520,0.519], [0.000,0.341], [0.506,0.510],
+  [0.372,0.471], [0.428,0.000], [0.480,0.461], [0.753,0.761], [0.419,0.000],
+  [0.935,0.949], [0.355,0.496], [0.596,0.592], [0.564,0.622], [0.442,0.000],
+  [0.470,0.372], [0.000,0.408], [0.342,0.000], [0.418,0.000], [0.411,0.381],
+  [0.382,0.000], [0.433,0.412], [0.570,0.603], [0.452,0.515], [0.000,0.401],
+  [0.528,0.507], [0.000,0.444],
 ];
 
 
@@ -12575,52 +12431,37 @@ const LearnTab = () => {
           <PatternCard
             title="Same-subject longitudinal samples — correlated cloud"
             verdict="FP"
-            rate="46.9%"
-            probability="0.78"
-            introduced="42.1%"
-            plot={<PatternMiniPlot points={SHAPE_FP_LONGITUDINAL} rate={0.469} lineSide="above" />}
+            rate="69.2%"
+            probability="0.97"
+            introduced="30.6%"
+            plot={<PatternMiniPlot points={SHAPE_FP_LONGITUDINAL} rate={0.692} lineSide="above" />}
             description={
               <>
-                Two timepoints from the <strong>same subject</strong>:
-                many species track loosely along a diagonal because the
-                subject's microbiota persists between visits. The model
-                is fully confident and the introduced % is high, yet
-                the broad noisy cloud reflects biological persistence,
-                not a mechanical contamination event — flag as FP.
+                A real example from the Mediterranean-diet cohort
+                (Meslier et al. 2020, PRJEB33500): subject{" "}
+                <strong>D40</strong>, sample{" "}
+                <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                  ERS4277379
+                </code>{" "}
+                (4 weeks) →{" "}
+                <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                  ERS4277462
+                </code>{" "}
+                (8 weeks). CroCoDeEL fits a contamination at 69 % rate
+                with probability 0.97, but these are two timepoints from
+                the same person — Spearman <em>ρ</em> = 0.90 between the
+                two profiles confirms that the dense diagonal is the
+                subject's own microbiota persisting between visits, not
+                a transfer event. Mark as FP.
               </>
             }
             signals={[
               "Source / target share the same subject_id (longitudinal sampling)",
               "Apparent diagonal trend, but visibly noisy / wide",
+              "High Spearman ρ between the two profiles (≥ 0.7) — flagged by criterion 06",
               "Elevated introduced %",
             ]}
             watchOut="High introduced % + high probability is not enough on its own. When the metadata shows same-subject longitudinal sampling, mark as FP — the correlated cloud is biological persistence."
-          />
-
-          <PatternCard
-            caseLabel="F"
-            title="Spread cloud despite moderate rate"
-            verdict="FP_OR_UNCERTAIN"
-            rate="2.58%"
-            probability="0.51"
-            introduced="7.1%"
-            plot={<PatternMiniPlot points={SHAPE_FP_DIFFUSE_BIO_2} rate={0.0258} lineSide="above" />}
-            description={
-              <>
-                The rate is non-trivial but the scatter doesn't form a
-                line. Same-biome longitudinal samples often produce this
-                shape from shared microbiota persistence. Borderline
-                probability (~0.5) — depending on stringency, a curator
-                may flag this as Uncertain or even keep it as TP rather
-                than dismissing it.
-              </>
-            }
-            signals={[
-              "Cloud-like distribution, no clean line",
-              "Both samples come from related subjects (same family, same cage, same body site)",
-              "Probability sitting near 0.5 — model is hesitant",
-            ]}
-            watchOut="Always check the metadata before classifying. If areRelated() returns true, lean toward FP; if not, Uncertain is the safer call."
           />
 
           <PatternCard
@@ -12690,28 +12531,8 @@ const LearnTab = () => {
         </p>
         <div
           className="grid gap-5"
-          style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}
+          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(260px, 360px))" }}
         >
-          <PatternCard
-            caseLabel="J"
-            title="Sparse signal, low confidence"
-            verdict="FN"
-            plot={<PatternMiniPlot points={SHAPE_FN_LOW_2} />}
-            description={
-              <>
-                Same family as case I — barely enough points to form a
-                line, and the noise dominates. The contamination is real
-                but borderline at the population-level.
-              </>
-            }
-            signals={[
-              "Faint diagonal cluster of 3-5 species",
-              "Low to very low rate",
-              "Both samples may be low-biomass",
-            ]}
-            watchOut="If both samples are low-biomass (controls, very early infants), the limit of detection itself is the problem — no clean answer is possible."
-          />
-
           <PatternCard
             caseLabel="K"
             title="Cascade contamination — blurred line"
@@ -12731,27 +12552,6 @@ const LearnTab = () => {
               "Cascade flag in the events table can hint at this when the third source IS detected",
             ]}
             watchOut="If you suspect cascade contamination, run the Network tab — the directed graph reveals shared upstream sources that are easy to miss in the table."
-          />
-
-          <PatternCard
-            caseLabel="L"
-            title="Clear line, surprisingly missed"
-            verdict="FN"
-            plot={<PatternMiniPlot points={SHAPE_FN_CLEAR_MISSED} />}
-            description={
-              <>
-                Visually, this looks like a textbook TP. The exact reason
-                CroCoDeEL misses it is unclear — possibly an unusual
-                feature combination outside the training distribution.
-                Rare, but worth knowing such edge cases exist.
-              </>
-            }
-            signals={[
-              "Clean diagonal cluster",
-              "No event reported in your file",
-              "If you suspect contamination from other clues (plate adjacency, cascade pattern in the network), investigate manually",
-            ]}
-            watchOut="The probability cutoff at the CroCoDeEL run stage matters. Re-running with a lower threshold may surface these, but trades sensitivity for specificity."
           />
         </div>
       </div>
@@ -12819,7 +12619,7 @@ const HelpTab = ({ onStartTour }) => {
       {/* Main content */}
       <div>
         <SectionTitle eyebrow="Help" title="How to use this tool">
-          A complete reference for the CroCoDeEL Interpretation Console — what
+          A complete reference for the CroCoDeEL Interpretation Interface — what
           it does, what files it accepts, how it scores events, and how to
           interpret the results.
         </SectionTitle>
@@ -13510,11 +13310,26 @@ const HelpTab = ({ onStartTour }) => {
                 <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Missing source species</td>
                 <td className="py-2.5 align-top text-[13px]">
                   Source "core" species (cumulative abundance reaching
-                  80%) should appear in the target if the contamination
-                  is real. Each species is checked against the target's
-                  empirical limit-of-detection adjusted for the rate, so
-                  the threshold adapts to sequencing depth. Passes when
-                  ≤ 2 expected species are missing.
+                  80% of the source profile) should appear in the target
+                  if the contamination is real. For each core species we
+                  predict its target abundance as <code style={{ fontFamily: "ui-monospace, monospace" }}>rate × source_abundance</code>{" "}
+                  and only evaluate species whose predicted contribution
+                  exceeds the target's <strong>LOD</strong> — anything
+                  below would be invisible even if the contamination
+                  were genuine. Passes when ≤ 2 of the evaluable species
+                  are absent (or below LOD) in the target.
+                  <div className="mt-2 p-2 rounded-sm text-[12px]" style={{ background: "var(--bg-soft)", border: "1px solid var(--border)" }}>
+                    <strong>LOD (limit of detection)</strong> — computed
+                    per target sample as the smallest non-zero abundance
+                    observed in that sample's column (fallback{" "}
+                    <code style={{ fontFamily: "ui-monospace, monospace" }}>1e-5</code>{" "}
+                    if the column has fewer than two non-zero entries).
+                    Adapting per sample makes the criterion robust to
+                    sequencing depth (a deep shotgun and a shallow 16S
+                    don't share a single fixed threshold) and to
+                    contamination rate (low-rate events legitimately
+                    fall under a high LOD without being penalised).
+                  </div>
                 </td>
               </tr>
               <tr style={{ borderBottom: "1px solid var(--border-soft)" }}>
@@ -13833,15 +13648,19 @@ const HelpTab = ({ onStartTour }) => {
             </li>
             <li>
               <strong>Suppress / keep action</strong> — opt-in. Adds a
-              "suppress" / "keep" action choice to each event so you can
-              decide which samples stay in your downstream analyses.
-              Defaults follow the verdict (TP → suppress, FP → keep) and
-              the value lands in the exported TSV. When enabled you also
-              get an <em>Action</em> column in the events table, an
-              action filter on the filter bar, an action override in the
-              Bulk apply dialog, an inline Keep / Suppress chip pair on
-              the verdict row in Guided validation, and an action popover
-              on the Scatterplot gallery cards.
+              "suppress" / "keep" action choice to true-positive events
+              so you can decide which samples stay in your downstream
+              analyses. Action only applies to TP — FP / Uncertain /
+              Pending events carry no action. Defaults to{" "}
+              <em>suppress</em> when no explicit choice is made; the
+              value lands in the exported TSV. When enabled you also get
+              an <em>Action</em> column in the events table, an action
+              filter on the filter bar, an action override in the Bulk
+              apply dialog, an inline Keep / Suppress chip pair on the
+              verdict row in Guided validation (TP only), and a colored
+              halo on TP verdict buttons in the Scatterplot gallery
+              showing the committed action at a glance (yellow = keep,
+              salmon = suppress).
             </li>
             <li>
               <strong>Items per page</strong> — three numeric inputs to
@@ -14631,13 +14450,10 @@ const ExportTab = ({
       else if (e.verdict === "false_positive") c.fp++;
       else if (e.verdict === "uncertain") c.uncertain++;
       else c.pending++;
-      const defaultAction =
-        e.verdict === "true_positive"
-          ? "suppress"
-          : e.verdict === "false_positive"
-            ? "keep"
-            : null;
-      const effective = e.action || defaultAction;
+      // Action only applies to TP — FP / Uncertain / Pending don't
+      // contribute to the suppress / keep tally.
+      const effective =
+        e.verdict === "true_positive" ? e.action || "suppress" : null;
       if (effective === "suppress") c.suppress++;
       else if (effective === "keep") c.keep++;
     });
@@ -14826,6 +14642,106 @@ function clearStorage() {
     // ignore
   }
 }
+
+/** Inline analysis-title chip in the sidebar, between "Interpretation
+    interface" and the version chip. Displays the value as a pill that
+    flips into a text input on click; commit on blur or Enter, cancel
+    with Escape. Empty value renders an "Untitled analysis" placeholder
+    so the user can always click to name their session. */
+const AnalysisTitleField = ({ value, onChange }) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value || "");
+  const inputRef = useRef(null);
+
+  // Sync local draft whenever the parent value changes (dataset load,
+  // session import, etc.) so the field doesn't get stuck on a stale
+  // edit when the source of truth shifts under it.
+  useEffect(() => {
+    setDraft(value || "");
+  }, [value]);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const commit = () => {
+    onChange(draft.trim());
+    setEditing(false);
+  };
+  const cancel = () => {
+    setDraft(value || "");
+    setEditing(false);
+  };
+
+  const display = value || "Untitled study";
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        placeholder="Study title"
+        className="px-3 py-1.5 rounded-sm outline-none"
+        style={{
+          background: "var(--bg-card)",
+          border: "1px solid #00a3a6",
+          color: "var(--ink)",
+          fontFamily: '"Raleway", sans-serif',
+          fontSize: 13,
+          fontWeight: 700,
+          letterSpacing: 0,
+          textTransform: "none",
+          minWidth: 280,
+          maxWidth: 760,
+          width: "100%",
+          boxShadow: "0 0 0 2px rgba(0,163,166,0.15)",
+        }}
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      title="Click to rename this study"
+      className="px-3 py-1.5 rounded-sm"
+      style={{
+        background: "var(--bg-card)",
+        border: `1px solid ${value ? "#00a3a6" : "var(--border-strong)"}`,
+        color: value ? "var(--ink)" : "var(--ink-muted)",
+        fontFamily: '"Raleway", sans-serif',
+        fontSize: 13,
+        letterSpacing: 0,
+        textTransform: "none",
+        fontStyle: value ? "normal" : "italic",
+        fontWeight: value ? 700 : 400,
+        cursor: "pointer",
+        flex: "1 1 auto",
+        maxWidth: 760,
+        textAlign: "left",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {display}
+    </button>
+  );
+};
 
 /** Floating "Saved" pill that appears briefly each time the curation
     work is auto-saved. The parent passes a timestamp; whenever it
@@ -15300,7 +15216,7 @@ const TutorialWelcome = ({ onStart, onSkip }) => (
           lineHeight: 1.25,
         }}
       >
-        Welcome to the CroCoDeEL Interpretation Console
+        Welcome to the CroCoDeEL Interpretation Interface
       </h2>
       <p
         style={{
@@ -15372,6 +15288,14 @@ export default function App() {
   const [metadata, setMetadata] = useState(initial?.metadata || null);
   const [plateMap, setPlateMap] = useState(initial?.plateMap || null);
   const [tab, setTab] = useState(initial?.tab || "overview");
+  // Analysis title — surfaces in the sidebar between "Interpretation
+  // interface" and the version chip so the curator (and anyone looking
+  // over their shoulder) sees which study they're working on. Auto-set
+  // when a bundled dataset is loaded; "Untitled analysis" by default
+  // for user uploads. Editable inline; persisted in the session JSON.
+  const [analysisTitle, setAnalysisTitle] = useState(
+    initial?.analysisTitle || "",
+  );
   // Global config dialog — accessible from the header gear button on
   // every page. Body is currently a placeholder; populate as we
   // surface user-tunable settings.
@@ -15758,6 +15682,7 @@ export default function App() {
         metadata,
         plateMap,
         ab,
+        analysisTitle,
         // UI state — keeps the user exactly where they left off
         tab,
         selId,
@@ -15767,7 +15692,7 @@ export default function App() {
       if (ok) setSavedAt(Date.now());
     }, 200);
     return () => clearTimeout(handle);
-  }, [rawEvents, runMetadata, metadata, plateMap, ab, tab, selId, filter, sort]);
+  }, [rawEvents, runMetadata, metadata, plateMap, ab, analysisTitle, tab, selId, filter, sort]);
 
   /* When a CroCoDeEL run header carries explicit cutoffs, pre-set the
      events-table filters to those values. The user can still lower them
@@ -15868,16 +15793,11 @@ export default function App() {
         if (!filter.verdicts.includes(e.verdict || "pending")) return false;
       }
       if (filter.action) {
-        // Resolve the same default the UI shows: TP -> suppress, FP -> keep,
-        // others -> no action. An event matches the filter only if its
-        // (explicit or defaulted) action equals the requested one.
-        const defaultAction =
-          e.verdict === "true_positive"
-            ? "suppress"
-            : e.verdict === "false_positive"
-              ? "keep"
-              : null;
-        const effective = e.action || defaultAction;
+        // Action only applies to TP — TP defaults to "suppress" when no
+        // explicit action is set; FP / Uncertain / Pending have no action
+        // and never match an action filter.
+        const effective =
+          e.verdict === "true_positive" ? e.action || "suppress" : null;
         if (effective !== filter.action) return false;
       }
       // Subject filter — events are "same subject" only when both samples
@@ -16220,6 +16140,13 @@ export default function App() {
       const parsed = parseEvents(text);
       setRawEvents(parsed.events);
       setRunMetadata(parsed.runMetadata);
+      // Default the study label to the events filename (without
+      // extension) so the curator gets some context immediately.
+      // They can rename it inline from the upload bar.
+      if (!analysisTitle) {
+        const base = (file?.name || "").replace(/\.tsv$|\.txt$|\.csv$/i, "");
+        setAnalysisTitle(base || "Untitled study");
+      }
       setErr(null);
       setTab("overview");
     } catch (e) {
@@ -16339,6 +16266,10 @@ export default function App() {
         setMetadata(null);
         setPlateMap(null);
         setSelId(null);
+        // Bundled datasets carry a curated title in the manifest —
+        // surface it as the analysis title so the sidebar shows the
+        // study the curator is working on.
+        setAnalysisTitle(dataset.title || dataset.short_title || "");
 
         // Optional files — load if present, skip silently otherwise
         if (dataset.files.metadata) {
@@ -16418,6 +16349,7 @@ export default function App() {
         setMetadata(null);
         setPlateMap(null);
         setSelId(null);
+        setAnalysisTitle("");
         setErr(null);
         setTutorialOpen(true);
       },
@@ -16451,7 +16383,13 @@ export default function App() {
       "action",
       "notes",
     ];
-    const lines = [header.join("\t")];
+    const lines = [];
+    // CroCoDeEL-style header comments — the study name lets downstream
+    // tools or readers identify which dataset this curation belongs to.
+    if (analysisTitle) {
+      lines.push(`# study: ${analysisTitle.replace(/[\t\n\r]/g, " ")}`);
+    }
+    lines.push(header.join("\t"));
     list.forEach((e) => {
       lines.push(
         [
@@ -16502,6 +16440,7 @@ export default function App() {
     setMetadata(json.metadata || null);
     setPlateMap(json.plate_map || null);
     setAb(json.abundance || null);
+    setAnalysisTitle(json.analysis_title || "");
     if (json.ui_state) {
       if (typeof json.ui_state.tab === "string") setTab(json.ui_state.tab);
       if (json.ui_state.sel_id !== undefined) setSelId(json.ui_state.sel_id);
@@ -16529,6 +16468,7 @@ export default function App() {
         uncertain: counts.uncertain,
         pending: counts.pending,
       },
+      analysis_title: analysisTitle || null,
       has_metadata: !!metadata,
       has_plate_map: !!plateMap,
       has_abundance: !!ab,
@@ -16579,9 +16519,8 @@ export default function App() {
     const reportActionEnabled = !!(opts && opts.actionEnabled);
     // Recompute the verdict tally over the filtered subset so the
     // header in the report matches what's actually rendered below.
-    // Also tally suppress/keep using the same defaulting rule as the UI
-    // (TP→suppress, FP→keep) so the report's headline numbers match the
-    // Export tab's stat row.
+    // Action only applies to TP — FP / Uncertain / Pending don't
+    // contribute to the suppress / keep tally.
     const counts = list.reduce(
       (acc, e) => {
         acc.total++;
@@ -16589,13 +16528,8 @@ export default function App() {
         else if (e.verdict === "false_positive") acc.fp++;
         else if (e.verdict === "uncertain") acc.uncertain++;
         else acc.pending++;
-        const defaultAction =
-          e.verdict === "true_positive"
-            ? "suppress"
-            : e.verdict === "false_positive"
-              ? "keep"
-              : null;
-        const eff = e.action || defaultAction;
+        const eff =
+          e.verdict === "true_positive" ? e.action || "suppress" : null;
         if (eff === "suppress") acc.suppress++;
         else if (eff === "keep") acc.keep++;
         return acc;
@@ -16626,23 +16560,17 @@ export default function App() {
     };
 
     // Action chip — the curator's "what to do with the contaminated
-    // sample" choice. Defaults follow the verdict (TP→suppress, FP→keep)
-    // but the pill renders the explicit value when set, with an italic
-    // "(default)" suffix when we're inheriting from the verdict.
+    // sample" choice. Action only applies to TP; everything else has
+    // no chip. TP defaults to "suppress" when no explicit action is
+    // recorded, with an italic "(default)" suffix.
     const actionPill = (e) => {
-      const defaultAction =
-        e.verdict === "true_positive"
-          ? "suppress"
-          : e.verdict === "false_positive"
-            ? "keep"
-            : null;
-      const eff = e.action || defaultAction;
-      if (!eff) return "";
+      if (e.verdict !== "true_positive") return "";
+      const eff = e.action || "suppress";
       const tone =
         eff === "suppress"
           ? { bg: "#ed6e6c", label: "Suppress" }
           : { bg: "#00a3a6", label: "Keep" };
-      const isDefault = !e.action && !!defaultAction;
+      const isDefault = !e.action;
       return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>${isDefault ? ' <em style="color:#797870;font-size:9px;">(default)</em>' : ""}`;
     };
 
@@ -17013,7 +16941,11 @@ export default function App() {
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>CroCoDeEL curation report</title>
+<title>${
+      analysisTitle
+        ? `${escapeHTML(analysisTitle)} · CroCoDeEL curation report`
+        : "CroCoDeEL curation report"
+    }</title>
 <style>
   @page { size: A4; margin: 1.5cm; }
   body {
@@ -17231,6 +17163,11 @@ export default function App() {
 </head>
 <body>
   <h1>CroCoDeEL curation report</h1>
+  ${
+    analysisTitle
+      ? `<div class="study" style="margin-top:-4px;margin-bottom:10px;font-size:14px;font-weight:700;color:#275662;font-family:'Raleway',sans-serif;"><span style="text-transform:uppercase;letter-spacing:0.1em;font-size:10px;color:#797870;font-weight:700;margin-right:8px;">Study</span>${escapeHTML(analysisTitle)}</div>`
+      : ""
+  }
   <div class="meta">
     Generated ${new Date().toLocaleString()} ·
     ${counts.total} event${counts.total > 1 ? "s" : ""} ${
@@ -17238,10 +17175,10 @@ export default function App() {
         ? "curated"
         : `in this report (out of ${events.length} loaded)`
     } ·
-    Console build ${
+    Interface build ${
       __APP_VERSION__.hash === "dev"
         ? `<code>dev</code>`
-        : `<a href="https://github.com/metagenopolis/CroCoDeEL_interpreter/commit/${__APP_VERSION__.hash}" style="color:#275662;text-decoration:none;border-bottom:1px dotted #797870;"><code>${__APP_VERSION__.hash}</code></a>`
+        : `<a href="https://github.com/metagenopolis/CroCoDeEL_interpreter/tree/${__APP_VERSION__.hash}" style="color:#275662;text-decoration:none;border-bottom:1px dotted #797870;"><code>${__APP_VERSION__.hash}</code></a>`
     } · ${__APP_VERSION__.date}
   </div>
 
@@ -17323,7 +17260,7 @@ export default function App() {
   ${detailPages}
 
   <div class="footnote">
-    Generated by the CroCoDeEL Interpretation Console (Anthropic Claude · INRAE Metagenopolis).
+    Generated by the CroCoDeEL Interpretation Interface (Anthropic Claude · INRAE Metagenopolis).
     Reference: Goulet et al. 2025, bioRxiv 10.1101/2025.01.15.633153.
     To save as PDF: use your browser's print dialog (Ctrl+P / Cmd+P) and choose "Save as PDF".
   </div>
@@ -17467,16 +17404,16 @@ export default function App() {
                   fontFamily: '"Raleway", sans-serif',
                 }}
               >
-                <span>Interpretation console</span>
+                <span>Interpretation interface</span>
                 <a
                   href={
                     __APP_VERSION__.hash === "dev"
                       ? "https://github.com/metagenopolis/CroCoDeEL_interpreter"
-                      : `https://github.com/metagenopolis/CroCoDeEL_interpreter/commit/${__APP_VERSION__.hash}`
+                      : `https://github.com/metagenopolis/CroCoDeEL_interpreter/tree/${__APP_VERSION__.hash}`
                   }
                   target="_blank"
                   rel="noopener noreferrer"
-                  title={`Build ${__APP_VERSION__.hash} · ${__APP_VERSION__.date} — click to view this commit on GitHub`}
+                  title={`Build ${__APP_VERSION__.hash} · ${__APP_VERSION__.date} — click to browse the source tree at this commit on GitHub`}
                   className="px-1.5 py-0.5 rounded-sm tabular"
                   style={{
                     background: "var(--bg-soft)",
@@ -17579,7 +17516,7 @@ export default function App() {
             </div>
             <div
               className="flex flex-col items-end gap-2"
-              style={{ flex: "1 1 320px", maxWidth: 420 }}
+              style={{ flex: "1 1 480px", maxWidth: 620 }}
             >
               <button
                 type="button"
@@ -17635,8 +17572,10 @@ export default function App() {
                   className="text-[11px] mt-1"
                   style={{ color: "var(--ink-soft)", lineHeight: 1.5 }}
                 >
-                  Your work is auto-saved locally so you can close the tab and
-                  come back anytime (unless your browser cache is cleared). Use{" "}
+                  Files stay local: parsing happens entirely in your browser.
+                  No data is sent to any server. Your work is auto-saved
+                  locally so you can close the tab and come back anytime
+                  (unless your browser cache is cleared). Use{" "}
                   <strong style={{ color: "var(--ink)" }}>Clear session</strong>{" "}
                   on the files bar to wipe everything and start fresh.
                 </div>
@@ -17657,18 +17596,34 @@ export default function App() {
         }}
       >
         <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between gap-4 mb-3 flex-wrap">
-            <div
-              className="flex items-center gap-2 text-[11px]"
-              style={{ color: "var(--ink-muted)", fontFamily: '"Raleway", sans-serif' }}
-            >
-              <ShieldCheck className="w-3.5 h-3.5" style={{ color: "#00a3a6" }} />
-              <span>
-                Files stay local: parsing happens entirely in your browser. No
-                data is sent to any server.
-              </span>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center justify-end gap-4 mb-3 flex-wrap">
+            {rawEvents.length > 0 && (
+              <div
+                className="flex items-center gap-2 flex-1 min-w-0"
+                style={{
+                  color: "var(--ink-muted)",
+                  fontFamily: '"Raleway", sans-serif',
+                }}
+                title="Inline study label — click the pill to rename. Persists in the saved session JSON."
+              >
+                <BookOpen
+                  className="w-4 h-4 shrink-0"
+                  style={{ color: "#00a3a6" }}
+                  aria-hidden="true"
+                />
+                <span
+                  className="text-[11px] uppercase tracking-[0.1em] shrink-0"
+                  style={{ fontWeight: 700 }}
+                >
+                  Study
+                </span>
+                <AnalysisTitleField
+                  value={analysisTitle}
+                  onChange={setAnalysisTitle}
+                />
+              </div>
+            )}
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
               <input
                 ref={sessionFileRef}
                 type="file"
