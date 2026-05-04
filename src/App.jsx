@@ -6510,7 +6510,7 @@ const ExplorePairs = ({
                     id: "keep",
                     Icon: Save,
                     label: "Keep",
-                    color: "#00a3a6",
+                    color: "#e0b13a",
                     title: "Keep this sample (acknowledged contamination, but small enough to retain).",
                   },
                   {
@@ -9437,7 +9437,7 @@ const BulkApplyByCriteriaDialog = ({
                     id: "keep",
                     Icon: Save,
                     label: "Keep",
-                    color: "#00a3a6",
+                    color: "#e0b13a",
                     title:
                       "Force every matched sample to keep. Click again to leave existing actions untouched.",
                   },
@@ -10801,7 +10801,7 @@ const ValidateTab = ({
                       id: "keep",
                       Icon: Save,
                       label: "Keep",
-                      color: "#00a3a6",
+                      color: "#e0b13a",
                       hint: "Acknowledge the contamination but keep the sample in the study.",
                     },
                     {
