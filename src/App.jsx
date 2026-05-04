@@ -5677,6 +5677,20 @@ const GalleryCard = ({
                     : "var(--border-strong)"
                 : "rgba(255,255,255,0.85)";
               const color = active ? "var(--bg-card)" : "#275662";
+              // When the active verdict is TP or FP AND the curator has
+              // committed an action (keep / suppress), draw a colored
+              // ring around the verdict button so the action is visible
+              // at a glance from the gallery without expanding the card.
+              const actionRingColor =
+                active &&
+                (id === "true_positive" || id === "false_positive") &&
+                event.action
+                  ? event.action === "keep"
+                    ? "#e0b13a"
+                    : event.action === "suppress"
+                      ? "#ed6e6c"
+                      : null
+                  : null;
               return (
                 <button
                   key={id}
@@ -5715,7 +5729,10 @@ const GalleryCard = ({
                       ? "1px solid transparent"
                       : "1px solid #c4c0b3",
                     backdropFilter: active ? "none" : "blur(4px)",
-                    transition: "background 0.12s, color 0.12s",
+                    boxShadow: actionRingColor
+                      ? `0 0 0 1px var(--bg-card), 0 0 0 2.5px ${actionRingColor}, 0 0 8px 1px ${actionRingColor}b3`
+                      : "none",
+                    transition: "background 0.12s, color 0.12s, box-shadow 0.12s",
                   }}
                 >
                   <Icon className="w-4 h-4" />
