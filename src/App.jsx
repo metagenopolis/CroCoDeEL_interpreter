@@ -12218,15 +12218,6 @@ const LearnTab = () => {
           />
           True positives — what real contamination looks like
         </h2>
-        <p
-          className="text-[13px] mb-5"
-          style={{ color: "var(--ink-soft)", lineHeight: 1.55 }}
-        >
-          Cases CroCoDeEL flags AND human experts confirm. The shared
-          signature: a clear linear cluster on the y = x diagonal,
-          sometimes faint, sometimes dense. Rate is independent of how
-          obvious the line is — even 0.49% can be unambiguous.
-        </p>
         <div
           className="grid gap-5"
           style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}
@@ -12331,7 +12322,7 @@ const LearnTab = () => {
       </div>
 
       {/* ============================== */}
-      {/* FALSE POSITIVES (paper Fig. 3 E-H) */}
+      {/* FALSE DETECTIONS (FP + FN merged) */}
       {/* ============================== */}
       <div className="mb-8" data-tutorial="learn-fp">
         <h2
@@ -12355,31 +12346,55 @@ const LearnTab = () => {
               display: "inline-block",
             }}
           />
-          False positives — flagged but biological
+          <span
+            style={{
+              width: 10,
+              height: 10,
+              background: "#7d8b91",
+              borderRadius: "50%",
+              display: "inline-block",
+              marginLeft: -6,
+            }}
+          />
+          <span
+            style={{
+              width: 10,
+              height: 10,
+              background: "#9dc544",
+              borderRadius: "50%",
+              display: "inline-block",
+              marginLeft: -6,
+            }}
+          />
+          False detections — what humans see but the model gets wrong
         </h2>
         <p
-          className="text-[13px] mb-5"
-          style={{ color: "var(--ink-soft)", lineHeight: 1.55 }}
+          className="text-[13px] mb-3"
+          style={{ color: "var(--ink-soft)", lineHeight: 1.6 }}
         >
-          CroCoDeEL flagged these but a human curator decided they're
-          biological similarity, not mechanical contamination. The
-          give-aways are diffuse clouds, mid-range probabilities, and the
-          sneaky case where probability is high but the line still isn't
-          really there.
+          Two failure modes show up here.
         </p>
-        <p
-          className="text-[12px] mb-5"
-          style={{
-            color: "var(--ink-muted)",
-            lineHeight: 1.55,
-            fontStyle: "italic",
-          }}
+        <ul
+          className="text-[13px] mb-5 pl-5 list-disc space-y-1.5"
+          style={{ color: "var(--ink-soft)", lineHeight: 1.6 }}
         >
-          The dashed salmon line in each plot is where CroCoDeEL thought
-          it saw a contamination signal (at the rate it estimated). On a
-          true positive, the points hug this line tightly. On a false
-          positive, they don't — that's the visual key to spotting one.
-        </p>
+          <li>
+            <strong style={{ color: "#ed6e6c" }}>False positives</strong>{" "}
+            — pairs CroCoDeEL flagged that a curator reads as biological
+            pattern, not mechanical contamination. Typical give-aways:
+            diffuse clouds, mid-range probabilities, and the sneaky
+            case where the probability is high but the points don't
+            actually hug the line.
+          </li>
+          <li>
+            <strong style={{ color: "#9dc544" }}>False negatives</strong>{" "}
+            — real contaminations CroCoDeEL missed. By definition they
+            won't appear in your events table; knowing the patterns
+            helps you decide whether to widen the search (lower the
+            CroCoDeEL probability cutoff) or accept the residual blind
+            spots (should be very rare).
+          </li>
+        </ul>
         <div
           className="rounded-sm p-3 mb-5"
           style={{
@@ -12390,16 +12405,13 @@ const LearnTab = () => {
             lineHeight: 1.55,
           }}
         >
-          <strong style={{ color: "var(--ink)" }}>
-            Verdict depends on your stringency.
-          </strong>{" "}
-          The original Goulet et al. paper classified these as false
-          positives (i.e. real biological similarity, no actual
-          contamination). But two of them are visually borderline —
-          a stricter curator could legitimately tag them as{" "}
-          <strong>Uncertain</strong> rather than FP, and even <strong>TP</strong>,
-          especially when the metadata context is itself ambiguous. Pick a
-          stringency policy for your study and apply it consistently.
+          The original Goulet et al. paper classified the third as a
+          false positive (i.e. real biological similarity, no actual
+          contamination). A stricter curator could legitimately tag it
+          as <strong>Uncertain</strong> rather than FP, and even{" "}
+          <strong>TP</strong>, especially when the metadata context is
+          itself ambiguous. Pick a stringency policy for your study and
+          apply it consistently.
         </div>
         <div
           className="grid gap-5"
@@ -12488,51 +12500,6 @@ const LearnTab = () => {
             watchOut="Don't confuse this with case I (false negative): the difference is whether ANY narrow line is visible. Here, no — but the limit-of-detection issue alone justifies Uncertain in some workflows."
           />
 
-        </div>
-      </div>
-
-      {/* ============================== */}
-      {/* FALSE NEGATIVES (paper Fig. 3 I-L) */}
-      {/* ============================== */}
-      <div className="mb-8" data-tutorial="learn-fn">
-        <h2
-          style={{
-            fontSize: 18,
-            fontWeight: 700,
-            color: "var(--ink)",
-            fontFamily: '"Raleway", sans-serif',
-            marginBottom: 4,
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-          }}
-        >
-          <span
-            style={{
-              width: 10,
-              height: 10,
-              background: "#9dc544",
-              borderRadius: "50%",
-              display: "inline-block",
-            }}
-          />
-          False negatives — what CroCoDeEL misses
-        </h2>
-        <p
-          className="text-[13px] mb-5"
-          style={{ color: "var(--ink-soft)", lineHeight: 1.55 }}
-        >
-          The most concerning category for a curator: events humans
-          identified that CroCoDeEL didn't flag. They won't appear in your
-          events table — by definition. Knowing the patterns helps you
-          decide whether to widen the search (e.g. lowering the
-          probability cutoff at the CroCoDeEL stage) or accept the
-          residual blind spots.
-        </p>
-        <div
-          className="grid gap-5"
-          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(260px, 360px))" }}
-        >
           <PatternCard
             caseLabel="K"
             title="Cascade contamination — blurred line"
@@ -15559,7 +15526,7 @@ export default function App() {
         title: "Learn the patterns",
         body:
           "One last stop: the Learn tab is a reference for reading scatterplots, organised around the canonical patterns adapted from Goulet et al. 2025.\n\n" +
-          "Curation isn't just about clicking buttons — it's about training your eye. We'll walk through the three categories you'll encounter.",
+          "Curation isn't just about clicking buttons — it's about training your eye. We'll walk through the two categories you'll encounter.",
         action: "tabLearn",
         highlight: '[data-tutorial="tab-learn"]',
       },
@@ -15572,20 +15539,11 @@ export default function App() {
         highlight: '[data-tutorial="learn-tp"]',
       },
       {
-        title: "False positives — flagged but biological",
+        title: "False detections — what humans see but the model gets wrong",
         body:
-          "CroCoDeEL flagged these but a curator decided they're biological similarity (e.g. longitudinal pairs from the same subject — see the dedicated card).\n\n" +
-          "The visual key: do the points actually hug the dashed salmon line? On a true positive yes, on a false positive no — the cloud may correlate but it's broader and noisier.",
+          "Two failure modes shown side by side. False positives: pairs CroCoDeEL flagged that a curator reads as biological pattern, not mechanical contamination — diffuse clouds, longitudinal pairs from the same subject, or cases where probability is high but the points don't hug the line. False negatives: real contaminations CroCoDeEL missed — cascade contaminations are the classic example. Should be very rare; if you see many, lower the CroCoDeEL probability cutoff and re-run.",
         action: "tabLearn",
         highlight: '[data-tutorial="learn-fp"]',
-      },
-      {
-        title: "False negatives — what CroCoDeEL misses",
-        body:
-          "Events humans identified but CroCoDeEL didn't flag. These won't appear in your events table by definition — knowing the patterns helps you decide whether to lower the probability cutoff at the CroCoDeEL stage to widen the search.\n\n" +
-          "Cascade contamination is especially worth knowing: when two samples share a third common contamination source, the line is blurred and CroCoDeEL learned to reject it.",
-        action: "tabLearn",
-        highlight: '[data-tutorial="learn-fn"]',
       },
       {
         title: "You're ready!",
@@ -16195,6 +16153,9 @@ export default function App() {
       setRawEvents(parsedEvents.events);
       setRunMetadata(parsedEvents.runMetadata);
       setAb(parsedAb);
+      // Stamp a study title so the upload-bar chip shows the user
+      // they're on the demo data and not their own.
+      setAnalysisTitle("Demo — Lou et al. 2023 (early-life metagenomes, plate 3)");
 
       // Optional files — load if present, ignore 404s silently
       try {
