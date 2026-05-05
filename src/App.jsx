@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as d3 from "d3";
 import { Range, getTrackBackground } from "react-range";
+import LZString from "lz-string";
 import {
   FolderOpen,
   AlertCircle,
@@ -14734,11 +14735,27 @@ function sparsifyAbundance(ab) {
   return { ...ab, matrix: sparse };
 }
 
+// Magic prefix that flags an LZ-compressed payload. Legacy plain-JSON
+// strings starting with `{` still parse via the fallback branch below,
+// so existing sessions migrate transparently to the new format on the
+// next save.
+const COMPRESSED_PREFIX = "lz:";
+
 function loadFromStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw);
+    let json;
+    if (raw.startsWith(COMPRESSED_PREFIX)) {
+      const decompressed = LZString.decompressFromUTF16(
+        raw.slice(COMPRESSED_PREFIX.length),
+      );
+      if (!decompressed) return null;
+      json = decompressed;
+    } else {
+      json = raw;
+    }
+    const parsed = JSON.parse(json);
     if (!parsed || typeof parsed !== "object") return null;
     if (!Array.isArray(parsed.rawEvents) || parsed.rawEvents.length === 0) {
       return null;
@@ -14783,7 +14800,13 @@ function saveToStorage(payload) {
   ];
   for (const { payload: p, dropped } of attempts) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
+      // LZ-string UTF-16 compression on top of the sparse JSON. The
+      // UTF-16 variant packs 15 bits per character, which is the
+      // densest format that still survives a localStorage round-trip
+      // (localStorage stores UTF-16 strings). Typical savings on JSON
+      // are 5–10× on top of the sparsification.
+      const compressed = LZString.compressToUTF16(JSON.stringify(p));
+      localStorage.setItem(STORAGE_KEY, COMPRESSED_PREFIX + compressed);
       if (dropped) {
         console.warn(
           `[crocodeel] localStorage quota tight — saved without: ${dropped}`,
