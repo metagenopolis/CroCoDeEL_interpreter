@@ -14713,6 +14713,27 @@ const ExportTab = ({
    keeps their curation work and re-loads only the abundance file. */
 const STORAGE_KEY = "crocodeel-interpreter-v1";
 
+/** Drop zero / falsy entries from the abundance matrix before saving.
+    Most metagenomic profiles are very sparse (a typical sample has a
+    few hundred non-zero species out of thousands), so omitting the
+    zeros usually shrinks the JSON 5–10×. The dense form is never
+    needed downstream: every consumer reads `matrix[sp]?.[s] || 0` so a
+    missing key is treated as zero exactly like an explicit zero. */
+function sparsifyAbundance(ab) {
+  if (!ab || !ab.matrix) return ab;
+  const sparse = {};
+  for (const sp of Object.keys(ab.matrix)) {
+    const row = ab.matrix[sp];
+    const sparseRow = {};
+    for (const s of Object.keys(row)) {
+      const v = row[s];
+      if (v) sparseRow[s] = v;
+    }
+    sparse[sp] = sparseRow;
+  }
+  return { ...ab, matrix: sparse };
+}
+
 function loadFromStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -14733,20 +14754,28 @@ function saveToStorage(payload) {
   // the abundance table (which is by far the largest piece). If THAT
   // still fails, retry with events only as a last resort. UI state
   // (tab, selId, filter, sort) is tiny and always preserved.
+  // The abundance matrix is sparsified (zeros dropped) before saving:
+  // typical metagenomic profiles are dominated by zeros, so this
+  // shrinks the localStorage footprint enough that whole datasets that
+  // used to overflow the quota now fit on the first attempt.
+  const sparsePayload = {
+    ...payload,
+    ab: sparsifyAbundance(payload.ab),
+  };
   const uiState = {
-    tab: payload.tab,
-    selId: payload.selId,
-    filter: payload.filter,
-    sort: payload.sort,
+    tab: sparsePayload.tab,
+    selId: sparsePayload.selId,
+    filter: sparsePayload.filter,
+    sort: sparsePayload.sort,
   };
   const attempts = [
-    { payload, dropped: null },
-    { payload: { ...payload, ab: null }, dropped: "ab" },
+    { payload: sparsePayload, dropped: null },
+    { payload: { ...sparsePayload, ab: null }, dropped: "ab" },
     {
       payload: {
-        version: payload.version,
-        savedAt: payload.savedAt,
-        rawEvents: payload.rawEvents,
+        version: sparsePayload.version,
+        savedAt: sparsePayload.savedAt,
+        rawEvents: sparsePayload.rawEvents,
         ...uiState,
       },
       dropped: "ab+metadata+plateMap+runMetadata",
