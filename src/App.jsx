@@ -18374,7 +18374,9 @@ export default function App() {
               className="text-[11px] mt-1 italic"
               style={{ color: "var(--ink-muted)" }}
             >
-              Created using Claude Opus 4.7, prompted by G. Gautreau.
+              Created using Claude Opus 4.7, prompted by G. Gautreau with
+              contributions of E. Le Chatelier &amp; F. Plaza-Oñate (concept
+              and ideation).
             </div>
           </div>
         </div>
