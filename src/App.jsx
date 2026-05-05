@@ -299,6 +299,18 @@ function parseAbundance(text) {
 /* ---------- metadata.tsv ---------- */
 const METADATA_COLS = {
   sample: ["sample_id", "sample", "sampleid", "id"],
+  // Optional human-readable name for the sample. When present, the UI
+  // renders it as a muted secondary label next to the canonical
+  // sample_id (table rows, scatter plots, guided-validation header,
+  // network nodes, plate cells).
+  sampleName: [
+    "sample_name",
+    "name",
+    "display_name",
+    "displayname",
+    "label",
+    "alias",
+  ],
   subject: [
     "subject_id",
     "subject",
@@ -364,6 +376,7 @@ function parseMetadata(text) {
   }
   const cols = {
     sample: pickCol(header, METADATA_COLS.sample),
+    sampleName: pickCol(header, METADATA_COLS.sampleName),
     subject: pickCol(header, METADATA_COLS.subject),
     timepoint: pickCol(header, METADATA_COLS.timepoint),
     biome: pickCol(header, METADATA_COLS.biome),
@@ -383,6 +396,7 @@ function parseMetadata(text) {
     // the sample as a negative control.
     const isControl = /control|blank|negative/i.test(biomeVal);
     bySample[id] = {
+      sampleName: cols.sampleName ? r[cols.sampleName] || "" : "",
       subject: r[cols.subject] || "",
       timepoint: cols.timepoint ? r[cols.timepoint] || "" : "",
       biome: biomeVal,
@@ -402,6 +416,7 @@ function parseMetadata(text) {
     cols,
     bySample,
     nSamples: Object.keys(bySample).length,
+    hasSampleNameCol: !!cols.sampleName,
     hasBiomeCol: !!cols.biome,
     hasLowBiomassCol: !!cols.lowBiomass,
     hasLowSequencingDepthCol: !!cols.lowSequencingDepth,
@@ -440,6 +455,7 @@ function flagSample(sampleId, metadata) {
     const skip = new Set(
       [
         metadata.cols.sample,
+        metadata.cols.sampleName,
         metadata.cols.subject,
         metadata.cols.timepoint,
         metadata.cols.biome,
@@ -456,6 +472,20 @@ function flagSample(sampleId, metadata) {
   }
 
   return flags;
+}
+
+/** Look up the optional human-readable name for a sample. Returns the
+    trimmed `sample_name` field from the metadata when present and
+    distinct from the canonical `sample_id`, or null otherwise. The
+    null case lets every call site cheaply skip rendering when nothing
+    is to add. */
+function sampleName(metadata, sampleId) {
+  if (!sampleId || !metadata?.bySample) return null;
+  const meta = metadata.bySample[sampleId];
+  if (!meta) return null;
+  const n = (meta.sampleName || "").trim();
+  if (!n || n === sampleId) return null;
+  return n;
 }
 
 /* ---------- plate_map.tsv ---------- */
@@ -5192,6 +5222,15 @@ const EventsTable = ({
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
                     {e.source}
+                    {sampleName(metadata, e.source) && (
+                      <div
+                        className="text-[11px] truncate"
+                        style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
+                        title={sampleName(metadata, e.source)}
+                      >
+                        {sampleName(metadata, e.source)}
+                      </div>
+                    )}
                     {metadata && (
                       <div className="mt-1">
                         <SampleFlags
@@ -5208,6 +5247,15 @@ const EventsTable = ({
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
                     {e.target}
+                    {sampleName(metadata, e.target) && (
+                      <div
+                        className="text-[11px] truncate"
+                        style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
+                        title={sampleName(metadata, e.target)}
+                      >
+                        {sampleName(metadata, e.target)}
+                      </div>
+                    )}
                     {metadata && (
                       <div className="mt-1">
                         <SampleFlags
@@ -5866,15 +5914,36 @@ const GalleryCard = ({
             />
           )}
           <div
-            className="text-[11px] truncate"
-            style={{
-              color: "var(--ink)",
-              fontWeight: 700,
-              fontFamily: '"Raleway", sans-serif',
-            }}
-            title={`${event.source} → ${event.target}`}
+            className="min-w-0"
+            title={(() => {
+              const s = sampleName(metadata, event.source);
+              const t = sampleName(metadata, event.target);
+              return `${event.source}${s ? ` (${s})` : ""} → ${event.target}${t ? ` (${t})` : ""}`;
+            })()}
           >
-            {event.source} → {event.target}
+            <div
+              className="text-[11px] truncate"
+              style={{
+                color: "var(--ink)",
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+              }}
+            >
+              {event.source} → {event.target}
+            </div>
+            {(sampleName(metadata, event.source) ||
+              sampleName(metadata, event.target)) && (
+              <div
+                className="text-[10px] truncate"
+                style={{
+                  color: "var(--ink-muted)",
+                  fontFamily: '"Raleway", sans-serif',
+                }}
+              >
+                {sampleName(metadata, event.source) || event.source} →{" "}
+                {sampleName(metadata, event.target) || event.target}
+              </div>
+            )}
           </div>
         </div>
         <div
@@ -10178,7 +10247,29 @@ const ValidateTab = ({
 
         <SectionTitle
           eyebrow={`Event ${idx + 1} of ${events.length}`}
-          title={`${sel.source} → ${sel.target}`}
+          title={
+            <>
+              {sel.source}
+              {sampleName(metadata, sel.source) && (
+                <span
+                  className="text-[18px] ml-2"
+                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
+                >
+                  ({sampleName(metadata, sel.source)})
+                </span>
+              )}
+              {" → "}
+              {sel.target}
+              {sampleName(metadata, sel.target) && (
+                <span
+                  className="text-[18px] ml-2"
+                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
+                >
+                  ({sampleName(metadata, sel.target)})
+                </span>
+              )}
+            </>
+          }
         />
 
         <CascadeBanner
@@ -10687,6 +10778,18 @@ const ValidateTab = ({
                               >
                                 {sel.source}
                               </span>
+                              {sampleName(metadata, sel.source) && (
+                                <span
+                                  style={{
+                                    color: "var(--ink-muted)",
+                                    fontSize: 11,
+                                    fontFamily: '"Raleway", sans-serif',
+                                  }}
+                                  title={sampleName(metadata, sel.source)}
+                                >
+                                  ({sampleName(metadata, sel.source)})
+                                </span>
+                              )}
                             </div>
                             <SampleFlags flags={flagSample(sel.source, metadata)} />
                           </div>
@@ -10708,6 +10811,18 @@ const ValidateTab = ({
                               >
                                 {sel.target}
                               </span>
+                              {sampleName(metadata, sel.target) && (
+                                <span
+                                  style={{
+                                    color: "var(--ink-muted)",
+                                    fontSize: 11,
+                                    fontFamily: '"Raleway", sans-serif',
+                                  }}
+                                  title={sampleName(metadata, sel.target)}
+                                >
+                                  ({sampleName(metadata, sel.target)})
+                                </span>
+                              )}
                             </div>
                             <SampleFlags flags={flagSample(sel.target, metadata)} />
                           </div>
@@ -12924,6 +13039,14 @@ const HelpTab = ({ onStartTour }) => {
                 desc="Unique sample identifier — must match samples used in events and abundance files."
                 aliases={["sample", "sampleid", "id"]}
                 example={`sample_id\n40D89\n58M\n58D7\nNC3\n83D239`}
+              />
+              <HelpCol
+                name="sample_name"
+                recognized
+                type="string"
+                desc="Optional human-readable label for the sample. When present, surfaces alongside the canonical sample_id wherever a sample is named (events table, scatter cards, Guided validation header, sample-context panel). Purely cosmetic — the sample_id remains the join key."
+                aliases={["name", "display_name", "displayname", "label", "alias"]}
+                example={`sample_id   sample_name\n40D89       Patient40_D89\n58M         Mother_58\n58D7        Infant_58_D7\nNC3         Negative_ctrl_3\n83D239      Patient83_D239`}
               />
               <HelpCol
                 name="subject_id"
