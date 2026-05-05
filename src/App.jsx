@@ -4603,7 +4603,7 @@ const EventFilterBar = ({
         <input
           value={filter.q}
           onChange={(e) => setFilter({ ...filter, q: e.target.value })}
-          placeholder="sample…"
+          placeholder="sample id or name…"
           className="pl-7 pr-3 py-1 text-[12px] rounded-md w-44 outline-none"
           style={selectStyle}
         />
@@ -15955,9 +15955,13 @@ export default function App() {
         if (filter.adjacent === "non-adjacent" && isAdjacent) return false;
       }
       if (q) {
-        // Search across sample IDs only (source and target). Case-
+        // Search across sample IDs and, when the metadata exposes a
+        // sample_name column, the human-readable names too. Case-
         // insensitive thanks to the toLowerCase on both sides.
-        const hay = `${e.source} ${e.target}`.toLowerCase();
+        const sName = sampleName(metadata, e.source) || "";
+        const tName = sampleName(metadata, e.target) || "";
+        const hay =
+          `${e.source} ${e.target} ${sName} ${tName}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
