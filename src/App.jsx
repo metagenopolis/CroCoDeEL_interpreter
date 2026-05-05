@@ -5437,7 +5437,11 @@ const EventsTable = ({
 const MINI_LO = -8;
 const MINI_HI = 0;
 
-const MiniScatter = ({ scatter, width = 220, height = 180 }) => {
+const MiniScatter = React.memo(function MiniScatter({
+  scatter,
+  width = 220,
+  height = 180,
+}) {
   if (!scatter) return null;
   // Wider left + bottom padding to fit corner tick labels.
   const pad = { l: 18, r: 6, t: 6, b: 14 };
@@ -5621,10 +5625,10 @@ const MiniScatter = ({ scatter, width = 220, height = 180 }) => {
       />
     </svg>
   );
-};
+});
 
 /* ----- Gallery card ----- */
-const GalleryCard = ({
+const GalleryCard = React.memo(function GalleryCard({
   event,
   ab,
   metadata,
@@ -5633,8 +5637,19 @@ const GalleryCard = ({
   setVerdict,
   actionEnabled,
   setAction,
-}) => {
-  const scatter = useMemo(() => buildScatter(ab, event), [ab, event]);
+  onPopoverOpen,
+  onPopoverClose,
+}) {
+  // `event` reference shifts whenever any field changes (verdict /
+  // action / notes / cascade / introducedPct), but the scatter only
+  // depends on the structural fields. Splitting the deps stops the
+  // expensive O(species) buildScatter from re-running on every verdict
+  // click — the cached scatter is kept until source / target / rate /
+  // introduced actually changes.
+  const scatter = useMemo(
+    () => buildScatter(ab, event),
+    [ab, event.source, event.target, event.rate, event.introduced],
+  );
   const related = areRelated(metadata, event.source, event.target);
   const pd = plateDistance(plateMap, event.source, event.target);
   const verdictDot =
@@ -5658,6 +5673,20 @@ const GalleryCard = ({
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, [actionPopover]);
+  // Tell the parent gallery to freeze its sort while this card's
+  // popover is open — without this the card jumps under the user the
+  // moment they pick a verdict, taking the popover with it. We bind
+  // event.id inside the effect (not at the prop boundary) so the
+  // GalleryCard's prop refs stay stable across renders, which lets
+  // React.memo around GalleryCard actually skip unchanged cards.
+  const eventId = event.id;
+  useEffect(() => {
+    if (actionPopover) {
+      onPopoverOpen && onPopoverOpen(eventId);
+      return () => onPopoverClose && onPopoverClose(eventId);
+    }
+    return undefined;
+  }, [actionPopover, onPopoverOpen, onPopoverClose, eventId]);
   const cancelCloseTimer = () => {
     if (closeTimerRef.current) {
       window.clearTimeout(closeTimerRef.current);
@@ -6022,7 +6051,7 @@ const GalleryCard = ({
       </div>
     </div>
   );
-};
+});
 
 /* ----- Scatterplot gallery tab ----- */
 /* ============================================================================
@@ -7019,6 +7048,33 @@ const ScatterTab = ({
   // (descending for numeric severity, ascending for alphabetical).
   const SORT_DEFAULT_DIR = { score: "desc", rate: "desc", introducedPct: "desc", source: "asc", target: "asc", pending: "asc", action: "asc" };
   const [sortDir, setSortDir] = useState(SORT_DEFAULT_DIR.score);
+  // Sort freeze: when a card opens its action popover, we hold the
+  // gallery's order so the just-clicked card doesn't jump out from
+  // under the popover. The hold releases as soon as the popover closes.
+  const [openPopovers, setOpenPopovers] = useState(() => new Set());
+  // useCallback so memoised GalleryCards don't re-render every parent
+  // tick just because a fresh function ref was passed.
+  const onPopoverOpen = React.useCallback(
+    (id) =>
+      setOpenPopovers((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      }),
+    [],
+  );
+  const onPopoverClose = React.useCallback(
+    (id) =>
+      setOpenPopovers((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      }),
+    [],
+  );
+  const sortLocked = openPopovers.size > 0;
+  const sortedSnapshotRef = useRef(null);
   const handleSortClick = (id) => {
     if (sortBy === id) {
       setSortDir((d) => (d === "desc" ? "asc" : "desc"));
@@ -7075,6 +7131,26 @@ const ScatterTab = ({
   }
 
   const sorted = useMemo(() => {
+    // While at least one action popover is open, freeze the order so
+    // the just-clicked card doesn't jump under the popover. We reuse
+    // the cached order from the previous unfrozen pass and only filter
+    // it down to events still passing the filter (newly-arrived events
+    // are appended at the end so they stay reachable).
+    if (sortLocked && sortedSnapshotRef.current) {
+      const filteredById = new Map(filtered.map((e) => [e.id, e]));
+      const stable = [];
+      const seen = new Set();
+      for (const id of sortedSnapshotRef.current) {
+        if (filteredById.has(id)) {
+          stable.push(filteredById.get(id));
+          seen.add(id);
+        }
+      }
+      filtered.forEach((e) => {
+        if (!seen.has(e.id)) stable.push(e);
+      });
+      return stable;
+    }
     const copy = filtered.slice();
     const flip = sortDir === "asc" ? -1 : 1;
     if (sortBy === "score") copy.sort((a, b) => (b.score - a.score) * flip);
@@ -7110,8 +7186,9 @@ const ScatterTab = ({
           (b.score - a.score) * flip,
       );
     }
+    sortedSnapshotRef.current = copy.map((e) => e.id);
     return copy;
-  }, [filtered, sortBy, sortDir]);
+  }, [filtered, sortBy, sortDir, sortLocked]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(Math.max(1, page), totalPages);
@@ -7257,6 +7334,8 @@ const ScatterTab = ({
             setVerdict={setVerdict}
             actionEnabled={actionEnabled}
             setAction={setAction}
+            onPopoverOpen={onPopoverOpen}
+            onPopoverClose={onPopoverClose}
           />
         ))}
       </div>
@@ -14713,6 +14792,11 @@ const ExportTab = ({
    back gracefully to saving everything except the abundance — the user
    keeps their curation work and re-loads only the abundance file. */
 const STORAGE_KEY = "crocodeel-interpreter-v1";
+// Abundance matrix lives in its own key so verdict / action / filter
+// changes don't have to re-serialize and re-compress the (huge) matrix
+// on every click. The `_ab` key is rewritten only when the abundance
+// reference itself changes (file load, dataset switch, decontamination).
+const STORAGE_KEY_AB = "crocodeel-interpreter-v1-ab";
 
 /** Drop zero / falsy entries from the abundance matrix before saving.
     Most metagenomic profiles are very sparse (a typical sample has a
@@ -14741,94 +14825,138 @@ function sparsifyAbundance(ab) {
 // next save.
 const COMPRESSED_PREFIX = "lz:";
 
-function loadFromStorage() {
+/** Compress + decompress helpers. The COMPRESSED_PREFIX gates the
+    LZ-decoded path so legacy plain-JSON payloads still load. */
+function readCompressedKey(key) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
-    let json;
     if (raw.startsWith(COMPRESSED_PREFIX)) {
       const decompressed = LZString.decompressFromUTF16(
         raw.slice(COMPRESSED_PREFIX.length),
       );
       if (!decompressed) return null;
-      json = decompressed;
-    } else {
-      json = raw;
+      return JSON.parse(decompressed);
     }
-    const parsed = JSON.parse(json);
-    if (!parsed || typeof parsed !== "object") return null;
-    if (!Array.isArray(parsed.rawEvents) || parsed.rawEvents.length === 0) {
-      return null;
-    }
-    return parsed;
+    return JSON.parse(raw);
   } catch {
     return null;
   }
 }
 
-function saveToStorage(payload) {
-  // Try the full payload first. If it exceeds the quota, retry without
-  // the abundance table (which is by far the largest piece). If THAT
-  // still fails, retry with events only as a last resort. UI state
-  // (tab, selId, filter, sort) is tiny and always preserved.
-  // The abundance matrix is sparsified (zeros dropped) before saving:
-  // typical metagenomic profiles are dominated by zeros, so this
-  // shrinks the localStorage footprint enough that whole datasets that
-  // used to overflow the quota now fit on the first attempt.
-  const sparsePayload = {
-    ...payload,
-    ab: sparsifyAbundance(payload.ab),
-  };
+function writeCompressedKey(key, value) {
+  const compressed = LZString.compressToUTF16(JSON.stringify(value));
+  localStorage.setItem(key, COMPRESSED_PREFIX + compressed);
+}
+
+function loadFromStorage() {
+  // Read the main payload (events / metadata / UI state) and the
+  // abundance side payload separately. They were written under two
+  // different keys to avoid re-serializing the huge matrix on every
+  // verdict click. Legacy single-key payloads carry `ab` inline; if
+  // present we honour it, otherwise we splice the side payload back in.
+  const main = readCompressedKey(STORAGE_KEY);
+  if (!main) return null;
+  if (!Array.isArray(main.rawEvents) || main.rawEvents.length === 0) {
+    return null;
+  }
+  if (!main.ab) {
+    const ab = readCompressedKey(STORAGE_KEY_AB);
+    if (ab) main.ab = ab;
+  }
+  return main;
+}
+
+function saveToStorage(payload, options) {
+  // Two-key save: the abundance matrix is rewritten only when its
+  // reference changes (controlled by the caller via options.saveAb);
+  // everything else is rewritten on every change but is small enough
+  // that the JSON.stringify + LZ-compress cost is negligible.
+  const { saveAb } = options || {};
+  const { ab, ...rest } = payload;
+
   const uiState = {
-    tab: sparsePayload.tab,
-    selId: sparsePayload.selId,
-    filter: sparsePayload.filter,
-    sort: sparsePayload.sort,
+    tab: payload.tab,
+    selId: payload.selId,
+    filter: payload.filter,
+    sort: payload.sort,
   };
-  const attempts = [
-    { payload: sparsePayload, dropped: null },
-    { payload: { ...sparsePayload, ab: null }, dropped: "ab" },
+  // 1) Save the (small) main payload — tries the full thing, then a
+  //    minimal events+UI fallback if the quota is hit.
+  const mainAttempts = [
+    { payload: rest, dropped: null },
     {
       payload: {
-        version: sparsePayload.version,
-        savedAt: sparsePayload.savedAt,
-        rawEvents: sparsePayload.rawEvents,
+        version: rest.version,
+        savedAt: rest.savedAt,
+        rawEvents: rest.rawEvents,
         ...uiState,
       },
-      dropped: "ab+metadata+plateMap+runMetadata",
+      dropped: "metadata+plateMap+runMetadata",
     },
   ];
-  for (const { payload: p, dropped } of attempts) {
+  let mainOk = false;
+  for (const { payload: p, dropped } of mainAttempts) {
     try {
-      // LZ-string UTF-16 compression on top of the sparse JSON. The
-      // UTF-16 variant packs 15 bits per character, which is the
-      // densest format that still survives a localStorage round-trip
-      // (localStorage stores UTF-16 strings). Typical savings on JSON
-      // are 5–10× on top of the sparsification.
-      const compressed = LZString.compressToUTF16(JSON.stringify(p));
-      localStorage.setItem(STORAGE_KEY, COMPRESSED_PREFIX + compressed);
+      writeCompressedKey(STORAGE_KEY, p);
       if (dropped) {
         console.warn(
           `[crocodeel] localStorage quota tight — saved without: ${dropped}`,
         );
       }
-      return true;
+      mainOk = true;
+      break;
     } catch (e) {
-      // Try the next, smaller payload. If we exhaust all attempts the
-      // outer return false signals the failure.
       if (e?.name !== "QuotaExceededError" && e?.code !== 22) {
         console.warn("[crocodeel] localStorage save failed:", e?.message);
         return false;
       }
     }
   }
-  console.warn("[crocodeel] localStorage save failed even with minimal payload");
-  return false;
+  if (!mainOk) {
+    console.warn("[crocodeel] localStorage save failed even with minimal main payload");
+    return false;
+  }
+  // 2) Save the abundance side payload only when explicitly requested.
+  //    Sparsified to drop the zeros (5–10× shrink) then LZ-compressed.
+  if (saveAb) {
+    if (ab) {
+      try {
+        writeCompressedKey(STORAGE_KEY_AB, sparsifyAbundance(ab));
+      } catch (e) {
+        if (e?.name === "QuotaExceededError" || e?.code === 22) {
+          console.warn(
+            "[crocodeel] localStorage quota tight — abundance not saved",
+          );
+          // Drop the stale ab if any; otherwise the loader would
+          // splice an out-of-date matrix into the next session.
+          try {
+            localStorage.removeItem(STORAGE_KEY_AB);
+          } catch {
+            // ignore
+          }
+        } else {
+          console.warn(
+            "[crocodeel] localStorage abundance save failed:",
+            e?.message,
+          );
+        }
+      }
+    } else {
+      try {
+        localStorage.removeItem(STORAGE_KEY_AB);
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return true;
 }
 
 function clearStorage() {
   try {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY_AB);
   } catch {
     // ignore
   }
@@ -15845,34 +15973,47 @@ export default function App() {
   };
 
   /* Auto-save the full session to localStorage whenever any persisted
-     state changes. Debounced to 200 ms so we don't hammer the disk
-     when the user blasts through events with keyboard shortcuts. */
+     state changes. Debounced to 1 s so we don't hammer the disk when
+     the user blasts through events with keyboard shortcuts.
+     The abundance matrix is written to its own localStorage key, only
+     when the `ab` reference itself changes — this keeps verdict / action
+     clicks fast on large datasets (1000+ samples) where re-serializing
+     the matrix on every tick was the dominant cost. */
+  const lastSavedAbRef = useRef(null);
   useEffect(() => {
     if (rawEvents.length === 0) {
       // No data to save — actively clear storage so a previous session
       // doesn't linger after the user clears everything.
       clearStorage();
+      lastSavedAbRef.current = null;
       setSavedAt(null);
       return undefined;
     }
+    const abChanged = lastSavedAbRef.current !== ab;
     const handle = setTimeout(() => {
-      const ok = saveToStorage({
-        version: 1,
-        savedAt: new Date().toISOString(),
-        rawEvents,
-        runMetadata,
-        metadata,
-        plateMap,
-        ab,
-        analysisTitle,
-        // UI state — keeps the user exactly where they left off
-        tab,
-        selId,
-        filter,
-        sort,
-      });
-      if (ok) setSavedAt(Date.now());
-    }, 200);
+      const ok = saveToStorage(
+        {
+          version: 1,
+          savedAt: new Date().toISOString(),
+          rawEvents,
+          runMetadata,
+          metadata,
+          plateMap,
+          ab,
+          analysisTitle,
+          // UI state — keeps the user exactly where they left off
+          tab,
+          selId,
+          filter,
+          sort,
+        },
+        { saveAb: abChanged },
+      );
+      if (ok) {
+        if (abChanged) lastSavedAbRef.current = ab;
+        setSavedAt(Date.now());
+      }
+    }, 1000);
     return () => clearTimeout(handle);
   }, [rawEvents, runMetadata, metadata, plateMap, ab, analysisTitle, tab, selId, filter, sort]);
 
@@ -15908,17 +16049,73 @@ export default function App() {
     return counts;
   }, [ab]);
 
+  // `detectCascades` is O(events × species) and was the dominant cost
+  // on verdict clicks for large datasets — it ran on every rawEvents
+  // change even though cascades only depend on the structural shape
+  // (source, target, introduced, rate, score), not on verdict / action /
+  // notes. We cache the cascade map keyed by a cheap structural
+  // signature; verdict updates hit the cache and the heavy work is
+  // skipped. Updates that change topology (file load, decontamination,
+  // manual event add, dataset switch) miss the cache and recompute.
+  const cascadeCacheRef = useRef({ ab: null, sig: "", byId: new Map() });
+  // Per-event augmented-object cache: lets us reuse the SAME object
+  // reference for events whose underlying raw entry (and cascade /
+  // introducedPct) didn't change. Without this, mapping over rawEvents
+  // creates fresh objects each tick and every GalleryCard / table row
+  // re-renders even though nothing about them really changed.
+  const eventsAugmentedCacheRef = useRef(new Map());
   const events = useMemo(() => {
-    const cascaded = detectCascades(rawEvents, ab);
-    if (!targetSpeciesCounts) return cascaded;
-    return cascaded.map((e) => {
-      const total = targetSpeciesCounts[e.target];
-      const pct =
-        total > 0 && Array.isArray(e.introduced)
-          ? (e.introduced.length / total) * 100
-          : null;
-      return { ...e, introducedPct: pct };
+    const sigParts = [];
+    for (const e of rawEvents) {
+      sigParts.push(
+        `${e.id}|${e.source}|${e.target}|${e.rate}|${e.score}|${
+          (e.introduced && e.introduced.length) || 0
+        }`,
+      );
+    }
+    const sig = sigParts.join("\n");
+    let cascadeMap;
+    if (
+      cascadeCacheRef.current.ab === ab &&
+      cascadeCacheRef.current.sig === sig
+    ) {
+      cascadeMap = cascadeCacheRef.current.byId;
+    } else {
+      const cascaded = detectCascades(rawEvents, ab);
+      cascadeMap = new Map(cascaded.map((e) => [e.id, e.cascade || null]));
+      cascadeCacheRef.current = { ab, sig, byId: cascadeMap };
+    }
+    const prev = eventsAugmentedCacheRef.current;
+    const next = new Map();
+    const out = rawEvents.map((e) => {
+      const cascade = cascadeMap.get(e.id) || null;
+      let pct = null;
+      if (targetSpeciesCounts) {
+        const total = targetSpeciesCounts[e.target];
+        if (total > 0 && Array.isArray(e.introduced)) {
+          pct = (e.introduced.length / total) * 100;
+        }
+      }
+      const cached = prev.get(e.id);
+      // Reuse the cached augmented object if the underlying raw event
+      // and the two derived fields are all unchanged. This preserves
+      // reference equality for unaffected events so memoised consumers
+      // (GalleryCard, table rows) can skip their re-render.
+      if (
+        cached &&
+        cached.raw === e &&
+        cached.cascade === cascade &&
+        cached.pct === pct
+      ) {
+        next.set(e.id, cached);
+        return cached.aug;
+      }
+      const aug = { ...e, cascade, introducedPct: pct };
+      next.set(e.id, { raw: e, cascade, pct, aug });
+      return aug;
     });
+    eventsAugmentedCacheRef.current = next;
+    return out;
   }, [rawEvents, ab, targetSpeciesCounts]);
 
   const allSamples = useMemo(() => {
@@ -16079,36 +16276,61 @@ export default function App() {
 
   const selected =
     events.find((e) => e.id === selId) || events[0] || null;
-  const setVerdict = (id, verdict) =>
-    setRawEvents((prev) =>
-      prev.map((e) => {
-        if (e.id !== id) return e;
-        const next = { ...e, verdict };
-        // When the suppress/keep feature is on, reset the action to
-        // the verdict's default on every verdict change — TP -> suppress
-        // (drop the contaminated sample), FP -> keep (call was wrong,
-        // sample is fine). Other verdicts clear the action. The popover
-        // lets the user override afterwards.
-        if (actionEnabled) {
-          if (verdict === "true_positive") {
-            next.action = "suppress";
-          } else if (verdict === "false_positive") {
-            next.action = "keep";
-          } else {
-            next.action = null;
+  // Stable refs across renders so memoised consumers (GalleryCard,
+  // table rows) don't see a fresh function on every parent render.
+  // Without useCallback the wrapper would prevent React.memo from
+  // skipping unchanged cards on a verdict click — the dominant cost on
+  // large datasets.
+  const setVerdict = React.useCallback(
+    (id, verdict) =>
+      setRawEvents((prev) =>
+        prev.map((e) => {
+          if (e.id !== id) return e;
+          const next = { ...e, verdict };
+          // When the suppress/keep feature is on, reset the action to
+          // the verdict's default on every verdict change — TP ->
+          // suppress (drop the contaminated sample), FP -> keep (call
+          // was wrong, sample is fine). Other verdicts clear the
+          // action. The popover lets the user override afterwards.
+          if (actionEnabled) {
+            if (verdict === "true_positive") {
+              next.action = "suppress";
+            } else if (verdict === "false_positive") {
+              next.action = "keep";
+            } else {
+              next.action = null;
+            }
           }
-        }
-        return next;
-      }),
-    );
-  const setAction = (id, action) =>
-    setRawEvents((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, action } : e)),
-    );
-  const setNote = (id, notes) =>
-    setRawEvents((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, notes } : e)),
-    );
+          return next;
+        }),
+      ),
+    [actionEnabled],
+  );
+  const setAction = React.useCallback(
+    (id, action) =>
+      setRawEvents((prev) =>
+        prev.map((e) => (e.id === id ? { ...e, action } : e)),
+      ),
+    [],
+  );
+  const setNote = React.useCallback(
+    (id, notes) =>
+      setRawEvents((prev) =>
+        prev.map((e) => (e.id === id ? { ...e, notes } : e)),
+      ),
+    [],
+  );
+  // Stable navigation handler — picks an event and jumps to Guided
+  // validation (or Scatter when no abundance is loaded). Reused by
+  // every gallery / table / network / plate "click on event" path so
+  // the prop passed to GalleryCard et al. has a stable reference.
+  const pickEventToValidate = React.useCallback(
+    (id) => {
+      setSelId(id);
+      setTab(ab ? "validate" : "scatter");
+    },
+    [ab],
+  );
 
   /** Add a user-curated event to the events list. Used by the
       "Explore new pairs" feature in the Scatterplots tab when the user
@@ -17459,9 +17681,18 @@ export default function App() {
   };
 
   /* ---- diagnostics for selected event ---- */
+  // Same deps trick as in GalleryCard: stable structural fields only,
+  // so verdict / action / cascade flips on the selected event don't
+  // re-run buildScatter (and the diag chain that depends on it).
   const scatter = useMemo(
     () => (selected ? buildScatter(ab, selected) : null),
-    [ab, selected],
+    [
+      ab,
+      selected?.source,
+      selected?.target,
+      selected?.rate,
+      selected?.introduced,
+    ],
   );
   const diag = useMemo(() => lineDiagnostics(scatter), [scatter]);
   const above = useMemo(() => pointsAboveLine(scatter), [scatter]);
@@ -18187,10 +18418,7 @@ export default function App() {
               metadata={metadata}
               plateMap={plateMap}
               runMetadata={runMetadata}
-              onPick={(id) => {
-                setSelId(id);
-                setTab(ab ? "validate" : "scatter");
-              }}
+              onPick={pickEventToValidate}
               setVerdict={setVerdict}
               onBulkApply={
                 bulkApplyToEvents ? () => setBulkApplyOpen(true) : undefined
@@ -18212,10 +18440,7 @@ export default function App() {
               plateMap={plateMap}
               runMetadata={runMetadata}
               setVerdict={setVerdict}
-              onPick={(id) => {
-                setSelId(id);
-                setTab("validate");
-              }}
+              onPick={pickEventToValidate}
               onAddManualEvent={addManualEvent}
               onBulkApply={
                 bulkApplyToEvents ? () => setBulkApplyOpen(true) : undefined
@@ -18235,10 +18460,7 @@ export default function App() {
               plateMap={plateMap}
               runMetadata={runMetadata}
               actionEnabled={actionEnabled}
-              onPick={(id) => {
-                setSelId(id);
-                setTab("validate");
-              }}
+              onPick={pickEventToValidate}
               onBulkApply={
                 bulkApplyToEvents ? () => setBulkApplyOpen(true) : undefined
               }
@@ -18253,10 +18475,7 @@ export default function App() {
               samples={allSamples}
               metadata={metadata}
               focusPlate={focusPlate}
-              onPick={(id) => {
-                setSelId(id);
-                setTab("validate");
-              }}
+              onPick={pickEventToValidate}
             />
           )}
           {tab === "validate" && (
