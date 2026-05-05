@@ -28,7 +28,7 @@ Each event is scored against seven criteria; the aggregate verdict (`X / 7`) is 
 | 01 | Straight contamination line | R&sup2; > 0.8 of the linear fit on log-log | abundance |
 | 02 | Enough species on the line | n > 10 species | abundance |
 | 03 | Line spans many decades | decade range &ge; 1.5 | abundance |
-| 04 | Abundant source species present in target | &le; 2 missing out of evaluated set (per-target empirical LOD) | abundance |
+| 04 | Abundant source species present in target | observed misses within Poisson sampling noise (p &ge; 0.05, λ = N &times; rate &times; source, N &asymp; 1/LOD) | abundance |
 | 05 | No points clearly above the line | max distance < 0.5 decade above (cascade-aware) | abundance |
 | 06 | Source / target profiles are distinct | Spearman &rho; < 0.7 across full profiles | abundance |
 | 07 | Source and target are different individuals | `subject_id` (or `group_id`) mismatch | metadata |

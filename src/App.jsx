@@ -659,6 +659,36 @@ function buildScatter(ab, event) {
   return { points, logC, source, target, logRange: ab.logRange || null };
 }
 
+/** Complementary error function — Numerical-Recipes rational
+    approximation (max abs error ~1.5e-7 over [0, ∞)). Used to convert
+    a normal-approximation Z-score to a one-sided p-value. */
+function erfc(x) {
+  const z = Math.abs(x);
+  const t = 1 / (1 + 0.5 * z);
+  const ans =
+    t *
+    Math.exp(
+      -z * z -
+        1.26551223 +
+        t *
+          (1.00002368 +
+            t *
+              (0.37409196 +
+                t *
+                  (0.09678418 +
+                    t *
+                      (-0.18628806 +
+                        t *
+                          (0.27886807 +
+                            t *
+                              (-1.13520398 +
+                                t *
+                                  (1.48851587 +
+                                    t * (-0.82215223 + t * 0.17087277))))))))
+    );
+  return x >= 0 ? ans : 2 - ans;
+}
+
 /** Average-rank ranking — handles ties by giving each tied entry the
     mean of the rank positions they would have taken. Returns ranks in
     the original input order. */
@@ -821,17 +851,50 @@ function missingAbundantFromSource(ab, source, target, rate) {
     if (cumul / totalSource >= 0.8) break;
   }
 
+  // Poisson-binomial detection test — we model the target as a count
+  // process with depth N ≈ 1 / target_LOD (since the LOD is roughly the
+  // smallest detectable relative abundance, ≈ 1 read out of N). For each
+  // core species the expected number of reads under H_real (genuine
+  // contamination at this rate) is λ = N × rate × source = expected /
+  // target_LOD. The probability the species is missed by Poisson sampling
+  // alone is e^(-λ); the probability of being detected is 1 - e^(-λ).
+  // Across all evaluable core species the number of misses is a
+  // Poisson-binomial sum — its mean is Σ p_miss and its variance is
+  // Σ p_miss × p_detect. We compare the observed miss count to that
+  // expectation (one-sided normal approximation, valid for ≥ ~10
+  // species) and report a p-value. Species too rare in the source to
+  // have any expected contribution at all are skipped (expected ≤ 0).
   let missing = 0;
+  let expectedMissing = 0;
+  let variance = 0;
   let evaluated = 0;
   coreSet.forEach((sp) => {
     const ys = ab.matrix[sp][srcKey] || 0;
     const xs = ab.matrix[sp][tgtKey] || 0;
     const expected = (rate || 0) * ys;
-    if (expected < targetLOD) return; // would not be detectable in this target
+    if (expected <= 0) return;
+    const lambda = expected / targetLOD;
+    const pMiss = Math.exp(-lambda);
+    expectedMissing += pMiss;
+    variance += pMiss * (1 - pMiss);
     evaluated++;
     if (xs < targetLOD) missing++;
   });
-  return { count: missing, evaluated, targetLOD, coreSize: coreSet.size };
+  const sigma = Math.sqrt(variance);
+  const zScore = sigma > 0 ? (missing - expectedMissing) / sigma : 0;
+  // One-sided p-value (probability of seeing this many misses or more
+  // under H_real). 1 - Φ(z) = 0.5 × erfc(z / √2).
+  const pValue = 0.5 * erfc(zScore / Math.SQRT2);
+  return {
+    count: missing,
+    evaluated,
+    targetLOD,
+    coreSize: coreSet.size,
+    expectedMissing,
+    sigma,
+    zScore,
+    pValue,
+  };
 }
 
 function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
@@ -876,13 +939,18 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
     }
   }
   if (nMissing != null) {
-    const { count: missingCount, evaluated } = nMissing;
+    const {
+      count: missingCount,
+      evaluated,
+      expectedMissing,
+      pValue,
+    } = nMissing;
     if (evaluated === 0) {
-      // No species passed the filter (none abundant enough or rate too
-      // low to expect any detectable signal). Cannot inform the verdict.
+      // No core species had any predictable contribution (rate ≈ 0 or
+      // empty source). Cannot inform the verdict.
       reasons.push({
         ok: true,
-        label: `Missing-species check not informative (no species expected above LOD given rate)`,
+        label: `Missing-species check not informative (no species expected in target given rate)`,
       });
       good++;
     } else if (missingCount === 0) {
@@ -891,16 +959,19 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
         ok: true,
         label: `All ${evaluated} expected source species present in target`,
       });
-    } else if (missingCount <= 2) {
+    } else if (pValue >= 0.05) {
+      // Observed misses are consistent with Poisson-binomial sampling
+      // noise under H_real — fold them into the "tolerable" bucket and
+      // keep the criterion as a pass.
       good++;
       reasons.push({
         ok: true,
-        label: `${missingCount}/${evaluated} expected source species missing (tolerable)`,
+        label: `${missingCount}/${evaluated} missing — within Poisson sampling noise (p = ${pValue.toFixed(2)}, expected ≈ ${expectedMissing.toFixed(1)})`,
       });
     } else {
       reasons.push({
         ok: false,
-        label: `${missingCount}/${evaluated} expected source species missing from target`,
+        label: `${missingCount}/${evaluated} expected source species missing — significantly more than Poisson noise (p = ${pValue.toExponential(1)}, expected ≈ ${expectedMissing.toFixed(1)})`,
       });
     }
   }
@@ -8656,7 +8727,7 @@ const BULK_CRIT = [
   { id: "shape", label: "Shape — line is straight (R² > 0.8)" },
   { id: "nOnLine", label: "n on line — > 10 species fall on the line" },
   { id: "decade", label: "Decade range — line spans ≥ 1.5 decades" },
-  { id: "missing", label: "Missing source species — ≤ 2 missing from target" },
+  { id: "missing", label: "Missing source species — observed misses within Poisson sampling noise (p ≥ 0.05)" },
   { id: "above", label: "Above-line points — none, or all within 0.5 decade" },
   { id: "spearman", label: "Profile dissimilarity — Spearman ρ < 0.7" },
 ];
@@ -10441,7 +10512,7 @@ const ValidateTab = ({
                 <Criterion
                   n="04"
                   title="Abundant source species present in target"
-                  wiki="Source 'core' species (those whose cumulative abundance reaches 80% of the source) should appear in the target if the contamination is real. Each species is checked against the target's own empirical limit of detection (smallest observed value), and only species whose expected target abundance (rate × source) exceeds that LOD are evaluated — so the threshold adapts to sequencing depth and contamination rate."
+                  wiki="Source 'core' species (those whose cumulative abundance reaches 80% of the source) should appear in the target if the contamination is real. We model Poisson sampling: the target depth is estimated from the LOD (N ≈ 1 / LOD), each species has an expected count λ = N × rate × source, and is missed by chance with probability e^(-λ). The number of misses across the core is a Poisson-binomial sum; the criterion fails when the observed miss count exceeds its expectation under H_real with p < 0.05 (one-sided normal approximation). Adapts to sequencing depth and rate."
                   pass={
                     missing != null
                       ? missing.evaluated === 0 || missing.count <= 2
@@ -13278,13 +13349,24 @@ const HelpTab = ({ onStartTour }) => {
                 <td className="py-2.5 align-top text-[13px]">
                   Source "core" species (cumulative abundance reaching
                   80% of the source profile) should appear in the target
-                  if the contamination is real. For each core species we
-                  predict its target abundance as <code style={{ fontFamily: "ui-monospace, monospace" }}>rate × source_abundance</code>{" "}
-                  and only evaluate species whose predicted contribution
-                  exceeds the target's <strong>LOD</strong> — anything
-                  below would be invisible even if the contamination
-                  were genuine. Passes when ≤ 2 of the evaluable species
-                  are absent (or below LOD) in the target.
+                  if the contamination is real. We model the target as a
+                  count process with depth{" "}
+                  <code style={{ fontFamily: "ui-monospace, monospace" }}>N ≈ 1 / LOD</code>{" "}
+                  (the LOD is the smallest detectable relative abundance,
+                  ≈ one read out of N). Each core species then has an
+                  expected count{" "}
+                  <code style={{ fontFamily: "ui-monospace, monospace" }}>λ = N × rate × source_abundance</code>{" "}
+                  and is missed by Poisson chance alone with probability{" "}
+                  <code style={{ fontFamily: "ui-monospace, monospace" }}>e^(−λ)</code>.
+                  Across the core, the observed miss count is compared
+                  to its expectation under{" "}
+                  <em>H<sub>real</sub></em> (genuine contamination) via
+                  a Poisson-binomial sum (one-sided normal approximation).
+                  Passes when{" "}
+                  <code style={{ fontFamily: "ui-monospace, monospace" }}>p ≥ 0.05</code>{" "}
+                  (observed misses are within Poisson sampling noise);
+                  fails when significantly more species are missing than
+                  the Poisson model can explain.
                   <div className="mt-2 p-2 rounded-sm text-[12px]" style={{ background: "var(--bg-soft)", border: "1px solid var(--border)" }}>
                     <strong>LOD (limit of detection)</strong> — computed
                     per target sample as the smallest non-zero abundance
@@ -13293,9 +13375,7 @@ const HelpTab = ({ onStartTour }) => {
                     if the column has fewer than two non-zero entries).
                     Adapting per sample makes the criterion robust to
                     sequencing depth (a deep shotgun and a shallow 16S
-                    don't share a single fixed threshold) and to
-                    contamination rate (low-rate events legitimately
-                    fall under a high LOD without being penalised).
+                    don't share a single fixed threshold).
                   </div>
                 </td>
               </tr>
