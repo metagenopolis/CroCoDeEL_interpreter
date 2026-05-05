@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Local test fixtures
+public/demo/metadata_with_names.tsv
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
