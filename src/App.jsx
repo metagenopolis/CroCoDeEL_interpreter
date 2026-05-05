@@ -793,38 +793,23 @@ function pointsAboveLine(scatter) {
   return { count: above, maxDist, farAbove };
 }
 
-/** How many source species that SHOULD show up in the target (given
-    the contamination rate) are nonetheless absent or below detection?
-
-    Logic — a species qualifies as "missing despite being expected" when
-    all three conditions hold:
-      1. It is part of the source's "core" abundant species — defined
-         adaptively as the species in the source whose cumulative
-         abundance reaches 80%. This adapts to whatever the dataset
-         looks like (16S amplicon shallow vs. shotgun deep, human gut
-         vs. soil, etc.) instead of using a fixed 1% threshold that
-         may exclude the true abundant species in highly diversified
-         communities.
-      2. Its expected contribution to the target, computed as
-         rate × source_abundance, exceeds the target sample's empirical
-         limit-of-detection (the smallest non-zero value observed in
-         that target). Below that, even a real contamination would not
-         produce a detectable signal — so the species being "missing"
-         doesn't mean anything.
-      3. It is genuinely absent or below LOD in the target.
-
-    The rate-awareness combined with empirical LOD makes this robust
-    to deep/shallow sequencing differences AND to low/high contamination
-    rates. */
+/** Are the source species detected in the target as the contamination
+    model predicts? Poisson-binomial detection test over EVERY species
+    present in the source — no abundance pre-filter is needed because
+    the test self-regulates: rare species (low λ) contribute almost
+    nothing to the variance and roughly equal weight to expected and
+    observed missing counts, so they don't bias the Z-score. Including
+    the full source profile increases statistical power vs. the older
+    "top 80%" heuristic. */
 function missingAbundantFromSource(ab, source, target, rate) {
   if (!ab) return null;
   const srcKey = resolveSample(ab, source);
   const tgtKey = resolveSample(ab, target);
   if (!srcKey || !tgtKey) return null;
 
-  // 1. Adaptive empirical LOD for the target — the smallest non-zero
-  //    abundance observed in this specific sample. Falls back to a
-  //    conservative 1e-5 if the target has zero or one species.
+  // Adaptive empirical LOD for the target — the smallest non-zero
+  // abundance observed in this specific sample. Falls back to a
+  // conservative 1e-5 if the target has zero or one species.
   const targetValues = [];
   ab.species.forEach((sp) => {
     const v = ab.matrix[sp][tgtKey] || 0;
@@ -832,44 +817,26 @@ function missingAbundantFromSource(ab, source, target, rate) {
   });
   const targetLOD = targetValues.length > 0 ? Math.min(...targetValues) : 1e-5;
 
-  // 2. Adaptive "core abundant species" of the source — the smallest
-  //    set of species whose cumulative abundance reaches 80% of the
-  //    source. These are the species whose absence in the target would
-  //    be most informative.
-  const sourceAbundances = [];
-  ab.species.forEach((sp) => {
-    const v = ab.matrix[sp][srcKey] || 0;
-    if (v > 0) sourceAbundances.push({ sp, v });
-  });
-  sourceAbundances.sort((a, b) => b.v - a.v);
-  const totalSource = sourceAbundances.reduce((s, x) => s + x.v, 0);
-  const coreSet = new Set();
-  let cumul = 0;
-  for (const x of sourceAbundances) {
-    coreSet.add(x.sp);
-    cumul += x.v;
-    if (cumul / totalSource >= 0.8) break;
-  }
-
   // Poisson-binomial detection test — we model the target as a count
   // process with depth N ≈ 1 / target_LOD (since the LOD is roughly the
   // smallest detectable relative abundance, ≈ 1 read out of N). For each
-  // core species the expected number of reads under H_real (genuine
+  // source species the expected number of reads under H_real (genuine
   // contamination at this rate) is λ = N × rate × source = expected /
   // target_LOD. The probability the species is missed by Poisson sampling
   // alone is e^(-λ); the probability of being detected is 1 - e^(-λ).
-  // Across all evaluable core species the number of misses is a
-  // Poisson-binomial sum — its mean is Σ p_miss and its variance is
+  // Across all evaluable species the number of misses is a Poisson-
+  // binomial sum — its mean is Σ p_miss and its variance is
   // Σ p_miss × p_detect. We compare the observed miss count to that
-  // expectation (one-sided normal approximation, valid for ≥ ~10
-  // species) and report a p-value. Species too rare in the source to
-  // have any expected contribution at all are skipped (expected ≤ 0).
+  // expectation (one-sided normal approximation) and report a p-value.
   let missing = 0;
   let expectedMissing = 0;
   let variance = 0;
   let evaluated = 0;
-  coreSet.forEach((sp) => {
+  let coreSize = 0;
+  ab.species.forEach((sp) => {
     const ys = ab.matrix[sp][srcKey] || 0;
+    if (ys <= 0) return;
+    coreSize++;
     const xs = ab.matrix[sp][tgtKey] || 0;
     const expected = (rate || 0) * ys;
     if (expected <= 0) return;
@@ -889,7 +856,7 @@ function missingAbundantFromSource(ab, source, target, rate) {
     count: missing,
     evaluated,
     targetLOD,
-    coreSize: coreSet.size,
+    coreSize,
     expectedMissing,
     sigma,
     zScore,
@@ -10512,7 +10479,7 @@ const ValidateTab = ({
                 <Criterion
                   n="04"
                   title="Abundant source species present in target"
-                  wiki="Source 'core' species (those whose cumulative abundance reaches 80% of the source) should appear in the target if the contamination is real. We model Poisson sampling: the target depth is estimated from the LOD (N ≈ 1 / LOD), each species has an expected count λ = N × rate × source, and is missed by chance with probability e^(-λ). The number of misses across the core is a Poisson-binomial sum; the criterion fails when the observed miss count exceeds its expectation under H_real with p < 0.05 (one-sided normal approximation). Adapts to sequencing depth and rate."
+                  wiki="Every source species should appear in the target if the contamination is real. We model Poisson sampling: the target depth is estimated from the LOD (N ≈ 1 / LOD), each species has an expected count λ = N × rate × source, and is missed by chance with probability e^(-λ). The number of misses across all source species is a Poisson-binomial sum (rare species contribute almost nothing to the variance, so no abundance pre-filter is needed); the criterion fails when the observed miss count exceeds its expectation under H_real with p < 0.05 (one-sided normal approximation). Adapts to sequencing depth and rate."
                   pass={
                     missing != null
                       ? missing.evaluated === 0 || missing.count <= 2
@@ -13347,21 +13314,23 @@ const HelpTab = ({ onStartTour }) => {
                 <td className="py-2.5 pr-3 align-top text-[12px]" style={{ color: "var(--ink-muted)", fontWeight: 700 }}>04</td>
                 <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Missing source species</td>
                 <td className="py-2.5 align-top text-[13px]">
-                  Source "core" species (cumulative abundance reaching
-                  80% of the source profile) should appear in the target
-                  if the contamination is real. We model the target as a
-                  count process with depth{" "}
+                  Every species present in the source should appear in
+                  the target if the contamination is real. We model the
+                  target as a count process with depth{" "}
                   <code style={{ fontFamily: "ui-monospace, monospace" }}>N ≈ 1 / LOD</code>{" "}
                   (the LOD is the smallest detectable relative abundance,
-                  ≈ one read out of N). Each core species then has an
+                  ≈ one read out of N). Each source species then has an
                   expected count{" "}
                   <code style={{ fontFamily: "ui-monospace, monospace" }}>λ = N × rate × source_abundance</code>{" "}
                   and is missed by Poisson chance alone with probability{" "}
                   <code style={{ fontFamily: "ui-monospace, monospace" }}>e^(−λ)</code>.
-                  Across the core, the observed miss count is compared
-                  to its expectation under{" "}
+                  Across the full source profile, the observed miss
+                  count is compared to its expectation under{" "}
                   <em>H<sub>real</sub></em> (genuine contamination) via
                   a Poisson-binomial sum (one-sided normal approximation).
+                  No abundance pre-filter is needed: rare species
+                  contribute almost nothing to the test variance and
+                  cancel out in expectation, so the test self-regulates.
                   Passes when{" "}
                   <code style={{ fontFamily: "ui-monospace, monospace" }}>p ≥ 0.05</code>{" "}
                   (observed misses are within Poisson sampling noise);
