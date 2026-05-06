@@ -1918,6 +1918,7 @@ const NetworkGraph = ({
   const [popAction, setPopAction] = useState("suppress");
   const [popApplyTarget, setPopApplyTarget] = useState(true);
   const [popApplySource, setPopApplySource] = useState(true);
+  const [popSkipDecided, setPopSkipDecided] = useState(true);
   // Reset action default whenever the verdict changes — TP defaults to
   // suppress, every other verdict has no action.
   useEffect(() => {
@@ -2771,11 +2772,15 @@ const NetworkGraph = ({
           setApplyTarget={setPopApplyTarget}
           applySource={popApplySource}
           setApplySource={setPopApplySource}
+          skipDecided={popSkipDecided}
+          setSkipDecided={setPopSkipDecided}
           onClose={() => setNodePopover(null)}
           onApply={() => {
             if (!onApplyToEventIds) return;
             const ids = events
               .filter((e) => {
+                if (popSkipDecided && e.verdict && e.verdict !== "pending")
+                  return false;
                 const isTgt = e.target === nodePopover.id;
                 const isSrc = e.source === nodePopover.id;
                 if (popApplyTarget && isTgt) return true;
@@ -2819,6 +2824,8 @@ const NodeBulkPopover = ({
   setApplyTarget,
   applySource,
   setApplySource,
+  skipDecided,
+  setSkipDecided,
   onClose,
   onApply,
 }) => {
@@ -2844,11 +2851,12 @@ const NodeBulkPopover = ({
     let asTarget = 0;
     let asSource = 0;
     events.forEach((e) => {
+      if (skipDecided && e.verdict && e.verdict !== "pending") return;
       if (e.target === sampleId) asTarget++;
       if (e.source === sampleId) asSource++;
     });
     return { asTarget, asSource };
-  }, [events, sampleId]);
+  }, [events, sampleId, skipDecided]);
   const matchedCount =
     (applyTarget ? counts.asTarget : 0) + (applySource ? counts.asSource : 0);
   const name = sampleName(metadata, sampleId);
@@ -2971,6 +2979,22 @@ const NodeBulkPopover = ({
           </span>
         </label>
       </div>
+
+      <label
+        className="flex items-center gap-2 mb-3 select-none cursor-pointer text-[12px]"
+        style={{ color: "var(--ink)" }}
+        title="When checked, only events still marked Pending receive the new verdict. Already-curated events (TP / FP / Uncertain) are left untouched."
+      >
+        <input
+          type="checkbox"
+          checked={skipDecided}
+          onChange={(e) => setSkipDecided(e.target.checked)}
+          style={{ accentColor: "#00a3a6" }}
+        />
+        <span>
+          <strong>Don't overwrite previous verdicts</strong>
+        </span>
+      </label>
 
       <div
         className="text-[10px] uppercase tracking-[0.1em] mb-1"
