@@ -1908,6 +1908,7 @@ const NetworkGraph = ({
   actionEnabled,
   colorScheme,
   setColorScheme,
+  onScopeToSamples,
 }) => {
   const [hover, setHover] = useState(null);
   const [zoom, setZoom] = useState({ k: 1, x: 0, y: 0 });
@@ -2837,10 +2838,25 @@ const NetworkGraph = ({
               return inD && outD;
             }).length;
             const active = focusIdx === i;
+            const scope = (target) => (ev) => {
+              ev.stopPropagation();
+              if (!onScopeToSamples) return;
+              onScopeToSamples(c.nodes, target);
+            };
+            // div + role=button so we can nest the per-component drill-in
+            // icon buttons (an HTML button can't contain another button).
             return (
-              <button
+              <div
                 key={i}
+                role="button"
+                tabIndex={0}
                 onClick={() => setFocusIdx(active ? null : i)}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter" || ev.key === " ") {
+                    ev.preventDefault();
+                    setFocusIdx(active ? null : i);
+                  }
+                }}
                 onMouseEnter={() => setHoverCompIdx(i)}
                 onMouseLeave={() => setHoverCompIdx(null)}
                 className="w-full text-left px-3 py-2"
@@ -2849,6 +2865,7 @@ const NetworkGraph = ({
                   borderBottom: "1px solid var(--border-soft)",
                   borderLeft: active ? "3px solid #00a3a6" : "3px solid transparent",
                   cursor: "pointer",
+                  outline: "none",
                 }}
                 onMouseOver={(ev) => {
                   if (!active) ev.currentTarget.style.background = "#f0f4f4";
@@ -2857,40 +2874,86 @@ const NetworkGraph = ({
                   if (!active) ev.currentTarget.style.background = "transparent";
                 }}
               >
-                <div
-                  className="text-[12px]"
-                  style={{
-                    color: "var(--ink)",
-                    fontWeight: 700,
-                    fontFamily: '"Raleway", sans-serif',
-                  }}
-                >
-                  #{i + 1}{" "}
-                  <span style={{ color: "var(--ink-muted)", fontWeight: 400 }}>
-                    — {c.nodes.length} sample{c.nodes.length !== 1 ? "s" : ""}
-                  </span>
-                </div>
-                <div
-                  className="text-[10px] mt-0.5 flex items-center gap-2"
-                  style={{ color: "var(--ink-muted)" }}
-                >
-                  <span>
-                    {c.edges.length} event{c.edges.length !== 1 ? "s" : ""}
-                  </span>
-                  {cascade > 0 && (
-                    <span
-                      className="inline-flex items-center gap-1"
-                      style={{ color: "#b84442" }}
+                <div className="flex items-start justify-between gap-2">
+                  <div style={{ minWidth: 0 }}>
+                    <div
+                      className="text-[12px]"
+                      style={{
+                        color: "var(--ink)",
+                        fontWeight: 700,
+                        fontFamily: '"Raleway", sans-serif',
+                      }}
                     >
+                      #{i + 1}{" "}
                       <span
-                        className="inline-block w-1.5 h-1.5 rounded-full"
-                        style={{ background: "#ed6e6c" }}
-                      />
-                      {cascade} cascade{cascade !== 1 ? "s" : ""}
-                    </span>
+                        style={{ color: "var(--ink-muted)", fontWeight: 400 }}
+                      >
+                        — {c.nodes.length} sample
+                        {c.nodes.length !== 1 ? "s" : ""}
+                      </span>
+                    </div>
+                    <div
+                      className="text-[10px] mt-0.5 flex items-center gap-2"
+                      style={{ color: "var(--ink-muted)" }}
+                    >
+                      <span>
+                        {c.edges.length} event{c.edges.length !== 1 ? "s" : ""}
+                      </span>
+                      {cascade > 0 && (
+                        <span
+                          className="inline-flex items-center gap-1"
+                          style={{ color: "#b84442" }}
+                        >
+                          <span
+                            className="inline-block w-1.5 h-1.5 rounded-full"
+                            style={{ background: "#ed6e6c" }}
+                          />
+                          {cascade} cascade{cascade !== 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {onScopeToSamples && (
+                    <div
+                      className="flex items-center gap-1 shrink-0"
+                      onClick={(ev) => ev.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        onClick={scope("scatter")}
+                        title={`Scope the gallery to this component's ${c.nodes.length} sample${c.nodes.length === 1 ? "" : "s"} and switch to Scatter`}
+                        className="px-1.5 py-0.5 text-[10px] rounded-sm"
+                        style={{
+                          background: "var(--bg-card)",
+                          border: "1px solid var(--border)",
+                          color: "var(--ink-muted)",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          fontFamily: '"Raleway", sans-serif',
+                        }}
+                      >
+                        → Scatter
+                      </button>
+                      <button
+                        type="button"
+                        onClick={scope("table")}
+                        title={`Scope the events table to this component's ${c.nodes.length} sample${c.nodes.length === 1 ? "" : "s"}`}
+                        className="px-1.5 py-0.5 text-[10px] rounded-sm"
+                        style={{
+                          background: "var(--bg-card)",
+                          border: "1px solid var(--border)",
+                          color: "var(--ink-muted)",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          fontFamily: '"Raleway", sans-serif',
+                        }}
+                      >
+                        → Events
+                      </button>
+                    </div>
                   )}
                 </div>
-              </button>
+              </div>
             );
           })}
         </div>
@@ -2903,6 +2966,7 @@ const NetworkGraph = ({
           metadata={metadata}
           events={events}
           actionEnabled={actionEnabled}
+          onScopeToSamples={onScopeToSamples}
           verdict={popVerdict}
           setVerdict={setPopVerdict}
           action={popAction}
@@ -3025,6 +3089,7 @@ const NodeBulkPopover = ({
   setSkipDecided,
   onClose,
   onApply,
+  onScopeToSamples,
 }) => {
   const ref = useRef(null);
   useEffect(() => {
@@ -3114,7 +3179,7 @@ const NodeBulkPopover = ({
       }}
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="flex items-center justify-between gap-2 mb-2">
+      <div className="flex items-start justify-between gap-2 mb-2">
         <div style={{ minWidth: 0 }}>
           <div
             className="text-[10px] uppercase tracking-[0.1em]"
@@ -3123,19 +3188,72 @@ const NodeBulkPopover = ({
             Apply to events touching
           </div>
           <div
-            className="text-[14px] truncate"
+            className="text-[14px] truncate flex items-center gap-2 flex-wrap"
             style={{ color: "var(--ink)", fontWeight: 700 }}
             title={name ? `${sampleId} (${name})` : sampleId}
           >
-            {sampleId}
-            {name && (
-              <span
-                className="ml-1.5 text-[12px]"
-                style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-              >
-                ({name})
-              </span>
-            )}
+            <span>
+              {sampleId}
+              {name && (
+                <span
+                  className="ml-1.5 text-[12px]"
+                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
+                >
+                  ({name})
+                </span>
+              )}
+            </span>
+            {onScopeToSamples &&
+              (() => {
+                const neighbours = new Set([sampleId]);
+                events.forEach((e) => {
+                  if (e.source === sampleId && e.target)
+                    neighbours.add(e.target);
+                  if (e.target === sampleId && e.source)
+                    neighbours.add(e.source);
+                });
+                const ids = Array.from(neighbours);
+                const scopeAndGo = (target) => () => {
+                  onScopeToSamples(ids, target);
+                  onClose();
+                };
+                return (
+                  <span
+                    className="flex items-center gap-1"
+                    onClick={(ev) => ev.stopPropagation()}
+                    title={`Scope to the ${ids.length} sample${ids.length === 1 ? "" : "s"} touching ${sampleId}`}
+                  >
+                    <button
+                      type="button"
+                      onClick={scopeAndGo("scatter")}
+                      className="px-1.5 py-0.5 text-[10px] rounded-sm"
+                      style={{
+                        background: "var(--bg-card)",
+                        border: "1px solid var(--border)",
+                        color: "var(--ink-muted)",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      → Scatter
+                    </button>
+                    <button
+                      type="button"
+                      onClick={scopeAndGo("table")}
+                      className="px-1.5 py-0.5 text-[10px] rounded-sm"
+                      style={{
+                        background: "var(--bg-card)",
+                        border: "1px solid var(--border)",
+                        color: "var(--ink-muted)",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      → Events
+                    </button>
+                  </span>
+                );
+              })()}
           </div>
         </div>
         <button
@@ -5219,6 +5337,35 @@ const EventFilterBar = ({
       className="flex flex-wrap gap-2 mb-4 items-center p-2 rounded-md"
       style={{ background: FILTER_PANEL_BG, border: FILTER_PANEL_BORDER }}
     >
+      {/* Sample-list scope pill — shown when the user has drilled into
+          a Network component / node from elsewhere. Click ✕ to clear
+          the scope and go back to seeing every event. */}
+      {Array.isArray(filter.scopeSamples) &&
+        filter.scopeSamples.length > 0 && (
+          <button
+            type="button"
+            onClick={() =>
+              setFilter({ ...filter, scopeSamples: null })
+            }
+            title="Clear the sample scope and go back to all events"
+            className="flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-sm"
+            style={{
+              background: "rgba(0,163,166,0.12)",
+              border: "1px solid #00a3a6",
+              color: "#1d3a44",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+              cursor: "pointer",
+            }}
+          >
+            <span>
+              scope: {filter.scopeSamples.length} sample
+              {filter.scopeSamples.length === 1 ? "" : "s"}
+            </span>
+            <X className="w-3 h-3" />
+          </button>
+        )}
+
       {/* Search */}
       <div className="relative">
         <Search
@@ -8019,6 +8166,7 @@ const NetworkTab = ({
   actionEnabled,
   colorScheme,
   setColorScheme,
+  onScopeToSamples,
 }) => {
   const filteredIds = useMemo(
     () => new Set(filtered.map((e) => e.id)),
@@ -8051,6 +8199,7 @@ const NetworkTab = ({
       actionEnabled={actionEnabled}
       colorScheme={colorScheme}
       setColorScheme={setColorScheme}
+      onScopeToSamples={onScopeToSamples}
     />
     <p
       className="text-[11px] mt-3 flex items-center gap-1.5"
@@ -16464,6 +16613,11 @@ export default function App() {
       subject: f.subject ?? (f.hideRelated ? "different" : "any"),
       group: f.group ?? "any",
       adjacent: f.adjacent ?? (f.adjacentOnly ? "adjacent" : "any"),
+      // Optional sample-list scope. When set, only events whose source
+      // or target is in this array pass the filter — used by the
+      // Network tab to drill into one component's events from Scatter
+      // or the Events table.
+      scopeSamples: Array.isArray(f.scopeSamples) ? f.scopeSamples : null,
     };
   });
   const [sort, setSort] = useState(initial?.sort || { by: "score", dir: "desc" });
@@ -16873,7 +17027,15 @@ export default function App() {
     // every event has introducedPct == null in that case, so applying it
     // would silently hide everything.
     const minIntro = ab ? filter.minIntroduced || 0 : 0;
+    // Sample-list scope (set by Network drill-in actions). Build a Set
+    // upfront for O(1) per-event lookup.
+    const scopeSet =
+      Array.isArray(filter.scopeSamples) && filter.scopeSamples.length > 0
+        ? new Set(filter.scopeSamples)
+        : null;
     let res = events.filter((e) => {
+      if (scopeSet && !scopeSet.has(e.source) && !scopeSet.has(e.target))
+        return false;
       if (e.score < filter.minScore) return false;
       if (e.rate < filter.minRate) return false;
       if (minIntro > 0) {
@@ -17043,6 +17205,16 @@ export default function App() {
     },
     [ab],
   );
+  // Drill-in helper: scope the events filter to a list of samples and
+  // jump to the chosen tab. Used by the Network tab to load a
+  // component or a node's neighbourhood into the Scatter gallery /
+  // Events table without losing the node-driven context. The scope
+  // shows up as a clearable pill in the EventFilterBar.
+  const scopeToSamples = React.useCallback((sampleIds, targetTab) => {
+    if (!Array.isArray(sampleIds) || sampleIds.length === 0) return;
+    setFilter((f) => ({ ...f, scopeSamples: [...sampleIds] }));
+    if (targetTab) setTab(targetTab);
+  }, []);
 
   /** Add a user-curated event to the events list. Used by the
       "Explore new pairs" feature in the Scatterplots tab when the user
@@ -19182,6 +19354,7 @@ export default function App() {
               hasAb={!!ab}
               colorScheme={networkColorScheme}
               setColorScheme={setNetworkColorScheme}
+              onScopeToSamples={scopeToSamples}
             />
           )}
           {tab === "plate" && (
