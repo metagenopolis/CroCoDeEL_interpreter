@@ -1906,9 +1906,19 @@ const NetworkGraph = ({
   onApplyToEventIds,
   hasAb,
   actionEnabled,
+  colorScheme,
+  setColorScheme,
 }) => {
   const [hover, setHover] = useState(null);
   const [zoom, setZoom] = useState({ k: 1, x: 0, y: 0 });
+  // Color scheme — owned by the parent (App) so the choice survives
+  // tab switches:
+  //  - "exploration" (default): edges colored by rate, nodes coded as
+  //    source / target / cascade (the topology-driven view that's been
+  //    there from the start).
+  //  - "curation": edges colored by verdict (TP / FP / Uncertain /
+  //    Pending), nodes colored by the most-severe action targeting them
+  //    (suppress > decontaminate > keep > none).
   // Node popover — opens when the user clicks a node, anchored at the
   // click coordinates. Lets the curator apply a verdict (and optional
   // action) to every event where this sample is the source, the
@@ -1948,6 +1958,23 @@ const NetworkGraph = ({
   const zoomBehaviorRef = useRef(null);
 
   const components = useMemo(() => buildComponents(events), [events]);
+
+  // For the "curation" colour scheme: for every sample, the
+  // most-severe action recorded across the TP events that target it.
+  // Severity ordering chosen so the more drastic outcome wins:
+  //   suppress (drop) > decontaminate (clean) > keep (raw) > none.
+  const sampleActionMap = useMemo(() => {
+    const sev = (a) =>
+      a === "suppress" ? 3 : a === "decontaminate" ? 2 : a === "keep" ? 1 : 0;
+    const m = {};
+    events.forEach((e) => {
+      if (e.verdict !== "true_positive" || !e.action) return;
+      if (!e.target) return;
+      const cur = m[e.target];
+      if (!cur || sev(e.action) > sev(cur)) m[e.target] = e.action;
+    });
+    return m;
+  }, [events]);
 
   // Show big, messy components first — they're the ones that need
   // attention. Trivial pairs go to the bottom of the sidebar.
@@ -2245,35 +2272,95 @@ const NetworkGraph = ({
 
       <div className="flex">
         <div className="flex-1" style={{ position: "relative", minWidth: 0 }}>
-      {/* HTML overlay: legend (top-left, never zooms) */}
+      {/* HTML overlay: scheme picker + legend (top-left, never zooms) */}
       <div
-        className="absolute z-10 flex items-center gap-4 px-3 py-1.5 rounded-sm pointer-events-none"
+        className="absolute z-10 flex items-center gap-3 px-3 py-1.5 rounded-sm flex-wrap"
         style={{
           top: 8,
           left: 8,
           background: "var(--bg-card)",
           border: "1px solid var(--border)",
           opacity: 0.95,
+          maxWidth: "calc(100% - 16px)",
         }}
       >
-        <span
-          className="text-[10px] tracking-[0.1em] uppercase"
-          style={{ color: "var(--ink)", fontWeight: 700, fontFamily: '"Raleway", sans-serif' }}
-        >
-          Legend
-        </span>
-        <span className="flex items-center gap-1.5 text-[10px]" style={{ color: "var(--ink)" }}>
-          <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "var(--bg-card)", border: "1.2px solid #275662" }} />
-          source only
-        </span>
-        <span className="flex items-center gap-1.5 text-[10px]" style={{ color: "var(--ink)" }}>
-          <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#275662" }} />
-          target only
-        </span>
-        <span className="flex items-center gap-1.5 text-[10px]" style={{ color: "var(--ink)" }}>
-          <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#ed6e6c" }} />
-          cascade (both)
-        </span>
+        <div className="flex items-center gap-1">
+          {[
+            { id: "exploration", label: "Exploration" },
+            { id: "curation", label: "Curation" },
+          ].map((opt) => {
+            const active = colorScheme === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setColorScheme(opt.id)}
+                className="px-2 py-0.5 text-[10px] rounded-sm"
+                style={{
+                  background: active ? "#275662" : "var(--bg-card)",
+                  color: active ? "#fff" : "var(--ink-muted)",
+                  border: `1px solid ${active ? "#275662" : "var(--border)"}`,
+                  fontWeight: 700,
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                  fontFamily: '"Raleway", sans-serif',
+                }}
+                title={
+                  opt.id === "exploration"
+                    ? "Edges by rate, nodes by source / target / cascade role"
+                    : "Edges by verdict, nodes by most-severe action targeting them"
+                }
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        {colorScheme === "exploration" ? (
+          <div className="flex items-center gap-3 flex-wrap pointer-events-none">
+            <span className="flex items-center gap-1.5 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "var(--bg-card)", border: "1.2px solid #275662" }} />
+              source only
+            </span>
+            <span className="flex items-center gap-1.5 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#275662" }} />
+              target only
+            </span>
+            <span className="flex items-center gap-1.5 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#ed6e6c" }} />
+              cascade (both)
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 flex-wrap pointer-events-none">
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block" style={{ width: 14, height: 2, background: "#00a3a6" }} />
+              TP
+            </span>
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block" style={{ width: 14, height: 2, background: "#ed6e6c" }} />
+              FP
+            </span>
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block" style={{ width: 14, height: 2, background: "#d97a3c" }} />
+              Uncertain
+            </span>
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block" style={{ width: 14, height: 2, background: "#9aaab0" }} />
+              Pending
+            </span>
+            <span style={{ width: 1, height: 12, background: "var(--border-strong)" }} />
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#ed6e6c" }} />
+              suppress
+            </span>
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#e0b13a" }} />
+              keep
+            </span>
+          </div>
+        )}
       </div>
 
       {/* HTML overlay: zoom controls (top-right) */}
@@ -2325,17 +2412,29 @@ const NetworkGraph = ({
         }}
       >
         <defs>
-          <marker
-            id="arrow-inrae"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#00a3a6" />
-          </marker>
+          {/* Arrowhead markers, one per stroke colour family. We swap
+              the marker per edge in the curation scheme so the head
+              matches the verdict colour (otherwise a pending grey edge
+              kept a teal head, which read as "TP" at a glance). */}
+          {[
+            ["arrow-inrae", "#00a3a6"],
+            ["arrow-fp", "#ed6e6c"],
+            ["arrow-uncertain", "#d97a3c"],
+            ["arrow-pending", "#9aaab0"],
+          ].map(([id, color]) => (
+            <marker
+              key={id}
+              id={id}
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+            </marker>
+          ))}
         </defs>
 
         {/* Background rect — receives pan drags. Click-through everywhere
@@ -2451,14 +2550,41 @@ const NetworkGraph = ({
 
                   // Stroke: 1.2 (low rate) → 4.5 (high rate) base width
                   const baseWidth = 1.2 + t * 3.3;
-                  const strokeColor = rejected
-                    ? "var(--border-strong)"
-                    : accepted
-                      ? "#00a3a6"
-                      : // Lerp from light teal-grey (#7a9aa1) to deep teal (#1d3a44)
-                        // so high-rate events stand out as visually heavier.
-                        d3.interpolateRgb("#9aaab0", "#1d3a44")(t);
+                  let strokeColor;
+                  if (colorScheme === "curation") {
+                    // Verdict-driven palette — independent from rate so
+                    // pending vs decided is the dominant visual signal.
+                    strokeColor =
+                      e.verdict === "true_positive"
+                        ? "#00a3a6"
+                        : e.verdict === "false_positive"
+                          ? "#ed6e6c"
+                          : e.verdict === "uncertain"
+                            ? "#d97a3c"
+                            : "#9aaab0"; // pending
+                  } else {
+                    strokeColor = rejected
+                      ? "var(--border-strong)"
+                      : accepted
+                        ? "#00a3a6"
+                        : // Lerp from light teal-grey (#7a9aa1) to deep teal (#1d3a44)
+                          // so high-rate events stand out as visually heavier.
+                          d3.interpolateRgb("#9aaab0", "#1d3a44")(t);
+                  }
 
+                  // Match the arrowhead colour to the stroke in the
+                  // curation scheme — the default teal head on a grey
+                  // pending edge looked like a TP at a glance.
+                  let markerId = "arrow-inrae";
+                  if (colorScheme === "curation") {
+                    if (e.verdict === "false_positive") markerId = "arrow-fp";
+                    else if (e.verdict === "uncertain")
+                      markerId = "arrow-uncertain";
+                    else if (
+                      e.verdict !== "true_positive"
+                    )
+                      markerId = "arrow-pending";
+                  }
                   return (
                     <line
                       x1={x1}
@@ -2469,7 +2595,7 @@ const NetworkGraph = ({
                       strokeOpacity={isHovered ? 1 : rejected ? 0.4 : 0.85}
                       strokeWidth={baseWidth + (isHovered ? 1.5 : 0)}
                       strokeDasharray={rejected ? "3 3" : undefined}
-                      markerEnd="url(#arrow-inrae)"
+                      markerEnd={`url(#${markerId})`}
                       style={{ pointerEvents: "none" }}
                     />
                   );
@@ -2514,13 +2640,26 @@ const NetworkGraph = ({
           const isSource = (outDeg[n.id] || 0) > 0 && (inDeg[n.id] || 0) === 0;
           const isTarget = (inDeg[n.id] || 0) > 0 && (outDeg[n.id] || 0) === 0;
           const isBoth = (inDeg[n.id] || 0) > 0 && (outDeg[n.id] || 0) > 0;
-          const fill = isSource
-            ? "var(--bg-card)"
-            : isTarget
-              ? "#275662"
-              : isBoth
+          let fill;
+          if (colorScheme === "curation") {
+            const act = sampleActionMap[n.id];
+            fill =
+              act === "suppress"
                 ? "#ed6e6c"
-                : "var(--bg-card)";
+                : act === "decontaminate"
+                  ? "#423089"
+                  : act === "keep"
+                    ? "#e0b13a"
+                    : "var(--bg-card)";
+          } else {
+            fill = isSource
+              ? "var(--bg-card)"
+              : isTarget
+                ? "#275662"
+                : isBoth
+                  ? "#ed6e6c"
+                  : "var(--bg-card)";
+          }
           const isNodeHover = hover?.kind === "node" && hover.n.id === n.id;
           // Show label when:
           //   - this is a small/compact component (≤ 25 nodes), OR
@@ -2805,6 +2944,64 @@ const NetworkGraph = ({
   );
 };
 
+/** Tiny inline summary shown under the target / source checkboxes in
+    the Network node popover. Surfaces what verdict + action neighbours
+    already carry so the curator can decide whether to override or not.
+    Renders nothing when there are no related events. */
+const ActionBreakdown = ({ breakdown }) => {
+  if (!breakdown || breakdown.total === 0) return null;
+  const dot = (color) => (
+    <span
+      className="inline-block"
+      style={{
+        width: 6,
+        height: 6,
+        borderRadius: "50%",
+        background: color,
+        marginRight: 3,
+        verticalAlign: "middle",
+      }}
+    />
+  );
+  const segments = [];
+  if (breakdown.suppress > 0)
+    segments.push(
+      <span key="s" title="TP + suppress">
+        {dot("#ed6e6c")}
+        {breakdown.suppress} suppress
+      </span>,
+    );
+  if (breakdown.keep > 0)
+    segments.push(
+      <span key="k" title="TP + keep">
+        {dot("#e0b13a")}
+        {breakdown.keep} keep
+      </span>,
+    );
+  if (breakdown.none > 0)
+    segments.push(
+      <span key="n" title="No action set (pending / FP / Uncertain / TP without action)">
+        {dot("#9aaab0")}
+        {breakdown.none} none
+      </span>,
+    );
+  if (segments.length === 0) return null;
+  return (
+    <div
+      className="text-[10px] mt-0.5 ml-6"
+      style={{ color: "var(--ink-muted)" }}
+    >
+      currently:{" "}
+      {segments.map((seg, i) => (
+        <React.Fragment key={i}>
+          {seg}
+          {i < segments.length - 1 && " · "}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+};
+
 /** Floating popover anchored at a clicked Network node. Lets the
     curator bulk-apply a verdict (and optional action) to every event
     where this sample is the target, the source, or both. Renders as a
@@ -2848,14 +3045,40 @@ const NodeBulkPopover = ({
   }, [onClose]);
 
   const counts = useMemo(() => {
+    // `eligible*` is the count after applying the skipDecided filter
+    // (drives the matched/Apply count). `breakdown*` looks at every
+    // related event regardless of the filter so the user can see what
+    // verdicts/actions are already set on the neighbours.
     let asTarget = 0;
     let asSource = 0;
+    const breakdownTarget = { suppress: 0, decontaminate: 0, keep: 0, none: 0, total: 0 };
+    const breakdownSource = { suppress: 0, decontaminate: 0, keep: 0, none: 0, total: 0 };
     events.forEach((e) => {
-      if (skipDecided && e.verdict && e.verdict !== "pending") return;
-      if (e.target === sampleId) asTarget++;
-      if (e.source === sampleId) asSource++;
+      const tgt = e.target === sampleId;
+      const src = e.source === sampleId;
+      if (!tgt && !src) return;
+      const eligible =
+        !skipDecided || !e.verdict || e.verdict === "pending";
+      if (tgt) {
+        if (eligible) asTarget++;
+        breakdownTarget.total++;
+        const a = e.verdict === "true_positive" ? e.action || "none" : "none";
+        if (a === "suppress") breakdownTarget.suppress++;
+        else if (a === "decontaminate") breakdownTarget.decontaminate++;
+        else if (a === "keep") breakdownTarget.keep++;
+        else breakdownTarget.none++;
+      }
+      if (src) {
+        if (eligible) asSource++;
+        breakdownSource.total++;
+        const a = e.verdict === "true_positive" ? e.action || "none" : "none";
+        if (a === "suppress") breakdownSource.suppress++;
+        else if (a === "decontaminate") breakdownSource.decontaminate++;
+        else if (a === "keep") breakdownSource.keep++;
+        else breakdownSource.none++;
+      }
     });
-    return { asTarget, asSource };
+    return { asTarget, asSource, breakdownTarget, breakdownSource };
   }, [events, sampleId, skipDecided]);
   const matchedCount =
     (applyTarget ? counts.asTarget : 0) + (applySource ? counts.asSource : 0);
@@ -2939,45 +3162,59 @@ const NodeBulkPopover = ({
         Pick a verdict and decide which side(s) of the edges to update.
       </div>
 
-      <div className="flex flex-col gap-1.5 mb-3">
-        <label
-          className="flex items-center gap-2 text-[12px] cursor-pointer"
-          style={{ color: counts.asTarget === 0 ? "var(--ink-muted)" : "var(--ink)" }}
-          title={`${counts.asTarget} event${counts.asTarget === 1 ? "" : "s"} where ${sampleId} is the target.`}
-        >
-          <input
-            type="checkbox"
-            checked={applyTarget}
-            disabled={counts.asTarget === 0}
-            onChange={(e) => setApplyTarget(e.target.checked)}
-            style={{ accentColor: "#00a3a6" }}
-          />
-          <span>
-            As <strong>target</strong>{" "}
-            <span style={{ color: "var(--ink-muted)" }}>
-              ({counts.asTarget} event{counts.asTarget === 1 ? "" : "s"})
+      <div className="flex flex-col gap-2 mb-3">
+        <div>
+          <label
+            className="flex items-center gap-2 text-[12px] cursor-pointer"
+            style={{
+              color:
+                counts.asTarget === 0 ? "var(--ink-muted)" : "var(--ink)",
+            }}
+            title={`${counts.asTarget} event${counts.asTarget === 1 ? "" : "s"} where ${sampleId} is the target (after the skip filter).`}
+          >
+            <input
+              type="checkbox"
+              checked={applyTarget}
+              disabled={counts.asTarget === 0}
+              onChange={(e) => setApplyTarget(e.target.checked)}
+              style={{ accentColor: "#00a3a6" }}
+            />
+            <span>
+              As <strong>target</strong>{" "}
+              <span style={{ color: "var(--ink-muted)" }}>
+                ({counts.asTarget} event
+                {counts.asTarget === 1 ? "" : "s"})
+              </span>
             </span>
-          </span>
-        </label>
-        <label
-          className="flex items-center gap-2 text-[12px] cursor-pointer"
-          style={{ color: counts.asSource === 0 ? "var(--ink-muted)" : "var(--ink)" }}
-          title={`${counts.asSource} event${counts.asSource === 1 ? "" : "s"} where ${sampleId} is the source.`}
-        >
-          <input
-            type="checkbox"
-            checked={applySource}
-            disabled={counts.asSource === 0}
-            onChange={(e) => setApplySource(e.target.checked)}
-            style={{ accentColor: "#00a3a6" }}
-          />
-          <span>
-            As <strong>source</strong>{" "}
-            <span style={{ color: "var(--ink-muted)" }}>
-              ({counts.asSource} event{counts.asSource === 1 ? "" : "s"})
+          </label>
+          <ActionBreakdown breakdown={counts.breakdownTarget} />
+        </div>
+        <div>
+          <label
+            className="flex items-center gap-2 text-[12px] cursor-pointer"
+            style={{
+              color:
+                counts.asSource === 0 ? "var(--ink-muted)" : "var(--ink)",
+            }}
+            title={`${counts.asSource} event${counts.asSource === 1 ? "" : "s"} where ${sampleId} is the source (after the skip filter).`}
+          >
+            <input
+              type="checkbox"
+              checked={applySource}
+              disabled={counts.asSource === 0}
+              onChange={(e) => setApplySource(e.target.checked)}
+              style={{ accentColor: "#00a3a6" }}
+            />
+            <span>
+              As <strong>source</strong>{" "}
+              <span style={{ color: "var(--ink-muted)" }}>
+                ({counts.asSource} event
+                {counts.asSource === 1 ? "" : "s"})
+              </span>
             </span>
-          </span>
-        </label>
+          </label>
+          <ActionBreakdown breakdown={counts.breakdownSource} />
+        </div>
       </div>
 
       <label
@@ -3036,7 +3273,7 @@ const NodeBulkPopover = ({
             className="text-[10px] uppercase tracking-[0.1em] mb-1"
             style={{ color: "var(--ink-muted)", fontWeight: 700 }}
           >
-            Action
+            Action on related samples
           </div>
           <div className="flex gap-1.5 mb-3 flex-wrap">
             {[
@@ -7780,6 +8017,8 @@ const NetworkTab = ({
   onApplyToEventIds,
   hasAb,
   actionEnabled,
+  colorScheme,
+  setColorScheme,
 }) => {
   const filteredIds = useMemo(
     () => new Set(filtered.map((e) => e.id)),
@@ -7810,6 +8049,8 @@ const NetworkTab = ({
       onApplyToEventIds={onApplyToEventIds}
       hasAb={hasAb}
       actionEnabled={actionEnabled}
+      colorScheme={colorScheme}
+      setColorScheme={setColorScheme}
     />
     <p
       className="text-[11px] mt-3 flex items-center gap-1.5"
@@ -16082,6 +16323,10 @@ export default function App() {
   const [explorePairsForm, setExplorePairsForm] = useState(
     EXPLORE_PAIRS_DEFAULTS,
   );
+  // Network tab colour scheme — lifted to App so the user's choice
+  // ("exploration" vs "curation") survives switching tabs and coming
+  // back to Network.
+  const [networkColorScheme, setNetworkColorScheme] = useState("exploration");
   // Global config dialog — accessible from the header gear button on
   // every page. Body is currently a placeholder; populate as we
   // surface user-tunable settings.
@@ -18935,6 +19180,8 @@ export default function App() {
               }
               onApplyToEventIds={bulkApplyToEvents}
               hasAb={!!ab}
+              colorScheme={networkColorScheme}
+              setColorScheme={setNetworkColorScheme}
             />
           )}
           {tab === "plate" && (
