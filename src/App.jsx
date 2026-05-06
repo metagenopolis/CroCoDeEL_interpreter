@@ -5704,6 +5704,16 @@ const GalleryCard = React.memo(function GalleryCard({
     if (!setVerdict) return;
     cancelCloseTimer();
     const next = event.verdict === target ? "pending" : target;
+    // Engage the gallery sort lock SYNCHRONOUSLY before the verdict
+    // change propagates upward — otherwise the new sort runs in the
+    // same render and the card jumps out from under the popover before
+    // the lock kicks in via useEffect (which runs after the render).
+    // React batches the parent-state updates from this handler, so by
+    // the time the gallery's sort useMemo runs, the lock is already
+    // visible.
+    if (actionEnabled && next === "true_positive" && onPopoverOpen) {
+      onPopoverOpen(event.id);
+    }
     setVerdict(event.id, next);
     if (actionEnabled && next === "true_positive") {
       setActionPopover(next);
@@ -6298,19 +6308,23 @@ const ExplorePairs = ({
   plateMap,
   metadata,
   actionEnabled,
+  formState,
+  setFormState,
 }) => {
-  const [src, setSrc] = useState("");
-  const [tgt, setTgt] = useState("");
-  // Sliders work in log-space for rate (so the user gets fine control at
-  // low rates without a 50× larger range up high). Range: log10(rate)
-  // from -3 (0.1%) to log10(0.5) ≈ -0.301 (50%). Default at -2 (1%).
-  const [rateLog, setRateLog] = useState(-2);
-  const [probability, setProbability] = useState(0.9);
-  const [verdict, setVerdict] = useState("true_positive");
-  // Action override for the manual event when actionEnabled. Action is
-  // only applicable to TP — FP / Uncertain / Pending carry no action.
-  const [action, setAction] = useState("suppress");
-  const [notes, setNotes] = useState("Manually added by user");
+  // Form state lives in the parent (App level) so the draft survives
+  // tab switches — see EXPLORE_PAIRS_DEFAULTS in App. The component
+  // reads from `formState` and writes via small wrapper setters so the
+  // call sites below stay readable.
+  const { src, tgt, rateLog, probability, verdict, action, notes } = formState;
+  const setField = (key) => (val) =>
+    setFormState((prev) => ({ ...prev, [key]: val }));
+  const setSrc = setField("src");
+  const setTgt = setField("tgt");
+  const setRateLog = setField("rateLog");
+  const setProbability = setField("probability");
+  const setVerdict = setField("verdict");
+  const setAction = setField("action");
+  const setNotes = setField("notes");
   const [feedback, setFeedback] = useState(null);
 
   // Reset action whenever the verdict changes — TP defaults to suppress,
@@ -6318,6 +6332,9 @@ const ExplorePairs = ({
   useEffect(() => {
     if (verdict === "true_positive") setAction("suppress");
     else setAction(null);
+    // setAction is recreated each render but writes to the parent
+    // state, so we intentionally exclude it from the dep array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [verdict]);
 
   const rate = Math.pow(10, rateLog);
@@ -7041,6 +7058,8 @@ const ScatterTab = ({
   actionEnabled,
   setAction,
   pageSize,
+  explorePairsForm,
+  setExplorePairsForm,
 }) => {
   const [mode, setMode] = useState("flagged"); // "flagged" or "explore"
   const [sortBy, setSortBy] = useState("score");
@@ -7241,6 +7260,8 @@ const ScatterTab = ({
           plateMap={plateMap}
           metadata={metadata}
           actionEnabled={actionEnabled}
+          formState={explorePairsForm}
+          setFormState={setExplorePairsForm}
         />
       ) : (
         <>
@@ -15615,6 +15636,22 @@ export default function App() {
   const [analysisTitle, setAnalysisTitle] = useState(
     initial?.analysisTitle || "",
   );
+  // Draft state for the "Explore new pairs" sub-tab of the Scatter tab.
+  // Lifted to App level so the form values survive tab switches —
+  // dropping it inside ScatterTab would lose everything every time the
+  // curator hops to e.g. Events to verify a sample name.
+  const EXPLORE_PAIRS_DEFAULTS = {
+    src: "",
+    tgt: "",
+    rateLog: -2,
+    probability: 0.9,
+    verdict: "true_positive",
+    action: "suppress",
+    notes: "Manually added by user",
+  };
+  const [explorePairsForm, setExplorePairsForm] = useState(
+    EXPLORE_PAIRS_DEFAULTS,
+  );
   // Global config dialog — accessible from the header gear button on
   // every page. Body is currently a placeholder; populate as we
   // surface user-tunable settings.
@@ -18448,6 +18485,8 @@ export default function App() {
               actionEnabled={actionEnabled}
               setAction={setAction}
               pageSize={galleryPageSize}
+              explorePairsForm={explorePairsForm}
+              setExplorePairsForm={setExplorePairsForm}
             />
           )}
           {tab === "network" && (
