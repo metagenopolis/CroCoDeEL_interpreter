@@ -1903,11 +1903,36 @@ const NetworkGraph = ({
   totalEvents,
   onPick,
   onBulkApply,
+  onApplyToEventIds,
   hasAb,
   actionEnabled,
 }) => {
   const [hover, setHover] = useState(null);
   const [zoom, setZoom] = useState({ k: 1, x: 0, y: 0 });
+  // Node popover — opens when the user clicks a node, anchored at the
+  // click coordinates. Lets the curator apply a verdict (and optional
+  // action) to every event where this sample is the source, the
+  // target, or both.
+  const [nodePopover, setNodePopover] = useState(null); // { id, x, y } | null
+  const [popVerdict, setPopVerdict] = useState("true_positive");
+  const [popAction, setPopAction] = useState("suppress");
+  const [popApplyTarget, setPopApplyTarget] = useState(true);
+  const [popApplySource, setPopApplySource] = useState(true);
+  // Reset action default whenever the verdict changes — TP defaults to
+  // suppress, every other verdict has no action.
+  useEffect(() => {
+    if (popVerdict === "true_positive") setPopAction("suppress");
+    else setPopAction(null);
+  }, [popVerdict]);
+  // Close the popover on Escape and on outside click.
+  useEffect(() => {
+    if (!nodePopover) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") setNodePopover(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [nodePopover]);
   // null = browse all components in a grid; otherwise the index (in
   // sortedComponents) of the single component currently being focused.
   const [focusIdx, setFocusIdx] = useState(null);
@@ -2512,6 +2537,15 @@ const NetworkGraph = ({
               key={n.id}
               onMouseEnter={() => setHover({ kind: "node", n })}
               onMouseLeave={() => setHover(null)}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                if (!onApplyToEventIds) return;
+                setNodePopover({
+                  id: n.id,
+                  x: ev.clientX,
+                  y: ev.clientY,
+                });
+              }}
               style={{ cursor: "pointer" }}
             >
               <circle
@@ -2719,6 +2753,335 @@ const NetworkGraph = ({
               </button>
             );
           })}
+        </div>
+      </div>
+      {nodePopover && (
+        <NodeBulkPopover
+          x={nodePopover.x}
+          y={nodePopover.y}
+          sampleId={nodePopover.id}
+          metadata={metadata}
+          events={events}
+          actionEnabled={actionEnabled}
+          verdict={popVerdict}
+          setVerdict={setPopVerdict}
+          action={popAction}
+          setAction={setPopAction}
+          applyTarget={popApplyTarget}
+          setApplyTarget={setPopApplyTarget}
+          applySource={popApplySource}
+          setApplySource={setPopApplySource}
+          onClose={() => setNodePopover(null)}
+          onApply={() => {
+            if (!onApplyToEventIds) return;
+            const ids = events
+              .filter((e) => {
+                const isTgt = e.target === nodePopover.id;
+                const isSrc = e.source === nodePopover.id;
+                if (popApplyTarget && isTgt) return true;
+                if (popApplySource && isSrc) return true;
+                return false;
+              })
+              .map((e) => e.id);
+            if (ids.length === 0) {
+              setNodePopover(null);
+              return;
+            }
+            const dirParts = [];
+            if (popApplyTarget) dirParts.push("target");
+            if (popApplySource) dirParts.push("source");
+            const note = `applied via Network → node ${nodePopover.id} (as ${dirParts.join(" / ")})`;
+            onApplyToEventIds(ids, popVerdict, note, popAction);
+            setNodePopover(null);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+/** Floating popover anchored at a clicked Network node. Lets the
+    curator bulk-apply a verdict (and optional action) to every event
+    where this sample is the target, the source, or both. Renders as a
+    fixed overlay so it doesn't fight with the SVG zoom transform. */
+const NodeBulkPopover = ({
+  x,
+  y,
+  sampleId,
+  metadata,
+  events,
+  actionEnabled,
+  verdict,
+  setVerdict,
+  action,
+  setAction,
+  applyTarget,
+  setApplyTarget,
+  applySource,
+  setApplySource,
+  onClose,
+  onApply,
+}) => {
+  const ref = useRef(null);
+  useEffect(() => {
+    const onDown = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    };
+    // Schedule a microtask to avoid catching the click event that
+    // opened the popover in the first place (it bubbles to document
+    // after the synchronous open).
+    const t = window.setTimeout(
+      () => document.addEventListener("mousedown", onDown),
+      0,
+    );
+    return () => {
+      window.clearTimeout(t);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [onClose]);
+
+  const counts = useMemo(() => {
+    let asTarget = 0;
+    let asSource = 0;
+    events.forEach((e) => {
+      if (e.target === sampleId) asTarget++;
+      if (e.source === sampleId) asSource++;
+    });
+    return { asTarget, asSource };
+  }, [events, sampleId]);
+  const matchedCount =
+    (applyTarget ? counts.asTarget : 0) + (applySource ? counts.asSource : 0);
+  const name = sampleName(metadata, sampleId);
+  // Clamp the popover inside the viewport (best-effort; we don't have
+  // measured dimensions yet but the typical width is ~320 px).
+  const POP_W = 340;
+  const POP_H = 360;
+  const left = Math.min(
+    Math.max(8, x + 12),
+    Math.max(8, window.innerWidth - POP_W - 8),
+  );
+  const top = Math.min(
+    Math.max(8, y + 12),
+    Math.max(8, window.innerHeight - POP_H - 8),
+  );
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "fixed",
+        left,
+        top,
+        zIndex: 60,
+        width: POP_W,
+        background: "var(--bg-card)",
+        border: "1px solid var(--border-strong)",
+        borderRadius: 4,
+        boxShadow: "0 12px 28px rgba(39,86,98,0.20)",
+        padding: 14,
+        fontFamily: '"Raleway", sans-serif',
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div style={{ minWidth: 0 }}>
+          <div
+            className="text-[10px] uppercase tracking-[0.1em]"
+            style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+          >
+            Apply to events touching
+          </div>
+          <div
+            className="text-[14px] truncate"
+            style={{ color: "var(--ink)", fontWeight: 700 }}
+            title={name ? `${sampleId} (${name})` : sampleId}
+          >
+            {sampleId}
+            {name && (
+              <span
+                className="ml-1.5 text-[12px]"
+                style={{ color: "var(--ink-muted)", fontWeight: 500 }}
+              >
+                ({name})
+              </span>
+            )}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="shrink-0"
+          style={{
+            background: "transparent",
+            border: 0,
+            cursor: "pointer",
+            color: "var(--ink-muted)",
+            padding: 2,
+          }}
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div
+        className="text-[11px] mb-3"
+        style={{ color: "var(--ink-muted)" }}
+      >
+        Pick a verdict and decide which side(s) of the edges to update.
+      </div>
+
+      <div className="flex flex-col gap-1.5 mb-3">
+        <label
+          className="flex items-center gap-2 text-[12px] cursor-pointer"
+          style={{ color: counts.asTarget === 0 ? "var(--ink-muted)" : "var(--ink)" }}
+          title={`${counts.asTarget} event${counts.asTarget === 1 ? "" : "s"} where ${sampleId} is the target.`}
+        >
+          <input
+            type="checkbox"
+            checked={applyTarget}
+            disabled={counts.asTarget === 0}
+            onChange={(e) => setApplyTarget(e.target.checked)}
+            style={{ accentColor: "#00a3a6" }}
+          />
+          <span>
+            As <strong>target</strong>{" "}
+            <span style={{ color: "var(--ink-muted)" }}>
+              ({counts.asTarget} event{counts.asTarget === 1 ? "" : "s"})
+            </span>
+          </span>
+        </label>
+        <label
+          className="flex items-center gap-2 text-[12px] cursor-pointer"
+          style={{ color: counts.asSource === 0 ? "var(--ink-muted)" : "var(--ink)" }}
+          title={`${counts.asSource} event${counts.asSource === 1 ? "" : "s"} where ${sampleId} is the source.`}
+        >
+          <input
+            type="checkbox"
+            checked={applySource}
+            disabled={counts.asSource === 0}
+            onChange={(e) => setApplySource(e.target.checked)}
+            style={{ accentColor: "#00a3a6" }}
+          />
+          <span>
+            As <strong>source</strong>{" "}
+            <span style={{ color: "var(--ink-muted)" }}>
+              ({counts.asSource} event{counts.asSource === 1 ? "" : "s"})
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div
+        className="text-[10px] uppercase tracking-[0.1em] mb-1"
+        style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+      >
+        Verdict
+      </div>
+      <div className="flex gap-1.5 mb-3 flex-wrap">
+        {[
+          { v: "true_positive", lbl: "TP", bg: "#00a3a6" },
+          { v: "false_positive", lbl: "FP", bg: "#ed6e6c" },
+          { v: "uncertain", lbl: "Uncertain", bg: "var(--border-strong)" },
+          { v: "pending", lbl: "Pending", bg: "#5a5550" },
+        ].map((v) => {
+          const active = verdict === v.v;
+          return (
+            <button
+              key={v.v}
+              type="button"
+              onClick={() => setVerdict(v.v)}
+              className="px-2.5 py-1 text-[11px] rounded-sm"
+              style={{
+                background: active ? v.bg : "var(--bg-card)",
+                color: active ? "#fff" : "var(--ink)",
+                border: `1px solid ${active ? v.bg : "var(--border-strong)"}`,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              {v.lbl}
+            </button>
+          );
+        })}
+      </div>
+
+      {actionEnabled && verdict === "true_positive" && (
+        <>
+          <div
+            className="text-[10px] uppercase tracking-[0.1em] mb-1"
+            style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+          >
+            Action
+          </div>
+          <div className="flex gap-1.5 mb-3 flex-wrap">
+            {[
+              { id: "keep", lbl: "Keep", bg: "#e0b13a" },
+              { id: "suppress", lbl: "Suppress", bg: "#ed6e6c" },
+            ].map((opt) => {
+              const active = action === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setAction(opt.id)}
+                  className="px-2.5 py-1 text-[11px] rounded-sm"
+                  style={{
+                    background: active ? opt.bg : "var(--bg-card)",
+                    color: active ? "#fff" : "var(--ink)",
+                    border: `1px solid ${active ? opt.bg : "var(--border-strong)"}`,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  {opt.lbl}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      <div className="flex items-center justify-between gap-2 pt-2"
+        style={{ borderTop: "1px solid var(--border)" }}
+      >
+        <span
+          className="text-[11px]"
+          style={{ color: "var(--ink-muted)" }}
+        >
+          {matchedCount} event{matchedCount === 1 ? "" : "s"} will be updated
+        </span>
+        <div className="flex gap-1.5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1 text-[11px] rounded-sm"
+            style={{
+              background: "var(--bg-card)",
+              color: "var(--ink-muted)",
+              border: "1px solid var(--border-strong)",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onApply}
+            disabled={matchedCount === 0}
+            className="px-3 py-1 text-[11px] rounded-sm"
+            style={{
+              background: matchedCount === 0 ? "var(--border-strong)" : "#275662",
+              color: "#fff",
+              border: "1px solid transparent",
+              fontWeight: 700,
+              cursor: matchedCount === 0 ? "not-allowed" : "pointer",
+              opacity: matchedCount === 0 ? 0.7 : 1,
+            }}
+          >
+            Apply
+          </button>
         </div>
       </div>
     </div>
@@ -7390,6 +7753,7 @@ const NetworkTab = ({
   runMetadata,
   onPick,
   onBulkApply,
+  onApplyToEventIds,
   hasAb,
   actionEnabled,
 }) => {
@@ -7404,7 +7768,9 @@ const NetworkTab = ({
       reflect the contamination rate (log-scaled — heavier, darker arrows mean
       higher rates). Salmon nodes appear on both sides — a possible
       contamination cascade. Hover any edge for details, click to open it in
-      Guided validation.
+      Guided validation. Click a <strong>node</strong> to bulk-apply a
+      verdict (and an optional action) to every event where this sample sits
+      on the source, target, or either side.
     </SectionTitle>
     <NetworkGraph
       events={events}
@@ -7417,6 +7783,7 @@ const NetworkTab = ({
       totalEvents={events.length}
       onPick={onPick}
       onBulkApply={onBulkApply}
+      onApplyToEventIds={onApplyToEventIds}
       hasAb={hasAb}
       actionEnabled={actionEnabled}
     />
@@ -8936,6 +9303,7 @@ const BulkApplyByCriteriaDialog = ({
   events,
   ab,
   metadata,
+  filter,
   onClose,
   onApply,
   bulkMarkSameSubjectAsFP,
@@ -8961,11 +9329,21 @@ const BulkApplyByCriteriaDialog = ({
     fn();
     onClose();
   };
-  const [minScore, setMinScore] = useState(0);
+  // Seed the ranges from the filter bar so the dialog opens already
+  // narrowed to whatever subset the curator was inspecting. Filter
+  // values are lower-bound only (the bar exposes mins, no maxes), so
+  // the upper bounds default to the absolute max for each metric.
+  const [minScore, setMinScore] = useState(
+    Math.min(1, Math.max(0, filter?.minScore || 0)),
+  );
   const [maxScore, setMaxScore] = useState(1);
-  const [minRate, setMinRate] = useState(0);
+  const [minRate, setMinRate] = useState(
+    Math.min(1, Math.max(0, filter?.minRate || 0)),
+  );
   const [maxRate, setMaxRate] = useState(1);
-  const [minIntroduced, setMinIntroduced] = useState(0);
+  const [minIntroduced, setMinIntroduced] = useState(
+    Math.min(100, Math.max(0, filter?.minIntroduced || 0)),
+  );
   const [maxIntroduced, setMaxIntroduced] = useState(100);
   // "Draft" strings for the number inputs — what the user is currently
   // typing. We only commit to the real numeric state on blur (or Enter);
@@ -9051,6 +9429,10 @@ const BulkApplyByCriteriaDialog = ({
   // existing action untouched. Only meaningful when the suppress/keep
   // feature is enabled in Configuration.
   const [bulkAction, setBulkAction] = useState(null);
+  // When checked (default), the bulk apply skips events that already
+  // carry a verdict — protects the curator's prior work from being
+  // clobbered by a later sweeping rule.
+  const [skipDecided, setSkipDecided] = useState(true);
 
   // Compute the 6-criteria pass/fail status for every event once. Each
   // entry is { shape, nOnLine, decade, missing, above, spearman } where
@@ -9084,6 +9466,7 @@ const BulkApplyByCriteriaDialog = ({
 
   const matched = useMemo(() => {
     return events.filter((e, i) => {
+      if (skipDecided && e.verdict && e.verdict !== "pending") return false;
       if ((e.score ?? 0) < minScore || (e.score ?? 0) > maxScore) return false;
       if ((e.rate ?? 0) < minRate || (e.rate ?? 0) > maxRate) return false;
       if (introducedFilterActive) {
@@ -9115,6 +9498,7 @@ const BulkApplyByCriteriaDialog = ({
     maxIntroduced,
     introducedFilterActive,
     crit,
+    skipDecided,
   ]);
 
   const apply = () => {
@@ -9602,6 +9986,28 @@ const BulkApplyByCriteriaDialog = ({
         >
           Apply verdict
         </div>
+        <label
+          className="flex items-center gap-2 mb-3 select-none cursor-pointer"
+          style={{
+            color: "var(--ink)",
+            fontFamily: '"Raleway", sans-serif',
+            fontSize: 12,
+          }}
+          title="When checked, only events still marked Pending receive the new verdict. Already-curated events (TP / FP / Uncertain) are left untouched so a sweeping rule can't undo earlier work."
+        >
+          <input
+            type="checkbox"
+            checked={skipDecided}
+            onChange={(e) => setSkipDecided(e.target.checked)}
+            style={{ accentColor: "#00a3a6" }}
+          />
+          <span>
+            <strong>Don't overwrite previous verdicts</strong>{" "}
+            <span style={{ color: "var(--ink-muted)" }}>
+              (skip events already TP / FP / Uncertain)
+            </span>
+          </span>
+        </label>
         <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
           {[
             { v: "true_positive", lbl: "True positive", bg: "#00a3a6" },
@@ -18503,6 +18909,7 @@ export default function App() {
               onBulkApply={
                 bulkApplyToEvents ? () => setBulkApplyOpen(true) : undefined
               }
+              onApplyToEventIds={bulkApplyToEvents}
               hasAb={!!ab}
             />
           )}
@@ -18792,6 +19199,7 @@ export default function App() {
           events={events}
           ab={ab}
           metadata={metadata}
+          filter={filter}
           onClose={() => setBulkApplyOpen(false)}
           onApply={bulkApplyToEvents}
           bulkMarkSameSubjectAsFP={bulkMarkSameSubjectAsFP}
