@@ -9212,6 +9212,54 @@ const SampleEventsCell = ({ row, onScopeToSamples }) => (
         {row.asTarget} as target · {row.asSource} as source
       </div>
     )}
+    {row.maxTargetRate != null &&
+      (() => {
+        // Worst-rate contamination targeting this sample, regardless
+        // of evaluation. Tone matches the events-table rate scale:
+        //   ≤ 1% good (teal), ≤ 10% warn (amber), else bad (salmon).
+        const r = row.maxTargetRate;
+        const tone =
+          r <= 0.01
+            ? { bg: "#00a3a6" }
+            : r <= 0.1
+              ? { bg: "#d97a3c" }
+              : { bg: "#ed6e6c" };
+        const pct =
+          r >= 0.001
+            ? `${(r * 100).toFixed(2)}%`
+            : `${(r * 100).toExponential(1)}%`;
+        return (
+          <div
+            style={{
+              marginTop: 4,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              height: 18,
+              padding: "0 6px",
+              borderRadius: 9,
+              background: `${tone.bg}1f`,
+              color: tone.bg,
+              fontSize: 10,
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+            }}
+            title={`Maximum rate among events targeting ${row.id} — picked across all evaluations (TP / FP / Uncertain / Pending).`}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: tone.bg,
+              }}
+            />
+            max rate {pct}
+          </div>
+        );
+      })()}
     {row.eventsTouching > 0 && (
       <div className="flex gap-1 flex-wrap" style={{ marginTop: 4 }}>
         {[
@@ -9802,6 +9850,151 @@ const SampleContextSearchBar = ({
   );
 };
 
+/** Third filter row on the Samples tab — slices the visible samples
+    by the statistics of the events that target them. Each metric
+    (count of targeting events, max rate, max probability, max number
+    of introduced species) gets a min / max number-input pair. Empty
+    bound = no constraint. Rates are entered as percentages 0–100. */
+const SampleTargetingFilterBar = ({
+  tgtCountMin,
+  setTgtCountMin,
+  tgtCountMax,
+  setTgtCountMax,
+  tgtRateMin,
+  setTgtRateMin,
+  tgtRateMax,
+  setTgtRateMax,
+  tgtScoreMin,
+  setTgtScoreMin,
+  tgtScoreMax,
+  setTgtScoreMax,
+  tgtIntroMin,
+  setTgtIntroMin,
+  tgtIntroMax,
+  setTgtIntroMax,
+  anyActive,
+  onClear,
+}) => {
+  const numberInput = (value, setValue, placeholder, step) => (
+    <input
+      type="number"
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      placeholder={placeholder}
+      step={step || "any"}
+      className="text-[12px] outline-none rounded-sm"
+      style={{
+        width: 56,
+        padding: "2px 4px",
+        background: "var(--bg-card)",
+        border: "1px solid var(--border)",
+        color: "var(--ink)",
+        fontFamily: '"Raleway", sans-serif',
+        fontWeight: 500,
+        appearance: "textfield",
+        MozAppearance: "textfield",
+      }}
+    />
+  );
+
+  const metricChip = (label, hint, IconComp, minNode, maxNode) => (
+    <div
+      className="flex items-center gap-1 rounded-md"
+      title={hint}
+      style={{
+        padding: "3px 8px",
+        background: "var(--bg-card)",
+        border: "1px solid var(--border)",
+        fontFamily: '"Raleway", sans-serif',
+      }}
+    >
+      <IconComp
+        className="w-3 h-3"
+        style={{ color: "var(--ink-muted)", flexShrink: 0 }}
+      />
+      <span
+        style={{
+          color: "var(--ink-muted)",
+          fontSize: 10,
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: "0.04em",
+        }}
+      >
+        {label}
+      </span>
+      {minNode}
+      <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>–</span>
+      {maxNode}
+    </div>
+  );
+
+  return (
+    <div
+      className="flex flex-wrap gap-2 items-center mb-4 p-2 rounded-md"
+      style={{
+        background: "var(--bg-soft)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <span
+        className="text-[10px] uppercase tracking-[0.05em] mr-1"
+        style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+        title="Filter samples by aggregate statistics of the events that target them"
+      >
+        Targeting events
+      </span>
+      {metricChip(
+        "count",
+        "Number of events with this sample as target — keep samples whose count is in [min, max]. Leave blank for no bound.",
+        ListChecks,
+        numberInput(tgtCountMin, setTgtCountMin, "min", "1"),
+        numberInput(tgtCountMax, setTgtCountMax, "max", "1"),
+      )}
+      {metricChip(
+        "rate %",
+        "Maximum rate (in %) among events targeting this sample. Keep samples whose worst targeting-event rate is in [min, max].",
+        Activity,
+        numberInput(tgtRateMin, setTgtRateMin, "min", "0.1"),
+        numberInput(tgtRateMax, setTgtRateMax, "max", "0.1"),
+      )}
+      {metricChip(
+        "prob",
+        "Maximum probability (0–1) among events targeting this sample.",
+        ShieldCheck,
+        numberInput(tgtScoreMin, setTgtScoreMin, "min", "0.01"),
+        numberInput(tgtScoreMax, setTgtScoreMax, "max", "0.01"),
+      )}
+      {metricChip(
+        "introduced",
+        "Maximum number of introduced species across events targeting this sample.",
+        Droplets,
+        numberInput(tgtIntroMin, setTgtIntroMin, "min", "1"),
+        numberInput(tgtIntroMax, setTgtIntroMax, "max", "1"),
+      )}
+      {anyActive && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="ml-auto flex items-center gap-1 text-[11px]"
+          style={{
+            color: "var(--ink-muted)",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            fontFamily: '"Raleway", sans-serif',
+            fontWeight: 600,
+          }}
+          title="Clear every targeting-event filter"
+        >
+          <X className="w-3 h-3" />
+          clear stats
+        </button>
+      )}
+    </div>
+  );
+};
+
 /** [Legacy] Original context filter row — replaced by
     SampleContextSearchBar above. Kept temporarily as a reference so
     the dropdown-based pattern is easy to rebuild if the search-based
@@ -10053,6 +10246,7 @@ const SamplesTab = ({
   onScopeToSamples,
   onExportSamplesTSV,
   onOpenPlate,
+  pageSize,
 }) => {
   // Sample-table-local context filters — layered on top of the global
   // event filter. Subject can also be set by clicking a `subj` pill in
@@ -10151,10 +10345,36 @@ const SamplesTab = ({
       const touching = eventsBySample.get(id) || [];
       let asSource = 0;
       let asTarget = 0;
+      // Aggregates over the events that *target* this sample — i.e.
+      // the events that may explain why the sample is contaminated.
+      // Used by the per-targeting-event sliders below the context
+      // search bar to filter samples by the worst (max) attributes
+      // among their incoming contaminations.
+      let maxTargetRate = null;
+      let maxTargetScore = null;
+      let maxTargetIntroducedCount = null;
       const evalCounts = { tp: 0, fp: 0, uncertain: 0, pending: 0 };
       for (const e of touching) {
         if (e.source === id) asSource++;
-        if (e.target === id) asTarget++;
+        if (e.target === id) {
+          asTarget++;
+          if (typeof e.rate === "number") {
+            if (maxTargetRate == null || e.rate > maxTargetRate)
+              maxTargetRate = e.rate;
+          }
+          if (typeof e.score === "number") {
+            if (maxTargetScore == null || e.score > maxTargetScore)
+              maxTargetScore = e.score;
+          }
+          const introCount = Array.isArray(e.introduced)
+            ? e.introduced.length
+            : 0;
+          if (
+            maxTargetIntroducedCount == null ||
+            introCount > maxTargetIntroducedCount
+          )
+            maxTargetIntroducedCount = introCount;
+        }
         if (e.verdict === "true_positive") evalCounts.tp++;
         else if (e.verdict === "false_positive") evalCounts.fp++;
         else if (e.verdict === "uncertain") evalCounts.uncertain++;
@@ -10180,6 +10400,9 @@ const SamplesTab = ({
         evalCounts,
         flags,
         placement,
+        maxTargetRate,
+        maxTargetScore,
+        maxTargetIntroducedCount,
       };
     });
   }, [eventsForSamples, ab, metadata, plateMap, sampleCuration]);
@@ -10290,7 +10513,7 @@ const SamplesTab = ({
     actionEnabled && { id: "action", label: "Action" },
   ].filter(Boolean);
 
-  const PAGE_SIZE = 200;
+  const PAGE_SIZE = pageSize || 200;
   const [page, setPage] = useState(1);
   useEffect(() => {
     setPage(1);
@@ -10597,14 +10820,12 @@ const SamplesTab = ({
       {bulkOpen && (
         <BulkSampleApplyDialog
           samples={sorted}
+          totalSamples={sampleRows.length}
+          contextOptions={contextOptions}
           actionEnabled={actionEnabled}
           onClose={() => setBulkOpen(false)}
-          onApply={(ids, verdict, action, skipDecided) => {
+          onApply={(ids, verdict, action) => {
             for (const id of ids) {
-              const cur = sampleCuration?.[id] || {};
-              const hasDecision =
-                (cur.verdict && cur.verdict !== "pending") || cur.action;
-              if (skipDecided && hasDecision) continue;
               if (verdict) setSampleVerdict(id, verdict);
               if (action !== undefined) setSampleAction(id, action);
             }
@@ -10615,30 +10836,527 @@ const SamplesTab = ({
   );
 };
 
-/** Modal dialog: bulk-apply a sample-level verdict and/or action to
-    every sample currently visible in the SamplesTab list (i.e. the
-    filtered + sorted set the user is looking at). */
+/** Compact "key: dropdown" pill used inside the bulk-apply dialog
+    to filter by a metadata facet. Renders nothing when the dropdown
+    has no values to offer. */
+const BulkContextSelect = ({ label, value, setValue, options, IconComp }) => {
+  if (!options || options.length === 0) return null;
+  const active = !!value;
+  return (
+    <label
+      className="flex items-center gap-1.5 rounded-md"
+      title={`Filter samples by ${label}`}
+      style={{
+        padding: "2px 8px 2px 6px",
+        background: active ? "rgba(0,163,166,0.10)" : "var(--bg-card)",
+        border: active ? "1px solid #00a3a6" : "1px solid var(--border)",
+        fontFamily: '"Raleway", sans-serif',
+        fontSize: 11,
+      }}
+    >
+      <IconComp
+        className="w-3 h-3"
+        style={{ color: "var(--ink-muted)", flexShrink: 0 }}
+      />
+      <span
+        style={{
+          color: "var(--ink-muted)",
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: "0.04em",
+          fontSize: 10,
+        }}
+      >
+        {label}
+      </span>
+      <select
+        value={value || ""}
+        onChange={(e) => setValue(e.target.value || "")}
+        className="text-[12px] outline-none"
+        style={{
+          background: "transparent",
+          border: "none",
+          color: "var(--ink)",
+          fontFamily: '"Raleway", sans-serif',
+          fontWeight: 500,
+          cursor: "pointer",
+          padding: "2px 0",
+          minWidth: 60,
+        }}
+      >
+        <option value="">any</option>
+        {options.map((opt) => (
+          <option key={opt} value={opt}>
+            {opt}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+};
+
+/** Tri-state any/yes/no chip used for boolean metadata flags inside
+    the bulk-apply dialog. */
+const BulkTriChip = ({ label, value, setValue, IconComp, accent }) => (
+  <div
+    className="flex items-center gap-1 rounded-md"
+    title={`Filter samples by ${label}`}
+    style={{
+      padding: "2px 8px 2px 6px",
+      background: value !== "any" ? `${accent}1f` : "var(--bg-card)",
+      border:
+        value !== "any" ? `1px solid ${accent}` : "1px solid var(--border)",
+      fontFamily: '"Raleway", sans-serif',
+      fontSize: 11,
+    }}
+  >
+    <IconComp
+      className="w-3 h-3"
+      style={{
+        color: value !== "any" ? accent : "var(--ink-muted)",
+        flexShrink: 0,
+      }}
+    />
+    <span
+      style={{
+        color: "var(--ink-muted)",
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: "0.04em",
+        fontSize: 10,
+        marginRight: 2,
+      }}
+    >
+      {label}
+    </span>
+    {[
+      { id: "any", lbl: "any" },
+      { id: "yes", lbl: "yes" },
+      { id: "no", lbl: "no" },
+    ].map((opt) => {
+      const active = value === opt.id;
+      return (
+        <button
+          key={opt.id}
+          type="button"
+          onClick={() => setValue(opt.id)}
+          style={{
+            padding: "1px 6px",
+            borderRadius: 8,
+            fontSize: 10,
+            fontFamily: '"Raleway", sans-serif',
+            fontWeight: active ? 700 : 500,
+            background: active ? accent : "transparent",
+            color: active ? "#fff" : "var(--ink-muted)",
+            border: "none",
+            cursor: "pointer",
+          }}
+        >
+          {opt.lbl}
+        </button>
+      );
+    })}
+  </div>
+);
+
+/** Context filter section inside the bulk-apply dialog. */
+const BulkContextSection = ({
+  contextOptions,
+  ctxSubject,
+  setCtxSubject,
+  ctxTimepoint,
+  setCtxTimepoint,
+  ctxGroup,
+  setCtxGroup,
+  ctxBiome,
+  setCtxBiome,
+  ctxControl,
+  setCtxControl,
+  ctxLowBiomass,
+  setCtxLowBiomass,
+  ctxLowSeqDepth,
+  setCtxLowSeqDepth,
+}) => {
+  const hasAny =
+    (contextOptions.subjects && contextOptions.subjects.length > 0) ||
+    (contextOptions.timepoints && contextOptions.timepoints.length > 0) ||
+    contextOptions.hasGroupIdCol ||
+    contextOptions.hasBiomeCol ||
+    contextOptions.hasLowBiomassCol ||
+    contextOptions.hasLowSeqDepthCol;
+  if (!hasAny) return null;
+  return (
+    <>
+      <div
+        className="text-[10px] uppercase tracking-[0.05em] mb-1"
+        style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+      >
+        Context
+      </div>
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        <BulkContextSelect
+          label="subj"
+          value={ctxSubject}
+          setValue={setCtxSubject}
+          options={contextOptions.subjects}
+          IconComp={User}
+        />
+        <BulkContextSelect
+          label="tp"
+          value={ctxTimepoint}
+          setValue={setCtxTimepoint}
+          options={contextOptions.timepoints}
+          IconComp={Calendar}
+        />
+        {contextOptions.hasGroupIdCol && (
+          <BulkContextSelect
+            label="grp"
+            value={ctxGroup}
+            setValue={setCtxGroup}
+            options={contextOptions.groups}
+            IconComp={Users}
+          />
+        )}
+        {contextOptions.hasBiomeCol && (
+          <BulkContextSelect
+            label="biome"
+            value={ctxBiome}
+            setValue={setCtxBiome}
+            options={contextOptions.biomes}
+            IconComp={Layers}
+          />
+        )}
+        {contextOptions.hasBiomeCol && (
+          <BulkTriChip
+            label="control"
+            value={ctxControl}
+            setValue={setCtxControl}
+            IconComp={ShieldAlert}
+            accent="#423089"
+          />
+        )}
+        {contextOptions.hasLowBiomassCol && (
+          <BulkTriChip
+            label="low biomass"
+            value={ctxLowBiomass}
+            setValue={setCtxLowBiomass}
+            IconComp={AlertCircle}
+            accent="#d97a3c"
+          />
+        )}
+        {contextOptions.hasLowSeqDepthCol && (
+          <BulkTriChip
+            label="low seq depth"
+            value={ctxLowSeqDepth}
+            setValue={setCtxLowSeqDepth}
+            IconComp={Activity}
+            accent="#d97a3c"
+          />
+        )}
+      </div>
+    </>
+  );
+};
+
+/** Targeting-event stats section inside the bulk-apply dialog —
+    count / rate / probability / introduced species count. Each
+    metric is a min / max number-input pair. Empty bound = no
+    constraint. Rates are entered in percent. */
+const BulkTargetingSection = ({
+  tgtCountMin,
+  setTgtCountMin,
+  tgtCountMax,
+  setTgtCountMax,
+  tgtRateMin,
+  setTgtRateMin,
+  tgtRateMax,
+  setTgtRateMax,
+  tgtScoreMin,
+  setTgtScoreMin,
+  tgtScoreMax,
+  setTgtScoreMax,
+  tgtIntroMin,
+  setTgtIntroMin,
+  tgtIntroMax,
+  setTgtIntroMax,
+}) => {
+  const numberInput = (value, setValue, placeholder, step) => (
+    <input
+      type="number"
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      placeholder={placeholder}
+      step={step || "any"}
+      className="text-[12px] outline-none rounded-sm"
+      style={{
+        width: 56,
+        padding: "2px 4px",
+        background: "var(--bg-card)",
+        border: "1px solid var(--border)",
+        color: "var(--ink)",
+        fontFamily: '"Raleway", sans-serif',
+        fontWeight: 500,
+        appearance: "textfield",
+        MozAppearance: "textfield",
+      }}
+    />
+  );
+  const metricChip = (label, hint, IconComp, minNode, maxNode) => (
+    <div
+      className="flex items-center gap-1 rounded-md"
+      title={hint}
+      style={{
+        padding: "3px 8px",
+        background: "var(--bg-card)",
+        border: "1px solid var(--border)",
+        fontFamily: '"Raleway", sans-serif',
+      }}
+    >
+      <IconComp
+        className="w-3 h-3"
+        style={{ color: "var(--ink-muted)", flexShrink: 0 }}
+      />
+      <span
+        style={{
+          color: "var(--ink-muted)",
+          fontSize: 10,
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: "0.04em",
+        }}
+      >
+        {label}
+      </span>
+      {minNode}
+      <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>–</span>
+      {maxNode}
+    </div>
+  );
+  return (
+    <>
+      <div
+        className="text-[10px] uppercase tracking-[0.05em] mb-1"
+        style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+      >
+        Stats of the events targeting each sample
+      </div>
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {metricChip(
+          "count",
+          "Number of events targeting each sample. Keep samples whose count is in [min, max].",
+          ListChecks,
+          numberInput(tgtCountMin, setTgtCountMin, "min", "1"),
+          numberInput(tgtCountMax, setTgtCountMax, "max", "1"),
+        )}
+        {metricChip(
+          "rate %",
+          "Maximum rate (in %) among the events targeting each sample.",
+          Activity,
+          numberInput(tgtRateMin, setTgtRateMin, "min", "0.1"),
+          numberInput(tgtRateMax, setTgtRateMax, "max", "0.1"),
+        )}
+        {metricChip(
+          "prob",
+          "Maximum probability (0–1) among the events targeting each sample.",
+          ShieldCheck,
+          numberInput(tgtScoreMin, setTgtScoreMin, "min", "0.01"),
+          numberInput(tgtScoreMax, setTgtScoreMax, "max", "0.01"),
+        )}
+        {metricChip(
+          "introduced",
+          "Maximum number of introduced species across the events targeting each sample.",
+          Droplets,
+          numberInput(tgtIntroMin, setTgtIntroMin, "min", "1"),
+          numberInput(tgtIntroMax, setTgtIntroMax, "max", "1"),
+        )}
+      </div>
+    </>
+  );
+};
+
+/** Modal dialog: bulk-apply a sample-level verdict and/or action.
+    The visible-samples scope is set by the caller (filter bar +
+    context search bar already applied); this dialog layers extra
+    pre-conditions on top — context (subj/tp/grp/biome + flags),
+    targeting-event stats, and current verdict / action — so the
+    curator can target very narrow subsets. */
 const BulkSampleApplyDialog = ({
   samples,
+  totalSamples,
+  contextOptions,
   actionEnabled,
   onClose,
   onApply,
 }) => {
   const [verdict, setVerdict] = useState("");
   const [action, setAction] = useState(""); // "" | "keep" | "suppress" | "clear"
-  const [skipDecided, setSkipDecided] = useState(true);
-  const matchedCount = samples.length;
+  // Two independent safety toggles, both default ON to protect prior
+  // curation work. They layer on top of the pre-condition multi-
+  // selects below; AND-ed together when both are checked.
+  const [skipExistingVerdict, setSkipExistingVerdict] = useState(true);
+  const [skipExistingAction, setSkipExistingAction] = useState(true);
+  // Pre-condition multi-selects: only modify samples whose CURRENT
+  // verdict / action is in the chosen set. Default = all selected
+  // (no constraint).
+  const [matchVerdicts, setMatchVerdicts] = useState([
+    "pending",
+    "contaminated",
+    "correct",
+    "uncertain",
+  ]);
+  const [matchActions, setMatchActions] = useState([
+    "unset",
+    "keep",
+    "suppress",
+  ]);
+  // Context pre-conditions — let the curator narrow inside the
+  // dialog without going back to the page bar. All default to "no
+  // constraint" so opening the dialog reflects whatever the table
+  // currently shows.
+  const [ctxSubject, setCtxSubject] = useState("");
+  const [ctxTimepoint, setCtxTimepoint] = useState("");
+  const [ctxGroup, setCtxGroup] = useState("");
+  const [ctxBiome, setCtxBiome] = useState("");
+  const [ctxControl, setCtxControl] = useState("any");
+  const [ctxLowBiomass, setCtxLowBiomass] = useState("any");
+  const [ctxLowSeqDepth, setCtxLowSeqDepth] = useState("any");
+  // Targeting-event stat thresholds. Empty string = no bound. Rates
+  // are entered as percentages (0–100); converted before comparison.
+  const [tgtCountMin, setTgtCountMin] = useState("");
+  const [tgtCountMax, setTgtCountMax] = useState("");
+  const [tgtRateMin, setTgtRateMin] = useState("");
+  const [tgtRateMax, setTgtRateMax] = useState("");
+  const [tgtScoreMin, setTgtScoreMin] = useState("");
+  const [tgtScoreMax, setTgtScoreMax] = useState("");
+  const [tgtIntroMin, setTgtIntroMin] = useState("");
+  const [tgtIntroMax, setTgtIntroMax] = useState("");
+
+  const toggleMV = (id) =>
+    setMatchVerdicts((prev) =>
+      prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id],
+    );
+  const toggleMA = (id) =>
+    setMatchActions((prev) =>
+      prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id],
+    );
+
+  const matched = useMemo(() => {
+    const num = (v) => {
+      const x = parseFloat(v);
+      return Number.isFinite(x) ? x : null;
+    };
+    const cMin = num(tgtCountMin);
+    const cMax = num(tgtCountMax);
+    const rMin = num(tgtRateMin);
+    const rMax = num(tgtRateMax);
+    const sMin = num(tgtScoreMin);
+    const sMax = num(tgtScoreMax);
+    const iMin = num(tgtIntroMin);
+    const iMax = num(tgtIntroMax);
+    return samples.filter((s) => {
+      const cv = s.verdict || "pending";
+      const ca = s.action || "unset";
+      if (!matchVerdicts.includes(cv)) return false;
+      if (actionEnabled && !matchActions.includes(ca)) return false;
+      if (skipExistingVerdict && cv !== "pending") return false;
+      if (skipExistingAction && actionEnabled && ca !== "unset") return false;
+      const f = s.flags || {};
+      if (ctxSubject && f.subject !== ctxSubject) return false;
+      if (ctxTimepoint && f.timepoint !== ctxTimepoint) return false;
+      if (ctxGroup && f.groupId !== ctxGroup) return false;
+      if (ctxBiome && f.biome !== ctxBiome) return false;
+      if (ctxControl === "yes" && !f.isControl) return false;
+      if (ctxControl === "no" && f.isControl) return false;
+      if (ctxLowBiomass === "yes" && !f.isLowBiomass) return false;
+      if (ctxLowBiomass === "no" && f.isLowBiomass) return false;
+      if (ctxLowSeqDepth === "yes" && !f.isLowSequencingDepth) return false;
+      if (ctxLowSeqDepth === "no" && f.isLowSequencingDepth) return false;
+      // Targeting-event aggregates. When a sample has zero targeting
+      // events, its max* fields are null and any non-zero min bound
+      // excludes it (the user is asking for samples touched by an
+      // event with that property).
+      if (cMin != null && s.asTarget < cMin) return false;
+      if (cMax != null && s.asTarget > cMax) return false;
+      if (rMin != null) {
+        if (s.maxTargetRate == null || s.maxTargetRate < rMin / 100)
+          return false;
+      }
+      if (rMax != null) {
+        if (s.maxTargetRate == null || s.maxTargetRate > rMax / 100)
+          return false;
+      }
+      if (sMin != null) {
+        if (s.maxTargetScore == null || s.maxTargetScore < sMin)
+          return false;
+      }
+      if (sMax != null) {
+        if (s.maxTargetScore == null || s.maxTargetScore > sMax)
+          return false;
+      }
+      if (iMin != null) {
+        if (
+          s.maxTargetIntroducedCount == null ||
+          s.maxTargetIntroducedCount < iMin
+        )
+          return false;
+      }
+      if (iMax != null) {
+        if (
+          s.maxTargetIntroducedCount == null ||
+          s.maxTargetIntroducedCount > iMax
+        )
+          return false;
+      }
+      return true;
+    });
+  }, [
+    samples,
+    matchVerdicts,
+    matchActions,
+    actionEnabled,
+    skipExistingVerdict,
+    skipExistingAction,
+    ctxSubject,
+    ctxTimepoint,
+    ctxGroup,
+    ctxBiome,
+    ctxControl,
+    ctxLowBiomass,
+    ctxLowSeqDepth,
+    tgtCountMin,
+    tgtCountMax,
+    tgtRateMin,
+    tgtRateMax,
+    tgtScoreMin,
+    tgtScoreMax,
+    tgtIntroMin,
+    tgtIntroMax,
+  ]);
+
   const apply = () => {
     if (!verdict && !action) {
       onClose();
       return;
     }
-    const ids = samples.map((s) => s.id);
+    const ids = matched.map((s) => s.id);
     const actionVal =
       action === "" ? undefined : action === "clear" ? null : action;
-    onApply(ids, verdict || null, actionVal, skipDecided);
+    onApply(ids, verdict || null, actionVal);
     onClose();
   };
+
+  const verdictOptions = [
+    { id: "pending", label: "Pending" },
+    { id: "contaminated", label: "Contaminated" },
+    { id: "correct", label: "Correct" },
+    { id: "uncertain", label: "Uncertain" },
+  ];
+  const actionOptions = [
+    { id: "unset", label: "Unset" },
+    { id: "keep", label: "Keep" },
+    { id: "suppress", label: "Suppress" },
+  ];
+
   return (
     <div
       onClick={onClose}
@@ -10659,8 +11377,10 @@ const BulkSampleApplyDialog = ({
           background: "var(--bg-card)",
           borderRadius: 4,
           padding: "20px 24px",
-          maxWidth: 540,
+          maxWidth: 720,
           width: "100%",
+          maxHeight: "92vh",
+          overflowY: "auto",
           boxShadow: "0 12px 32px rgba(0,0,0,0.2)",
           borderLeft: "4px solid #00a3a6",
         }}
@@ -10674,24 +11394,241 @@ const BulkSampleApplyDialog = ({
             marginBottom: 4,
           }}
         >
-          Bulk-apply to {matchedCount} sample{matchedCount !== 1 ? "s" : ""}
+          Bulk-apply to {matched.length} sample{matched.length !== 1 ? "s" : ""}
         </h3>
         <div
-          className="text-[11px] mb-4"
+          className="text-[11px] mb-4 leading-relaxed"
           style={{ color: "var(--ink-muted)" }}
         >
-          Applies to every sample currently visible in the table (filter +
-          sort already applied). Tweak the filters above the table to narrow
-          this set.
+          Scope:{" "}
+          <strong style={{ color: "var(--ink)" }}>{samples.length}</strong> of{" "}
+          <strong style={{ color: "var(--ink)" }}>{totalSamples}</strong> total
+          samples are currently visible (filter bar + context search above
+          the table). The filters below narrow that set further by context,
+          by targeting-event statistics, and by each sample's{" "}
+          <em>current</em> verdict / action — useful when re-curating only a
+          precise subset.
         </div>
 
+        {/* Context pre-conditions — narrow by metadata facets without
+            leaving the dialog. Dropdowns are populated from the loaded
+            metadata; sections fold away when the matching column isn't
+            present. Tri-state for the boolean flags. */}
+        {contextOptions && (
+          <BulkContextSection
+            contextOptions={contextOptions}
+            ctxSubject={ctxSubject}
+            setCtxSubject={setCtxSubject}
+            ctxTimepoint={ctxTimepoint}
+            setCtxTimepoint={setCtxTimepoint}
+            ctxGroup={ctxGroup}
+            setCtxGroup={setCtxGroup}
+            ctxBiome={ctxBiome}
+            setCtxBiome={setCtxBiome}
+            ctxControl={ctxControl}
+            setCtxControl={setCtxControl}
+            ctxLowBiomass={ctxLowBiomass}
+            setCtxLowBiomass={setCtxLowBiomass}
+            ctxLowSeqDepth={ctxLowSeqDepth}
+            setCtxLowSeqDepth={setCtxLowSeqDepth}
+          />
+        )}
+
+        {/* Targeting-event statistics — narrow by aggregates over the
+            events that target each sample (count, max rate, max
+            probability, max introduced species count). */}
+        <BulkTargetingSection
+          tgtCountMin={tgtCountMin}
+          setTgtCountMin={setTgtCountMin}
+          tgtCountMax={tgtCountMax}
+          setTgtCountMax={setTgtCountMax}
+          tgtRateMin={tgtRateMin}
+          setTgtRateMin={setTgtRateMin}
+          tgtRateMax={tgtRateMax}
+          setTgtRateMax={setTgtRateMax}
+          tgtScoreMin={tgtScoreMin}
+          setTgtScoreMin={setTgtScoreMin}
+          tgtScoreMax={tgtScoreMax}
+          setTgtScoreMax={setTgtScoreMax}
+          tgtIntroMin={tgtIntroMin}
+          setTgtIntroMin={setTgtIntroMin}
+          tgtIntroMax={tgtIntroMax}
+          setTgtIntroMax={setTgtIntroMax}
+        />
+
+        {/* Pre-condition: current verdict */}
         <div
           className="text-[10px] uppercase tracking-[0.05em] mb-1"
           style={{ color: "var(--ink-muted)", fontWeight: 700 }}
         >
-          Verdict
+          Apply only to samples whose current verdict is one of
         </div>
         <div className="flex flex-wrap gap-1 mb-3">
+          {verdictOptions.map((opt) => {
+            const active = matchVerdicts.includes(opt.id);
+            const tone = SAMPLE_VERDICT_TONE[opt.id];
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => toggleMV(opt.id)}
+                className="px-2 py-0.5 rounded-sm text-[11px]"
+                style={{
+                  background: active ? tone.bg : "var(--bg-card)",
+                  color: active ? "#fff" : "var(--ink-muted)",
+                  border: `1px solid ${active ? tone.bg : "var(--border)"}`,
+                  fontWeight: 700,
+                  fontFamily: '"Raleway", sans-serif',
+                  cursor: "pointer",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() =>
+              setMatchVerdicts(verdictOptions.map((o) => o.id))
+            }
+            className="text-[10px] ml-2"
+            style={{
+              color: "#00a3a6",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontFamily: '"Raleway", sans-serif',
+              fontWeight: 600,
+            }}
+          >
+            all
+          </button>
+          <button
+            type="button"
+            onClick={() => setMatchVerdicts([])}
+            className="text-[10px]"
+            style={{
+              color: "var(--ink-muted)",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontFamily: '"Raleway", sans-serif',
+              fontWeight: 600,
+            }}
+          >
+            none
+          </button>
+        </div>
+
+        {/* Pre-condition: current action */}
+        {actionEnabled && (
+          <>
+            <div
+              className="text-[10px] uppercase tracking-[0.05em] mb-1"
+              style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+            >
+              Apply only to samples whose current action is one of
+            </div>
+            <div className="flex flex-wrap gap-1 mb-3">
+              {actionOptions.map((opt) => {
+                const active = matchActions.includes(opt.id);
+                const color =
+                  opt.id === "keep"
+                    ? "#e0b13a"
+                    : opt.id === "suppress"
+                      ? "#ed6e6c"
+                      : "#9aaab0";
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => toggleMA(opt.id)}
+                    className="px-2 py-0.5 rounded-sm text-[11px]"
+                    style={{
+                      background: active ? color : "var(--bg-card)",
+                      color: active ? "#fff" : "var(--ink-muted)",
+                      border: `1px solid ${active ? color : "var(--border)"}`,
+                      fontWeight: 700,
+                      fontFamily: '"Raleway", sans-serif',
+                      cursor: "pointer",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.04em",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() =>
+                  setMatchActions(actionOptions.map((o) => o.id))
+                }
+                className="text-[10px] ml-2"
+                style={{
+                  color: "#00a3a6",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  fontFamily: '"Raleway", sans-serif',
+                  fontWeight: 600,
+                }}
+              >
+                all
+              </button>
+              <button
+                type="button"
+                onClick={() => setMatchActions([])}
+                className="text-[10px]"
+                style={{
+                  color: "var(--ink-muted)",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  fontFamily: '"Raleway", sans-serif',
+                  fontWeight: 600,
+                }}
+              >
+                none
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Live count of samples that will actually be modified. */}
+        <div
+          className="rounded-sm mb-4 px-3 py-2 text-[12px]"
+          style={{
+            background:
+              matched.length === 0
+                ? "rgba(217,122,60,0.10)"
+                : "rgba(0,163,166,0.08)",
+            border: `1px solid ${matched.length === 0 ? "#d97a3c" : "#00a3a6"}`,
+            color: "var(--ink)",
+            fontFamily: '"Raleway", sans-serif',
+          }}
+        >
+          Will modify <strong>{matched.length}</strong> of {samples.length}{" "}
+          visible sample{samples.length !== 1 ? "s" : ""}
+          {matched.length !== samples.length && (
+            <span style={{ color: "var(--ink-muted)" }}>
+              {" "}
+              ({samples.length - matched.length} excluded by pre-conditions)
+            </span>
+          )}
+          .
+        </div>
+
+        {/* Verdict to set */}
+        <div
+          className="text-[10px] uppercase tracking-[0.05em] mb-1"
+          style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+        >
+          New verdict
+        </div>
+        <div className="flex flex-wrap gap-1 mb-1">
           {[
             { id: "", label: "(no change)" },
             { id: "pending", label: "Pending" },
@@ -10723,16 +11660,29 @@ const BulkSampleApplyDialog = ({
             );
           })}
         </div>
+        <label
+          className="flex items-center gap-2 mb-3 text-[11px] cursor-pointer"
+          style={{ color: "var(--ink)", userSelect: "none" }}
+        >
+          <input
+            type="checkbox"
+            checked={skipExistingVerdict}
+            onChange={(e) => setSkipExistingVerdict(e.target.checked)}
+            style={{ accentColor: "#00a3a6" }}
+          />
+          Don't overwrite samples that already have a verdict.
+        </label>
 
+        {/* Action to set */}
         {actionEnabled && (
           <>
             <div
               className="text-[10px] uppercase tracking-[0.05em] mb-1"
               style={{ color: "var(--ink-muted)", fontWeight: 700 }}
             >
-              Action
+              New action
             </div>
-            <div className="flex flex-wrap gap-1 mb-3">
+            <div className="flex flex-wrap gap-1 mb-1">
               {[
                 { id: "", label: "(no change)" },
                 { id: "clear", label: "(clear)" },
@@ -10766,20 +11716,20 @@ const BulkSampleApplyDialog = ({
                 );
               })}
             </div>
+            <label
+              className="flex items-center gap-2 mb-3 text-[11px] cursor-pointer"
+              style={{ color: "var(--ink)", userSelect: "none" }}
+            >
+              <input
+                type="checkbox"
+                checked={skipExistingAction}
+                onChange={(e) => setSkipExistingAction(e.target.checked)}
+                style={{ accentColor: "#00a3a6" }}
+              />
+              Don't overwrite samples that already have an action.
+            </label>
           </>
         )}
-
-        <label
-          className="flex items-center gap-2 mb-4 text-[12px]"
-          style={{ color: "var(--ink)" }}
-        >
-          <input
-            type="checkbox"
-            checked={skipDecided}
-            onChange={(e) => setSkipDecided(e.target.checked)}
-          />
-          Don't overwrite samples that already have a verdict or action.
-        </label>
 
         <div className="flex justify-end gap-2">
           <button
@@ -10802,16 +11752,28 @@ const BulkSampleApplyDialog = ({
             onClick={apply}
             className="px-3 py-1.5 text-[12px] rounded-sm"
             style={{
-              background: "#00a3a6",
+              background:
+                matched.length === 0 || (!verdict && action === "")
+                  ? "var(--border-strong)"
+                  : "#00a3a6",
               color: "#fff",
-              border: "1px solid #00a3a6",
-              cursor: "pointer",
+              border: `1px solid ${
+                matched.length === 0 || (!verdict && action === "")
+                  ? "var(--border-strong)"
+                  : "#00a3a6"
+              }`,
+              cursor:
+                matched.length === 0 || (!verdict && action === "")
+                  ? "not-allowed"
+                  : "pointer",
               fontWeight: 700,
               fontFamily: '"Raleway", sans-serif',
             }}
-            disabled={!verdict && action === ""}
+            disabled={
+              matched.length === 0 || (!verdict && action === "")
+            }
           >
-            Apply to {matchedCount}
+            Apply to {matched.length}
           </button>
         </div>
       </div>
@@ -12435,6 +13397,19 @@ const BulkApplyByCriteriaDialog = ({
   });
   const [verdict, setVerdict] = useState("true_positive");
   const [comment, setComment] = useState("");
+  // Separate comment for the target sample notes — only used when the
+  // dialog stamps a sample-level verdict / action. Empty = keep
+  // existing sample notes untouched.
+  const [sampleComment, setSampleComment] = useState("");
+  // Optional sample-level side-effects: also set a verdict and / or
+  // an action on the TARGET sample of each matched event. Empty
+  // strings = leave the target's existing curation untouched. The
+  // skip-existing checkboxes layer on top so the curator can
+  // safeguard already-decided targets without changing the picker.
+  const [targetVerdict, setTargetVerdict] = useState("");
+  const [targetAction, setTargetAction] = useState(""); // "" | "keep" | "suppress" | "clear"
+  const [skipTargetVerdict, setSkipTargetVerdict] = useState(true);
+  const [skipTargetAction, setSkipTargetAction] = useState(true);
   // When checked (default), the bulk apply skips events that already
   // carry an evaluation — protects the curator's prior work from being
   // clobbered by a later sweeping rule.
@@ -12508,10 +13483,24 @@ const BulkApplyByCriteriaDialog = ({
   ]);
 
   const apply = () => {
+    const tvOpt = targetVerdict || null;
+    const taOpt =
+      targetAction === ""
+        ? undefined
+        : targetAction === "clear"
+          ? null
+          : targetAction;
     onApply(
       matched.map((e) => e.id),
       verdict,
       comment.trim(),
+      {
+        targetVerdict: tvOpt,
+        targetAction: taOpt,
+        skipExistingTargetVerdict: skipTargetVerdict,
+        skipExistingTargetAction: skipTargetAction,
+        sampleComment: sampleComment.trim(),
+      },
     );
     onClose();
   };
@@ -12612,12 +13601,13 @@ const BulkApplyByCriteriaDialog = ({
                     e.currentTarget.style.borderColor = "var(--border-strong)";
                     e.currentTarget.style.color = "#275662";
                   }}
-                  title="Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note"
+                  title="Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note. Their target samples are also flagged as Correct (skipping any target that already carries a sample-level verdict)."
                 >
                   <XCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>
-                    Mark all same-subject contaminations as FP (
-                    {pendingSameSubjectCount} pending)
+                    Mark all same-subject contaminations as FP and their
+                    target samples as Correct ({pendingSameSubjectCount}{" "}
+                    pending)
                   </span>
                 </button>
               )}
@@ -12643,11 +13633,13 @@ const BulkApplyByCriteriaDialog = ({
                     e.currentTarget.style.borderColor = "var(--border-strong)";
                     e.currentTarget.style.color = "#275662";
                   }}
-                  title="Bulk-classify events flowing into a negative control as true positives"
+                  title="Bulk-classify events flowing into a negative control as true positives. Their target negative-control samples are also flagged as Contaminated (skipping any target that already carries a sample-level verdict)."
                 >
                   <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                   <span>
-                    Mark all toward NC as TP ({pendingTowardNCCount} pending)
+                    Mark all events targeting a negative control as TP and
+                    their target samples as Contaminated (
+                    {pendingTowardNCCount} pending)
                   </span>
                 </button>
               )}
@@ -13043,22 +14035,10 @@ const BulkApplyByCriteriaDialog = ({
           })}
         </div>
 
-        {actionEnabled && verdict === "true_positive" && (
-            <div
-              style={{
-                fontSize: 11,
-                color: "var(--ink-muted)",
-                fontStyle: "italic",
-                marginBottom: 16,
-              }}
-            >
-              Sample-level actions (keep / suppress) are set on the
-              <strong style={{ color: "var(--ink)" }}> Samples</strong> tab —
-              this dialog only changes event evaluations.
-            </div>
-          )}
-
-        {/* Comment */}
+        {/* Sample-level side-effects — also set a verdict and / or an
+            action on the TARGET sample of every matched event.
+            Both default to "(no change)" so the dialog stays a pure
+            event-evaluation tool unless the curator opts in. */}
         <div
           style={{
             fontSize: 11,
@@ -13070,13 +14050,148 @@ const BulkApplyByCriteriaDialog = ({
             textTransform: "uppercase",
           }}
         >
-          Comment (optional)
+          Verdict on samples targeted by the matched events (optional)
+        </div>
+        <div className="flex flex-wrap gap-1 mb-1">
+          {[
+            { id: "", label: "(no change)" },
+            { id: "pending", label: "Pending" },
+            { id: "contaminated", label: "Contaminated" },
+            { id: "correct", label: "Correct" },
+            { id: "uncertain", label: "Uncertain" },
+          ].map((opt) => {
+            const active = targetVerdict === opt.id;
+            const tone = opt.id ? SAMPLE_VERDICT_TONE[opt.id] : null;
+            return (
+              <button
+                key={opt.id || "none"}
+                type="button"
+                onClick={() => setTargetVerdict(opt.id)}
+                className="px-2 py-0.5 rounded-sm text-[11px]"
+                style={{
+                  background: active
+                    ? tone?.bg || "#275662"
+                    : "var(--bg-card)",
+                  color: active ? "#fff" : "var(--ink)",
+                  border: `1px solid ${active ? tone?.bg || "#275662" : "var(--border-strong)"}`,
+                  fontWeight: 700,
+                  fontFamily: '"Raleway", sans-serif',
+                  cursor: "pointer",
+                }}
+                title={
+                  opt.id
+                    ? `Set the target sample's verdict to "${opt.label}" for every matched event`
+                    : "Don't touch the target sample's verdict"
+                }
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        <label
+          className="flex items-center gap-2 mb-3 text-[11px] cursor-pointer"
+          style={{ color: "var(--ink)", userSelect: "none" }}
+        >
+          <input
+            type="checkbox"
+            checked={skipTargetVerdict}
+            onChange={(e) => setSkipTargetVerdict(e.target.checked)}
+            style={{ accentColor: "#00a3a6" }}
+          />
+          Don't overwrite target samples that already have a verdict.
+        </label>
+
+        {actionEnabled && (
+          <>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--ink-muted)",
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+                marginBottom: 6,
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+              }}
+            >
+              Action on samples targeted by the matched events (optional)
+            </div>
+            <div className="flex flex-wrap gap-1 mb-1">
+              {[
+                { id: "", label: "(no change)" },
+                { id: "clear", label: "(clear)" },
+                { id: "keep", label: "Keep" },
+                { id: "suppress", label: "Suppress" },
+              ].map((opt) => {
+                const active = targetAction === opt.id;
+                const color =
+                  opt.id === "keep"
+                    ? "#e0b13a"
+                    : opt.id === "suppress"
+                      ? "#ed6e6c"
+                      : "#275662";
+                return (
+                  <button
+                    key={opt.id || "none"}
+                    type="button"
+                    onClick={() => setTargetAction(opt.id)}
+                    className="px-2 py-0.5 rounded-sm text-[11px]"
+                    style={{
+                      background: active ? color : "var(--bg-card)",
+                      color: active ? "#fff" : "var(--ink)",
+                      border: `1px solid ${active ? color : "var(--border-strong)"}`,
+                      fontWeight: 700,
+                      fontFamily: '"Raleway", sans-serif',
+                      cursor: "pointer",
+                    }}
+                    title={
+                      opt.id === ""
+                        ? "Don't touch the target sample's action"
+                        : opt.id === "clear"
+                          ? "Clear any action on the target sample"
+                          : `Set the target sample's action to ${opt.label}`
+                    }
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <label
+              className="flex items-center gap-2 mb-4 text-[11px] cursor-pointer"
+              style={{ color: "var(--ink)", userSelect: "none" }}
+            >
+              <input
+                type="checkbox"
+                checked={skipTargetAction}
+                onChange={(e) => setSkipTargetAction(e.target.checked)}
+                style={{ accentColor: "#00a3a6" }}
+              />
+              Don't overwrite target samples that already have an action.
+            </label>
+          </>
+        )}
+
+        {/* Comment on event (prepended to each matched event's notes) */}
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--ink-muted)",
+            fontWeight: 700,
+            fontFamily: '"Raleway", sans-serif',
+            marginBottom: 6,
+            letterSpacing: "0.05em",
+            textTransform: "uppercase",
+          }}
+        >
+          Comment on event (optional)
         </div>
         <textarea
           value={comment}
           onChange={(e) => setComment(e.target.value)}
           placeholder="Leave empty to keep existing notes on matched events. Otherwise this comment is prepended to whatever each event already has."
-          rows={3}
+          rows={2}
           style={{
             width: "100%",
             padding: "8px",
@@ -13086,10 +14201,50 @@ const BulkApplyByCriteriaDialog = ({
             color: "var(--ink)",
             borderRadius: 2,
             fontFamily: "system-ui, sans-serif",
-            marginBottom: 16,
+            marginBottom: 12,
             resize: "vertical",
           }}
         />
+
+        {/* Comment on sample — only relevant when a sample-level
+            verdict or action is being stamped on the target. Hidden
+            otherwise so the dialog stays focused. Prepended to each
+            target sample's notes. */}
+        {(targetVerdict || targetAction) && (
+          <>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--ink-muted)",
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+                marginBottom: 6,
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+              }}
+            >
+              Comment on target sample (optional)
+            </div>
+            <textarea
+              value={sampleComment}
+              onChange={(e) => setSampleComment(e.target.value)}
+              placeholder="Leave empty to keep existing sample notes. Otherwise this comment is prepended to each target sample's notes."
+              rows={2}
+              style={{
+                width: "100%",
+                padding: "8px",
+                fontSize: 12,
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg-card)",
+                color: "var(--ink)",
+                borderRadius: 2,
+                fontFamily: "system-ui, sans-serif",
+                marginBottom: 16,
+                resize: "vertical",
+              }}
+            />
+          </>
+        )}
 
         {/* Match count + actions */}
         <div
@@ -19098,12 +20253,16 @@ export default function App() {
   const [datasetsPageSize, setDatasetsPageSize] = useState(() =>
     readPageSize("datasets", 50),
   );
+  const [samplesPageSize, setSamplesPageSize] = useState(() =>
+    readPageSize("samples", 200),
+  );
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("crocodeel-page-size-events", String(eventsPageSize));
     window.localStorage.setItem("crocodeel-page-size-gallery", String(galleryPageSize));
     window.localStorage.setItem("crocodeel-page-size-datasets", String(datasetsPageSize));
-  }, [eventsPageSize, galleryPageSize, datasetsPageSize]);
+    window.localStorage.setItem("crocodeel-page-size-samples", String(samplesPageSize));
+  }, [eventsPageSize, galleryPageSize, datasetsPageSize, samplesPageSize]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("crocodeel-theme", theme);
@@ -19927,10 +21086,11 @@ export default function App() {
       title: `Mark ${matches.length} same-subject event${matches.length > 1 ? "s" : ""} as false positive?`,
       body:
         "These are longitudinal pairs (source and target share a subject_id) — biologically expected to share microbes, so CroCoDeEL flags are typically false positives.\n\n" +
-        "An explanatory note will be added to each. Already-validated events are not affected.",
+        "Each event is marked FP and its TARGET sample is flagged as Correct (skipping any target sample that already carries a verdict). Already-validated events are not affected.",
       confirmLabel: `Mark ${matches.length} as FP`,
       onConfirm: () => {
         const matchIds = new Set(matches.map((e) => e.id));
+        const matchedTargets = [];
         setRawEvents((prev) =>
           prev.map((e) => {
             if (!matchIds.has(e.id)) return e;
@@ -19938,9 +21098,19 @@ export default function App() {
             const subj = r?.value || "?";
             const autoNote = `Auto-classified as FP: longitudinal pair (same subject_id=${subj}).`;
             const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
+            if (e.target) matchedTargets.push(e.target);
             return { ...e, verdict: "false_positive", notes: newNote };
           }),
         );
+        // Side-effect: stamp the target samples as Correct, but never
+        // overwrite an existing sample-level verdict the curator may
+        // have already set by hand.
+        const uniqueTargets = Array.from(new Set(matchedTargets));
+        for (const t of uniqueTargets) {
+          const cur = sampleCuration[t] || {};
+          if (cur.verdict && cur.verdict !== "pending") continue;
+          setSampleVerdict(t, "correct");
+        }
       },
     });
   };
@@ -19975,18 +21145,28 @@ export default function App() {
       title: `Mark ${matches.length} event${matches.length > 1 ? "s" : ""} toward NC as true positive?`,
       body:
         "These events flow into a sample tagged as a negative control. A clean NC should not carry biological signal, so any contamination reaching it is almost certainly real (well-to-well leakage, carry-over, or reagent contamination).\n\n" +
-        "An explanatory note will be added to each. Already-validated events are not affected.",
+        "Each event is marked TP and its TARGET sample (the negative control) is flagged as Contaminated (skipping any target sample that already carries a verdict). Already-validated events are not affected.",
       confirmLabel: `Mark ${matches.length} as TP`,
       onConfirm: () => {
         const matchIds = new Set(matches.map((e) => e.id));
+        const matchedTargets = [];
         setRawEvents((prev) =>
           prev.map((e) => {
             if (!matchIds.has(e.id)) return e;
             const autoNote = `Auto-classified as TP: contamination flowing into negative control "${e.target}".`;
             const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
+            if (e.target) matchedTargets.push(e.target);
             return { ...e, verdict: "true_positive", notes: newNote };
           }),
         );
+        // Side-effect: stamp the target NC samples as Contaminated,
+        // but never overwrite an existing sample-level verdict.
+        const uniqueTargets = Array.from(new Set(matchedTargets));
+        for (const t of uniqueTargets) {
+          const cur = sampleCuration[t] || {};
+          if (cur.verdict && cur.verdict !== "pending") continue;
+          setSampleVerdict(t, "contaminated");
+        }
       },
     });
   };
@@ -19998,24 +21178,54 @@ export default function App() {
       list of event ids. Used by the "Bulk apply by criteria" dialog in
       Guided validation. If `comment` is empty, existing notes are
       preserved untouched; otherwise the comment is prepended to each
-      event's notes so prior context is never destroyed. */
-  const bulkApplyToEvents = (ids, verdict, comment) => {
+      event's notes so prior context is never destroyed.
+
+      The optional `sampleSideEffects` argument lets the dialog ALSO
+      stamp a verdict and / or an action on the TARGET sample of each
+      matched event — handy for sweeping rules like "every event with
+      probability ≥ 0.95 → mark TP and mark its target as contaminated
+      + suppress". `targetVerdict` is null → leave alone, otherwise
+      one of pending/contaminated/correct/uncertain. `targetAction` is
+      undefined → leave alone, null → clear, else "keep"/"suppress". */
+  const bulkApplyToEvents = (ids, verdict, comment, sampleSideEffects) => {
     if (!ids || ids.length === 0) return;
     const idSet = new Set(ids);
     const stamp = new Date().toISOString().slice(0, 10);
+    const sse = sampleSideEffects || {};
+    const tv = sse.targetVerdict || null;
+    const ta = sse.targetAction;
+    const taProvided = ta !== undefined;
+    const skipExistingTV = !!sse.skipExistingTargetVerdict;
+    const skipExistingTA = !!sse.skipExistingTargetAction;
+    const sampleComment = (sse.sampleComment || "").trim();
+    const sideEffectBits = [];
+    if (tv)
+      sideEffectBits.push(
+        `target verdict → ${tv}${skipExistingTV ? " (skip already-set)" : ""}`,
+      );
+    if (taProvided)
+      sideEffectBits.push(
+        `target action → ${ta == null ? "(clear)" : ta}${skipExistingTA ? " (skip already-set)" : ""}`,
+      );
+    if (sampleComment) sideEffectBits.push("note prepended to target sample");
     setBulkConfirm({
       kind: "confirm",
       title: `Apply "${verdict.replace("_", " ")}" to ${ids.length} event${ids.length > 1 ? "s" : ""}?`,
       body:
         `Existing evaluations on the matched events will be overwritten.` +
+        (sideEffectBits.length
+          ? `\n\nSample-level side-effects on each event's TARGET sample: ${sideEffectBits.join(", ")}.`
+          : "") +
         (comment
           ? `\n\nThe comment will be prepended to each event's notes (existing notes are preserved).`
           : `\n\nNo comment provided — existing notes are kept untouched.`),
       confirmLabel: `Apply to ${ids.length}`,
       onConfirm: () => {
+        let matchedTargets = [];
         setRawEvents((prev) =>
           prev.map((e) => {
             if (!idSet.has(e.id)) return e;
+            if (e.target) matchedTargets.push(e.target);
             const next = { ...e, verdict };
             if (comment) {
               const tag = `[bulk ${stamp}] ${comment}`;
@@ -20024,6 +21234,28 @@ export default function App() {
             return next;
           }),
         );
+        if (tv || taProvided || sampleComment) {
+          // Dedupe target ids before pushing to setSampleVerdict /
+          // setSampleAction so a sample touched by multiple matched
+          // events isn't written N times in a row. Skip-existing
+          // toggles are honoured field by field — checked against the
+          // sampleCuration snapshot at confirm time.
+          const uniqueTargets = Array.from(new Set(matchedTargets));
+          for (const t of uniqueTargets) {
+            const cur = sampleCuration[t] || {};
+            const hasVerdict = cur.verdict && cur.verdict !== "pending";
+            const hasAction = !!cur.action;
+            if (tv && !(skipExistingTV && hasVerdict))
+              setSampleVerdict(t, tv);
+            if (taProvided && !(skipExistingTA && hasAction))
+              setSampleAction(t, ta);
+            if (sampleComment) {
+              const tag = `[bulk ${stamp}] ${sampleComment}`;
+              const newNote = cur.notes ? `${tag}\n\n${cur.notes}` : tag;
+              setSampleNote(t, newNote);
+            }
+          }
+        }
       },
     });
   };
@@ -22147,6 +23379,7 @@ export default function App() {
                 setFocusPlate(plateId || null);
                 setTab("plate");
               }}
+              pageSize={samplesPageSize}
             />
           )}
           {tab === "export" && (
@@ -22668,6 +23901,11 @@ export default function App() {
                     label: "Scatterplot gallery",
                     value: galleryPageSize,
                     setter: setGalleryPageSize,
+                  },
+                  {
+                    label: "Samples table",
+                    value: samplesPageSize,
+                    setter: setSamplesPageSize,
                   },
                   {
                     label: "Datasets",
