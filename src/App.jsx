@@ -5,9 +5,15 @@ import LZString from "lz-string";
 import {
   FolderOpen,
   AlertCircle,
+  AlertOctagon,
+  BadgeCheck,
+  Bookmark,
   CheckCircle2,
+  Circle,
   XCircle,
   HelpCircle,
+  ThumbsDown,
+  ThumbsUp,
   Download,
   GitBranch,
   ScatterChart as ScatterIcon,
@@ -6221,6 +6227,7 @@ const EventsTable = ({
   setSort,
   onPick,
   setVerdict,
+  setSampleVerdict,
   metadata,
   plateMap,
   runMetadata,
@@ -6500,84 +6507,122 @@ const EventsTable = ({
                       </QuickBtn>
                     </div>
                   </td>
+                  {/* Target verdict — sample-level verdict on the
+                      event's target sample. Editable inline (writes
+                      via setSampleVerdict), so curating from the
+                      events table no longer requires a hop to the
+                      Samples tab. */}
                   <td className="px-3 py-2.5">
-                    {(() => {
-                      // Read-only badge — sample-level verdict on the
-                      // event's target sample. Edited from the Samples
-                      // tab; mirrored here so the events table reads
-                      // alongside the per-sample call.
-                      const v = sampleCuration?.[e.target]?.verdict;
-                      if (!v || v === "pending") {
+                    <div className="flex gap-0.5">
+                      {[
+                        {
+                          id: "pending",
+                          Icon: Circle,
+                          tone: SAMPLE_VERDICT_TONE.pending,
+                        },
+                        {
+                          id: "contaminated",
+                          Icon: ThumbsDown,
+                          tone: SAMPLE_VERDICT_TONE.contaminated,
+                        },
+                        {
+                          id: "correct",
+                          Icon: ThumbsUp,
+                          tone: SAMPLE_VERDICT_TONE.correct,
+                        },
+                        {
+                          id: "uncertain",
+                          Icon: HelpCircle,
+                          tone: SAMPLE_VERDICT_TONE.uncertain,
+                        },
+                      ].map((opt) => {
+                        const cur =
+                          sampleCuration?.[e.target]?.verdict || "pending";
+                        const active = cur === opt.id;
+                        const Icon = opt.Icon;
                         return (
-                          <span
-                            className="text-[11px]"
-                            style={{ color: "var(--border-strong)" }}
-                            title={`Target sample "${e.target}" has no verdict yet`}
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              if (setSampleVerdict)
+                                setSampleVerdict(e.target, opt.id);
+                            }}
+                            title={`Set ${e.target}'s sample-level verdict to ${opt.tone.label}`}
+                            className="rounded-sm flex items-center justify-center"
+                            style={{
+                              width: 24,
+                              height: 24,
+                              padding: 0,
+                              background: active
+                                ? opt.tone.bg
+                                : "var(--bg-card)",
+                              color: active ? "#fff" : opt.tone.bg,
+                              border: `1px solid ${active ? opt.tone.bg : "var(--border)"}`,
+                              cursor: "pointer",
+                            }}
                           >
-                            —
-                          </span>
+                            <Icon className="w-3.5 h-3.5" />
+                          </button>
                         );
-                      }
-                      const tone = SAMPLE_VERDICT_TONE[v] || SAMPLE_VERDICT_TONE.pending;
-                      return (
-                        <span
-                          className="text-[10px] px-1.5 py-0.5 rounded-sm"
-                          style={{
-                            background: tone.bg,
-                            color: "#fff",
-                            fontWeight: 700,
-                            letterSpacing: "0.05em",
-                            textTransform: "uppercase",
-                            fontFamily: '"Raleway", sans-serif',
-                          }}
-                          title={`Sample-level verdict recorded on target "${e.target}"`}
-                        >
-                          {tone.label}
-                        </span>
-                      );
-                    })()}
+                      })}
+                    </div>
                   </td>
                   {actionEnabled && (
                     <td className="px-3 py-2.5">
-                      {(() => {
-                        // Read-only badge — action lives on the target
-                        // sample, edited from Samples / Validate / the
-                        // Network node popover. Showing it here keeps
-                        // the events table in sync without offering a
-                        // second editing surface that could diverge.
-                        const a = sampleCuration?.[e.target]?.action;
-                        if (!a) {
+                      <div className="flex gap-0.5">
+                        {[
+                          {
+                            id: "keep",
+                            Icon: Save,
+                            color: "#e0b13a",
+                            label: "Keep",
+                          },
+                          {
+                            id: "suppress",
+                            Icon: Trash2,
+                            color: "#ed6e6c",
+                            label: "Suppress",
+                          },
+                        ].map((opt) => {
+                          const cur = sampleCuration?.[e.target]?.action;
+                          const active = cur === opt.id;
+                          const Icon = opt.Icon;
                           return (
-                            <span
-                              className="text-[11px]"
-                              style={{ color: "var(--border-strong)" }}
-                              title="No action recorded on the target sample"
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                if (setAction)
+                                  setAction(
+                                    e.id,
+                                    active ? null : opt.id,
+                                  );
+                              }}
+                              title={
+                                active
+                                  ? `Clear ${opt.label.toLowerCase()} on ${e.target}`
+                                  : `Mark ${e.target} as ${opt.label.toLowerCase()}`
+                              }
+                              className="rounded-sm flex items-center justify-center"
+                              style={{
+                                width: 24,
+                                height: 24,
+                                background: active
+                                  ? opt.color
+                                  : "var(--bg-card)",
+                                color: active ? "#fff" : opt.color,
+                                border: `1px solid ${active ? opt.color : "var(--border)"}`,
+                                cursor: "pointer",
+                              }}
                             >
-                              —
-                            </span>
+                              <Icon className="w-3.5 h-3.5" />
+                            </button>
                           );
-                        }
-                        const tone =
-                          a === "suppress"
-                            ? { bg: "#ed6e6c", label: "Suppress" }
-                            : { bg: "#e0b13a", label: "Keep" };
-                        return (
-                          <span
-                            className="text-[10px] px-1.5 py-0.5 rounded-sm"
-                            style={{
-                              background: tone.bg,
-                              color: "#fff",
-                              fontWeight: 700,
-                              letterSpacing: "0.05em",
-                              textTransform: "uppercase",
-                              fontFamily: '"Raleway", sans-serif',
-                            }}
-                            title={`Action recorded on target sample "${e.target}"`}
-                          >
-                            {tone.label}
-                          </span>
-                        );
-                      })()}
+                        })}
+                      </div>
                     </td>
                   )}
                 </tr>
@@ -6586,7 +6631,7 @@ const EventsTable = ({
             {events.length === 0 && (
               <tr>
                 <td
-                  colSpan={8 + (hasContext ? 1 : 0) + (actionEnabled ? 1 : 0)}
+                  colSpan={9 + (hasContext ? 1 : 0) + (actionEnabled ? 1 : 0)}
                   className="px-3 py-8 text-center text-[13px]"
                   style={{ color: "var(--ink-muted)" }}
                 >
@@ -23627,6 +23672,7 @@ export default function App() {
               hasAb={!!ab}
               actionEnabled={actionEnabled}
               setAction={setAction}
+              setSampleVerdict={setSampleVerdict}
               sampleCuration={sampleCuration}
               pageSize={eventsPageSize}
             />
