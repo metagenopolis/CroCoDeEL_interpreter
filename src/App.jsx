@@ -19152,6 +19152,22 @@ export default function App() {
   );
   const [focusPlate, setFocusPlate] = useState(null);
   const [bulkApplyOpen, setBulkApplyOpen] = useState(false);
+  // Default filter shape — mirrored by the useState lazy init below.
+  // Exposed so the dataset / demo / file-load paths can reset cleanly
+  // when the user switches studies (otherwise stale scope / sliders
+  // from the previous dataset can hide every event in the new one).
+  const defaultFilter = () => ({
+    q: "",
+    minScore: 0,
+    minRate: 0,
+    minIntroduced: 0,
+    verdicts: [...VERDICT_IDS],
+    sampleVerdicts: [...SAMPLE_VERDICT_IDS],
+    subject: "any",
+    group: "any",
+    adjacent: "any",
+    scopeSamples: null,
+  });
   const [filter, setFilter] = useState(() => {
     // Migrate legacy boolean fields (hideRelated / adjacentOnly) to the
     // tri-state strings while preserving the user's last selection.
@@ -20056,6 +20072,11 @@ export default function App() {
       const text = await file.text();
       const parsed = parseEvents(text);
       setRawEvents(parsed.events);
+      setSampleCuration({});
+      // Reset the filter so any scope / sliders / sample-verdict
+      // selection from a previous study don't silently hide every
+      // event in the new file.
+      setFilter(defaultFilter());
       setRunMetadata(parsed.runMetadata);
       // Default the study label to the events filename (without
       // extension) so the curator gets some context immediately.
@@ -20110,6 +20131,12 @@ export default function App() {
       if (!parsedAb) throw new Error("Could not parse demo abundance table");
       const parsedEvents = parseEvents(evText);
       setRawEvents(parsedEvents.events);
+      setSampleCuration({});
+      // Reset the filter so any scope / sliders / sample-verdict
+      // selection from a previous study don't silently hide every
+      // event of the demo. The runMetadata effect re-applies the
+      // probability / rate cutoffs right after.
+      setFilter(defaultFilter());
       setRunMetadata(parsedEvents.runMetadata);
       setAb(parsedAb);
       // Stamp a study title so the upload-bar chip shows the user
@@ -20182,6 +20209,11 @@ export default function App() {
         // Reset session state to avoid mixing files from different datasets
         setRawEvents(parsedEvents.events);
         setSampleCuration({});
+        // Reset the filter so any scope / sliders / sample-verdict
+        // selection from the previous study don't silently hide every
+        // event of the new one (a stale scopeSamples list is the most
+        // common offender — its sample ids no longer exist here).
+        setFilter(defaultFilter());
         setRunMetadata(parsedEvents.runMetadata);
         setAb(parsedAb);
         setMetadata(null);
