@@ -1389,15 +1389,25 @@ const Stat = ({ label, value, tone = "neutral" }) => {
     good: { background: "#00a3a6", color: "white" },
     bad: { background: "#275662", color: "white" },
     warn: { background: "var(--border-strong)", color: "var(--ink)" },
-    // Sample-curation palette — matches the verdict / action button
-    // colours (Samples tab pills, Validate toolbar, scatter card halo)
-    // so the stat cards read as a continuation of the same vocabulary.
+    // One palette across the whole app — matches the verdict / action
+    // chips on the Samples tab, the Validate toolbar, the scatter
+    // card halos and the Network curation scheme so a colour means
+    // the same thing wherever you look:
+    //   teal  → TP / correct
+    //   salmon → FP / contaminated / suppress
+    //   amber → uncertain
+    //   grey  → pending
+    //   gold  → keep
+    //   violet → cascade
+    tp: { background: "#00a3a6", color: "white" },
+    fp: { background: "#ed6e6c", color: "white" },
     contaminated: { background: "#ed6e6c", color: "white" },
     correct: { background: "#00a3a6", color: "white" },
     uncertain: { background: "#d97a3c", color: "white" },
     pending: { background: "#9aaab0", color: "white" },
     keep: { background: "#e0b13a", color: "white" },
     suppress: { background: "#ed6e6c", color: "white" },
+    cascade: { background: "#423089", color: "white" },
   };
   return (
     <div className="px-4 py-4 rounded-sm" style={{ ...styles[tone], border: "1px solid var(--border)" }}>
@@ -1914,12 +1924,14 @@ const NetworkGraph = ({
   onBulkApply,
   onApplyToEventIds,
   onApplySampleAction,
+  onApplySampleVerdict,
   hasAb,
   actionEnabled,
   colorScheme,
   setColorScheme,
   onScopeToSamples,
   sampleCuration,
+  focusSampleId,
 }) => {
   const [hover, setHover] = useState(null);
   const [zoom, setZoom] = useState({ k: 1, x: 0, y: 0 });
@@ -1938,14 +1950,24 @@ const NetworkGraph = ({
   const [nodePopover, setNodePopover] = useState(null); // { id, x, y } | null
   const [popVerdict, setPopVerdict] = useState("true_positive");
   const [popAction, setPopAction] = useState("suppress");
-  const [popApplyTarget, setPopApplyTarget] = useState(true);
-  const [popApplySource, setPopApplySource] = useState(true);
+  const [popTargetVerdict, setPopTargetVerdict] = useState(null);
   const [popSkipDecided, setPopSkipDecided] = useState(true);
-  // Reset action default whenever the verdict changes — TP defaults to
-  // suppress, every other verdict has no action.
+  // Reset action / target-verdict defaults whenever the event
+  // evaluation changes — TP defaults the target sample's verdict to
+  // contaminated and the action to suppress; FP defaults the target
+  // verdict to correct (with no action). Other evaluations leave
+  // both alone.
   useEffect(() => {
-    if (popVerdict === "true_positive") setPopAction("suppress");
-    else setPopAction(null);
+    if (popVerdict === "true_positive") {
+      setPopAction("suppress");
+      setPopTargetVerdict("contaminated");
+    } else if (popVerdict === "false_positive") {
+      setPopAction(null);
+      setPopTargetVerdict("correct");
+    } else {
+      setPopAction(null);
+      setPopTargetVerdict(null);
+    }
   }, [popVerdict]);
   // Close the popover on Escape and on outside click.
   useEffect(() => {
@@ -2000,6 +2022,22 @@ const NetworkGraph = ({
       setFocusIdx(null);
     }
   }, [sortedComponents, focusIdx]);
+
+  // Auto-focus the connected component containing focusSampleId — set
+  // by a Network drill-in from the Samples tab. Fires whenever the
+  // requested sample changes (or whenever sortedComponents rebuild
+  // around the same id) so the curator lands directly on the right
+  // component instead of having to find it by hand.
+  useEffect(() => {
+    if (!focusSampleId) return;
+    const idx = sortedComponents.findIndex((c) =>
+      c.nodes.includes(focusSampleId),
+    );
+    if (idx >= 0 && idx !== focusIdx) {
+      setFocusIdx(idx);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSampleId, sortedComponents]);
 
   // Components actually rendered: either the single focused one, or all of
   // them. In focus mode we give that one component the whole canvas.
@@ -2318,7 +2356,7 @@ const NetworkGraph = ({
                 title={
                   opt.id === "exploration"
                     ? "Edges by rate, nodes by source / target / cascade role"
-                    : "Edges by verdict, nodes by most-severe action targeting them"
+                    : "Edges by event evaluation, node fill by sample-level verdict, node border by sample-level action"
                 }
               >
                 {opt.label}
@@ -2343,6 +2381,7 @@ const NetworkGraph = ({
           </div>
         ) : (
           <div className="flex items-center gap-3 flex-wrap pointer-events-none">
+            {/* Edge palette: event evaluation */}
             <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
               <span className="inline-block" style={{ width: 14, height: 2, background: "#00a3a6" }} />
               TP
@@ -2360,13 +2399,32 @@ const NetworkGraph = ({
               Pending
             </span>
             <span style={{ width: 1, height: 12, background: "var(--border-strong)" }} />
+            {/* Node fill = sample-level verdict */}
             <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
-              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#ed6e6c" }} />
-              suppress
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#ed6e6c", border: "1px solid #275662" }} />
+              contaminated
             </span>
             <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
-              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#e0b13a" }} />
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#00a3a6", border: "1px solid #275662" }} />
+              correct
+            </span>
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#d97a3c", border: "1px solid #275662" }} />
+              uncertain
+            </span>
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "#9aaab0", border: "1px solid #275662" }} />
+              pending
+            </span>
+            <span style={{ width: 1, height: 12, background: "var(--border-strong)" }} />
+            {/* Node border = sample-level action */}
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "transparent", border: "2px solid #e0b13a" }} />
               keep
+            </span>
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
+              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "transparent", border: "2px solid #7e3137" }} />
+              suppress
             </span>
           </div>
         )}
@@ -2650,16 +2708,35 @@ const NetworkGraph = ({
           const isTarget = (inDeg[n.id] || 0) > 0 && (outDeg[n.id] || 0) === 0;
           const isBoth = (inDeg[n.id] || 0) > 0 && (outDeg[n.id] || 0) > 0;
           let fill;
+          // Curation-scheme node styling:
+          //   • fill encodes the sample-level VERDICT (contaminated /
+          //     correct / uncertain / pending — pending stays the
+          //     muted grey baseline).
+          //   • stroke encodes the sample-level ACTION (keep gold /
+          //     suppress salmon), with a wider ring so it reads at a
+          //     glance even on small nodes. Samples without an action
+          //     keep the default deep-teal hairline.
+          let nodeStroke = "#275662";
+          let nodeStrokeWidth = 1.5;
           if (colorScheme === "curation") {
-            const act = sampleActionMap[n.id];
+            const cur = sampleCuration?.[n.id] || {};
+            const v = cur.verdict || "pending";
             fill =
-              act === "suppress"
+              v === "contaminated"
                 ? "#ed6e6c"
-                : act === "decontaminate"
-                  ? "#423089"
-                  : act === "keep"
-                    ? "#e0b13a"
-                    : "var(--bg-card)";
+                : v === "correct"
+                  ? "#00a3a6"
+                  : v === "uncertain"
+                    ? "#d97a3c"
+                    : "#9aaab0";
+            const act = cur.action;
+            if (act === "keep") {
+              nodeStroke = "#e0b13a";
+              nodeStrokeWidth = 3;
+            } else if (act === "suppress") {
+              nodeStroke = "#7e3137";
+              nodeStrokeWidth = 3;
+            }
           } else {
             fill = isSource
               ? "var(--bg-card)"
@@ -2702,8 +2779,12 @@ const NetworkGraph = ({
                 cy={n.y}
                 r={nodeRadius(n.id) * (isNodeHover ? 1.18 : 1)}
                 fill={fill}
-                stroke="#275662"
-                strokeWidth={isNodeHover ? 2.5 : 1.5}
+                stroke={nodeStroke}
+                strokeWidth={
+                  isNodeHover
+                    ? Math.max(nodeStrokeWidth + 1, 2.5)
+                    : nodeStrokeWidth
+                }
               />
               {/* External label below node — white halo for readability over
                   edges. Hidden in dense components when not zoomed/hovered. */}
@@ -2980,10 +3061,8 @@ const NetworkGraph = ({
           setVerdict={setPopVerdict}
           action={popAction}
           setAction={setPopAction}
-          applyTarget={popApplyTarget}
-          setApplyTarget={setPopApplyTarget}
-          applySource={popApplySource}
-          setApplySource={setPopApplySource}
+          targetVerdict={popTargetVerdict}
+          setTargetVerdict={setPopTargetVerdict}
           skipDecided={popSkipDecided}
           setSkipDecided={setPopSkipDecided}
           onClose={() => setNodePopover(null)}
@@ -2992,21 +3071,18 @@ const NetworkGraph = ({
               .filter((e) => {
                 if (popSkipDecided && e.verdict && e.verdict !== "pending")
                   return false;
-                const isTgt = e.target === nodePopover.id;
-                const isSrc = e.source === nodePopover.id;
-                if (popApplyTarget && isTgt) return true;
-                if (popApplySource && isSrc) return true;
-                return false;
+                return e.target === nodePopover.id;
               })
               .map((e) => e.id);
-            const dirParts = [];
-            if (popApplyTarget) dirParts.push("target");
-            if (popApplySource) dirParts.push("source");
-            const note = `applied via Network → node ${nodePopover.id} (as ${dirParts.join(" / ")})`;
-            // The verdict applies to events; the action is recorded
-            // directly on the node's sample (sample-level action).
+            const note = `applied via Network → node ${nodePopover.id} (as target)`;
+            // Event evaluation goes to the matched events; verdict
+            // and action go to the clicked sample (always the target
+            // of the matched events here).
             if (ids.length > 0 && onApplyToEventIds) {
               onApplyToEventIds(ids, popVerdict, note);
+            }
+            if (popTargetVerdict && onApplySampleVerdict) {
+              onApplySampleVerdict(nodePopover.id, popTargetVerdict);
             }
             if (popAction && onApplySampleAction) {
               onApplySampleAction(nodePopover.id, popAction);
@@ -3015,64 +3091,6 @@ const NetworkGraph = ({
           }}
         />
       )}
-    </div>
-  );
-};
-
-/** Tiny inline summary shown under the target / source checkboxes in
-    the Network node popover. Surfaces what verdict + action neighbours
-    already carry so the curator can decide whether to override or not.
-    Renders nothing when there are no related events. */
-const ActionBreakdown = ({ breakdown }) => {
-  if (!breakdown || breakdown.total === 0) return null;
-  const dot = (color) => (
-    <span
-      className="inline-block"
-      style={{
-        width: 6,
-        height: 6,
-        borderRadius: "50%",
-        background: color,
-        marginRight: 3,
-        verticalAlign: "middle",
-      }}
-    />
-  );
-  const segments = [];
-  if (breakdown.suppress > 0)
-    segments.push(
-      <span key="s" title="TP + suppress">
-        {dot("#ed6e6c")}
-        {breakdown.suppress} suppress
-      </span>,
-    );
-  if (breakdown.keep > 0)
-    segments.push(
-      <span key="k" title="TP + keep">
-        {dot("#e0b13a")}
-        {breakdown.keep} keep
-      </span>,
-    );
-  if (breakdown.none > 0)
-    segments.push(
-      <span key="n" title="No action set (pending / FP / Uncertain / TP without action)">
-        {dot("#9aaab0")}
-        {breakdown.none} none
-      </span>,
-    );
-  if (segments.length === 0) return null;
-  return (
-    <div
-      className="text-[10px] mt-0.5 ml-6"
-      style={{ color: "var(--ink-muted)" }}
-    >
-      currently:{" "}
-      {segments.map((seg, i) => (
-        <React.Fragment key={i}>
-          {seg}
-          {i < segments.length - 1 && " · "}
-        </React.Fragment>
-      ))}
     </div>
   );
 };
@@ -3092,10 +3110,8 @@ const NodeBulkPopover = ({
   setVerdict,
   action,
   setAction,
-  applyTarget,
-  setApplyTarget,
-  applySource,
-  setApplySource,
+  targetVerdict,
+  setTargetVerdict,
   skipDecided,
   setSkipDecided,
   onClose,
@@ -3121,47 +3137,24 @@ const NodeBulkPopover = ({
     };
   }, [onClose]);
 
+  // Count events where this sample is the TARGET, both unfiltered
+  // (the "total") and after honouring the skip-decided toggle (drives
+  // the Apply button label). This popover only ever operates on
+  // target-side edges — i.e. the contaminations flowing INTO the
+  // clicked sample.
   const counts = useMemo(() => {
-    // `eligible*` is the count after applying the skipDecided filter
-    // (drives the matched/Apply count). `breakdown*` looks at every
-    // related event regardless of the filter so the user can see what
-    // verdicts/actions are already set on the neighbours.
     let asTarget = 0;
-    let asSource = 0;
-    // Action lives on samples now — for the "as source" view we count
-    // the actions recorded on the *targets* this node points to (i.e.
-    // what's being decided downstream of the node). The "as target"
-    // view counts neighbouring sources; usually they don't carry an
-    // action, but we keep symmetry so the UI reads consistently.
-    const breakdownTarget = { suppress: 0, keep: 0, none: 0, total: 0 };
-    const breakdownSource = { suppress: 0, keep: 0, none: 0, total: 0 };
+    let eligibleAsTarget = 0;
     events.forEach((e) => {
-      const tgt = e.target === sampleId;
-      const src = e.source === sampleId;
-      if (!tgt && !src) return;
+      if (e.target !== sampleId) return;
+      asTarget++;
       const eligible =
         !skipDecided || !e.verdict || e.verdict === "pending";
-      if (tgt) {
-        if (eligible) asTarget++;
-        breakdownTarget.total++;
-        const a = sampleCuration?.[e.source]?.action || "none";
-        if (a === "suppress") breakdownTarget.suppress++;
-        else if (a === "keep") breakdownTarget.keep++;
-        else breakdownTarget.none++;
-      }
-      if (src) {
-        if (eligible) asSource++;
-        breakdownSource.total++;
-        const a = sampleCuration?.[e.target]?.action || "none";
-        if (a === "suppress") breakdownSource.suppress++;
-        else if (a === "keep") breakdownSource.keep++;
-        else breakdownSource.none++;
-      }
+      if (eligible) eligibleAsTarget++;
     });
-    return { asTarget, asSource, breakdownTarget, breakdownSource };
-  }, [events, sampleId, skipDecided, sampleCuration]);
-  const matchedCount =
-    (applyTarget ? counts.asTarget : 0) + (applySource ? counts.asSource : 0);
+    return { asTarget, eligibleAsTarget };
+  }, [events, sampleId, skipDecided]);
+  const matchedCount = counts.eligibleAsTarget;
   const name = sampleName(metadata, sampleId);
   // Clamp the popover inside the viewport (best-effort; we don't have
   // measured dimensions yet but the typical width is ~320 px).
@@ -3200,7 +3193,7 @@ const NodeBulkPopover = ({
             className="text-[10px] uppercase tracking-[0.1em]"
             style={{ color: "var(--ink-muted)", fontWeight: 700 }}
           >
-            Apply to events touching
+            Apply to events targeting
           </div>
           <div
             className="text-[14px] truncate flex items-center gap-2 flex-wrap"
@@ -3218,57 +3211,66 @@ const NodeBulkPopover = ({
                 </span>
               )}
             </span>
-            {onScopeToSamples &&
-              (() => {
-                const neighbours = new Set([sampleId]);
-                events.forEach((e) => {
-                  if (e.source === sampleId && e.target)
-                    neighbours.add(e.target);
-                  if (e.target === sampleId && e.source)
-                    neighbours.add(e.source);
-                });
-                const ids = Array.from(neighbours);
-                const scopeAndGo = (target) => () => {
-                  onScopeToSamples(ids, target);
-                  onClose();
-                };
-                return (
-                  <span
-                    className="flex items-center gap-1"
-                    onClick={(ev) => ev.stopPropagation()}
-                    title={`Scope to the ${ids.length} sample${ids.length === 1 ? "" : "s"} touching ${sampleId}`}
-                  >
-                    <button
-                      type="button"
-                      onClick={scopeAndGo("scatter")}
-                      className="px-1.5 py-0.5 text-[10px] rounded-sm"
-                      style={{
-                        background: "var(--bg-card)",
-                        border: "1px solid var(--border)",
-                        color: "var(--ink-muted)",
-                        fontWeight: 600,
-                        cursor: "pointer",
-                      }}
-                    >
-                      → Scatter
-                    </button>
-                    <button
-                      type="button"
-                      onClick={scopeAndGo("table")}
-                      className="px-1.5 py-0.5 text-[10px] rounded-sm"
-                      style={{
-                        background: "var(--bg-card)",
-                        border: "1px solid var(--border)",
-                        color: "var(--ink-muted)",
-                        fontWeight: 600,
-                        cursor: "pointer",
-                      }}
-                    >
-                      → Events
-                    </button>
-                  </span>
-                );
-              })()}
+            {onScopeToSamples && (
+              <span
+                className="flex items-center gap-1"
+                onClick={(ev) => ev.stopPropagation()}
+                title={`Drill into ${sampleId}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    onScopeToSamples([sampleId], "scatter");
+                    onClose();
+                  }}
+                  className="px-1.5 py-0.5 text-[10px] rounded-sm"
+                  style={{
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    color: "var(--ink-muted)",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  → Scatter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onScopeToSamples([sampleId], "table");
+                    onClose();
+                  }}
+                  className="px-1.5 py-0.5 text-[10px] rounded-sm"
+                  style={{
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    color: "var(--ink-muted)",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  → Events
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onScopeToSamples([sampleId], "samples");
+                    onClose();
+                  }}
+                  className="px-1.5 py-0.5 text-[10px] rounded-sm"
+                  style={{
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    color: "var(--ink-muted)",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                  title="Open this sample in the Samples tab"
+                >
+                  → Samples
+                </button>
+              </span>
+            )}
           </div>
         </div>
         <button
@@ -3292,62 +3294,13 @@ const NodeBulkPopover = ({
         className="text-[11px] mb-3"
         style={{ color: "var(--ink-muted)" }}
       >
-        Pick an evaluation and decide which side(s) of the edges to update.
-      </div>
-
-      <div className="flex flex-col gap-2 mb-3">
-        <div>
-          <label
-            className="flex items-center gap-2 text-[12px] cursor-pointer"
-            style={{
-              color:
-                counts.asTarget === 0 ? "var(--ink-muted)" : "var(--ink)",
-            }}
-            title={`${counts.asTarget} event${counts.asTarget === 1 ? "" : "s"} where ${sampleId} is the target (after the skip filter).`}
-          >
-            <input
-              type="checkbox"
-              checked={applyTarget}
-              disabled={counts.asTarget === 0}
-              onChange={(e) => setApplyTarget(e.target.checked)}
-              style={{ accentColor: "#00a3a6" }}
-            />
-            <span>
-              As <strong>target</strong>{" "}
-              <span style={{ color: "var(--ink-muted)" }}>
-                ({counts.asTarget} event
-                {counts.asTarget === 1 ? "" : "s"})
-              </span>
-            </span>
-          </label>
-          <ActionBreakdown breakdown={counts.breakdownTarget} />
-        </div>
-        <div>
-          <label
-            className="flex items-center gap-2 text-[12px] cursor-pointer"
-            style={{
-              color:
-                counts.asSource === 0 ? "var(--ink-muted)" : "var(--ink)",
-            }}
-            title={`${counts.asSource} event${counts.asSource === 1 ? "" : "s"} where ${sampleId} is the source (after the skip filter).`}
-          >
-            <input
-              type="checkbox"
-              checked={applySource}
-              disabled={counts.asSource === 0}
-              onChange={(e) => setApplySource(e.target.checked)}
-              style={{ accentColor: "#00a3a6" }}
-            />
-            <span>
-              As <strong>source</strong>{" "}
-              <span style={{ color: "var(--ink-muted)" }}>
-                ({counts.asSource} event
-                {counts.asSource === 1 ? "" : "s"})
-              </span>
-            </span>
-          </label>
-          <ActionBreakdown breakdown={counts.breakdownSource} />
-        </div>
+        Updates the <strong>{counts.asTarget}</strong> event
+        {counts.asTarget === 1 ? "" : "s"} where{" "}
+        <code style={{ fontFamily: "ui-monospace, monospace" }}>
+          {sampleId}
+        </code>{" "}
+        is the target (the contaminations flowing into it). Verdict and
+        action are recorded on the sample itself.
       </div>
 
       <label
@@ -3400,33 +3353,109 @@ const NodeBulkPopover = ({
         })}
       </div>
 
-      {actionEnabled && verdict === "true_positive" && (
+      <div
+        className="text-[10px] uppercase tracking-[0.1em] mb-1"
+        style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+      >
+        Verdict on target sample
+      </div>
+      <div className="flex gap-1.5 mb-3 flex-wrap">
+        {[
+          { id: null, lbl: "(no change)", bg: "var(--bg-card)" },
+          { id: "pending", lbl: "Pending", bg: SAMPLE_VERDICT_TONE.pending.bg },
+          {
+            id: "contaminated",
+            lbl: "Contaminated",
+            bg: SAMPLE_VERDICT_TONE.contaminated.bg,
+          },
+          { id: "correct", lbl: "Correct", bg: SAMPLE_VERDICT_TONE.correct.bg },
+          {
+            id: "uncertain",
+            lbl: "Uncertain",
+            bg: SAMPLE_VERDICT_TONE.uncertain.bg,
+          },
+        ].map((opt) => {
+          const active = targetVerdict === opt.id;
+          const filled = active && opt.id !== null;
+          return (
+            <button
+              key={opt.id || "none"}
+              type="button"
+              onClick={() => setTargetVerdict(opt.id)}
+              className="px-2.5 py-1 text-[11px] rounded-sm"
+              style={{
+                background: filled
+                  ? opt.bg
+                  : active
+                    ? "var(--bg-soft)"
+                    : "var(--bg-card)",
+                color: filled ? "#fff" : "var(--ink)",
+                border: `1px solid ${
+                  filled
+                    ? opt.bg
+                    : active
+                      ? "#275662"
+                      : "var(--border-strong)"
+                }`,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+              title={
+                opt.id
+                  ? `Set ${sampleId}'s sample-level verdict to ${opt.lbl}`
+                  : "Don't touch the sample-level verdict"
+              }
+            >
+              {opt.lbl}
+            </button>
+          );
+        })}
+      </div>
+
+      {actionEnabled && (
         <>
           <div
             className="text-[10px] uppercase tracking-[0.1em] mb-1"
             style={{ color: "var(--ink-muted)", fontWeight: 700 }}
           >
-            Action on related samples
+            Action on target sample
           </div>
           <div className="flex gap-1.5 mb-3 flex-wrap">
             {[
+              { id: null, lbl: "(no change)", bg: "var(--bg-card)" },
               { id: "keep", lbl: "Keep", bg: "#e0b13a" },
               { id: "suppress", lbl: "Suppress", bg: "#ed6e6c" },
             ].map((opt) => {
               const active = action === opt.id;
+              const filled = active && opt.id !== null;
               return (
                 <button
-                  key={opt.id}
+                  key={opt.id || "none"}
                   type="button"
                   onClick={() => setAction(opt.id)}
                   className="px-2.5 py-1 text-[11px] rounded-sm"
                   style={{
-                    background: active ? opt.bg : "var(--bg-card)",
-                    color: active ? "#fff" : "var(--ink)",
-                    border: `1px solid ${active ? opt.bg : "var(--border-strong)"}`,
+                    background: filled
+                      ? opt.bg
+                      : active
+                        ? "var(--bg-soft)"
+                        : "var(--bg-card)",
+                    color: filled ? "#fff" : "var(--ink)",
+                    border: `1px solid ${
+                      filled
+                        ? opt.bg
+                        : active
+                          ? "#275662"
+                          : "var(--border-strong)"
+                    }`,
                     fontWeight: 700,
                     cursor: "pointer",
                   }}
+                  title={
+                    opt.id
+                      ? `Set ${sampleId}'s sample-level action to ${opt.lbl}`
+                      : "Don't touch the sample-level action"
+                  }
                 >
                   {opt.lbl}
                 </button>
@@ -4982,8 +5011,16 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
               : `${avgIntroducedPct.toFixed(1)}%`
           }
         />
-        <Stat label="Validated (TP)" value={counts.tp} tone="good" />
-        <Stat label="Rejected (FP)" value={counts.fp} tone="bad" />
+        <Stat
+          label="Validated (TP)"
+          value={counts.tp}
+          tone={counts.tp > 0 ? "tp" : "neutral"}
+        />
+        <Stat
+          label="Rejected (FP)"
+          value={counts.fp}
+          tone={counts.fp > 0 ? "fp" : "neutral"}
+        />
       </div>
 
       {(events.length > 0 || metadata || plateMap || cascadeCount > 0) && (
@@ -4992,14 +5029,14 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
             <Stat
               label="Samples to keep"
               value={keepCount}
-              tone={keepCount > 0 ? "good" : "neutral"}
+              tone={keepCount > 0 ? "keep" : "neutral"}
             />
           )}
           {actionEnabled && (
             <Stat
               label="Samples to suppress"
               value={suppressCount}
-              tone={suppressCount > 0 ? "bad" : "neutral"}
+              tone={suppressCount > 0 ? "suppress" : "neutral"}
             />
           )}
           {events.length > 0 && (
@@ -5025,11 +5062,15 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
             <Stat
               label="Adjacent wells on plate"
               value={adjacentCount}
-              tone={adjacentCount > 0 ? "good" : "neutral"}
+              tone={adjacentCount > 0 ? "uncertain" : "neutral"}
             />
           )}
           {cascadeCount > 0 && (
-            <Stat label="Cascades detected" value={cascadeCount} tone="bad" />
+            <Stat
+              label="Cascades detected"
+              value={cascadeCount}
+              tone="cascade"
+            />
           )}
         </div>
       )}
@@ -5362,15 +5403,22 @@ const EventFilterBar = ({
     : SAMPLE_VERDICT_OPTIONS.map((v) => v.id);
   const allSampleVerdictsSelected =
     selectedSampleVerdicts.length === SAMPLE_VERDICT_OPTIONS.length;
+  const sampleVerdictsSide = filter.sampleVerdictsSide || "either";
+  const sideTagShort =
+    sampleVerdictsSide === "source"
+      ? " (source)"
+      : sampleVerdictsSide === "target"
+        ? " (target)"
+        : "";
   const sampleVerdictLabel = allSampleVerdictsSelected
     ? "sample verdicts"
     : selectedSampleVerdicts.length === 0
       ? "no sample verdicts"
       : selectedSampleVerdicts.length === 1
-        ? SAMPLE_VERDICT_OPTIONS.find(
+        ? `${SAMPLE_VERDICT_OPTIONS.find(
             (v) => v.id === selectedSampleVerdicts[0],
-          )?.label || "sample verdicts"
-        : `${selectedSampleVerdicts.length} sample verdicts`;
+          )?.label || "sample verdicts"}${sideTagShort}`
+        : `${selectedSampleVerdicts.length} sample verdicts${sideTagShort}`;
   const toggleSampleVerdict = (id) => {
     const next = selectedSampleVerdicts.includes(id)
       ? selectedSampleVerdicts.filter((v) => v !== id)
@@ -5722,11 +5770,55 @@ const EventFilterBar = ({
             >
               Sample verdicts
             </div>
-            <div
-              className="text-[10px] mb-1"
-              style={{ color: "var(--ink-muted)", fontStyle: "italic" }}
-            >
-              Match events whose source OR target sample has the chosen verdict.
+            {/* Side selector — pick which endpoint must carry the
+                chosen verdict. "Either" matches source OR target;
+                "Source only" / "Target only" lock the test to one
+                side. Pulling "events targeting a contaminated sample"
+                is the canonical use case (target = contaminated)
+                — it surfaces candidates whose target is already
+                explained by another contamination story so the
+                curator can sweep them at once. */}
+            <div className="flex items-center gap-1 mb-1 flex-wrap">
+              <span
+                className="text-[10px]"
+                style={{
+                  color: "var(--ink-muted)",
+                  fontWeight: 600,
+                  marginRight: 2,
+                }}
+              >
+                match on
+              </span>
+              {[
+                { id: "either", label: "either" },
+                { id: "source", label: "source" },
+                { id: "target", label: "target" },
+              ].map((opt) => {
+                const active =
+                  (filter.sampleVerdictsSide || "either") === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() =>
+                      setFilter({ ...filter, sampleVerdictsSide: opt.id })
+                    }
+                    className="px-2 py-0.5 text-[10px] rounded-sm"
+                    style={{
+                      background: active ? "#275662" : "var(--bg-card)",
+                      color: active ? "#fff" : "var(--ink-muted)",
+                      border: `1px solid ${active ? "#275662" : "var(--border)"}`,
+                      cursor: "pointer",
+                      fontFamily: '"Raleway", sans-serif',
+                      fontWeight: active ? 700 : 500,
+                      letterSpacing: "0.04em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
             </div>
             {SAMPLE_VERDICT_OPTIONS.map((v) => (
               <label
@@ -5750,6 +5842,7 @@ const EventFilterBar = ({
                   setFilter({
                     ...filter,
                     sampleVerdicts: SAMPLE_VERDICT_OPTIONS.map((v) => v.id),
+                    sampleVerdictsSide: "either",
                   })
                 }
                 className="text-[11px]"
@@ -5772,6 +5865,85 @@ const EventFilterBar = ({
                 }}
               >
                 none
+              </button>
+            </div>
+            <div
+              className="mt-2 pt-2 text-[10px]"
+              style={{
+                borderTop: "1px solid var(--border)",
+                color: "var(--ink-muted)",
+                fontWeight: 600,
+                fontFamily: '"Raleway", sans-serif',
+              }}
+            >
+              Quick presets
+            </div>
+            <div className="flex flex-wrap gap-1">
+              <button
+                type="button"
+                onClick={() =>
+                  setFilter({
+                    ...filter,
+                    sampleVerdicts: ["contaminated"],
+                    sampleVerdictsSide: "target",
+                  })
+                }
+                className="px-2 py-0.5 text-[10px] rounded-sm"
+                style={{
+                  background: "var(--bg-card)",
+                  color: "var(--ink)",
+                  border: "1px solid var(--border-strong)",
+                  cursor: "pointer",
+                  fontFamily: '"Raleway", sans-serif',
+                  fontWeight: 600,
+                }}
+                title="Show only events whose target sample is already tagged Contaminated — useful to sweep candidates whose target is already explained by another contamination."
+              >
+                target = contaminated
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setFilter({
+                    ...filter,
+                    sampleVerdicts: ["contaminated"],
+                    sampleVerdictsSide: "source",
+                  })
+                }
+                className="px-2 py-0.5 text-[10px] rounded-sm"
+                style={{
+                  background: "var(--bg-card)",
+                  color: "var(--ink)",
+                  border: "1px solid var(--border-strong)",
+                  cursor: "pointer",
+                  fontFamily: '"Raleway", sans-serif',
+                  fontWeight: 600,
+                }}
+                title="Show only events whose source sample is already tagged Contaminated — surfaces cascade candidates."
+              >
+                source = contaminated
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setFilter({
+                    ...filter,
+                    sampleVerdicts: ["pending"],
+                    sampleVerdictsSide: "either",
+                  })
+                }
+                className="px-2 py-0.5 text-[10px] rounded-sm"
+                style={{
+                  background: "var(--bg-card)",
+                  color: "var(--ink)",
+                  border: "1px solid var(--border-strong)",
+                  cursor: "pointer",
+                  fontFamily: '"Raleway", sans-serif',
+                  fontWeight: 600,
+                }}
+                title="Show only events whose source or target sample is still pending — the not-yet-curated candidates."
+              >
+                either = pending
               </button>
             </div>
           </div>
@@ -8221,7 +8393,7 @@ const ScatterTab = ({
   const [sortBy, setSortBy] = useState("score");
   // Direction per sort key — defaults match what most users expect
   // (descending for numeric severity, ascending for alphabetical).
-  const SORT_DEFAULT_DIR = { score: "desc", rate: "desc", introducedPct: "desc", source: "asc", target: "asc", pending: "asc", action: "asc" };
+  const SORT_DEFAULT_DIR = { score: "desc", rate: "desc", introducedPct: "desc", source: "asc", target: "asc", pending: "asc", action: "asc", targetVerdict: "asc" };
   const [sortDir, setSortDir] = useState(SORT_DEFAULT_DIR.score);
   // Sort freeze: when a card opens its action popover, we hold the
   // gallery's order so the just-clicked card doesn't jump out from
@@ -8351,19 +8523,40 @@ const ScatterTab = ({
     } else if (sortBy === "target") {
       copy.sort((a, b) => a.target.localeCompare(b.target) * flip);
     } else if (sortBy === "action") {
-      // Group by action — keep / suppress / none — and break ties by
-      // descending probability so the most-confident calls bubble up
-      // inside each action bucket.
+      // Group by the action recorded on each event's TARGET sample
+      // (keep / suppress / none) and break ties by descending
+      // probability so the most-confident calls bubble up inside
+      // each action bucket.
       const rank = (v) => (v === "keep" ? 0 : v === "suppress" ? 1 : 2);
       copy.sort(
         (a, b) =>
-          (rank(a.action) - rank(b.action)) * flip ||
+          (rank(sampleCuration?.[a.target]?.action) -
+            rank(sampleCuration?.[b.target]?.action)) *
+            flip ||
+          (b.score - a.score) * flip,
+      );
+    } else if (sortBy === "targetVerdict") {
+      // Group by the sample-level verdict recorded on each event's
+      // TARGET. Ties break by descending probability.
+      const rank = (v) =>
+        v === "contaminated"
+          ? 0
+          : v === "uncertain"
+            ? 1
+            : v === "correct"
+              ? 2
+              : 3;
+      copy.sort(
+        (a, b) =>
+          (rank(sampleCuration?.[a.target]?.verdict) -
+            rank(sampleCuration?.[b.target]?.verdict)) *
+            flip ||
           (b.score - a.score) * flip,
       );
     }
     sortedSnapshotRef.current = copy.map((e) => e.id);
     return copy;
-  }, [filtered, sortBy, sortDir, sortLocked]);
+  }, [filtered, sortBy, sortDir, sortLocked, sampleCuration]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(Math.max(1, page), totalPages);
@@ -8455,7 +8648,10 @@ const ScatterTab = ({
           { id: "score", label: "probability" },
           { id: "introducedPct", label: "introduced" },
           { id: "pending", label: "evaluation" },
-          ...(actionEnabled ? [{ id: "action", label: "action" }] : []),
+          { id: "targetVerdict", label: "target verdict" },
+          ...(actionEnabled
+            ? [{ id: "action", label: "target action" }]
+            : []),
           { id: "source", label: "source" },
           { id: "target", label: "target" },
         ].map((opt) => {
@@ -8551,12 +8747,14 @@ const NetworkTab = ({
   onBulkApply,
   onApplyToEventIds,
   onApplySampleAction,
+  onApplySampleVerdict,
   hasAb,
   actionEnabled,
   colorScheme,
   setColorScheme,
   onScopeToSamples,
   sampleCuration,
+  focusSampleId,
 }) => {
   const filteredIds = useMemo(
     () => new Set(filtered.map((e) => e.id)),
@@ -8586,12 +8784,14 @@ const NetworkTab = ({
       onBulkApply={onBulkApply}
       onApplyToEventIds={onApplyToEventIds}
       onApplySampleAction={onApplySampleAction}
+      onApplySampleVerdict={onApplySampleVerdict}
       hasAb={hasAb}
       actionEnabled={actionEnabled}
       colorScheme={colorScheme}
       setColorScheme={setColorScheme}
       onScopeToSamples={onScopeToSamples}
       sampleCuration={sampleCuration}
+      focusSampleId={focusSampleId}
     />
     <p
       className="text-[11px] mt-3 flex items-center gap-1.5"
@@ -9041,143 +9241,14 @@ const SampleStringValue = ({ value, mono }) => {
   );
 };
 
-/** Same as SampleStringValue, but the value renders as a clickable
-    chip when an onClick handler is provided. Used for `subject` to let
-    the curator filter the table to a single subject in one click. */
-const SampleClickableId = ({ value, onClick, title }) => {
-  if (!value) return <SampleStringValue value={null} />;
-  if (!onClick) return <SampleStringValue value={value} mono />;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title || `Filter samples to "${value}"`}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        height: 22,
-        padding: "0 9px",
-        borderRadius: 11,
-        background: "var(--bg-soft)",
-        color: "var(--ink)",
-        border: "1px solid var(--border)",
-        cursor: "pointer",
-        fontFamily: "ui-monospace, monospace",
-        fontSize: 12,
-        fontWeight: 600,
-        transition: "border-color 0.12s, background 0.12s",
-      }}
-      onMouseEnter={(ev) => {
-        ev.currentTarget.style.borderColor = "#00a3a6";
-        ev.currentTarget.style.background = "rgba(0,163,166,0.10)";
-      }}
-      onMouseLeave={(ev) => {
-        ev.currentTarget.style.borderColor = "var(--border)";
-        ev.currentTarget.style.background = "var(--bg-soft)";
-      }}
-    >
-      {value}
-    </button>
-  );
-};
-
-/** Boolean indicator badge — coloured pill when active, faint dash
-    when inactive. Used for control / low-biomass / low-seq-depth
-    columns. */
-const SampleBoolBadge = ({ active, label, color, Icon, title }) => {
-  if (!active) return <SampleStringValue value={null} />;
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        height: 20,
-        padding: "0 7px",
-        borderRadius: 10,
-        background: `${color}1f`,
-        color,
-        fontSize: 10,
-        fontWeight: 700,
-        fontFamily: '"Raleway", sans-serif',
-        letterSpacing: "0.04em",
-        textTransform: "uppercase",
-      }}
-      title={title || label}
-    >
-      <Icon className="w-3 h-3" style={{ flexShrink: 0 }} />
-      {label}
-    </span>
-  );
-};
-
-/** Plate placement badge — shows "P1 · A07" with a Grid3x3 icon.
-    Click jumps to the Plate tab focused on the right plate. */
-const SamplePlateBadge = ({ placement, onClick }) => {
-  const wellLbl =
-    placement.row != null && placement.col != null
-      ? wellLabel(placement.row, placement.col)
-      : "";
-  const display = wellLbl
-    ? `${placement.plate} · ${wellLbl}`
-    : placement.plate;
-  const Tag = onClick ? "button" : "span";
-  return (
-    <Tag
-      type={onClick ? "button" : undefined}
-      onClick={onClick}
-      title={
-        onClick
-          ? `Open plate ${placement.plate}${wellLbl ? ` · well ${wellLbl}` : ""} in the Plate tab`
-          : `Plate ${placement.plate}${wellLbl ? ` · well ${wellLbl}` : ""}`
-      }
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        height: 22,
-        padding: "0 9px",
-        borderRadius: 11,
-        background: "var(--bg-soft)",
-        color: "var(--ink)",
-        border: "1px solid var(--border)",
-        cursor: onClick ? "pointer" : "default",
-        fontFamily: "ui-monospace, monospace",
-        fontSize: 12,
-        fontWeight: 600,
-        transition: onClick ? "border-color 0.12s, background 0.12s" : undefined,
-      }}
-      onMouseEnter={
-        onClick
-          ? (ev) => {
-              ev.currentTarget.style.borderColor = "#00a3a6";
-              ev.currentTarget.style.background = "rgba(0,163,166,0.10)";
-            }
-          : undefined
-      }
-      onMouseLeave={
-        onClick
-          ? (ev) => {
-              ev.currentTarget.style.borderColor = "var(--border)";
-              ev.currentTarget.style.background = "var(--bg-soft)";
-            }
-          : undefined
-      }
-    >
-      <Grid3x3
-        className="w-3 h-3"
-        style={{ color: "var(--ink-muted)", flexShrink: 0 }}
-      />
-      {display}
-    </Tag>
-  );
-};
 
 /** Combined event count + breakdown chips + drill-in buttons for
     the Events column. The drill-in buttons live here (rather than in
     a dedicated column) so the count and the navigation hints stay
-    visually grouped. */
-const SampleEventsCell = ({ row, onScopeToSamples }) => (
+    visually grouped. Memoised so unchanged rows don't re-render
+    when something elsewhere in the table flips state. */
+const SampleEventsCell = React.memo(function SampleEventsCell({ row, onScopeToSamples, onDrillSample }) {
+  return (
   <>
     <div
       style={{
@@ -9308,7 +9379,11 @@ const SampleEventsCell = ({ row, onScopeToSamples }) => (
     <div className="flex gap-1.5" style={{ marginTop: 6 }}>
       <button
         type="button"
-        onClick={() => onScopeToSamples([row.id], "scatter")}
+        onClick={() =>
+          onDrillSample
+            ? onDrillSample(row.id, "scatter")
+            : onScopeToSamples([row.id], "scatter")
+        }
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -9331,7 +9406,11 @@ const SampleEventsCell = ({ row, onScopeToSamples }) => (
       </button>
       <button
         type="button"
-        onClick={() => onScopeToSamples([row.id], "table")}
+        onClick={() =>
+          onDrillSample
+            ? onDrillSample(row.id, "table")
+            : onScopeToSamples([row.id], "table")
+        }
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -9352,13 +9431,42 @@ const SampleEventsCell = ({ row, onScopeToSamples }) => (
         <Droplets className="w-3 h-3" />
         Events
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          onDrillSample
+            ? onDrillSample(row.id, "network")
+            : onScopeToSamples([row.id], "network")
+        }
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          height: 22,
+          padding: "0 9px",
+          borderRadius: 11,
+          background: "var(--bg-card)",
+          color: "var(--ink)",
+          border: "1px solid var(--border-strong)",
+          cursor: "pointer",
+          fontFamily: '"Raleway", sans-serif',
+          fontSize: 11,
+          fontWeight: 600,
+        }}
+        title="Open the contamination network scoped to this sample"
+      >
+        <GitBranch className="w-3 h-3" />
+        Network
+      </button>
     </div>
   </>
-);
+  );
+});
 
 /** Verdict picker — 4 chip buttons (pending / contaminated / correct /
-    uncertain) wired to setSampleVerdict. */
-const SampleVerdictCell = ({ row, setSampleVerdict }) => (
+    uncertain) wired to setSampleVerdict. Memoised. */
+const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSampleVerdict }) {
+  return (
   <div className="flex flex-wrap gap-1">
     {[
       { id: "pending", k: SAMPLE_VERDICT_TONE.pending },
@@ -9404,10 +9512,12 @@ const SampleVerdictCell = ({ row, setSampleVerdict }) => (
       );
     })}
   </div>
-);
+  );
+});
 
-/** Action picker — keep / suppress chips. */
-const SampleActionCell = ({ row, setSampleAction }) => (
+/** Action picker — keep / suppress chips. Memoised. */
+const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAction }) {
+  return (
   <div className="flex gap-1">
     {[
       { id: "keep", color: "#e0b13a", Icon: Save, label: "Keep" },
@@ -9451,7 +9561,8 @@ const SampleActionCell = ({ row, setSampleAction }) => (
       );
     })}
   </div>
-);
+  );
+});
 
 /** Second filter row used on the Samples tab — a single free-text
     search field with auto-suggestions across every per-sample metadata
@@ -9475,8 +9586,11 @@ const SampleContextSearchBar = ({
   setLowBiomassFilter,
   lowSeqDepthFilter,
   setLowSeqDepthFilter,
+  minEvents,
+  setMinEvents,
   anyActive,
   onClear,
+  hasMetadata = true,
 }) => {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -9733,31 +9847,143 @@ const SampleContextSearchBar = ({
             <X className="w-3 h-3" />
           </button>
         ))}
-        <input
-          ref={inputRef}
-          type="text"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={onKeyDown}
-          placeholder={
-            activeChips.length === 0
-              ? "type to filter samples by context (subj, tp, grp, biome, control, low biomass, low seq depth)…"
-              : "add another filter…"
-          }
-          className="text-[12px] outline-none flex-1 min-w-[160px]"
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "var(--ink)",
-            padding: "2px 0",
-            fontFamily: '"Raleway", sans-serif',
-            fontWeight: 500,
-          }}
-        />
+        {hasMetadata ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            onKeyDown={onKeyDown}
+            placeholder={
+              activeChips.length === 0
+                ? "type to filter samples by context (subj, tp, grp, biome, control, low biomass, low seq depth)…"
+                : "add another filter…"
+            }
+            className="text-[12px] outline-none flex-1 min-w-[160px]"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "var(--ink)",
+              padding: "2px 0",
+              fontFamily: '"Raleway", sans-serif',
+              fontWeight: 500,
+            }}
+          />
+        ) : (
+          <span
+            className="flex-1 text-[11px]"
+            style={{
+              color: "var(--border-strong)",
+              fontStyle: "italic",
+              fontFamily: '"Raleway", sans-serif',
+            }}
+            title="Load metadata.tsv to filter by subject / timepoint / group / biome / control / quality flags."
+          >
+            no metadata loaded — context filters unavailable
+          </span>
+        )}
+        {/* Min-events counter — keep only samples touched by at least
+            N events. 0 = no constraint. */}
+        {typeof setMinEvents === "function" && (
+          <div
+            className="flex items-center gap-1 rounded-md"
+            style={{
+              padding: "2px 4px 2px 8px",
+              background: minEvents > 0 ? "rgba(0,163,166,0.10)" : "var(--bg-card)",
+              border: minEvents > 0
+                ? "1px solid #00a3a6"
+                : "1px solid var(--border)",
+              fontFamily: '"Raleway", sans-serif',
+              fontSize: 11,
+            }}
+            title="Minimum number of events touching a sample for it to appear in the table. Use the - / + buttons or type a number."
+          >
+            <ListChecks
+              className="w-3 h-3"
+              style={{ color: "var(--ink-muted)", flexShrink: 0 }}
+            />
+            <span
+              style={{
+                color: "var(--ink-muted)",
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+                fontSize: 10,
+              }}
+            >
+              ≥ events
+            </span>
+            <button
+              type="button"
+              onClick={() => setMinEvents(Math.max(0, (minEvents || 0) - 1))}
+              disabled={!minEvents}
+              style={{
+                width: 18,
+                height: 18,
+                padding: 0,
+                background: "transparent",
+                border: "1px solid var(--border-strong)",
+                borderRadius: 3,
+                color: !minEvents ? "var(--border-strong)" : "var(--ink)",
+                cursor: !minEvents ? "default" : "pointer",
+                fontWeight: 700,
+                fontSize: 12,
+                lineHeight: 1,
+                fontFamily: '"Raleway", sans-serif',
+              }}
+              aria-label="Decrease minimum events"
+            >
+              −
+            </button>
+            <input
+              type="number"
+              min={0}
+              value={minEvents || 0}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                setMinEvents(Number.isFinite(v) && v > 0 ? v : 0);
+              }}
+              style={{
+                width: 36,
+                padding: "1px 4px",
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                color: "var(--ink)",
+                borderRadius: 3,
+                fontFamily: "ui-monospace, monospace",
+                fontWeight: 600,
+                textAlign: "center",
+                fontSize: 11,
+              }}
+              aria-label="Minimum events to show a sample"
+            />
+            <button
+              type="button"
+              onClick={() => setMinEvents((minEvents || 0) + 1)}
+              style={{
+                width: 18,
+                height: 18,
+                padding: 0,
+                background: "transparent",
+                border: "1px solid var(--border-strong)",
+                borderRadius: 3,
+                color: "var(--ink)",
+                cursor: "pointer",
+                fontWeight: 700,
+                fontSize: 12,
+                lineHeight: 1,
+                fontFamily: '"Raleway", sans-serif',
+              }}
+              aria-label="Increase minimum events"
+            >
+              +
+            </button>
+          </div>
+        )}
         {anyActive && (
           <button
             type="button"
@@ -9850,383 +10076,6 @@ const SampleContextSearchBar = ({
   );
 };
 
-/** Third filter row on the Samples tab — slices the visible samples
-    by the statistics of the events that target them. Each metric
-    (count of targeting events, max rate, max probability, max number
-    of introduced species) gets a min / max number-input pair. Empty
-    bound = no constraint. Rates are entered as percentages 0–100. */
-const SampleTargetingFilterBar = ({
-  tgtCountMin,
-  setTgtCountMin,
-  tgtCountMax,
-  setTgtCountMax,
-  tgtRateMin,
-  setTgtRateMin,
-  tgtRateMax,
-  setTgtRateMax,
-  tgtScoreMin,
-  setTgtScoreMin,
-  tgtScoreMax,
-  setTgtScoreMax,
-  tgtIntroMin,
-  setTgtIntroMin,
-  tgtIntroMax,
-  setTgtIntroMax,
-  anyActive,
-  onClear,
-}) => {
-  const numberInput = (value, setValue, placeholder, step) => (
-    <input
-      type="number"
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      placeholder={placeholder}
-      step={step || "any"}
-      className="text-[12px] outline-none rounded-sm"
-      style={{
-        width: 56,
-        padding: "2px 4px",
-        background: "var(--bg-card)",
-        border: "1px solid var(--border)",
-        color: "var(--ink)",
-        fontFamily: '"Raleway", sans-serif',
-        fontWeight: 500,
-        appearance: "textfield",
-        MozAppearance: "textfield",
-      }}
-    />
-  );
-
-  const metricChip = (label, hint, IconComp, minNode, maxNode) => (
-    <div
-      className="flex items-center gap-1 rounded-md"
-      title={hint}
-      style={{
-        padding: "3px 8px",
-        background: "var(--bg-card)",
-        border: "1px solid var(--border)",
-        fontFamily: '"Raleway", sans-serif',
-      }}
-    >
-      <IconComp
-        className="w-3 h-3"
-        style={{ color: "var(--ink-muted)", flexShrink: 0 }}
-      />
-      <span
-        style={{
-          color: "var(--ink-muted)",
-          fontSize: 10,
-          fontWeight: 700,
-          textTransform: "uppercase",
-          letterSpacing: "0.04em",
-        }}
-      >
-        {label}
-      </span>
-      {minNode}
-      <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>–</span>
-      {maxNode}
-    </div>
-  );
-
-  return (
-    <div
-      className="flex flex-wrap gap-2 items-center mb-4 p-2 rounded-md"
-      style={{
-        background: "var(--bg-soft)",
-        border: "1px solid var(--border)",
-      }}
-    >
-      <span
-        className="text-[10px] uppercase tracking-[0.05em] mr-1"
-        style={{ color: "var(--ink-muted)", fontWeight: 700 }}
-        title="Filter samples by aggregate statistics of the events that target them"
-      >
-        Targeting events
-      </span>
-      {metricChip(
-        "count",
-        "Number of events with this sample as target — keep samples whose count is in [min, max]. Leave blank for no bound.",
-        ListChecks,
-        numberInput(tgtCountMin, setTgtCountMin, "min", "1"),
-        numberInput(tgtCountMax, setTgtCountMax, "max", "1"),
-      )}
-      {metricChip(
-        "rate %",
-        "Maximum rate (in %) among events targeting this sample. Keep samples whose worst targeting-event rate is in [min, max].",
-        Activity,
-        numberInput(tgtRateMin, setTgtRateMin, "min", "0.1"),
-        numberInput(tgtRateMax, setTgtRateMax, "max", "0.1"),
-      )}
-      {metricChip(
-        "prob",
-        "Maximum probability (0–1) among events targeting this sample.",
-        ShieldCheck,
-        numberInput(tgtScoreMin, setTgtScoreMin, "min", "0.01"),
-        numberInput(tgtScoreMax, setTgtScoreMax, "max", "0.01"),
-      )}
-      {metricChip(
-        "introduced",
-        "Maximum number of introduced species across events targeting this sample.",
-        Droplets,
-        numberInput(tgtIntroMin, setTgtIntroMin, "min", "1"),
-        numberInput(tgtIntroMax, setTgtIntroMax, "max", "1"),
-      )}
-      {anyActive && (
-        <button
-          type="button"
-          onClick={onClear}
-          className="ml-auto flex items-center gap-1 text-[11px]"
-          style={{
-            color: "var(--ink-muted)",
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            fontFamily: '"Raleway", sans-serif',
-            fontWeight: 600,
-          }}
-          title="Clear every targeting-event filter"
-        >
-          <X className="w-3 h-3" />
-          clear stats
-        </button>
-      )}
-    </div>
-  );
-};
-
-/** [Legacy] Original context filter row — replaced by
-    SampleContextSearchBar above. Kept temporarily as a reference so
-    the dropdown-based pattern is easy to rebuild if the search-based
-    one doesn't pan out. */
-const SampleContextFilterBar = ({
-  contextOptions,
-  subjectFilter,
-  setSubjectFilter,
-  timepointFilter,
-  setTimepointFilter,
-  groupFilter,
-  setGroupFilter,
-  biomeFilter,
-  setBiomeFilter,
-  controlFilter,
-  setControlFilter,
-  lowBiomassFilter,
-  setLowBiomassFilter,
-  lowSeqDepthFilter,
-  setLowSeqDepthFilter,
-  anyActive,
-  onClear,
-}) => {
-  const selectChip = (label, value, setValue, options, IconComp) => {
-    if (!options || options.length === 0) return null;
-    const active = !!value;
-    return (
-      <label
-        className="flex items-center gap-1.5 rounded-md"
-        style={{
-          padding: "2px 8px 2px 6px",
-          background: active ? "rgba(0,163,166,0.10)" : "var(--bg-card)",
-          border: active
-            ? "1px solid #00a3a6"
-            : "1px solid var(--border)",
-          fontFamily: '"Raleway", sans-serif',
-          fontSize: 11,
-        }}
-        title={`Filter samples by ${label}`}
-      >
-        <IconComp
-          className="w-3 h-3"
-          style={{ color: "var(--ink-muted)", flexShrink: 0 }}
-        />
-        <span
-          style={{
-            color: "var(--ink-muted)",
-            fontWeight: 700,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            fontSize: 10,
-          }}
-        >
-          {label}
-        </span>
-        <select
-          value={value || ""}
-          onChange={(e) => setValue(e.target.value || null)}
-          className="text-[12px] outline-none"
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "var(--ink)",
-            fontFamily: '"Raleway", sans-serif',
-            fontWeight: 500,
-            cursor: "pointer",
-            padding: "2px 0",
-            minWidth: 60,
-          }}
-        >
-          <option value="">any</option>
-          {options.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-        </select>
-      </label>
-    );
-  };
-
-  const triChip = (label, value, setValue, IconComp, accent) => (
-    <div
-      className="flex items-center gap-1 rounded-md"
-      style={{
-        padding: "2px 8px 2px 6px",
-        background: value !== "any" ? `${accent}1f` : "var(--bg-card)",
-        border:
-          value !== "any" ? `1px solid ${accent}` : "1px solid var(--border)",
-        fontFamily: '"Raleway", sans-serif',
-        fontSize: 11,
-      }}
-      title={`Filter samples by ${label}`}
-    >
-      <IconComp
-        className="w-3 h-3"
-        style={{
-          color: value !== "any" ? accent : "var(--ink-muted)",
-          flexShrink: 0,
-        }}
-      />
-      <span
-        style={{
-          color: "var(--ink-muted)",
-          fontWeight: 700,
-          textTransform: "uppercase",
-          letterSpacing: "0.04em",
-          fontSize: 10,
-          marginRight: 2,
-        }}
-      >
-        {label}
-      </span>
-      {[
-        { id: "any", lbl: "any" },
-        { id: "yes", lbl: "yes" },
-        { id: "no", lbl: "no" },
-      ].map((opt) => {
-        const active = value === opt.id;
-        return (
-          <button
-            key={opt.id}
-            type="button"
-            onClick={() => setValue(opt.id)}
-            style={{
-              padding: "1px 6px",
-              borderRadius: 8,
-              fontSize: 10,
-              fontFamily: '"Raleway", sans-serif',
-              fontWeight: active ? 700 : 500,
-              background: active ? accent : "transparent",
-              color: active ? "#fff" : "var(--ink-muted)",
-              border: "none",
-              cursor: "pointer",
-            }}
-          >
-            {opt.lbl}
-          </button>
-        );
-      })}
-    </div>
-  );
-
-  return (
-    <div
-      className="flex flex-wrap gap-2 items-center mb-4 p-2 rounded-md"
-      style={{
-        background: "var(--bg-soft)",
-        border: "1px solid var(--border)",
-      }}
-    >
-      <span
-        className="text-[10px] uppercase tracking-[0.05em] mr-1"
-        style={{ color: "var(--ink-muted)", fontWeight: 700 }}
-      >
-        Context
-      </span>
-      {selectChip(
-        "subj",
-        subjectFilter,
-        setSubjectFilter,
-        contextOptions.subjects,
-        User,
-      )}
-      {selectChip(
-        "tp",
-        timepointFilter,
-        setTimepointFilter,
-        contextOptions.timepoints,
-        Calendar,
-      )}
-      {contextOptions.hasGroupIdCol &&
-        selectChip(
-          "grp",
-          groupFilter,
-          setGroupFilter,
-          contextOptions.groups,
-          Users,
-        )}
-      {contextOptions.hasBiomeCol &&
-        selectChip(
-          "biome",
-          biomeFilter,
-          setBiomeFilter,
-          contextOptions.biomes,
-          Layers,
-        )}
-      {triChip(
-        "control",
-        controlFilter,
-        setControlFilter,
-        ShieldAlert,
-        "#423089",
-      )}
-      {contextOptions.hasLowBiomassCol &&
-        triChip(
-          "low biomass",
-          lowBiomassFilter,
-          setLowBiomassFilter,
-          AlertCircle,
-          "#d97a3c",
-        )}
-      {contextOptions.hasLowSeqDepthCol &&
-        triChip(
-          "low seq depth",
-          lowSeqDepthFilter,
-          setLowSeqDepthFilter,
-          Activity,
-          "#d97a3c",
-        )}
-      {anyActive && (
-        <button
-          type="button"
-          onClick={onClear}
-          className="ml-auto flex items-center gap-1 text-[11px]"
-          style={{
-            color: "var(--ink-muted)",
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            fontFamily: '"Raleway", sans-serif',
-            fontWeight: 600,
-          }}
-          title="Clear every sample-context filter"
-        >
-          <X className="w-3 h-3" />
-          clear context
-        </button>
-      )}
-    </div>
-  );
-};
 
 const SamplesTab = ({
   events,
@@ -10247,19 +10096,36 @@ const SamplesTab = ({
   onExportSamplesTSV,
   onOpenPlate,
   pageSize,
+  uiRef,
+  onDrillSample,
+  highlightSampleId,
 }) => {
-  // Sample-table-local context filters — layered on top of the global
-  // event filter. Subject can also be set by clicking a `subj` pill in
-  // the Context column. The boolean tri-states ("any" | "yes" | "no")
-  // let the curator slice on negative-control / low-biomass / low-seq-
-  // depth flags without changing the global event filter.
-  const [subjectFilter, setSubjectFilter] = useState(null);
-  const [timepointFilter, setTimepointFilter] = useState(null);
-  const [groupFilter, setGroupFilter] = useState(null);
-  const [biomeFilter, setBiomeFilter] = useState(null);
-  const [controlFilter, setControlFilter] = useState("any");
-  const [lowBiomassFilter, setLowBiomassFilter] = useState("any");
-  const [lowSeqDepthFilter, setLowSeqDepthFilter] = useState("any");
+  // Lazy-init each useState from uiRef.current so a round-trip to
+  // another tab and back lands the curator on the same row they were
+  // studying. Each setter mirrors back into uiRef via a tiny
+  // useEffect below so the ref always reflects the latest value.
+  const persisted = uiRef?.current || {};
+  const [subjectFilter, setSubjectFilter] = useState(
+    persisted.subjectFilter ?? null,
+  );
+  const [timepointFilter, setTimepointFilter] = useState(
+    persisted.timepointFilter ?? null,
+  );
+  const [groupFilter, setGroupFilter] = useState(persisted.groupFilter ?? null);
+  const [biomeFilter, setBiomeFilter] = useState(persisted.biomeFilter ?? null);
+  const [controlFilter, setControlFilter] = useState(
+    persisted.controlFilter ?? "any",
+  );
+  const [lowBiomassFilter, setLowBiomassFilter] = useState(
+    persisted.lowBiomassFilter ?? "any",
+  );
+  const [lowSeqDepthFilter, setLowSeqDepthFilter] = useState(
+    persisted.lowSeqDepthFilter ?? "any",
+  );
+  // Minimum-event-count filter — keep only samples touched by at
+  // least this many events. 0 = no constraint. Adjustable via the
+  // +/- counter inside the Context search bar.
+  const [minEvents, setMinEvents] = useState(persisted.minEvents ?? 0);
   const sampleFiltersActive =
     subjectFilter ||
     timepointFilter ||
@@ -10267,7 +10133,8 @@ const SamplesTab = ({
     biomeFilter ||
     controlFilter !== "any" ||
     lowBiomassFilter !== "any" ||
-    lowSeqDepthFilter !== "any";
+    lowSeqDepthFilter !== "any" ||
+    minEvents > 0;
   const clearSampleFilters = () => {
     setSubjectFilter(null);
     setTimepointFilter(null);
@@ -10276,6 +10143,7 @@ const SamplesTab = ({
     setControlFilter("any");
     setLowBiomassFilter("any");
     setLowSeqDepthFilter("any");
+    setMinEvents(0);
   };
 
   // Build the sorted unique value lists used to populate the dropdowns.
@@ -10307,10 +10175,12 @@ const SamplesTab = ({
       hasGroupIdCol: !!metadata?.hasGroupIdCol,
     };
   }, [metadata]);
-  const [sortBy, setSortBy] = useState("attention"); // attention | id | events | verdict
-  const [sortDir, setSortDir] = useState("desc");
+  const [sortBy, setSortBy] = useState(persisted.sortBy ?? "attention"); // attention | id | events | verdict
+  const [sortDir, setSortDir] = useState(persisted.sortDir ?? "desc");
   const [bulkOpen, setBulkOpen] = useState(false);
-  const [openNotes, setOpenNotes] = useState(() => new Set());
+  const [openNotes, setOpenNotes] = useState(
+    () => new Set(persisted.openNotes || []),
+  );
   const toggleNotes = (id) =>
     setOpenNotes((prev) => {
       const next = new Set(prev);
@@ -10421,6 +10291,7 @@ const SamplesTab = ({
       if (lowBiomassFilter === "no" && f.isLowBiomass) return false;
       if (lowSeqDepthFilter === "yes" && !f.isLowSequencingDepth) return false;
       if (lowSeqDepthFilter === "no" && f.isLowSequencingDepth) return false;
+      if (minEvents > 0 && r.eventsTouching < minEvents) return false;
       return true;
     });
   }, [
@@ -10433,6 +10304,7 @@ const SamplesTab = ({
     controlFilter,
     lowBiomassFilter,
     lowSeqDepthFilter,
+    minEvents,
   ]);
 
   const sorted = useMemo(() => {
@@ -10514,8 +10386,48 @@ const SamplesTab = ({
   ].filter(Boolean);
 
   const PAGE_SIZE = pageSize || 200;
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(persisted.page ?? 1);
+  // Mirror the local UI state into uiRef so the values survive a tab
+  // round-trip. Each effect runs whenever the corresponding piece of
+  // state changes; SamplesTab is mounted only when active so this is
+  // cheap.
   useEffect(() => {
+    if (!uiRef?.current) return;
+    uiRef.current.sortBy = sortBy;
+    uiRef.current.sortDir = sortDir;
+    uiRef.current.page = page;
+    uiRef.current.openNotes = Array.from(openNotes);
+    uiRef.current.subjectFilter = subjectFilter;
+    uiRef.current.timepointFilter = timepointFilter;
+    uiRef.current.groupFilter = groupFilter;
+    uiRef.current.biomeFilter = biomeFilter;
+    uiRef.current.controlFilter = controlFilter;
+    uiRef.current.lowBiomassFilter = lowBiomassFilter;
+    uiRef.current.lowSeqDepthFilter = lowSeqDepthFilter;
+    uiRef.current.minEvents = minEvents;
+  }, [
+    uiRef,
+    sortBy,
+    sortDir,
+    page,
+    openNotes,
+    subjectFilter,
+    timepointFilter,
+    groupFilter,
+    biomeFilter,
+    controlFilter,
+    lowBiomassFilter,
+    lowSeqDepthFilter,
+    minEvents,
+  ]);
+  // Reset to page 1 when sort or any filter changes — but NOT on the
+  // first render: that would clobber the page restored from uiRef.
+  const isFirstRenderRef = useRef(true);
+  useEffect(() => {
+    if (isFirstRenderRef.current) {
+      isFirstRenderRef.current = false;
+      return;
+    }
     setPage(1);
   }, [
     sortBy,
@@ -10528,6 +10440,7 @@ const SamplesTab = ({
     controlFilter,
     lowBiomassFilter,
     lowSeqDepthFilter,
+    minEvents,
   ]);
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(Math.max(1, page), totalPages);
@@ -10611,27 +10524,33 @@ const SamplesTab = ({
           shared event filter bar. Renders only when at least one
           metadata column is loaded; otherwise the dropdowns would all
           be empty. */}
-      {metadata && (
-        <SampleContextSearchBar
-          contextOptions={contextOptions}
-          subjectFilter={subjectFilter}
-          setSubjectFilter={setSubjectFilter}
-          timepointFilter={timepointFilter}
-          setTimepointFilter={setTimepointFilter}
-          groupFilter={groupFilter}
-          setGroupFilter={setGroupFilter}
-          biomeFilter={biomeFilter}
-          setBiomeFilter={setBiomeFilter}
-          controlFilter={controlFilter}
-          setControlFilter={setControlFilter}
-          lowBiomassFilter={lowBiomassFilter}
-          setLowBiomassFilter={setLowBiomassFilter}
-          lowSeqDepthFilter={lowSeqDepthFilter}
-          setLowSeqDepthFilter={setLowSeqDepthFilter}
-          anyActive={sampleFiltersActive}
-          onClear={clearSampleFilters}
-        />
-      )}
+      {/* Sample filter bar — always rendered so the min-events counter
+          (the only filter that doesn't depend on metadata) stays
+          available even when no metadata.tsv has been loaded. The
+          context dropdowns / flag tri-states fold away gracefully
+          when no metadata column exposes them. */}
+      <SampleContextSearchBar
+        contextOptions={contextOptions}
+        subjectFilter={subjectFilter}
+        setSubjectFilter={setSubjectFilter}
+        timepointFilter={timepointFilter}
+        setTimepointFilter={setTimepointFilter}
+        groupFilter={groupFilter}
+        setGroupFilter={setGroupFilter}
+        biomeFilter={biomeFilter}
+        setBiomeFilter={setBiomeFilter}
+        controlFilter={controlFilter}
+        setControlFilter={setControlFilter}
+        lowBiomassFilter={lowBiomassFilter}
+        setLowBiomassFilter={setLowBiomassFilter}
+        lowSeqDepthFilter={lowSeqDepthFilter}
+        setLowSeqDepthFilter={setLowSeqDepthFilter}
+        minEvents={minEvents}
+        setMinEvents={setMinEvents}
+        anyActive={sampleFiltersActive}
+        onClear={clearSampleFilters}
+        hasMetadata={!!metadata}
+      />
 
       {/* Table */}
       <div
@@ -10691,11 +10610,19 @@ const SamplesTab = ({
           <tbody>
             {visible.map((r, idx) => {
               const notesOpen = openNotes.has(r.id);
-              const rowBg = idx % 2 === 0 ? "transparent" : "var(--bg-soft)";
+              const isHighlighted = highlightSampleId === r.id;
+              const rowBg = isHighlighted
+                ? "rgba(0,163,166,0.10)"
+                : idx % 2 === 0
+                  ? "transparent"
+                  : "var(--bg-soft)";
               const cellStyle = {
                 borderBottom: "1px solid var(--border)",
                 background: rowBg,
                 verticalAlign: "top",
+                boxShadow: isHighlighted
+                  ? "inset 0 1px 0 #00a3a6, inset 0 -1px 0 #00a3a6"
+                  : undefined,
               };
               const f = r.flags || {};
               const placement = r.placement;
@@ -10747,6 +10674,7 @@ const SamplesTab = ({
                           <SampleEventsCell
                             row={r}
                             onScopeToSamples={onScopeToSamples}
+                            onDrillSample={onDrillSample}
                           />
                         )}
                         {col.id === "verdict" && (
@@ -11142,8 +11070,8 @@ const BulkTargetingSection = ({
       </div>
       <div className="flex flex-wrap gap-1.5 mb-3">
         {metricChip(
-          "count",
-          "Number of events targeting each sample. Keep samples whose count is in [min, max].",
+          "events",
+          "Number of events targeting each sample. Keep samples whose event count is in [min, max].",
           ListChecks,
           numberInput(tgtCountMin, setTgtCountMin, "min", "1"),
           numberInput(tgtCountMax, setTgtCountMax, "max", "1"),
@@ -14406,6 +14334,24 @@ const ValidateTab = ({
           (rank(eff(a)) - rank(eff(b))) * flip ||
           (b.score - a.score) * flip,
       );
+    } else if (queueSortBy === "targetVerdict") {
+      // Group by the sample-level verdict recorded on each event's
+      // TARGET sample. Ties break by descending probability.
+      const rank = (v) =>
+        v === "contaminated"
+          ? 0
+          : v === "uncertain"
+            ? 1
+            : v === "correct"
+              ? 2
+              : 3;
+      copy.sort(
+        (a, b) =>
+          (rank(sampleCuration?.[a.target]?.verdict) -
+            rank(sampleCuration?.[b.target]?.verdict)) *
+            flip ||
+          (b.score - a.score) * flip,
+      );
     } else if (queueSortBy === "source") {
       copy.sort((a, b) => a.source.localeCompare(b.source) * flip);
     }
@@ -14647,14 +14593,26 @@ const ValidateTab = ({
         </div>
         <div className="flex flex-wrap gap-1 mb-2">
           {[
-            // Labels stay short (prob / intro) to keep the row on one
-            // line in the narrow sidebar; tooltips carry the full name.
+            // Labels stay short (prob / intro / eval) to keep the row
+            // on one line in the narrow sidebar; tooltips carry the
+            // full name.
             { id: "rate", label: "rate", full: "rate" },
             { id: "score", label: "prob", full: "probability" },
             { id: "introducedPct", label: "intro", full: "introduced" },
-            { id: "verdict", label: "evaluation", full: "evaluation" },
+            { id: "verdict", label: "eval", full: "event evaluation" },
+            {
+              id: "targetVerdict",
+              label: "verdict",
+              full: "target sample verdict",
+            },
             ...(actionEnabled
-              ? [{ id: "action", label: "action", full: "action" }]
+              ? [
+                  {
+                    id: "action",
+                    label: "action",
+                    full: "target sample action",
+                  },
+                ]
               : []),
           ].map((opt) => {
             const active = queueSortBy === opt.id;
@@ -17285,6 +17243,7 @@ const HelpTab = ({ onStartTour }) => {
     { id: "h-plate", label: "plate_map.tsv" },
     { id: "h-datasets", label: "Bundled paper datasets" },
     { id: "h-tabs", label: "Tabs walkthrough" },
+    { id: "h-curation", label: "Event vs sample curation" },
     { id: "h-criteria", label: "Validation criteria" },
     { id: "h-flags", label: "Sample flags reference" },
     { id: "h-shortcuts", label: "Keyboard shortcuts" },
@@ -17433,7 +17392,7 @@ const HelpTab = ({ onStartTour }) => {
             <li>
               Optionally add sample metadata and the plate map — each one
               unlocks extra context (related-sample warnings, plate-proximity
-              criteria).
+              criteria, the per-sample Context column on the Samples tab).
             </li>
             <li>
               Browse the tabs to get an overview, scan the events table,
@@ -17442,14 +17401,28 @@ const HelpTab = ({ onStartTour }) => {
             <li>
               Open Guided validation to walk through events one by one:
               read the assisted criteria, look at the plate position,
-              check the sample context, and assign an evaluation (true
-              positive / false positive / uncertain).
+              check the sample context, and assign an{" "}
+              <strong>event evaluation</strong> (true positive / false
+              positive / uncertain). The popover on each scatter card
+              also lets you commit a <strong>sample-level verdict</strong>{" "}
+              (contaminated / correct / uncertain) and an{" "}
+              <strong>action</strong> (keep / suppress) on the target
+              sample in the same gesture.
+            </li>
+            <li>
+              Use the <strong>Samples</strong> tab as the per-sample
+              cockpit: filter by metadata or by "≥ N events", apply
+              bulk verdicts / actions to fine-grained subsets, drill
+              into Scatter / Events / Network for any sample (a
+              floating "Back to Samples" chip lands you back on the
+              same row).
             </li>
             <li>
               Export your curated TSV (or printable HTML report) from
               the Export tab. For a full session backup that round-trips
-              with every loaded file and your UI state, use{" "}
-              <strong>Download session</strong> on the files bar.
+              with every loaded file, sample-level curation and your UI
+              state, use <strong>Download session</strong> on the files
+              bar.
             </li>
           </ol>
         </HelpSection>
@@ -17854,10 +17827,14 @@ const HelpTab = ({ onStartTour }) => {
                 and introduced % are rendered as coloured bars (rate
                 uses a log10 scale, probability uses a continuous
                 gradient). Every column is click-sortable except Context
-                — including Evaluation, Action and Species count. Pagination
-                size is configurable (default 500) under the gear icon
-                → Items per page. Click a row to jump into Guided
-                validation.
+                — including <strong>Evaluation</strong>,{" "}
+                <strong>Target verdict</strong> (sample-level verdict
+                of the event's target — read-only badge sourced from
+                the Samples tab) and <strong>Target action</strong>{" "}
+                (Keep / Suppress badge, also read-only). Species count
+                is sortable too. Pagination size is configurable
+                (default 500) under the gear icon → Items per page.
+                Click a row to jump into Guided validation.
               </p>
             </div>
             <div>
@@ -17870,16 +17847,21 @@ const HelpTab = ({ onStartTour }) => {
                 axes are computed once per dataset from the abundance
                 matrix so all thumbnails are on identical bounds and
                 visually comparable. Sort by probability, rate,
-                introduced %, evaluation, action (when enabled) or source
-                name; click an active sort button again to flip
-                ascending/descending. The shared filter bar above the
-                grid hides events below your probability / rate /
-                introduced thresholds. Toggle to "Explore new pairs" to
-                inspect pairs that CroCoDeEL did not flag (potential
-                false negatives) and add them as manually-curated events
-                — the form sits side-by-side with a live preview that
-                recomputes the introduced-species count as you move the
-                rate / probability sliders.
+                introduced %, evaluation, <strong>target verdict</strong>,{" "}
+                <strong>target action</strong> (when the action layer is
+                enabled), or source / target sample name; click an
+                active sort button again to flip ascending/descending.
+                The shared filter bar above the grid hides events below
+                your probability / rate / introduced thresholds and
+                also exposes a Sample-verdicts popover (Beaker icon)
+                that hides events whose source or target sample isn't
+                in the chosen verdict subset. Click any verdict button
+                on a card to open the popover where you can commit, in
+                one place, an event evaluation, a sample-level{" "}
+                <em>Verdict on target</em> and an{" "}
+                <em>Action on target</em>. Toggle to "Explore new pairs"
+                to inspect pairs that CroCoDeEL did not flag and add
+                them as manually-curated events.
               </p>
             </div>
             <div>
@@ -17887,14 +17869,30 @@ const HelpTab = ({ onStartTour }) => {
                 Contamination network
               </h4>
               <p>
-                Directed graph of all events. Nodes coloured by role:
-                source-only (white), target-only (deep teal), cascade
-                (both sides — salmon). Edge thickness and colour intensity
-                scale with the contamination rate (log-scaled). Pan with
-                drag, zoom with scroll. Click an edge to open the event
-                in Guided validation; hovering shows source → target,
-                rate, probability and current evaluation in the bar at the
-                bottom.
+                Directed graph of all events. Two color schemes,
+                togglable in the legend:
+              </p>
+              <ul className="list-disc pl-5 space-y-1" style={{ marginTop: 6 }}>
+                <li>
+                  <strong>Exploration</strong> — edges by rate
+                  (log-scaled), nodes by topological role
+                  (source-only / target-only / cascade).
+                </li>
+                <li>
+                  <strong>Curation</strong> — edges by event evaluation
+                  (TP teal / FP salmon / Uncertain amber / Pending
+                  grey); node fill = sample-level verdict
+                  (contaminated salmon / correct teal / uncertain amber
+                  / pending grey); node border = sample-level action
+                  (gold for keep, dark salmon for suppress, default
+                  hairline when no action is set).
+                </li>
+              </ul>
+              <p style={{ marginTop: 6 }}>
+                Pan with drag, zoom with scroll. Click an edge to open
+                the event in Guided validation; hovering shows source
+                → target, rate, probability and current evaluation in
+                the bar at the bottom.
               </p>
               <p style={{ marginTop: 6 }}>
                 Toolbar features: <strong>evaluation checkboxes</strong>{" "}
@@ -17903,11 +17901,19 @@ const HelpTab = ({ onStartTour }) => {
                 the layout. The right sidebar lists every connected
                 component ranked by sample count; clicking one enters
                 <strong> focus mode</strong>, dedicating the whole canvas
-                to that component — handy for the dense blobs where
-                everything else looks tiny. Sample labels are hidden on
-                components with more than 25 nodes to keep the overview
-                readable; zoom past 1.4×, hover a node, or focus the
-                component to bring them back.
+                to that component. Drilling into a sample from the
+                Samples tab automatically focuses the component
+                containing that sample.
+              </p>
+              <p style={{ marginTop: 6 }}>
+                <strong>Click a node</strong> to open the bulk popover —
+                applies to the events <em>targeting</em> the clicked
+                sample (i.e. the contaminations flowing into it). It
+                exposes: an event Evaluation picker, a Verdict on
+                target sample picker, an Action on target sample
+                picker (when the action layer is enabled), and three
+                drill-ins → Scatter / → Events / → Samples that scope
+                to that sample and switch tabs.
               </p>
             </div>
             <div>
@@ -17934,14 +17940,75 @@ const HelpTab = ({ onStartTour }) => {
                 metadata is loaded) and an informational plate-proximity
                 check, the plate position and a sample-context panel
                 showing every metadata flag for both source and target.
-                Assign an evaluation (T / F / U / P) in a single click; when
-                the suppress/keep feature
-                is enabled in Configuration, a Keep / Suppress chip
-                pair appears inline next to the evaluation row. The event
-                queue in the sidebar is sortable (rate / prob / intro /
-                pending / source) and auto-scrolls to keep the active
-                row in view as you navigate. See the Keyboard shortcuts
-                and Bulk actions sections for faster workflows.
+                Assign an evaluation (T / F / U / P) in a single click;
+                when the suppress / keep layer is enabled, a Keep /
+                Suppress chip pair appears inline next to the evaluation
+                row and writes directly to the target sample's
+                action.
+              </p>
+              <p style={{ marginTop: 6 }}>
+                The event queue in the sidebar is sortable by{" "}
+                <strong>rate, prob, intro, eval, verdict</strong> (the
+                target sample's sample-level verdict) and{" "}
+                <strong>action</strong> (the target sample's
+                sample-level action, when enabled). It auto-scrolls to
+                keep the active row in view as you navigate. See the
+                Keyboard shortcuts and Bulk actions sections for faster
+                workflows.
+              </p>
+            </div>
+            <div>
+              <h4 style={{ color: "var(--ink)", fontWeight: 700 }}>
+                Samples
+              </h4>
+              <p>
+                Per-sample cockpit. The table lists every sample
+                (touched by an event or present in the abundance
+                table) with: sample id (+ optional sample_name), a
+                Context cell with all metadata pills (subj / tp / grp
+                / biome / control / low biomass / low seq depth /
+                plate position; pills are clickable — subj / tp / grp
+                / biome / flags add the matching filter, plate jumps
+                to the Plate tab), an Events cell with the count, the
+                evaluation breakdown of touching events, a colour-coded
+                "max rate" badge (worst contamination among events
+                targeting the sample) and inline → Scatter / → Events
+                / → Network drill-ins, a Verdict picker
+                (Pending / Contaminated / Correct / Uncertain) and a
+                keep / suppress Action picker (when the action layer
+                is enabled).
+              </p>
+              <p style={{ marginTop: 6 }}>
+                The bar above the table is split in two: the shared
+                event filter bar (probability / rate / introduced /
+                evaluations / sample verdicts / scope), and a
+                sample-context search bar with autocomplete suggestions
+                across every metadata facet plus a numeric
+                <em> ≥ events</em> counter that hides samples with
+                fewer than N touching events.
+              </p>
+              <p style={{ marginTop: 6 }}>
+                <strong>Drill-in workflow.</strong> Clicking → Scatter
+                / → Events / → Network on a row scopes those tabs to
+                that sample; a floating "Back to Samples" chip appears
+                at the bottom-right of every other tab so you can
+                return in one click. The corresponding row in the
+                Samples table receives a soft teal ring on arrival,
+                and the sort / page / scroll position / context filters
+                are restored from the last visit so you land back on
+                the row you were studying.
+              </p>
+              <p style={{ marginTop: 6 }}>
+                The toolbar's <strong>Bulk-apply sample action</strong>{" "}
+                button (also reachable from the filter-bar list-checks
+                icon) opens a dialog that adds, on top of whatever the
+                bars already filter, pre-conditions on the samples'
+                <em> current</em> verdict / action, dedicated context
+                dropdowns and tri-state flag selectors, plus min/max
+                aggregate filters on the events targeting each sample
+                (count, max rate, max probability, max introduced
+                species count). A live "will modify M of N visible
+                samples" banner reflects the combined selection.
               </p>
             </div>
             <div>
@@ -17966,6 +18033,88 @@ const HelpTab = ({ onStartTour }) => {
               </p>
             </div>
           </div>
+        </HelpSection>
+
+        {/* ---------- Event vs sample curation ---------- */}
+        <HelpSection
+          id="h-curation"
+          eyebrow="Two layers"
+          title="Event vs sample curation"
+        >
+          <p>
+            Curation runs on two levels that the interface keeps
+            independent so you can disagree with yourself between
+            them.
+          </p>
+          <h4
+            className="mt-3 text-[14px]"
+            style={{
+              color: "var(--ink)",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            Event evaluation
+          </h4>
+          <p>
+            Per-event call: <strong>true positive</strong>,{" "}
+            <strong>false positive</strong>, <strong>uncertain</strong>{" "}
+            or <strong>pending</strong>. Answers <em>"is this specific
+            CroCoDeEL flag a real cross-contamination?"</em> Set from
+            the Events table, the Scatterplot card, the Network edges
+            popover, or one-by-one in Guided validation.
+          </p>
+          <h4
+            className="mt-3 text-[14px]"
+            style={{
+              color: "var(--ink)",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            Sample-level verdict
+          </h4>
+          <p>
+            Per-sample call: <strong>contaminated</strong>,{" "}
+            <strong>correct</strong>, <strong>uncertain</strong> or{" "}
+            <strong>pending</strong>. Answers <em>"is this sample as
+            a whole compromised?"</em> A sample can be marked
+            contaminated even when each individual event targeting it
+            is uncertain, and conversely a sample can be marked correct
+            despite a TP event flowing into it (e.g. when the rate is
+            negligible). Edited from the Samples tab, from the
+            Scatterplot card popover ("Verdict on target") or from the
+            Network node popover.
+          </p>
+          <h4
+            className="mt-3 text-[14px]"
+            style={{
+              color: "var(--ink)",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            Sample-level action
+          </h4>
+          <p>
+            Optional downstream operation, opt-in via Configuration:{" "}
+            <strong>keep</strong> (acknowledge the contamination but
+            preserve the sample) or <strong>suppress</strong> (drop the
+            sample from analyses). Lives on the sample, not on the
+            event — so in case of multiple events targeting the same
+            sample, the action is set once. Surfaces as a read-only
+            badge in the Events table's <em>Target action</em> column,
+            as a halo on TP scatter cards and as the node border in
+            the Network's curation scheme.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            The Bulk-apply by criteria dialog (Validate sidebar) lets
+            you stamp evaluation, target verdict and target action in a
+            single sweep — each layer with its own "don't overwrite
+            previous" safety toggle. The Samples-tab Bulk-apply dialog
+            does the same per-sample, with its own pre-condition
+            multi-selects.
+          </p>
         </HelpSection>
 
         {/* ---------- Criteria ---------- */}
@@ -18311,49 +18460,134 @@ const HelpTab = ({ onStartTour }) => {
           title="Bulk actions"
         >
           <p>
-            All bulk actions live in the sidebar of the Guided validation
-            tab. Each goes through a confirmation modal before writing,
-            and existing notes are never destroyed silently — auto-notes
-            are prepended so prior context is preserved.
+            Bulk actions live in two places: the sidebar of the
+            Guided validation tab (event-centric) and the toolbar of
+            the Samples tab (sample-centric). Each goes through a
+            confirmation modal before writing, and existing notes are
+            never destroyed silently — auto-notes are prepended so
+            prior context is preserved.
           </p>
+          <h4
+            className="mt-3 text-[14px]"
+            style={{
+              color: "var(--ink)",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            Validate sidebar (event-level + optional target sample)
+          </h4>
           <ul className="list-disc pl-5 space-y-2">
             <li>
-              <strong>Mark all same-subject contaminations as FP</strong>{" "}
-              — when metadata.tsv carries a <code style={{ fontFamily: "ui-monospace, monospace" }}>subject_id</code>,
-              every PENDING event whose source and target share that id
-              (longitudinal pair) is flipped to false positive with an
-              explanatory note.
+              <strong>
+                Mark all same-subject contaminations as FP and their
+                target samples as Correct
+              </strong>{" "}
+              — when metadata.tsv carries a{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                subject_id
+              </code>
+              , every PENDING event whose source and target share
+              that id (longitudinal pair) is flipped to false positive
+              and the target sample is flagged as <em>Correct</em>{" "}
+              (skipping any target that already has a sample-level
+              verdict).
             </li>
             <li>
-              <strong>Mark all toward NC as TP</strong> — every PENDING
-              event flowing into a sample tagged as a negative control
-              (biome contains "control" / "blank" / "negative") is
-              flipped to true positive: a clean control should have no
-              signal, so any contamination into it is by definition real
-              well-to-well leakage.
+              <strong>
+                Mark all events targeting a negative control as TP and
+                their target samples as Contaminated
+              </strong>{" "}
+              — every PENDING event flowing into a sample tagged as a
+              negative control (biome contains "control" / "blank" /
+              "negative") is flipped to true positive and the NC
+              sample is flagged as <em>Contaminated</em>.
             </li>
             <li>
               <strong>Reset all evaluations</strong> — wipes every
-              evaluation and note back to pending. Loaded files (events,
-              abundance, metadata, plate map) are not affected.
+              event evaluation, sample-level verdict, sample-level
+              action and note back to pending / unset. Loaded files
+              (events, abundance, metadata, plate map) are not
+              affected.
             </li>
             <li>
-              <strong>Bulk apply by criteria…</strong> — opens a dialog
-              that lets you compose an arbitrary filter (rate range
-              in %, probability range, introduced % range, and pass /
-              fail / any per criterion: shape, n on line, decade range,
-              missing source species, above-line points, Spearman
-              profile dissimilarity), then apply one evaluation (TP / FP
-              / Uncertain / Reset) and an optional shared comment to
-              every matched event. When the suppress/keep feature is
-              enabled, an extra Action row lets you force the matched
-              events to Keep or Suppress (or leave each event's existing
-              action untouched). The comment, if non-empty, is prepended
-              to each event's existing notes with a{" "}
-              <code style={{ fontFamily: "ui-monospace, monospace" }}>[bulk YYYY-MM-DD]</code>{" "}
-              tag.
+              <strong>Bulk apply by criteria…</strong> — opens a
+              dialog that lets you compose an arbitrary filter (rate
+              range in %, probability range, introduced % range, and
+              pass / fail / any per criterion: shape, n on line,
+              decade range, missing source species, above-line points,
+              Spearman profile dissimilarity), then apply, in one
+              sweep:
+              <ul className="list-disc pl-5 mt-2 space-y-1">
+                <li>
+                  An <em>event evaluation</em> (TP / FP / Uncertain /
+                  Reset) plus an optional comment prepended to each
+                  matched event's notes.
+                </li>
+                <li>
+                  An optional <em>Verdict on samples targeted by the
+                  matched events</em> with its own "don't overwrite
+                  previous verdict" safety toggle (default ON).
+                </li>
+                <li>
+                  An optional <em>Action on samples targeted by the
+                  matched events</em> (when the action layer is
+                  enabled) with its own "don't overwrite previous
+                  action" safety toggle (default ON).
+                </li>
+                <li>
+                  An optional <em>Comment on target sample</em>{" "}
+                  (revealed once a sample-level verdict / action is
+                  picked) prepended to each unique target sample's
+                  notes with a{" "}
+                  <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                    [bulk YYYY-MM-DD]
+                  </code>{" "}
+                  tag.
+                </li>
+              </ul>
             </li>
           </ul>
+          <h4
+            className="mt-4 text-[14px]"
+            style={{
+              color: "var(--ink)",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            Samples tab toolbar (sample-level)
+          </h4>
+          <p>
+            <strong>Bulk-apply sample action</strong> (the list-checks
+            icon in the filter bar) opens a dialog scoped to the
+            samples currently visible in the table. On top of that
+            scope it lets you narrow further by:
+          </p>
+          <ul className="list-disc pl-5 space-y-2">
+            <li>
+              Pre-conditions on the samples' <em>current</em> verdict
+              and action (multi-select, default all).
+            </li>
+            <li>
+              Context dropdowns / tri-state flag selectors (subject /
+              timepoint / group / biome / control / low biomass / low
+              seq depth).
+            </li>
+            <li>
+              Aggregate min/max filters on the events targeting each
+              sample: number of events (the <em>events</em> chip),
+              max rate %, max probability, max number of introduced
+              species.
+            </li>
+          </ul>
+          <p style={{ marginTop: 6 }}>
+            Pick a new verdict and / or a new action, with a "don't
+            overwrite samples that already have one" checkbox under
+            each picker (default ON). The live banner shows{" "}
+            <em>Will modify M of N visible samples</em>; the Apply
+            button is disabled until at least one new value is chosen.
+          </p>
         </HelpSection>
 
         {/* ---------- Configuration ---------- */}
@@ -18396,10 +18630,10 @@ const HelpTab = ({ onStartTour }) => {
               salmon = suppress).
             </li>
             <li>
-              <strong>Items per page</strong> — three numeric inputs to
-              tune pagination on the events table (default 500), the
-              Scatterplot gallery (100) and the Datasets list (50).
-              Clamped to [1, 5000].
+              <strong>Items per page</strong> — four numeric inputs to
+              tune pagination on the Events table (default 500), the
+              Scatterplot gallery (100), the Samples table (200) and
+              the Datasets list (50). Clamped to [1, 5000].
             </li>
           </ul>
         </HelpSection>
@@ -18503,6 +18737,23 @@ const HelpTab = ({ onStartTour }) => {
         {/* ---------- FAQ ---------- */}
         <HelpSection id="h-faq" eyebrow="Common questions" title="FAQ">
           <div className="space-y-5">
+            <div>
+              <p style={{ color: "var(--ink)", fontWeight: 700 }}>
+                What's the difference between an event "evaluation"
+                and a sample "verdict"?
+              </p>
+              <p>
+                Evaluation lives on the event (TP / FP / Uncertain /
+                Pending) and answers <em>"is this CroCoDeEL flag
+                real?"</em>. Verdict lives on the sample
+                (Contaminated / Correct / Uncertain / Pending) and
+                answers <em>"is this sample as a whole compromised?"</em>.
+                A sample can be marked Contaminated even when its
+                events are still pending, and a TP event doesn't
+                automatically mark its target as Contaminated — see
+                the "Event vs sample curation" section above.
+              </p>
+            </div>
             <div>
               <p style={{ color: "var(--ink)", fontWeight: 700 }}>
                 Why does an event between two longitudinal samples (same
@@ -19266,22 +19517,38 @@ const ExportTab = ({
           label={isFiltered ? `In export (of ${totalLoaded})` : "Total"}
           value={counts.total}
         />
-        <Stat label="True positives" value={counts.tp} tone="good" />
-        <Stat label="False positives" value={counts.fp} tone="bad" />
-        <Stat label="Uncertain" value={counts.uncertain} tone="warn" />
-        <Stat label="Pending" value={counts.pending} />
+        <Stat
+          label="True positives"
+          value={counts.tp}
+          tone={counts.tp > 0 ? "tp" : "neutral"}
+        />
+        <Stat
+          label="False positives"
+          value={counts.fp}
+          tone={counts.fp > 0 ? "fp" : "neutral"}
+        />
+        <Stat
+          label="Uncertain"
+          value={counts.uncertain}
+          tone={counts.uncertain > 0 ? "uncertain" : "neutral"}
+        />
+        <Stat
+          label="Pending"
+          value={counts.pending}
+          tone={counts.pending > 0 ? "pending" : "neutral"}
+        />
         {actionEnabled && (
           <Stat
             label="To suppress"
             value={counts.suppress}
-            tone={counts.suppress > 0 ? "bad" : "neutral"}
+            tone={counts.suppress > 0 ? "suppress" : "neutral"}
           />
         )}
         {actionEnabled && (
           <Stat
             label="To keep"
             value={counts.keep}
-            tone={counts.keep > 0 ? "good" : "neutral"}
+            tone={counts.keep > 0 ? "keep" : "neutral"}
           />
         )}
       </div>
@@ -20161,6 +20428,43 @@ export default function App() {
   const [metadata, setMetadata] = useState(initial?.metadata || null);
   const [plateMap, setPlateMap] = useState(initial?.plateMap || null);
   const [tab, setTab] = useState(initial?.tab || "overview");
+  // Save the page scroll position when leaving the Samples tab and
+  // restore it when coming back, so the curator lands back on the
+  // sample row they were studying after a Scatter / Events drill-in.
+  // Also clear any sample-list scope on entering the Samples tab —
+  // the scope was almost certainly set by a drill-in from Samples
+  // itself and shouldn't persist when we come back.
+  const prevTabRef = useRef(tab);
+  useEffect(() => {
+    const prev = prevTabRef.current;
+    if (prev === "samples" && tab !== "samples") {
+      samplesUIRef.current.scrollY = window.scrollY;
+    } else if (prev !== "samples" && tab === "samples") {
+      // If we arrive on Samples with a single-sample scope (almost
+      // certainly a drill-in from Network or elsewhere), promote
+      // that id to lastSamplesDrill so the row is highlighted on
+      // arrival, then clear the scope so the table shows everything.
+      setFilter((f) => {
+        if (Array.isArray(f.scopeSamples) && f.scopeSamples.length === 1) {
+          setLastSamplesDrill(f.scopeSamples[0]);
+        }
+        return Array.isArray(f.scopeSamples) && f.scopeSamples.length > 0
+          ? { ...f, scopeSamples: null }
+          : f;
+      });
+      const y = samplesUIRef.current.scrollY || 0;
+      // Defer until the SamplesTab has rendered so the page is tall
+      // enough for the scroll to actually take effect.
+      const handle = window.setTimeout(() => {
+        window.scrollTo({ top: y, behavior: "auto" });
+      }, 0);
+      prevTabRef.current = tab;
+      return () => window.clearTimeout(handle);
+    }
+    prevTabRef.current = tab;
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
   // Analysis title — surfaces in the sidebar between "Interpretation
   // interface" and the version chip so the curator (and anyone looking
   // over their shoulder) sees which study they're working on. Auto-set
@@ -20185,6 +20489,27 @@ export default function App() {
   const [explorePairsForm, setExplorePairsForm] = useState(
     EXPLORE_PAIRS_DEFAULTS,
   );
+  // Samples-tab UI state — lifted to App so sort order, page,
+  // context filters, expanded notes and scroll position survive a
+  // round-trip to the Scatter / Events tabs (otherwise drilling on a
+  // sample dropped the curator back at the top of the table). Held
+  // in a ref so the SamplesTab can keep using local useState
+  // internally; values are synced into / out of the ref on mount
+  // and on every change.
+  const samplesUIRef = useRef({
+    sortBy: "attention",
+    sortDir: "desc",
+    page: 1,
+    openNotes: [],
+    subjectFilter: null,
+    timepointFilter: null,
+    groupFilter: null,
+    biomeFilter: null,
+    controlFilter: "any",
+    lowBiomassFilter: "any",
+    lowSeqDepthFilter: "any",
+    scrollY: 0,
+  });
   // Network tab colour scheme — lifted to App so the user's choice
   // ("exploration" vs "curation") survives switching tabs and coming
   // back to Network.
@@ -20322,6 +20647,7 @@ export default function App() {
     minIntroduced: 0,
     verdicts: [...VERDICT_IDS],
     sampleVerdicts: [...SAMPLE_VERDICT_IDS],
+    sampleVerdictsSide: "either",
     subject: "any",
     group: "any",
     adjacent: "any",
@@ -20340,6 +20666,11 @@ export default function App() {
     const sampleVerdicts = Array.isArray(f.sampleVerdicts)
       ? f.sampleVerdicts
       : [...SAMPLE_VERDICT_IDS];
+    const sampleVerdictsSide =
+      f.sampleVerdictsSide === "source" ||
+      f.sampleVerdictsSide === "target"
+        ? f.sampleVerdictsSide
+        : "either";
     return {
       q: f.q ?? "",
       minScore: f.minScore ?? 0,
@@ -20347,6 +20678,7 @@ export default function App() {
       minIntroduced: f.minIntroduced ?? 0,
       verdicts,
       sampleVerdicts,
+      sampleVerdictsSide,
       subject: f.subject ?? (f.hideRelated ? "different" : "any"),
       group: f.group ?? "any",
       adjacent: f.adjacent ?? (f.adjacentOnly ? "adjacent" : "any"),
@@ -20471,6 +20803,15 @@ export default function App() {
         highlight: '[data-tutorial="verdict-buttons"]',
       },
       {
+        title: "Samples — the per-sample cockpit",
+        body:
+          "Each event has an evaluation; each sample has its own verdict (Contaminated / Correct / Uncertain / Pending) and an optional action (Keep / Suppress).\n\n" +
+          "The Samples tab lists every sample with its metadata pills, the events targeting it (count, evaluation breakdown, max-rate badge) and one-click drill-ins → Scatter / → Events / → Network. A floating \"Back to Samples\" chip lets you jump straight back to the row you were studying.\n\n" +
+          "Filter by metadata (autocomplete on subject / timepoint / group / biome / control / quality flags) or by \"≥ N events\". The Bulk-apply dialog combines all those filters with pre-conditions on the samples' current verdict / action so you can stamp a verdict / action on a precise subset.",
+        action: "tabSamples",
+        highlight: '[data-tutorial="tab-samples"]',
+      },
+      {
         title: "Export your curated report",
         body:
           "When done, the Export tab produces a curated TSV with every event (evaluation, action, notes) plus a JSON audit trail with metadata context and cascade flags. Filter downstream using the evaluation / action columns if needed.",
@@ -20541,6 +20882,9 @@ export default function App() {
         break;
       case "tabValidate":
         setTab("validate");
+        break;
+      case "tabSamples":
+        setTab("samples");
         break;
       case "tabPlate":
         setTab("plate");
@@ -20787,17 +21131,24 @@ export default function App() {
         filter.sampleVerdicts &&
         filter.sampleVerdicts.length < SAMPLE_VERDICT_IDS.length
       ) {
-        // Match when EITHER endpoint sample carries a verdict in the
-        // selected set — lets the curator pull "every event touching a
-        // contaminated sample" with one click. Samples without an
-        // explicit verdict count as "pending".
+        // Match the chosen sample-verdict set on the selected SIDE:
+        // "either" = source or target qualifies; "source" / "target"
+        // = exactly that endpoint must carry the verdict. Useful to
+        // pull "every event TARGETING a contaminated sample" so the
+        // curator can quickly handle candidates whose target is
+        // already explained by another contamination story.
+        const side = filter.sampleVerdictsSide || "either";
         const sv = sampleCuration?.[e.source]?.verdict || "pending";
         const tv = sampleCuration?.[e.target]?.verdict || "pending";
-        if (
-          !filter.sampleVerdicts.includes(sv) &&
-          !filter.sampleVerdicts.includes(tv)
-        )
-          return false;
+        const sourceMatches = filter.sampleVerdicts.includes(sv);
+        const targetMatches = filter.sampleVerdicts.includes(tv);
+        const sideMatch =
+          side === "source"
+            ? sourceMatches
+            : side === "target"
+              ? targetMatches
+              : sourceMatches || targetMatches;
+        if (!sideMatch) return false;
       }
       if (filter.action) {
         // Action lives on the target sample — match events whose
@@ -21018,6 +21369,21 @@ export default function App() {
     setFilter((f) => ({ ...f, scopeSamples: [...sampleIds] }));
     if (targetTab) setTab(targetTab);
   }, []);
+
+  // Remember the sample most-recently drilled into from the Samples
+  // tab so we can (a) flash a "back to Samples" floating chip on
+  // every other tab and (b) subtly ring the matching row when the
+  // curator returns. Cleared by the next drill-in or by an explicit
+  // dismiss on the floating chip.
+  const [lastSamplesDrill, setLastSamplesDrill] = useState(null);
+  const drillFromSamples = React.useCallback(
+    (sampleId, targetTab) => {
+      if (!sampleId) return;
+      setLastSamplesDrill(sampleId);
+      scopeToSamples([sampleId], targetTab);
+    },
+    [scopeToSamples],
+  );
 
   /** Add a user-curated event to the events list. Used by the
       "Explore new pairs" feature in the Scatterplots tab when the user
@@ -23306,11 +23672,13 @@ export default function App() {
               }
               onApplyToEventIds={bulkApplyToEvents}
               onApplySampleAction={setSampleAction}
+              onApplySampleVerdict={setSampleVerdict}
               hasAb={!!ab}
               colorScheme={networkColorScheme}
               setColorScheme={setNetworkColorScheme}
               onScopeToSamples={scopeToSamples}
               sampleCuration={sampleCuration}
+              focusSampleId={lastSamplesDrill}
             />
           )}
           {tab === "plate" && (
@@ -23380,6 +23748,9 @@ export default function App() {
                 setTab("plate");
               }}
               pageSize={samplesPageSize}
+              uiRef={samplesUIRef}
+              onDrillSample={drillFromSamples}
+              highlightSampleId={lastSamplesDrill}
             />
           )}
           {tab === "export" && (
@@ -23981,6 +24352,94 @@ export default function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {/* Floating "back to Samples" chip — appears on every non-Samples
+          tab whenever the curator drilled in from a sample row. Click
+          to return; the matching row gets a subtle teal ring on
+          arrival so it's easy to spot. The ✕ dismisses the chip
+          (and clears the highlight). */}
+      {lastSamplesDrill && tab !== "samples" && (
+        <div
+          style={{
+            position: "fixed",
+            right: 24,
+            bottom: 24,
+            zIndex: 1400,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "0 4px 0 12px",
+            height: 38,
+            borderRadius: 19,
+            background: "#00a3a6",
+            color: "#fff",
+            boxShadow: "0 8px 24px rgba(39,86,98,0.28)",
+            fontFamily: '"Raleway", sans-serif',
+            fontSize: 12,
+            fontWeight: 700,
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setTab("samples")}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "0 10px",
+              height: 30,
+              borderRadius: 15,
+              background: "transparent",
+              color: "#fff",
+              border: "none",
+              cursor: "pointer",
+              fontFamily: '"Raleway", sans-serif',
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+            }}
+            title={`Return to the Samples tab — ${lastSamplesDrill}`}
+          >
+            <ArrowRight
+              className="w-3.5 h-3.5"
+              style={{ transform: "rotate(180deg)" }}
+            />
+            Back to Samples
+            <span
+              style={{
+                fontFamily: "ui-monospace, monospace",
+                fontWeight: 600,
+                opacity: 0.9,
+                marginLeft: 2,
+                textTransform: "none",
+                letterSpacing: 0,
+              }}
+            >
+              {lastSamplesDrill}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setLastSamplesDrill(null)}
+            style={{
+              width: 26,
+              height: 26,
+              borderRadius: 13,
+              background: "rgba(255,255,255,0.16)",
+              color: "#fff",
+              border: "none",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="Dismiss this shortcut and clear the row highlight"
+            aria-label="Dismiss back-to-Samples chip"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
     </div>
