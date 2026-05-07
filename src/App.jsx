@@ -1389,6 +1389,15 @@ const Stat = ({ label, value, tone = "neutral" }) => {
     good: { background: "#00a3a6", color: "white" },
     bad: { background: "#275662", color: "white" },
     warn: { background: "var(--border-strong)", color: "var(--ink)" },
+    // Sample-curation palette — matches the verdict / action button
+    // colours (Samples tab pills, Validate toolbar, scatter card halo)
+    // so the stat cards read as a continuation of the same vocabulary.
+    contaminated: { background: "#ed6e6c", color: "white" },
+    correct: { background: "#00a3a6", color: "white" },
+    uncertain: { background: "#d97a3c", color: "white" },
+    pending: { background: "#9aaab0", color: "white" },
+    keep: { background: "#e0b13a", color: "white" },
+    suppress: { background: "#ed6e6c", color: "white" },
   };
   return (
     <div className="px-4 py-4 rounded-sm" style={{ ...styles[tone], border: "1px solid var(--border)" }}>
@@ -1904,11 +1913,13 @@ const NetworkGraph = ({
   onPick,
   onBulkApply,
   onApplyToEventIds,
+  onApplySampleAction,
   hasAb,
   actionEnabled,
   colorScheme,
   setColorScheme,
   onScopeToSamples,
+  sampleCuration,
 }) => {
   const [hover, setHover] = useState(null);
   const [zoom, setZoom] = useState({ k: 1, x: 0, y: 0 });
@@ -1960,22 +1971,19 @@ const NetworkGraph = ({
 
   const components = useMemo(() => buildComponents(events), [events]);
 
-  // For the "curation" colour scheme: for every sample, the
-  // most-severe action recorded across the TP events that target it.
-  // Severity ordering chosen so the more drastic outcome wins:
-  //   suppress (drop) > decontaminate (clean) > keep (raw) > none.
+  // For the "curation" colour scheme: for every sample, the action
+  // recorded directly on the sample (sampleCuration[id].action).
+  // Mapped here as { sampleId: "keep" | "suppress" } so the SVG node
+  // pass can read it in O(1).
   const sampleActionMap = useMemo(() => {
-    const sev = (a) =>
-      a === "suppress" ? 3 : a === "decontaminate" ? 2 : a === "keep" ? 1 : 0;
     const m = {};
-    events.forEach((e) => {
-      if (e.verdict !== "true_positive" || !e.action) return;
-      if (!e.target) return;
-      const cur = m[e.target];
-      if (!cur || sev(e.action) > sev(cur)) m[e.target] = e.action;
-    });
+    if (!sampleCuration) return m;
+    for (const id of Object.keys(sampleCuration)) {
+      const a = sampleCuration[id]?.action;
+      if (a) m[id] = a;
+    }
     return m;
-  }, [events]);
+  }, [sampleCuration]);
 
   // Show big, messy components first — they're the ones that need
   // attention. Trivial pairs go to the bottom of the sidebar.
@@ -2793,7 +2801,7 @@ const NetworkGraph = ({
               {formatIntroducedPct(hover.e.introducedPct)}
             </>
           )}
-          <span className="text-stone-500 ml-2">verdict:</span>
+          <span className="text-stone-500 ml-2">evaluation:</span>
           <VerdictBadge v={hover.e.verdict} />
           <span
             className="ml-auto text-[11px]"
@@ -2967,6 +2975,7 @@ const NetworkGraph = ({
           events={events}
           actionEnabled={actionEnabled}
           onScopeToSamples={onScopeToSamples}
+          sampleCuration={sampleCuration}
           verdict={popVerdict}
           setVerdict={setPopVerdict}
           action={popAction}
@@ -2979,7 +2988,6 @@ const NetworkGraph = ({
           setSkipDecided={setPopSkipDecided}
           onClose={() => setNodePopover(null)}
           onApply={() => {
-            if (!onApplyToEventIds) return;
             const ids = events
               .filter((e) => {
                 if (popSkipDecided && e.verdict && e.verdict !== "pending")
@@ -2991,15 +2999,18 @@ const NetworkGraph = ({
                 return false;
               })
               .map((e) => e.id);
-            if (ids.length === 0) {
-              setNodePopover(null);
-              return;
-            }
             const dirParts = [];
             if (popApplyTarget) dirParts.push("target");
             if (popApplySource) dirParts.push("source");
             const note = `applied via Network → node ${nodePopover.id} (as ${dirParts.join(" / ")})`;
-            onApplyToEventIds(ids, popVerdict, note, popAction);
+            // The verdict applies to events; the action is recorded
+            // directly on the node's sample (sample-level action).
+            if (ids.length > 0 && onApplyToEventIds) {
+              onApplyToEventIds(ids, popVerdict, note);
+            }
+            if (popAction && onApplySampleAction) {
+              onApplySampleAction(nodePopover.id, popAction);
+            }
             setNodePopover(null);
           }}
         />
@@ -3090,6 +3101,7 @@ const NodeBulkPopover = ({
   onClose,
   onApply,
   onScopeToSamples,
+  sampleCuration,
 }) => {
   const ref = useRef(null);
   useEffect(() => {
@@ -3116,8 +3128,13 @@ const NodeBulkPopover = ({
     // verdicts/actions are already set on the neighbours.
     let asTarget = 0;
     let asSource = 0;
-    const breakdownTarget = { suppress: 0, decontaminate: 0, keep: 0, none: 0, total: 0 };
-    const breakdownSource = { suppress: 0, decontaminate: 0, keep: 0, none: 0, total: 0 };
+    // Action lives on samples now — for the "as source" view we count
+    // the actions recorded on the *targets* this node points to (i.e.
+    // what's being decided downstream of the node). The "as target"
+    // view counts neighbouring sources; usually they don't carry an
+    // action, but we keep symmetry so the UI reads consistently.
+    const breakdownTarget = { suppress: 0, keep: 0, none: 0, total: 0 };
+    const breakdownSource = { suppress: 0, keep: 0, none: 0, total: 0 };
     events.forEach((e) => {
       const tgt = e.target === sampleId;
       const src = e.source === sampleId;
@@ -3127,24 +3144,22 @@ const NodeBulkPopover = ({
       if (tgt) {
         if (eligible) asTarget++;
         breakdownTarget.total++;
-        const a = e.verdict === "true_positive" ? e.action || "none" : "none";
+        const a = sampleCuration?.[e.source]?.action || "none";
         if (a === "suppress") breakdownTarget.suppress++;
-        else if (a === "decontaminate") breakdownTarget.decontaminate++;
         else if (a === "keep") breakdownTarget.keep++;
         else breakdownTarget.none++;
       }
       if (src) {
         if (eligible) asSource++;
         breakdownSource.total++;
-        const a = e.verdict === "true_positive" ? e.action || "none" : "none";
+        const a = sampleCuration?.[e.target]?.action || "none";
         if (a === "suppress") breakdownSource.suppress++;
-        else if (a === "decontaminate") breakdownSource.decontaminate++;
         else if (a === "keep") breakdownSource.keep++;
         else breakdownSource.none++;
       }
     });
     return { asTarget, asSource, breakdownTarget, breakdownSource };
-  }, [events, sampleId, skipDecided]);
+  }, [events, sampleId, skipDecided, sampleCuration]);
   const matchedCount =
     (applyTarget ? counts.asTarget : 0) + (applySource ? counts.asSource : 0);
   const name = sampleName(metadata, sampleId);
@@ -3277,7 +3292,7 @@ const NodeBulkPopover = ({
         className="text-[11px] mb-3"
         style={{ color: "var(--ink-muted)" }}
       >
-        Pick a verdict and decide which side(s) of the edges to update.
+        Pick an evaluation and decide which side(s) of the edges to update.
       </div>
 
       <div className="flex flex-col gap-2 mb-3">
@@ -3338,7 +3353,7 @@ const NodeBulkPopover = ({
       <label
         className="flex items-center gap-2 mb-3 select-none cursor-pointer text-[12px]"
         style={{ color: "var(--ink)" }}
-        title="When checked, only events still marked Pending receive the new verdict. Already-curated events (TP / FP / Uncertain) are left untouched."
+        title="When checked, only events still marked Pending receive the new evaluation. Already-curated events (TP / FP / Uncertain) are left untouched."
       >
         <input
           type="checkbox"
@@ -3347,7 +3362,7 @@ const NodeBulkPopover = ({
           style={{ accentColor: "#00a3a6" }}
         />
         <span>
-          <strong>Don't overwrite previous verdicts</strong>
+          <strong>Don't overwrite previous evaluations</strong>
         </span>
       </label>
 
@@ -3355,7 +3370,7 @@ const NodeBulkPopover = ({
         className="text-[10px] uppercase tracking-[0.1em] mb-1"
         style={{ color: "var(--ink-muted)", fontWeight: 700 }}
       >
-        Verdict
+        Evaluation
       </div>
       <div className="flex gap-1.5 mb-3 flex-wrap">
         {[
@@ -4812,7 +4827,7 @@ const RunMetadataBlock = ({ meta }) => {
   );
 };
 
-const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOpen, onLoadDemo, demoLoading, actionEnabled }) => {
+const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOpen, onLoadDemo, demoLoading, actionEnabled, sampleCuration }) => {
   const topByScore = [...events].sort((a, b) => b.score - a.score).slice(0, 5);
   const topByRate = [...events].sort((a, b) => b.rate - a.rate).slice(0, 5);
   const bottomByScore = [...events].sort((a, b) => a.score - b.score).slice(0, 5);
@@ -4841,24 +4856,22 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
 
   const cascadeCount = events.filter((e) => e.cascade).length;
 
-  // Suppress / keep counts. Use the same default-resolution rules as
-  // the rest of the app: TP -> suppress, FP -> keep, others -> none.
-  // Only meaningful when the feature is enabled.
+  // Suppress / keep counts. Action lives on the sample now — count
+  // distinct samples whose recorded sample-level action is set, so the
+  // overview cards reflect the curator's downstream decisions
+  // (independent of any specific event's evaluation).
   const { keepCount, suppressCount } = useMemo(() => {
     let keep = 0;
     let supp = 0;
-    if (actionEnabled) {
-      events.forEach((e) => {
-        // Action only applies to TP — FP / Uncertain / Pending don't
-        // contribute to the keep / suppress tally.
-        const a =
-          e.verdict === "true_positive" ? e.action || "suppress" : null;
+    if (actionEnabled && sampleCuration) {
+      for (const id of Object.keys(sampleCuration)) {
+        const a = sampleCuration[id]?.action;
         if (a === "keep") keep++;
         else if (a === "suppress") supp++;
-      });
+      }
     }
     return { keepCount: keep, suppressCount: supp };
-  }, [events, actionEnabled]);
+  }, [actionEnabled, sampleCuration]);
 
   // Number of connected components in the contamination network — gives
   // a sense of how clustered the events are.
@@ -4977,14 +4990,14 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 xl:grid-cols-7 gap-3 mb-10">
           {actionEnabled && (
             <Stat
-              label="To keep"
+              label="Samples to keep"
               value={keepCount}
               tone={keepCount > 0 ? "good" : "neutral"}
             />
           )}
           {actionEnabled && (
             <Stat
-              label="To suppress"
+              label="Samples to suppress"
               value={suppressCount}
               tone={suppressCount > 0 ? "bad" : "neutral"}
             />
@@ -5107,6 +5120,19 @@ const VERDICT_OPTIONS = [
 ];
 const VERDICT_IDS = VERDICT_OPTIONS.map((v) => v.id);
 
+// Sample-level verdict options used by the filter bar. The filter
+// matches an event when EITHER its source or target sample carries a
+// verdict in the selected set — so the curator can pull up "every
+// event touching a contaminated sample" with one click. Default = all
+// selected (no filtering effect).
+const SAMPLE_VERDICT_OPTIONS = [
+  { id: "pending", label: "pending" },
+  { id: "contaminated", label: "contaminated" },
+  { id: "correct", label: "correct" },
+  { id: "uncertain", label: "uncertain" },
+];
+const SAMPLE_VERDICT_IDS = SAMPLE_VERDICT_OPTIONS.map((v) => v.id);
+
 const FILTER_CHIP_BG = "var(--bg-card)";
 const FILTER_CHIP_BORDER = "1px solid var(--border)";
 const FILTER_PANEL_BG = "var(--bg-soft)";
@@ -5210,6 +5236,7 @@ const EventFilterBar = ({
   plateMap,
   runMetadata,
   onBulkApply,
+  bulkApplyTitle,
   hasAb,
   events,
   actionEnabled,
@@ -5267,6 +5294,8 @@ const EventFilterBar = ({
 
   const [verdictPopoverOpen, setVerdictPopoverOpen] = useState(false);
   const verdictPopoverRef = useRef(null);
+  const [sampleVerdictPopoverOpen, setSampleVerdictPopoverOpen] = useState(false);
+  const sampleVerdictPopoverRef = useRef(null);
   const [actionPopoverOpen, setActionPopoverOpen] = useState(false);
   const actionPopoverRef = useRef(null);
   useEffect(() => {
@@ -5295,24 +5324,58 @@ const EventFilterBar = ({
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, [verdictPopoverOpen]);
+  useEffect(() => {
+    if (!sampleVerdictPopoverOpen) return;
+    const handle = (e) => {
+      if (
+        sampleVerdictPopoverRef.current &&
+        !sampleVerdictPopoverRef.current.contains(e.target)
+      ) {
+        setSampleVerdictPopoverOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [sampleVerdictPopoverOpen]);
 
   const selectedVerdicts = Array.isArray(filter.verdicts)
     ? filter.verdicts
     : VERDICT_OPTIONS.map((v) => v.id);
   const allVerdictsSelected = selectedVerdicts.length === VERDICT_OPTIONS.length;
   const verdictLabel = allVerdictsSelected
-    ? "verdicts"
+    ? "evaluations"
     : selectedVerdicts.length === 0
-      ? "no verdicts"
+      ? "no evaluations"
       : selectedVerdicts.length === 1
         ? VERDICT_OPTIONS.find((v) => v.id === selectedVerdicts[0])?.label ||
-          "verdicts"
-        : `${selectedVerdicts.length} verdicts`;
+          "evaluations"
+        : `${selectedVerdicts.length} evaluations`;
   const toggleVerdict = (id) => {
     const next = selectedVerdicts.includes(id)
       ? selectedVerdicts.filter((v) => v !== id)
       : [...selectedVerdicts, id];
     setFilter({ ...filter, verdicts: next });
+  };
+
+  const selectedSampleVerdicts = Array.isArray(filter.sampleVerdicts)
+    ? filter.sampleVerdicts
+    : SAMPLE_VERDICT_OPTIONS.map((v) => v.id);
+  const allSampleVerdictsSelected =
+    selectedSampleVerdicts.length === SAMPLE_VERDICT_OPTIONS.length;
+  const sampleVerdictLabel = allSampleVerdictsSelected
+    ? "sample verdicts"
+    : selectedSampleVerdicts.length === 0
+      ? "no sample verdicts"
+      : selectedSampleVerdicts.length === 1
+        ? SAMPLE_VERDICT_OPTIONS.find(
+            (v) => v.id === selectedSampleVerdicts[0],
+          )?.label || "sample verdicts"
+        : `${selectedSampleVerdicts.length} sample verdicts`;
+  const toggleSampleVerdict = (id) => {
+    const next = selectedSampleVerdicts.includes(id)
+      ? selectedSampleVerdicts.filter((v) => v !== id)
+      : [...selectedSampleVerdicts, id];
+    setFilter({ ...filter, sampleVerdicts: next });
   };
 
   const cutoffBadge = (text, tip) => (
@@ -5337,49 +5400,69 @@ const EventFilterBar = ({
       className="flex flex-wrap gap-2 mb-4 items-center p-2 rounded-md"
       style={{ background: FILTER_PANEL_BG, border: FILTER_PANEL_BORDER }}
     >
-      {/* Sample-list scope pill — shown when the user has drilled into
-          a Network component / node from elsewhere. Click ✕ to clear
-          the scope and go back to seeing every event. */}
-      {Array.isArray(filter.scopeSamples) &&
-        filter.scopeSamples.length > 0 && (
-          <button
-            type="button"
-            onClick={() =>
-              setFilter({ ...filter, scopeSamples: null })
-            }
-            title="Clear the sample scope and go back to all events"
-            className="flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-sm"
+      {/* Search field — also hosts the sample-scope chip when the user
+          has drilled in from the Network / Samples tab. The chip lives
+          inside the input wrapper so the bar stays compact. */}
+      {(() => {
+        const scopeActive =
+          Array.isArray(filter.scopeSamples) &&
+          filter.scopeSamples.length > 0;
+        return (
+          <div
+            className="flex items-center gap-1.5 rounded-md"
             style={{
-              background: "rgba(0,163,166,0.12)",
-              border: "1px solid #00a3a6",
-              color: "#1d3a44",
-              fontWeight: 700,
-              fontFamily: '"Raleway", sans-serif',
-              cursor: "pointer",
+              ...selectStyle,
+              padding: "2px 8px",
+              minWidth: scopeActive ? 220 : 180,
             }}
           >
-            <span>
-              scope: {filter.scopeSamples.length} sample
-              {filter.scopeSamples.length === 1 ? "" : "s"}
-            </span>
-            <X className="w-3 h-3" />
-          </button>
-        )}
-
-      {/* Search */}
-      <div className="relative">
-        <Search
-          className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
-          style={{ color: "var(--ink-muted)" }}
-        />
-        <input
-          value={filter.q}
-          onChange={(e) => setFilter({ ...filter, q: e.target.value })}
-          placeholder="sample id or name…"
-          className="pl-7 pr-3 py-1 text-[12px] rounded-md w-44 outline-none"
-          style={selectStyle}
-        />
-      </div>
+            {scopeActive && (
+              <button
+                type="button"
+                onClick={() =>
+                  setFilter({ ...filter, scopeSamples: null })
+                }
+                title="Clear the sample scope and go back to all events"
+                className="flex items-center gap-1 rounded-sm"
+                style={{
+                  background: "rgba(0,163,166,0.16)",
+                  border: "1px solid #00a3a6",
+                  color: "#1d3a44",
+                  fontWeight: 700,
+                  fontFamily: '"Raleway", sans-serif',
+                  fontSize: 10,
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                  padding: "2px 6px",
+                  height: 18,
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+              >
+                scope · {filter.scopeSamples.length}
+                <X className="w-3 h-3" />
+              </button>
+            )}
+            <Search
+              className="w-3.5 h-3.5"
+              style={{ color: "var(--ink-muted)", flexShrink: 0 }}
+            />
+            <input
+              value={filter.q}
+              onChange={(e) => setFilter({ ...filter, q: e.target.value })}
+              placeholder="sample id or name…"
+              className="text-[12px] outline-none flex-1 min-w-0"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "var(--ink)",
+                fontWeight: 500,
+                padding: "2px 0",
+              }}
+            />
+          </div>
+        );
+      })()}
 
       <FilterDivider />
 
@@ -5481,8 +5564,8 @@ const EventFilterBar = ({
               : FILTER_CHIP_BORDER,
             color: "var(--ink)",
           }}
-          title={`Verdicts: ${verdictLabel}`}
-          aria-label={`Verdicts: ${verdictLabel}`}
+          title={`Evaluations: ${verdictLabel}`}
+          aria-label={`Evaluations: ${verdictLabel}`}
         >
           <Scale className="w-4 h-4" />
           {!allVerdictsSelected && (
@@ -5524,7 +5607,7 @@ const EventFilterBar = ({
                 fontFamily: '"Raleway", sans-serif',
               }}
             >
-              Verdicts
+              Evaluations
             </div>
             {VERDICT_OPTIONS.map((v) => (
               <label
@@ -5562,6 +5645,125 @@ const EventFilterBar = ({
               <button
                 type="button"
                 onClick={() => setFilter({ ...filter, verdicts: [] })}
+                className="text-[11px]"
+                style={{
+                  color: "var(--ink-muted)",
+                  fontWeight: 600,
+                  fontFamily: '"Raleway", sans-serif',
+                }}
+              >
+                none
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Sample verdict popover — filters events whose source OR target
+          sample carries a verdict in the selected set. */}
+      <div className="relative" ref={sampleVerdictPopoverRef}>
+        <button
+          type="button"
+          onClick={() => setSampleVerdictPopoverOpen((o) => !o)}
+          className="flex items-center justify-center rounded-md outline-none relative"
+          style={{
+            width: 28,
+            height: 28,
+            background: !allSampleVerdictsSelected
+              ? "rgba(0,163,166,0.10)"
+              : FILTER_CHIP_BG,
+            border: !allSampleVerdictsSelected
+              ? "1px solid #00a3a6"
+              : FILTER_CHIP_BORDER,
+            color: "var(--ink)",
+          }}
+          title={`Sample verdicts: ${sampleVerdictLabel}`}
+          aria-label={`Sample verdicts: ${sampleVerdictLabel}`}
+        >
+          <Beaker className="w-4 h-4" />
+          {!allSampleVerdictsSelected && (
+            <span
+              className="absolute text-[9px] rounded-full"
+              style={{
+                top: -4,
+                right: -4,
+                background: "#00a3a6",
+                color: "#fff",
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+                lineHeight: "13px",
+                minWidth: 13,
+                height: 13,
+                padding: "0 3px",
+                textAlign: "center",
+              }}
+            >
+              {selectedSampleVerdicts.length}
+            </span>
+          )}
+        </button>
+        {sampleVerdictPopoverOpen && (
+          <div
+            className="absolute right-0 top-full mt-1.5 z-20 p-3 rounded-md flex flex-col gap-2"
+            style={{
+              background: "var(--bg-card)",
+              border: "1px solid var(--border-strong)",
+              boxShadow: "0 8px 24px rgba(39,86,98,0.12)",
+              minWidth: 220,
+            }}
+          >
+            <div
+              className="text-[10px] tracking-[0.1em] uppercase mb-1"
+              style={{
+                color: "var(--ink-muted)",
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+              }}
+            >
+              Sample verdicts
+            </div>
+            <div
+              className="text-[10px] mb-1"
+              style={{ color: "var(--ink-muted)", fontStyle: "italic" }}
+            >
+              Match events whose source OR target sample has the chosen verdict.
+            </div>
+            {SAMPLE_VERDICT_OPTIONS.map((v) => (
+              <label
+                key={v.id}
+                className="flex items-center gap-2 text-[12px] cursor-pointer"
+                style={{ color: "var(--ink)", userSelect: "none" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedSampleVerdicts.includes(v.id)}
+                  onChange={() => toggleSampleVerdict(v.id)}
+                  style={{ accentColor: "#00a3a6" }}
+                />
+                {v.label}
+              </label>
+            ))}
+            <div className="flex items-center gap-3 mt-1">
+              <button
+                type="button"
+                onClick={() =>
+                  setFilter({
+                    ...filter,
+                    sampleVerdicts: SAMPLE_VERDICT_OPTIONS.map((v) => v.id),
+                  })
+                }
+                className="text-[11px]"
+                style={{
+                  color: "#00a3a6",
+                  fontWeight: 600,
+                  fontFamily: '"Raleway", sans-serif',
+                }}
+              >
+                all
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilter({ ...filter, sampleVerdicts: [] })}
                 className="text-[11px]"
                 style={{
                   color: "var(--ink-muted)",
@@ -5822,8 +6024,11 @@ const EventFilterBar = ({
             border: "1px solid #275662",
             color: "#275662",
           }}
-          title="Bulk apply a verdict to all events matching probability / rate / criteria filters"
-          aria-label="Bulk apply verdict"
+          title={
+            bulkApplyTitle ||
+            "Bulk apply an evaluation to all events matching probability / rate / criteria filters"
+          }
+          aria-label={bulkApplyTitle || "Bulk apply evaluation"}
         >
           <ListChecks className="w-4 h-4" />
         </button>
@@ -5851,6 +6056,7 @@ const EventsTable = ({
   hasAb,
   actionEnabled,
   setAction,
+  sampleCuration,
   pageSize,
 }) => {
   const PAGE_SIZE = pageSize || 500;
@@ -5963,16 +6169,22 @@ const EventsTable = ({
               )}
               <Th
                 onClick={() => toggleSort("verdict")}
-                title="Your curation decision — TP (true positive), FP (false positive), Uncertain or Pending. Click to sort by verdict."
+                title="Your evaluation — TP (true positive), FP (false positive), Uncertain or Pending. Click to sort by evaluation."
               >
-                Verdict <SortIcon col="verdict" />
+                Evaluation <SortIcon col="verdict" />
+              </Th>
+              <Th
+                onClick={() => toggleSort("targetVerdict")}
+                title="Sample-level verdict recorded on the TARGET sample (contaminated / correct / uncertain / pending). Set from the Samples tab. Click to sort."
+              >
+                Target verdict <SortIcon col="targetVerdict" />
               </Th>
               {actionEnabled && (
                 <Th
                   onClick={() => toggleSort("action")}
-                  title="Suppress / keep — what to do with this sample in downstream analyses. Click to sort."
+                  title="Suppress / keep — action recorded on the TARGET sample. Set from the Samples tab. Click to sort."
                 >
-                  Action <SortIcon col="action" />
+                  Target action <SortIcon col="action" />
                 </Th>
               )}
             </tr>
@@ -6116,58 +6328,84 @@ const EventsTable = ({
                       </QuickBtn>
                     </div>
                   </td>
+                  <td className="px-3 py-2.5">
+                    {(() => {
+                      // Read-only badge — sample-level verdict on the
+                      // event's target sample. Edited from the Samples
+                      // tab; mirrored here so the events table reads
+                      // alongside the per-sample call.
+                      const v = sampleCuration?.[e.target]?.verdict;
+                      if (!v || v === "pending") {
+                        return (
+                          <span
+                            className="text-[11px]"
+                            style={{ color: "var(--border-strong)" }}
+                            title={`Target sample "${e.target}" has no verdict yet`}
+                          >
+                            —
+                          </span>
+                        );
+                      }
+                      const tone = SAMPLE_VERDICT_TONE[v] || SAMPLE_VERDICT_TONE.pending;
+                      return (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded-sm"
+                          style={{
+                            background: tone.bg,
+                            color: "#fff",
+                            fontWeight: 700,
+                            letterSpacing: "0.05em",
+                            textTransform: "uppercase",
+                            fontFamily: '"Raleway", sans-serif',
+                          }}
+                          title={`Sample-level verdict recorded on target "${e.target}"`}
+                        >
+                          {tone.label}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   {actionEnabled && (
                     <td className="px-3 py-2.5">
-                      {e.verdict === "true_positive" ? (
-                        <div className="flex gap-1">
-                          {[
-                            {
-                              id: "keep",
-                              Icon: Save,
-                              color: "#e0b13a",
-                              title: "Keep this sample (acknowledged contamination, but small enough to retain)",
-                            },
-                            {
-                              id: "suppress",
-                              Icon: Trash2,
-                              color: "#ed6e6c",
-                              title: "Suppress this contaminated sample from downstream analyses",
-                            },
-                          ].map((opt) => {
-                            const active = (e.action || "suppress") === opt.id;
-                            const Icon = opt.Icon;
-                            return (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                onClick={(ev) => {
-                                  ev.stopPropagation();
-                                  setAction(e.id, opt.id);
-                                }}
-                                title={opt.title}
-                                aria-label={opt.title}
-                                className="rounded-sm flex items-center justify-center"
-                                style={{
-                                  width: 26,
-                                  height: 26,
-                                  background: active ? opt.color : "var(--bg-card)",
-                                  color: active ? "#fff" : "var(--ink-muted)",
-                                  border: active
-                                    ? "1px solid transparent"
-                                    : "1px solid var(--border)",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                <Icon className="w-3.5 h-3.5" />
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <span className="text-[11px]" style={{ color: "var(--border-strong)" }}>
-                          —
-                        </span>
-                      )}
+                      {(() => {
+                        // Read-only badge — action lives on the target
+                        // sample, edited from Samples / Validate / the
+                        // Network node popover. Showing it here keeps
+                        // the events table in sync without offering a
+                        // second editing surface that could diverge.
+                        const a = sampleCuration?.[e.target]?.action;
+                        if (!a) {
+                          return (
+                            <span
+                              className="text-[11px]"
+                              style={{ color: "var(--border-strong)" }}
+                              title="No action recorded on the target sample"
+                            >
+                              —
+                            </span>
+                          );
+                        }
+                        const tone =
+                          a === "suppress"
+                            ? { bg: "#ed6e6c", label: "Suppress" }
+                            : { bg: "#e0b13a", label: "Keep" };
+                        return (
+                          <span
+                            className="text-[10px] px-1.5 py-0.5 rounded-sm"
+                            style={{
+                              background: tone.bg,
+                              color: "#fff",
+                              fontWeight: 700,
+                              letterSpacing: "0.05em",
+                              textTransform: "uppercase",
+                              fontFamily: '"Raleway", sans-serif',
+                            }}
+                            title={`Action recorded on target sample "${e.target}"`}
+                          >
+                            {tone.label}
+                          </span>
+                        );
+                      })()}
                     </td>
                   )}
                 </tr>
@@ -6408,6 +6646,9 @@ const GalleryCard = React.memo(function GalleryCard({
   setVerdict,
   actionEnabled,
   setAction,
+  sampleAction,
+  sampleVerdict,
+  setSampleVerdict,
   onPopoverOpen,
   onPopoverClose,
 }) {
@@ -6482,11 +6723,16 @@ const GalleryCard = React.memo(function GalleryCard({
     // React batches the parent-state updates from this handler, so by
     // the time the gallery's sort useMemo runs, the lock is already
     // visible.
-    if (actionEnabled && next === "true_positive" && onPopoverOpen) {
+    // Open the popover for any non-Pending verdict so the curator can
+    // also commit a sample-level verdict / action on the target right
+    // after picking the event evaluation. Pending = "I'm undoing my
+    // call", no follow-up needed.
+    const shouldOpen = next !== "pending";
+    if (shouldOpen && onPopoverOpen) {
       onPopoverOpen(event.id);
     }
     setVerdict(event.id, next);
-    if (actionEnabled && next === "true_positive") {
+    if (shouldOpen) {
       setActionPopover(next);
     } else {
       setActionPopover(null);
@@ -6583,10 +6829,10 @@ const GalleryCard = React.memo(function GalleryCard({
               // Action is only available for TP — FP keeps no halo even
               // if a legacy action is recorded in the data.
               const actionRingColor =
-                active && id === "true_positive" && event.action
-                  ? event.action === "keep"
+                active && id === "true_positive" && sampleAction
+                  ? sampleAction === "keep"
                     ? "#f5c324"
-                    : event.action === "suppress"
+                    : sampleAction === "suppress"
                       ? "#ed6e6c"
                       : null
                   : null;
@@ -6597,15 +6843,13 @@ const GalleryCard = React.memo(function GalleryCard({
                   onClick={toggleVerdict(id)}
                   onMouseEnter={() => {
                     // Re-show the popover on hover only if this event
-                    // already has an action committed for the current
-                    // verdict — gives the curator a quick way to flip
-                    // their previous choice without re-clicking the
-                    // verdict button. Fresh / pending events stay quiet.
+                    // already has a sample-level verdict or action on
+                    // its target — gives the curator a quick way to
+                    // re-edit. Fresh / pending events stay quiet.
                     if (
-                      actionEnabled &&
-                      event.action &&
                       event.verdict === id &&
-                      id === "true_positive"
+                      event.verdict !== "pending" &&
+                      (sampleVerdict || sampleAction)
                     ) {
                       cancelCloseTimer();
                       setActionPopover(id);
@@ -6640,79 +6884,218 @@ const GalleryCard = React.memo(function GalleryCard({
             })}
           </div>
         )}
-        {actionEnabled && actionPopover && (
+        {actionPopover && (
           <div
             ref={popoverRef}
             onClick={(e) => e.stopPropagation()}
             onMouseEnter={cancelCloseTimer}
             onMouseLeave={startCloseTimer}
-            className="absolute z-20 flex flex-col gap-1 p-1.5 rounded-md"
+            className="absolute z-20 flex flex-col gap-2 p-2 rounded-md"
             style={{
               // Anchor just to the right of the verdict-button column,
               // outside the card. z-20 floats it above neighbouring
-              // gallery cards.
-              right: -44,
+              // gallery cards. Wider than the legacy action-only
+              // popover because we now expose three sections.
+              left: "calc(100% + 8px)",
               top: "50%",
               transform: "translateY(-50%)",
               background: "var(--bg-card)",
               border: "1px solid var(--border-strong)",
               boxShadow: "0 8px 24px rgba(39,86,98,0.18)",
+              minWidth: 200,
             }}
           >
+            {/* Section 1 — event evaluation (TP / FP / Uncertain /
+                Pending). Lets the curator change their mind without
+                clicking the round buttons on the card. */}
             <div
-              className="text-[9px] tracking-[0.1em] uppercase text-center mb-0.5"
+              className="text-[9px] tracking-[0.1em] uppercase mb-0.5"
               style={{
                 color: "var(--ink-muted)",
                 fontWeight: 700,
                 fontFamily: '"Raleway", sans-serif',
               }}
             >
-              Action
+              Evaluation on event
             </div>
-            {[
-              {
-                id: "keep",
-                Icon: Save,
-                color: "#e0b13a",
-                title: "Keep this sample",
-              },
-              {
-                id: "suppress",
-                Icon: Trash2,
-                color: "#ed6e6c",
-                title: "Suppress this sample",
-              },
-            ].map((opt) => {
-              // Popover only opens for TP, so the default is "suppress".
-              const active = (event.action || "suppress") === opt.id;
-              const Icon = opt.Icon;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    setAction(event.id, opt.id);
-                    setActionPopover(null);
-                  }}
-                  title={opt.title}
-                  aria-label={opt.title}
-                  className="rounded-full flex items-center justify-center"
+            <div className="flex flex-wrap gap-1">
+              {[
+                { id: "true_positive", color: "#00a3a6", label: "TP" },
+                { id: "false_positive", color: "#ed6e6c", label: "FP" },
+                { id: "uncertain", color: "#d97a3c", label: "Uncertain" },
+                { id: "pending", color: "#9aaab0", label: "Pending" },
+              ].map((opt) => {
+                const active = event.verdict === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      setVerdict(event.id, opt.id);
+                    }}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 5,
+                      height: 22,
+                      padding: "0 8px",
+                      borderRadius: 11,
+                      background: active ? opt.color : "var(--bg-card)",
+                      color: active ? "#fff" : "var(--ink)",
+                      border: `1px solid ${active ? opt.color : "var(--border)"}`,
+                      cursor: "pointer",
+                      fontWeight: 700,
+                      letterSpacing: "0.04em",
+                      textTransform: "uppercase",
+                      fontFamily: '"Raleway", sans-serif',
+                      fontSize: 10,
+                    }}
+                    title={`Set evaluation to ${opt.label}`}
+                  >
+                    <span
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: "50%",
+                        background: active ? "#fff" : opt.color,
+                      }}
+                    />
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Section 2 — sample-level verdict on the event's TARGET
+                sample. Independent of the event evaluation; the
+                curator decides whether the target sample is
+                contaminated overall. */}
+            {setSampleVerdict && (
+              <>
+                <div
+                  className="text-[9px] tracking-[0.1em] uppercase mt-1 mb-0.5"
                   style={{
-                    width: 28,
-                    height: 28,
-                    background: active ? opt.color : "var(--bg-card)",
-                    color: active ? "#fff" : "var(--ink-muted)",
-                    border: active
-                      ? "1px solid transparent"
-                      : "1px solid var(--border-strong)",
-                    cursor: "pointer",
+                    color: "var(--ink-muted)",
+                    fontWeight: 700,
+                    fontFamily: '"Raleway", sans-serif',
                   }}
+                  title={`Sample-level verdict on target "${event.target}"`}
                 >
-                  <Icon className="w-3.5 h-3.5" />
-                </button>
-              );
-            })}
+                  Verdict on target
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {[
+                    { id: "pending", k: SAMPLE_VERDICT_TONE.pending },
+                    { id: "contaminated", k: SAMPLE_VERDICT_TONE.contaminated },
+                    { id: "correct", k: SAMPLE_VERDICT_TONE.correct },
+                    { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
+                  ].map((opt) => {
+                    const active = (sampleVerdict || "pending") === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          setSampleVerdict(event.target, opt.id);
+                        }}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 5,
+                          height: 22,
+                          padding: "0 8px",
+                          borderRadius: 11,
+                          background: active ? opt.k.bg : "var(--bg-card)",
+                          color: active ? "#fff" : "var(--ink)",
+                          border: `1px solid ${active ? opt.k.bg : "var(--border)"}`,
+                          cursor: "pointer",
+                          fontWeight: 700,
+                          letterSpacing: "0.04em",
+                          textTransform: "uppercase",
+                          fontFamily: '"Raleway", sans-serif',
+                          fontSize: 10,
+                        }}
+                        title={`Set target verdict to "${opt.k.label}"`}
+                      >
+                        <span
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: "50%",
+                            background: active ? "#fff" : opt.k.bg,
+                          }}
+                        />
+                        {opt.k.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* Section 3 — sample-level action on the target. Only
+                shown when the suppress/keep feature is enabled. */}
+            {actionEnabled && (
+              <>
+                <div
+                  className="text-[9px] tracking-[0.1em] uppercase mt-1 mb-0.5"
+                  style={{
+                    color: "var(--ink-muted)",
+                    fontWeight: 700,
+                    fontFamily: '"Raleway", sans-serif',
+                  }}
+                  title={`Sample-level action on target "${event.target}"`}
+                >
+                  Action on target
+                </div>
+                <div className="flex gap-1">
+                  {[
+                    { id: "keep", Icon: Save, color: "#e0b13a", label: "Keep" },
+                    { id: "suppress", Icon: Trash2, color: "#ed6e6c", label: "Suppress" },
+                  ].map((opt) => {
+                    const active = sampleAction === opt.id;
+                    const Icon = opt.Icon;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          setAction(event.id, active ? null : opt.id);
+                        }}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          height: 22,
+                          padding: "0 9px",
+                          borderRadius: 11,
+                          background: active ? opt.color : "var(--bg-card)",
+                          color: active ? "#fff" : "var(--ink)",
+                          border: `1px solid ${active ? opt.color : "var(--border)"}`,
+                          cursor: "pointer",
+                          fontWeight: 700,
+                          letterSpacing: "0.04em",
+                          textTransform: "uppercase",
+                          fontFamily: '"Raleway", sans-serif',
+                          fontSize: 10,
+                        }}
+                        title={
+                          active
+                            ? `Clear ${opt.label.toLowerCase()} on ${event.target}`
+                            : `Set target action to ${opt.label.toLowerCase()}`
+                        }
+                      >
+                        <Icon className="w-3 h-3" />
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -7401,7 +7784,7 @@ const ExplorePairs = ({
               fontFamily: '"Raleway", sans-serif',
             }}
           >
-            Verdict
+            Evaluation
           </label>
           <div className="flex gap-2 flex-wrap">
             {[
@@ -7828,6 +8211,8 @@ const ScatterTab = ({
   onBulkApply,
   actionEnabled,
   setAction,
+  sampleCuration,
+  setSampleVerdict,
   pageSize,
   explorePairsForm,
   setExplorePairsForm,
@@ -8069,7 +8454,7 @@ const ScatterTab = ({
           { id: "rate", label: "rate" },
           { id: "score", label: "probability" },
           { id: "introducedPct", label: "introduced" },
-          { id: "pending", label: "verdict" },
+          { id: "pending", label: "evaluation" },
           ...(actionEnabled ? [{ id: "action", label: "action" }] : []),
           { id: "source", label: "source" },
           { id: "target", label: "target" },
@@ -8126,6 +8511,9 @@ const ScatterTab = ({
             setVerdict={setVerdict}
             actionEnabled={actionEnabled}
             setAction={setAction}
+            sampleAction={sampleCuration?.[e.target]?.action || null}
+            sampleVerdict={sampleCuration?.[e.target]?.verdict || null}
+            setSampleVerdict={setSampleVerdict}
             onPopoverOpen={onPopoverOpen}
             onPopoverClose={onPopoverClose}
           />
@@ -8162,11 +8550,13 @@ const NetworkTab = ({
   onPick,
   onBulkApply,
   onApplyToEventIds,
+  onApplySampleAction,
   hasAb,
   actionEnabled,
   colorScheme,
   setColorScheme,
   onScopeToSamples,
+  sampleCuration,
 }) => {
   const filteredIds = useMemo(
     () => new Set(filtered.map((e) => e.id)),
@@ -8195,11 +8585,13 @@ const NetworkTab = ({
       onPick={onPick}
       onBulkApply={onBulkApply}
       onApplyToEventIds={onApplyToEventIds}
+      onApplySampleAction={onApplySampleAction}
       hasAb={hasAb}
       actionEnabled={actionEnabled}
       colorScheme={colorScheme}
       setColorScheme={setColorScheme}
       onScopeToSamples={onScopeToSamples}
+      sampleCuration={sampleCuration}
     />
     <p
       className="text-[11px] mt-3 flex items-center gap-1.5"
@@ -8223,6 +8615,2210 @@ const NetworkTab = ({
   </div>
   );
 };
+/* ---------- SAMPLES TAB ----------
+   Per-sample curation surface. Sample-level verdict (contaminated /
+   correct / uncertain / pending) and action (keep / suppress) live in
+   the App-level `sampleCuration` map; this tab is the only place
+   verdicts are edited and the primary place actions are edited.
+   Read-only mirrors live in the events table, the network curation
+   colour scheme, and the Validate-tab toolbar's keep/suppress chips. */
+
+/** Auto-derive a verdict suggestion for a sample from the evaluations
+    of the events touching it. The intuition is "a sample is contaminated
+    if at least one TP event reaches it as a target"; conversely, a
+    sample with only FP-targeted events is most likely correct. Mixed or
+    pending evidence yields "uncertain" (or no suggestion when nothing
+    has been evaluated yet). Sources without targets default to no
+    suggestion since the sample isn't itself a contamination victim. */
+const suggestSampleVerdict = (sampleId, events) => {
+  let tpAsTarget = 0;
+  let fpAsTarget = 0;
+  let uncertainAsTarget = 0;
+  let pendingAsTarget = 0;
+  let asTarget = 0;
+  for (const e of events) {
+    if (e.target !== sampleId) continue;
+    asTarget++;
+    if (e.verdict === "true_positive") tpAsTarget++;
+    else if (e.verdict === "false_positive") fpAsTarget++;
+    else if (e.verdict === "uncertain") uncertainAsTarget++;
+    else pendingAsTarget++;
+  }
+  if (asTarget === 0) return null; // sample only seen as source
+  if (tpAsTarget > 0) return "contaminated";
+  if (uncertainAsTarget > 0) return "uncertain";
+  if (pendingAsTarget > 0 && fpAsTarget === 0) return null; // not enough info yet
+  if (fpAsTarget > 0 && pendingAsTarget === 0 && uncertainAsTarget === 0)
+    return "correct";
+  return "uncertain";
+};
+
+const SAMPLE_VERDICT_TONE = {
+  contaminated: { bg: "#ed6e6c", label: "Contaminated" },
+  correct: { bg: "#00a3a6", label: "Correct" },
+  uncertain: { bg: "#d97a3c", label: "Uncertain" },
+  pending: { bg: "#9aaab0", label: "Pending" },
+};
+
+/** Compact metadata pill block shown in the SamplesTab "Context"
+    column. Two visual tiers: warning flags (negative control, low
+    biomass, low sequencing depth) get a soft tinted chip with a
+    coloured icon and label; identity / placement / extras render as
+    neutral icon-prefixed pills. The whole cell degrades to a faint
+    "no metadata" placeholder when nothing is annotated. */
+const SAMPLE_CONTEXT_PILL = {
+  base: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    height: 20,
+    padding: "0 7px",
+    borderRadius: 10,
+    fontFamily: '"Raleway", sans-serif',
+    fontSize: 11,
+    lineHeight: 1,
+    whiteSpace: "nowrap",
+  },
+};
+
+const SampleContextCell = ({
+  row,
+  onSubjectClick,
+  onTimepointClick,
+  onGroupClick,
+  onBiomeClick,
+  onControlClick,
+  onLowBiomassClick,
+  onLowSeqDepthClick,
+  onPlateClick,
+}) => {
+  const f = row.flags || {};
+  const placement = row.placement || null;
+
+  /** Tinted warning chip — bg derives from the accent so it reads as
+      a single colour family. Used for control / low biomass / low
+      sequencing depth, where the curator should pause before trusting
+      the call. Renders as an interactive button when a click handler
+      is supplied so the curator can pivot the table to "only samples
+      that share this flag" with one click. */
+  const flagPill = (key, label, accent, IconComp, title, onClick) => {
+    const Tag = onClick ? "button" : "span";
+    const interactive = !!onClick;
+    return (
+      <Tag
+        key={key}
+        type={onClick ? "button" : undefined}
+        onClick={onClick}
+        style={{
+          ...SAMPLE_CONTEXT_PILL.base,
+          background: `${accent}1f`,
+          color: accent,
+          fontWeight: 700,
+          letterSpacing: "0.04em",
+          textTransform: "uppercase",
+          fontSize: 10,
+          cursor: interactive ? "pointer" : "default",
+          border: "1px solid transparent",
+          transition: interactive ? "border-color 0.12s, background 0.12s" : undefined,
+        }}
+        onMouseEnter={
+          interactive
+            ? (ev) => {
+                ev.currentTarget.style.borderColor = accent;
+                ev.currentTarget.style.background = `${accent}33`;
+              }
+            : undefined
+        }
+        onMouseLeave={
+          interactive
+            ? (ev) => {
+                ev.currentTarget.style.borderColor = "transparent";
+                ev.currentTarget.style.background = `${accent}1f`;
+              }
+            : undefined
+        }
+        title={title || label}
+      >
+        <IconComp className="w-3 h-3" style={{ flexShrink: 0 }} />
+        {label}
+      </Tag>
+    );
+  };
+
+  /** Neutral identity / placement / extras pill — muted background,
+      grey icon, ink text. Key in monospace muted, value emphasised.
+      When `onClick` is provided the pill renders as a button with a
+      subtle hover ring so the curator gets feedback that it's
+      interactive (used for subject and plate). */
+  const kvPill = (key, value, IconComp, title, valueIsMono, onClick) => {
+    const Tag = onClick ? "button" : "span";
+    const interactive = !!onClick;
+    return (
+      <Tag
+        key={`${key}-${value}`}
+        type={onClick ? "button" : undefined}
+        onClick={onClick}
+        style={{
+          ...SAMPLE_CONTEXT_PILL.base,
+          background: "var(--bg-soft)",
+          color: "var(--ink)",
+          border: "1px solid var(--border)",
+          cursor: interactive ? "pointer" : "default",
+          transition: interactive ? "border-color 0.12s, background 0.12s" : undefined,
+        }}
+        onMouseEnter={
+          interactive
+            ? (ev) => {
+                ev.currentTarget.style.borderColor = "#00a3a6";
+                ev.currentTarget.style.background = "rgba(0,163,166,0.10)";
+              }
+            : undefined
+        }
+        onMouseLeave={
+          interactive
+            ? (ev) => {
+                ev.currentTarget.style.borderColor = "var(--border)";
+                ev.currentTarget.style.background = "var(--bg-soft)";
+              }
+            : undefined
+        }
+        title={title || `${key}: ${value}`}
+      >
+        <IconComp
+          className="w-3 h-3"
+          style={{ flexShrink: 0, color: "var(--ink-muted)" }}
+        />
+        <span
+          style={{
+            color: "var(--ink-muted)",
+            fontSize: 10,
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+          }}
+        >
+          {key}
+        </span>
+        <span
+          style={{
+            fontWeight: 600,
+            fontFamily: valueIsMono
+              ? "ui-monospace, monospace"
+              : '"Raleway", sans-serif',
+          }}
+        >
+          {value}
+        </span>
+      </Tag>
+    );
+  };
+
+  const flagPills = [];
+  if (f.isControl)
+    flagPills.push(
+      flagPill(
+        "control",
+        "negative control",
+        "#423089",
+        ShieldAlert,
+        onControlClick
+          ? "Filter to samples tagged as a negative control"
+          : "Sample tagged as a negative control — biological signal here is suspect.",
+        onControlClick || null,
+      ),
+    );
+  if (f.isLowBiomass)
+    flagPills.push(
+      flagPill(
+        "low-biomass",
+        "low biomass",
+        "#d97a3c",
+        AlertCircle,
+        onLowBiomassClick
+          ? "Filter to samples flagged as low biomass"
+          : "Low biomass — community profile may be unreliable.",
+        onLowBiomassClick || null,
+      ),
+    );
+  if (f.isLowSequencingDepth)
+    flagPills.push(
+      flagPill(
+        "low-seqdepth",
+        "low seq depth",
+        "#d97a3c",
+        Activity,
+        onLowSeqDepthClick
+          ? "Filter to samples flagged as low sequencing depth"
+          : "Low sequencing depth — community profile may be unreliable.",
+        onLowSeqDepthClick || null,
+      ),
+    );
+
+  const idPills = [];
+  if (f.subject)
+    idPills.push(
+      kvPill(
+        "subj",
+        f.subject,
+        User,
+        onSubjectClick
+          ? `Filter samples to subject "${f.subject}"`
+          : `subj: ${f.subject}`,
+        true,
+        onSubjectClick ? () => onSubjectClick(f.subject) : null,
+      ),
+    );
+  if (f.timepoint)
+    idPills.push(
+      kvPill(
+        "tp",
+        f.timepoint,
+        Calendar,
+        onTimepointClick
+          ? `Filter samples to timepoint "${f.timepoint}"`
+          : `tp: ${f.timepoint}`,
+        false,
+        onTimepointClick ? () => onTimepointClick(f.timepoint) : null,
+      ),
+    );
+  if (f.groupId)
+    idPills.push(
+      kvPill(
+        "grp",
+        f.groupId,
+        Users,
+        onGroupClick
+          ? `Filter samples to group "${f.groupId}"`
+          : `grp: ${f.groupId}`,
+        true,
+        onGroupClick ? () => onGroupClick(f.groupId) : null,
+      ),
+    );
+  if (f.biome && !f.isControl)
+    idPills.push(
+      kvPill(
+        "biome",
+        f.biome,
+        Layers,
+        onBiomeClick
+          ? `Filter samples to biome "${f.biome}"`
+          : `biome: ${f.biome}`,
+        false,
+        onBiomeClick ? () => onBiomeClick(f.biome) : null,
+      ),
+    );
+
+  const placePills = [];
+  if (placement) {
+    const wellLbl =
+      placement.row != null && placement.col != null
+        ? wellLabel(placement.row, placement.col)
+        : "";
+    placePills.push(
+      kvPill(
+        "plate",
+        wellLbl ? `${placement.plate} · ${wellLbl}` : placement.plate,
+        Grid3x3,
+        onPlateClick
+          ? `Open plate ${placement.plate}${wellLbl ? ` · well ${wellLbl}` : ""} in the Plate tab`
+          : `Plate ${placement.plate}${wellLbl ? ` · well ${wellLbl}` : ""}`,
+        true,
+        onPlateClick ? () => onPlateClick(placement.plate) : null,
+      ),
+    );
+  }
+
+  const extraPills = [];
+  if (f.other) {
+    for (const [k, v] of Object.entries(f.other)) {
+      extraPills.push(kvPill(k, String(v), Layers));
+    }
+  }
+
+  const groups = [flagPills, idPills, placePills, extraPills].filter(
+    (g) => g.length > 0,
+  );
+  if (groups.length === 0) {
+    return (
+      <span
+        className="text-[11px]"
+        style={{ color: "var(--border-strong)", fontStyle: "italic" }}
+        title="No metadata loaded for this sample"
+      >
+        no metadata
+      </span>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      {groups.map((g, i) => (
+        <div key={i} className="flex flex-wrap gap-1.5">
+          {g}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+/** Sample id + notes-toggle button rendered in the first column. */
+const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
+  <>
+    <div
+      style={{
+        fontFamily: "ui-monospace, monospace",
+        color: "var(--ink)",
+        fontWeight: 600,
+        fontSize: 13,
+        lineHeight: 1.2,
+      }}
+    >
+      {row.id}
+    </div>
+    <button
+      type="button"
+      onClick={onToggleNotes}
+      style={{
+        marginTop: 6,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        height: 18,
+        padding: "0 7px",
+        borderRadius: 9,
+        fontSize: 10,
+        fontFamily: '"Raleway", sans-serif',
+        fontWeight: 600,
+        background: row.notes ? "rgba(39,86,98,0.08)" : "transparent",
+        color: row.notes ? "#275662" : "var(--ink-muted)",
+        border: row.notes
+          ? "1px solid rgba(39,86,98,0.25)"
+          : "1px dashed var(--border)",
+        cursor: "pointer",
+      }}
+      title={
+        notesOpen
+          ? "Hide note"
+          : row.notes
+            ? "Edit existing note"
+            : "Add a note"
+      }
+    >
+      {notesOpen ? "− note" : row.notes ? "✎ note" : "+ note"}
+    </button>
+  </>
+);
+
+/** Generic value cell for context columns. Empty values fall back to
+    a faint dash so the column still has visible structure. */
+const SampleStringValue = ({ value, mono }) => {
+  if (!value) {
+    return (
+      <span
+        style={{
+          color: "var(--border-strong)",
+          fontStyle: "italic",
+          fontSize: 11,
+          fontFamily: '"Raleway", sans-serif',
+        }}
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <span
+      style={{
+        color: "var(--ink)",
+        fontFamily: mono
+          ? "ui-monospace, monospace"
+          : '"Raleway", sans-serif',
+        fontSize: 12,
+        fontWeight: mono ? 600 : 500,
+      }}
+    >
+      {value}
+    </span>
+  );
+};
+
+/** Same as SampleStringValue, but the value renders as a clickable
+    chip when an onClick handler is provided. Used for `subject` to let
+    the curator filter the table to a single subject in one click. */
+const SampleClickableId = ({ value, onClick, title }) => {
+  if (!value) return <SampleStringValue value={null} />;
+  if (!onClick) return <SampleStringValue value={value} mono />;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title || `Filter samples to "${value}"`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        height: 22,
+        padding: "0 9px",
+        borderRadius: 11,
+        background: "var(--bg-soft)",
+        color: "var(--ink)",
+        border: "1px solid var(--border)",
+        cursor: "pointer",
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 12,
+        fontWeight: 600,
+        transition: "border-color 0.12s, background 0.12s",
+      }}
+      onMouseEnter={(ev) => {
+        ev.currentTarget.style.borderColor = "#00a3a6";
+        ev.currentTarget.style.background = "rgba(0,163,166,0.10)";
+      }}
+      onMouseLeave={(ev) => {
+        ev.currentTarget.style.borderColor = "var(--border)";
+        ev.currentTarget.style.background = "var(--bg-soft)";
+      }}
+    >
+      {value}
+    </button>
+  );
+};
+
+/** Boolean indicator badge — coloured pill when active, faint dash
+    when inactive. Used for control / low-biomass / low-seq-depth
+    columns. */
+const SampleBoolBadge = ({ active, label, color, Icon, title }) => {
+  if (!active) return <SampleStringValue value={null} />;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        height: 20,
+        padding: "0 7px",
+        borderRadius: 10,
+        background: `${color}1f`,
+        color,
+        fontSize: 10,
+        fontWeight: 700,
+        fontFamily: '"Raleway", sans-serif',
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+      }}
+      title={title || label}
+    >
+      <Icon className="w-3 h-3" style={{ flexShrink: 0 }} />
+      {label}
+    </span>
+  );
+};
+
+/** Plate placement badge — shows "P1 · A07" with a Grid3x3 icon.
+    Click jumps to the Plate tab focused on the right plate. */
+const SamplePlateBadge = ({ placement, onClick }) => {
+  const wellLbl =
+    placement.row != null && placement.col != null
+      ? wellLabel(placement.row, placement.col)
+      : "";
+  const display = wellLbl
+    ? `${placement.plate} · ${wellLbl}`
+    : placement.plate;
+  const Tag = onClick ? "button" : "span";
+  return (
+    <Tag
+      type={onClick ? "button" : undefined}
+      onClick={onClick}
+      title={
+        onClick
+          ? `Open plate ${placement.plate}${wellLbl ? ` · well ${wellLbl}` : ""} in the Plate tab`
+          : `Plate ${placement.plate}${wellLbl ? ` · well ${wellLbl}` : ""}`
+      }
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        height: 22,
+        padding: "0 9px",
+        borderRadius: 11,
+        background: "var(--bg-soft)",
+        color: "var(--ink)",
+        border: "1px solid var(--border)",
+        cursor: onClick ? "pointer" : "default",
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 12,
+        fontWeight: 600,
+        transition: onClick ? "border-color 0.12s, background 0.12s" : undefined,
+      }}
+      onMouseEnter={
+        onClick
+          ? (ev) => {
+              ev.currentTarget.style.borderColor = "#00a3a6";
+              ev.currentTarget.style.background = "rgba(0,163,166,0.10)";
+            }
+          : undefined
+      }
+      onMouseLeave={
+        onClick
+          ? (ev) => {
+              ev.currentTarget.style.borderColor = "var(--border)";
+              ev.currentTarget.style.background = "var(--bg-soft)";
+            }
+          : undefined
+      }
+    >
+      <Grid3x3
+        className="w-3 h-3"
+        style={{ color: "var(--ink-muted)", flexShrink: 0 }}
+      />
+      {display}
+    </Tag>
+  );
+};
+
+/** Combined event count + breakdown chips + drill-in buttons for
+    the Events column. The drill-in buttons live here (rather than in
+    a dedicated column) so the count and the navigation hints stay
+    visually grouped. */
+const SampleEventsCell = ({ row, onScopeToSamples }) => (
+  <>
+    <div
+      style={{
+        color: "var(--ink)",
+        fontFamily: '"Raleway", sans-serif',
+        fontWeight: 700,
+        fontSize: 13,
+        lineHeight: 1.1,
+      }}
+    >
+      {row.eventsTouching}
+      <span
+        style={{
+          color: "var(--ink-muted)",
+          fontWeight: 500,
+          fontSize: 11,
+          marginLeft: 4,
+        }}
+      >
+        event{row.eventsTouching !== 1 ? "s" : ""}
+      </span>
+    </div>
+    {row.eventsTouching > 0 && (
+      <div
+        style={{
+          color: "var(--ink-muted)",
+          fontSize: 10,
+          fontFamily: '"Raleway", sans-serif',
+          marginTop: 2,
+        }}
+      >
+        {row.asTarget} as target · {row.asSource} as source
+      </div>
+    )}
+    {row.eventsTouching > 0 && (
+      <div className="flex gap-1 flex-wrap" style={{ marginTop: 4 }}>
+        {[
+          { k: "tp", color: "#00a3a6", title: "True positive" },
+          { k: "fp", color: "#ed6e6c", title: "False positive" },
+          { k: "uncertain", color: "#d97a3c", title: "Uncertain" },
+          { k: "pending", color: "#9aaab0", title: "Pending" },
+        ].map((c) =>
+          row.evalCounts[c.k] > 0 ? (
+            <span
+              key={c.k}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                height: 18,
+                padding: "0 6px",
+                borderRadius: 9,
+                background: `${c.color}1f`,
+                color: c.color,
+                fontSize: 10,
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+              }}
+              title={`${c.title}: ${row.evalCounts[c.k]}`}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: c.color,
+                }}
+              />
+              {c.k}
+              <span style={{ fontWeight: 800, marginLeft: 1 }}>
+                {row.evalCounts[c.k]}
+              </span>
+            </span>
+          ) : null,
+        )}
+      </div>
+    )}
+    <div className="flex gap-1.5" style={{ marginTop: 6 }}>
+      <button
+        type="button"
+        onClick={() => onScopeToSamples([row.id], "scatter")}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          height: 22,
+          padding: "0 9px",
+          borderRadius: 11,
+          background: "var(--bg-card)",
+          color: "var(--ink)",
+          border: "1px solid var(--border-strong)",
+          cursor: "pointer",
+          fontFamily: '"Raleway", sans-serif',
+          fontSize: 11,
+          fontWeight: 600,
+        }}
+        title="Open these events in the Scatter gallery"
+      >
+        <ScatterIcon className="w-3 h-3" />
+        Scatter
+      </button>
+      <button
+        type="button"
+        onClick={() => onScopeToSamples([row.id], "table")}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          height: 22,
+          padding: "0 9px",
+          borderRadius: 11,
+          background: "var(--bg-card)",
+          color: "var(--ink)",
+          border: "1px solid var(--border-strong)",
+          cursor: "pointer",
+          fontFamily: '"Raleway", sans-serif',
+          fontSize: 11,
+          fontWeight: 600,
+        }}
+        title="Open these events in the Events table"
+      >
+        <Droplets className="w-3 h-3" />
+        Events
+      </button>
+    </div>
+  </>
+);
+
+/** Verdict picker — 4 chip buttons (pending / contaminated / correct /
+    uncertain) wired to setSampleVerdict. */
+const SampleVerdictCell = ({ row, setSampleVerdict }) => (
+  <div className="flex flex-wrap gap-1">
+    {[
+      { id: "pending", k: SAMPLE_VERDICT_TONE.pending },
+      { id: "contaminated", k: SAMPLE_VERDICT_TONE.contaminated },
+      { id: "correct", k: SAMPLE_VERDICT_TONE.correct },
+      { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
+    ].map((opt) => {
+      const active = row.verdict === opt.id;
+      return (
+        <button
+          key={opt.id}
+          type="button"
+          onClick={() => setSampleVerdict(row.id, opt.id)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            height: 22,
+            padding: "0 9px",
+            borderRadius: 11,
+            background: active ? opt.k.bg : "var(--bg-card)",
+            color: active ? "#fff" : "var(--ink)",
+            border: `1px solid ${active ? opt.k.bg : "var(--border)"}`,
+            cursor: "pointer",
+            fontWeight: 700,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            fontFamily: '"Raleway", sans-serif',
+            fontSize: 10,
+          }}
+          title={`Set verdict to "${opt.k.label}"`}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: active ? "#fff" : opt.k.bg,
+            }}
+          />
+          {opt.k.label}
+        </button>
+      );
+    })}
+  </div>
+);
+
+/** Action picker — keep / suppress chips. */
+const SampleActionCell = ({ row, setSampleAction }) => (
+  <div className="flex gap-1">
+    {[
+      { id: "keep", color: "#e0b13a", Icon: Save, label: "Keep" },
+      { id: "suppress", color: "#ed6e6c", Icon: Trash2, label: "Suppress" },
+    ].map((opt) => {
+      const active = row.action === opt.id;
+      const Icon = opt.Icon;
+      return (
+        <button
+          key={opt.id}
+          type="button"
+          onClick={() =>
+            setSampleAction(row.id, active ? null : opt.id)
+          }
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            height: 22,
+            padding: "0 9px",
+            borderRadius: 11,
+            background: active ? opt.color : "var(--bg-card)",
+            color: active ? "#fff" : "var(--ink)",
+            border: `1px solid ${active ? opt.color : "var(--border)"}`,
+            cursor: "pointer",
+            fontWeight: 700,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            fontFamily: '"Raleway", sans-serif',
+            fontSize: 10,
+          }}
+          title={
+            active
+              ? `Clear ${opt.label.toLowerCase()} on ${row.id}`
+              : `Mark ${row.id} as ${opt.label.toLowerCase()}`
+          }
+        >
+          <Icon className="w-3 h-3" />
+          {opt.label}
+        </button>
+      );
+    })}
+  </div>
+);
+
+/** Second filter row used on the Samples tab — a single free-text
+    search field with auto-suggestions across every per-sample metadata
+    facet (subject / timepoint / group / biome plus the boolean flags
+    control / low biomass / low seq depth). Picking a suggestion adds
+    it as a removable chip on the same line. Multiple facets can be
+    active simultaneously (e.g. subj=A123 + control=yes). */
+const SampleContextSearchBar = ({
+  contextOptions,
+  subjectFilter,
+  setSubjectFilter,
+  timepointFilter,
+  setTimepointFilter,
+  groupFilter,
+  setGroupFilter,
+  biomeFilter,
+  setBiomeFilter,
+  controlFilter,
+  setControlFilter,
+  lowBiomassFilter,
+  setLowBiomassFilter,
+  lowSeqDepthFilter,
+  setLowSeqDepthFilter,
+  anyActive,
+  onClear,
+}) => {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const containerRef = useRef(null);
+  const inputRef = useRef(null);
+
+  // Build the universe of selectable suggestions. Each entry knows how
+  // to apply / unapply itself and whether it's currently active so the
+  // dropdown can dim / mark already-set facets.
+  const allSuggestions = useMemo(() => {
+    const items = [];
+    for (const s of contextOptions.subjects || [])
+      items.push({
+        kind: "subj",
+        value: s,
+        label: `subj · ${s}`,
+        apply: () => setSubjectFilter(s),
+        active: subjectFilter === s,
+      });
+    for (const t of contextOptions.timepoints || [])
+      items.push({
+        kind: "tp",
+        value: t,
+        label: `tp · ${t}`,
+        apply: () => setTimepointFilter(t),
+        active: timepointFilter === t,
+      });
+    if (contextOptions.hasGroupIdCol) {
+      for (const g of contextOptions.groups || [])
+        items.push({
+          kind: "grp",
+          value: g,
+          label: `grp · ${g}`,
+          apply: () => setGroupFilter(g),
+          active: groupFilter === g,
+        });
+    }
+    if (contextOptions.hasBiomeCol) {
+      for (const b of contextOptions.biomes || [])
+        items.push({
+          kind: "biome",
+          value: b,
+          label: `biome · ${b}`,
+          apply: () => setBiomeFilter(b),
+          active: biomeFilter === b,
+        });
+    }
+    if (contextOptions.hasBiomeCol) {
+      items.push({
+        kind: "control",
+        value: "yes",
+        label: "control · yes (only negative controls)",
+        apply: () => setControlFilter("yes"),
+        active: controlFilter === "yes",
+      });
+      items.push({
+        kind: "control",
+        value: "no",
+        label: "control · no (exclude negative controls)",
+        apply: () => setControlFilter("no"),
+        active: controlFilter === "no",
+      });
+    }
+    if (contextOptions.hasLowBiomassCol) {
+      items.push({
+        kind: "low biomass",
+        value: "yes",
+        label: "low biomass · yes",
+        apply: () => setLowBiomassFilter("yes"),
+        active: lowBiomassFilter === "yes",
+      });
+      items.push({
+        kind: "low biomass",
+        value: "no",
+        label: "low biomass · no",
+        apply: () => setLowBiomassFilter("no"),
+        active: lowBiomassFilter === "no",
+      });
+    }
+    if (contextOptions.hasLowSeqDepthCol) {
+      items.push({
+        kind: "low seq depth",
+        value: "yes",
+        label: "low seq depth · yes",
+        apply: () => setLowSeqDepthFilter("yes"),
+        active: lowSeqDepthFilter === "yes",
+      });
+      items.push({
+        kind: "low seq depth",
+        value: "no",
+        label: "low seq depth · no",
+        apply: () => setLowSeqDepthFilter("no"),
+        active: lowSeqDepthFilter === "no",
+      });
+    }
+    return items;
+  }, [
+    contextOptions,
+    subjectFilter,
+    timepointFilter,
+    groupFilter,
+    biomeFilter,
+    controlFilter,
+    lowBiomassFilter,
+    lowSeqDepthFilter,
+    setSubjectFilter,
+    setTimepointFilter,
+    setGroupFilter,
+    setBiomeFilter,
+    setControlFilter,
+    setLowBiomassFilter,
+    setLowSeqDepthFilter,
+  ]);
+
+  const matchedSuggestions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = q
+      ? allSuggestions.filter((s) => s.label.toLowerCase().includes(q))
+      : allSuggestions;
+    return list.slice(0, 80);
+  }, [allSuggestions, query]);
+
+  useEffect(() => {
+    setHighlight(0);
+  }, [query]);
+
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  const pickSuggestion = (s) => {
+    s.apply();
+    setQuery("");
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setOpen(true);
+      setHighlight((h) =>
+        Math.min(matchedSuggestions.length - 1, h + 1),
+      );
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlight((h) => Math.max(0, h - 1));
+    } else if (e.key === "Enter") {
+      const s = matchedSuggestions[highlight];
+      if (s) {
+        e.preventDefault();
+        pickSuggestion(s);
+      }
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    } else if (e.key === "Backspace" && !query && activeChips.length > 0) {
+      // Pop the last chip when the input is empty — quick "undo".
+      activeChips[activeChips.length - 1].clear();
+    }
+  };
+
+  const activeChips = [];
+  if (subjectFilter)
+    activeChips.push({
+      key: `subj-${subjectFilter}`,
+      label: `subj · ${subjectFilter}`,
+      clear: () => setSubjectFilter(null),
+    });
+  if (timepointFilter)
+    activeChips.push({
+      key: `tp-${timepointFilter}`,
+      label: `tp · ${timepointFilter}`,
+      clear: () => setTimepointFilter(null),
+    });
+  if (groupFilter)
+    activeChips.push({
+      key: `grp-${groupFilter}`,
+      label: `grp · ${groupFilter}`,
+      clear: () => setGroupFilter(null),
+    });
+  if (biomeFilter)
+    activeChips.push({
+      key: `biome-${biomeFilter}`,
+      label: `biome · ${biomeFilter}`,
+      clear: () => setBiomeFilter(null),
+    });
+  if (controlFilter !== "any")
+    activeChips.push({
+      key: `control-${controlFilter}`,
+      label: `control · ${controlFilter}`,
+      clear: () => setControlFilter("any"),
+    });
+  if (lowBiomassFilter !== "any")
+    activeChips.push({
+      key: `low-biomass-${lowBiomassFilter}`,
+      label: `low biomass · ${lowBiomassFilter}`,
+      clear: () => setLowBiomassFilter("any"),
+    });
+  if (lowSeqDepthFilter !== "any")
+    activeChips.push({
+      key: `low-seq-depth-${lowSeqDepthFilter}`,
+      label: `low seq depth · ${lowSeqDepthFilter}`,
+      clear: () => setLowSeqDepthFilter("any"),
+    });
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative mb-4 p-2 rounded-md"
+      style={{
+        background: "var(--bg-soft)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <div className="flex items-center gap-2 flex-wrap">
+        <Search
+          className="w-4 h-4"
+          style={{ color: "var(--ink-muted)", flexShrink: 0 }}
+        />
+        <span
+          className="text-[10px] uppercase tracking-[0.05em]"
+          style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+        >
+          Context
+        </span>
+        {activeChips.map((c) => (
+          <button
+            key={c.key}
+            type="button"
+            onClick={c.clear}
+            className="flex items-center gap-1 rounded-sm"
+            style={{
+              background: "rgba(0,163,166,0.12)",
+              border: "1px solid #00a3a6",
+              color: "#1d3a44",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+              fontSize: 10,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+              padding: "2px 6px",
+              cursor: "pointer",
+            }}
+            title={`Remove ${c.label} filter`}
+          >
+            {c.label}
+            <X className="w-3 h-3" />
+          </button>
+        ))}
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          placeholder={
+            activeChips.length === 0
+              ? "type to filter samples by context (subj, tp, grp, biome, control, low biomass, low seq depth)…"
+              : "add another filter…"
+          }
+          className="text-[12px] outline-none flex-1 min-w-[160px]"
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--ink)",
+            padding: "2px 0",
+            fontFamily: '"Raleway", sans-serif',
+            fontWeight: 500,
+          }}
+        />
+        {anyActive && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="text-[11px]"
+            style={{
+              color: "var(--ink-muted)",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontFamily: '"Raleway", sans-serif',
+              fontWeight: 600,
+            }}
+            title="Clear every sample-context filter"
+          >
+            clear all
+          </button>
+        )}
+      </div>
+      {open && matchedSuggestions.length > 0 && (
+        <div
+          className="absolute left-0 right-0 mt-1 rounded-md z-30 overflow-auto"
+          style={{
+            top: "100%",
+            maxHeight: 280,
+            background: "var(--bg-card)",
+            border: "1px solid var(--border-strong)",
+            boxShadow: "0 8px 24px rgba(39,86,98,0.12)",
+          }}
+        >
+          {matchedSuggestions.map((s, i) => {
+            const isHighlighted = i === highlight;
+            return (
+              <button
+                key={`${s.kind}-${s.value}`}
+                type="button"
+                onClick={() => pickSuggestion(s)}
+                onMouseEnter={() => setHighlight(i)}
+                disabled={s.active}
+                className="w-full text-left px-3 py-1.5 text-[12px] flex items-center justify-between"
+                style={{
+                  background: isHighlighted
+                    ? "rgba(0,163,166,0.10)"
+                    : "transparent",
+                  color: s.active ? "var(--ink-muted)" : "var(--ink)",
+                  cursor: s.active ? "default" : "pointer",
+                  fontFamily: '"Raleway", sans-serif',
+                  border: "none",
+                  borderBottom:
+                    i < matchedSuggestions.length - 1
+                      ? "1px solid var(--border)"
+                      : "none",
+                  opacity: s.active ? 0.55 : 1,
+                }}
+              >
+                <span>
+                  <span
+                    style={{
+                      color: "var(--ink-muted)",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.04em",
+                      marginRight: 6,
+                    }}
+                  >
+                    {s.kind}
+                  </span>
+                  {s.value}
+                </span>
+                {s.active && (
+                  <span
+                    style={{
+                      color: "#00a3a6",
+                      fontSize: 9,
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                    }}
+                  >
+                    active
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/** [Legacy] Original context filter row — replaced by
+    SampleContextSearchBar above. Kept temporarily as a reference so
+    the dropdown-based pattern is easy to rebuild if the search-based
+    one doesn't pan out. */
+const SampleContextFilterBar = ({
+  contextOptions,
+  subjectFilter,
+  setSubjectFilter,
+  timepointFilter,
+  setTimepointFilter,
+  groupFilter,
+  setGroupFilter,
+  biomeFilter,
+  setBiomeFilter,
+  controlFilter,
+  setControlFilter,
+  lowBiomassFilter,
+  setLowBiomassFilter,
+  lowSeqDepthFilter,
+  setLowSeqDepthFilter,
+  anyActive,
+  onClear,
+}) => {
+  const selectChip = (label, value, setValue, options, IconComp) => {
+    if (!options || options.length === 0) return null;
+    const active = !!value;
+    return (
+      <label
+        className="flex items-center gap-1.5 rounded-md"
+        style={{
+          padding: "2px 8px 2px 6px",
+          background: active ? "rgba(0,163,166,0.10)" : "var(--bg-card)",
+          border: active
+            ? "1px solid #00a3a6"
+            : "1px solid var(--border)",
+          fontFamily: '"Raleway", sans-serif',
+          fontSize: 11,
+        }}
+        title={`Filter samples by ${label}`}
+      >
+        <IconComp
+          className="w-3 h-3"
+          style={{ color: "var(--ink-muted)", flexShrink: 0 }}
+        />
+        <span
+          style={{
+            color: "var(--ink-muted)",
+            fontWeight: 700,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            fontSize: 10,
+          }}
+        >
+          {label}
+        </span>
+        <select
+          value={value || ""}
+          onChange={(e) => setValue(e.target.value || null)}
+          className="text-[12px] outline-none"
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--ink)",
+            fontFamily: '"Raleway", sans-serif',
+            fontWeight: 500,
+            cursor: "pointer",
+            padding: "2px 0",
+            minWidth: 60,
+          }}
+        >
+          <option value="">any</option>
+          {options.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  };
+
+  const triChip = (label, value, setValue, IconComp, accent) => (
+    <div
+      className="flex items-center gap-1 rounded-md"
+      style={{
+        padding: "2px 8px 2px 6px",
+        background: value !== "any" ? `${accent}1f` : "var(--bg-card)",
+        border:
+          value !== "any" ? `1px solid ${accent}` : "1px solid var(--border)",
+        fontFamily: '"Raleway", sans-serif',
+        fontSize: 11,
+      }}
+      title={`Filter samples by ${label}`}
+    >
+      <IconComp
+        className="w-3 h-3"
+        style={{
+          color: value !== "any" ? accent : "var(--ink-muted)",
+          flexShrink: 0,
+        }}
+      />
+      <span
+        style={{
+          color: "var(--ink-muted)",
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: "0.04em",
+          fontSize: 10,
+          marginRight: 2,
+        }}
+      >
+        {label}
+      </span>
+      {[
+        { id: "any", lbl: "any" },
+        { id: "yes", lbl: "yes" },
+        { id: "no", lbl: "no" },
+      ].map((opt) => {
+        const active = value === opt.id;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => setValue(opt.id)}
+            style={{
+              padding: "1px 6px",
+              borderRadius: 8,
+              fontSize: 10,
+              fontFamily: '"Raleway", sans-serif',
+              fontWeight: active ? 700 : 500,
+              background: active ? accent : "transparent",
+              color: active ? "#fff" : "var(--ink-muted)",
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            {opt.lbl}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <div
+      className="flex flex-wrap gap-2 items-center mb-4 p-2 rounded-md"
+      style={{
+        background: "var(--bg-soft)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <span
+        className="text-[10px] uppercase tracking-[0.05em] mr-1"
+        style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+      >
+        Context
+      </span>
+      {selectChip(
+        "subj",
+        subjectFilter,
+        setSubjectFilter,
+        contextOptions.subjects,
+        User,
+      )}
+      {selectChip(
+        "tp",
+        timepointFilter,
+        setTimepointFilter,
+        contextOptions.timepoints,
+        Calendar,
+      )}
+      {contextOptions.hasGroupIdCol &&
+        selectChip(
+          "grp",
+          groupFilter,
+          setGroupFilter,
+          contextOptions.groups,
+          Users,
+        )}
+      {contextOptions.hasBiomeCol &&
+        selectChip(
+          "biome",
+          biomeFilter,
+          setBiomeFilter,
+          contextOptions.biomes,
+          Layers,
+        )}
+      {triChip(
+        "control",
+        controlFilter,
+        setControlFilter,
+        ShieldAlert,
+        "#423089",
+      )}
+      {contextOptions.hasLowBiomassCol &&
+        triChip(
+          "low biomass",
+          lowBiomassFilter,
+          setLowBiomassFilter,
+          AlertCircle,
+          "#d97a3c",
+        )}
+      {contextOptions.hasLowSeqDepthCol &&
+        triChip(
+          "low seq depth",
+          lowSeqDepthFilter,
+          setLowSeqDepthFilter,
+          Activity,
+          "#d97a3c",
+        )}
+      {anyActive && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="ml-auto flex items-center gap-1 text-[11px]"
+          style={{
+            color: "var(--ink-muted)",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            fontFamily: '"Raleway", sans-serif',
+            fontWeight: 600,
+          }}
+          title="Clear every sample-context filter"
+        >
+          <X className="w-3 h-3" />
+          clear context
+        </button>
+      )}
+    </div>
+  );
+};
+
+const SamplesTab = ({
+  events,
+  filteredEvents,
+  filter,
+  setFilter,
+  runMetadata,
+  metadata,
+  plateMap,
+  ab,
+  hasAb,
+  sampleCuration,
+  setSampleVerdict,
+  setSampleAction,
+  setSampleNote,
+  actionEnabled,
+  onScopeToSamples,
+  onExportSamplesTSV,
+  onOpenPlate,
+}) => {
+  // Sample-table-local context filters — layered on top of the global
+  // event filter. Subject can also be set by clicking a `subj` pill in
+  // the Context column. The boolean tri-states ("any" | "yes" | "no")
+  // let the curator slice on negative-control / low-biomass / low-seq-
+  // depth flags without changing the global event filter.
+  const [subjectFilter, setSubjectFilter] = useState(null);
+  const [timepointFilter, setTimepointFilter] = useState(null);
+  const [groupFilter, setGroupFilter] = useState(null);
+  const [biomeFilter, setBiomeFilter] = useState(null);
+  const [controlFilter, setControlFilter] = useState("any");
+  const [lowBiomassFilter, setLowBiomassFilter] = useState("any");
+  const [lowSeqDepthFilter, setLowSeqDepthFilter] = useState("any");
+  const sampleFiltersActive =
+    subjectFilter ||
+    timepointFilter ||
+    groupFilter ||
+    biomeFilter ||
+    controlFilter !== "any" ||
+    lowBiomassFilter !== "any" ||
+    lowSeqDepthFilter !== "any";
+  const clearSampleFilters = () => {
+    setSubjectFilter(null);
+    setTimepointFilter(null);
+    setGroupFilter(null);
+    setBiomeFilter(null);
+    setControlFilter("any");
+    setLowBiomassFilter("any");
+    setLowSeqDepthFilter("any");
+  };
+
+  // Build the sorted unique value lists used to populate the dropdowns.
+  // Driven by the loaded metadata so empty values disappear automatically
+  // when no metadata column carries that field.
+  const contextOptions = useMemo(() => {
+    const subjects = new Set();
+    const timepoints = new Set();
+    const groups = new Set();
+    const biomes = new Set();
+    if (metadata?.bySample) {
+      for (const id of Object.keys(metadata.bySample)) {
+        const m = metadata.bySample[id];
+        if (m.subject) subjects.add(m.subject);
+        if (m.timepoint) timepoints.add(m.timepoint);
+        if (m.groupId) groups.add(m.groupId);
+        if (m.biome) biomes.add(m.biome);
+      }
+    }
+    const sortStr = (a, b) => a.localeCompare(b);
+    return {
+      subjects: Array.from(subjects).sort(sortStr),
+      timepoints: Array.from(timepoints).sort(sortStr),
+      groups: Array.from(groups).sort(sortStr),
+      biomes: Array.from(biomes).sort(sortStr),
+      hasLowBiomassCol: !!metadata?.hasLowBiomassCol,
+      hasLowSeqDepthCol: !!metadata?.hasLowSequencingDepthCol,
+      hasBiomeCol: !!metadata?.hasBiomeCol,
+      hasGroupIdCol: !!metadata?.hasGroupIdCol,
+    };
+  }, [metadata]);
+  const [sortBy, setSortBy] = useState("attention"); // attention | id | events | verdict
+  const [sortDir, setSortDir] = useState("desc");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [openNotes, setOpenNotes] = useState(() => new Set());
+  const toggleNotes = (id) =>
+    setOpenNotes((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // Build the universe of samples — only those touched by an event
+  // currently passing the shared filter bar (rate / probability /
+  // sample-verdict / scope / etc.). When the abundance table is
+  // loaded we still include its samples so the curator can curate
+  // samples that have no flagged events. Counts and the suggestion
+  // are computed from the filtered set so they match what the user
+  // sees in the other tabs.
+  const eventsForSamples = filteredEvents || events;
+  const sampleRows = useMemo(() => {
+    const ids = new Set();
+    for (const e of eventsForSamples) {
+      if (e.source) ids.add(e.source);
+      if (e.target) ids.add(e.target);
+    }
+    if (ab?.samples) for (const s of ab.samples) ids.add(s);
+    const eventsBySample = new Map();
+    for (const id of ids) eventsBySample.set(id, []);
+    for (const e of eventsForSamples) {
+      if (e.source) eventsBySample.get(e.source)?.push(e);
+      if (e.target && e.target !== e.source)
+        eventsBySample.get(e.target)?.push(e);
+    }
+    return Array.from(ids).map((id) => {
+      const touching = eventsBySample.get(id) || [];
+      let asSource = 0;
+      let asTarget = 0;
+      const evalCounts = { tp: 0, fp: 0, uncertain: 0, pending: 0 };
+      for (const e of touching) {
+        if (e.source === id) asSource++;
+        if (e.target === id) asTarget++;
+        if (e.verdict === "true_positive") evalCounts.tp++;
+        else if (e.verdict === "false_positive") evalCounts.fp++;
+        else if (e.verdict === "uncertain") evalCounts.uncertain++;
+        else evalCounts.pending++;
+      }
+      const cur = sampleCuration?.[id] || {};
+      const verdict = cur.verdict || "pending";
+      const action = cur.action || null;
+      const notes = cur.notes || "";
+      const suggested = suggestSampleVerdict(id, eventsForSamples);
+      const flags = flagSample(id, metadata);
+      const placement = plateMap?.bySample?.[id] || null;
+      return {
+        id,
+        name: sampleName(metadata, id) || "",
+        verdict,
+        action,
+        notes,
+        suggested,
+        asSource,
+        asTarget,
+        eventsTouching: touching.length,
+        evalCounts,
+        flags,
+        placement,
+      };
+    });
+  }, [eventsForSamples, ab, metadata, plateMap, sampleCuration]);
+
+  const subjectFiltered = useMemo(() => {
+    if (!sampleFiltersActive) return sampleRows;
+    return sampleRows.filter((r) => {
+      const f = r.flags || {};
+      if (subjectFilter && f.subject !== subjectFilter) return false;
+      if (timepointFilter && f.timepoint !== timepointFilter) return false;
+      if (groupFilter && f.groupId !== groupFilter) return false;
+      if (biomeFilter && f.biome !== biomeFilter) return false;
+      if (controlFilter === "yes" && !f.isControl) return false;
+      if (controlFilter === "no" && f.isControl) return false;
+      if (lowBiomassFilter === "yes" && !f.isLowBiomass) return false;
+      if (lowBiomassFilter === "no" && f.isLowBiomass) return false;
+      if (lowSeqDepthFilter === "yes" && !f.isLowSequencingDepth) return false;
+      if (lowSeqDepthFilter === "no" && f.isLowSequencingDepth) return false;
+      return true;
+    });
+  }, [
+    sampleRows,
+    sampleFiltersActive,
+    subjectFilter,
+    timepointFilter,
+    groupFilter,
+    biomeFilter,
+    controlFilter,
+    lowBiomassFilter,
+    lowSeqDepthFilter,
+  ]);
+
+  const sorted = useMemo(() => {
+    const copy = [...subjectFiltered];
+    const flip = sortDir === "asc" ? 1 : -1;
+    if (sortBy === "id")
+      copy.sort((a, b) => a.id.localeCompare(b.id) * flip);
+    else if (sortBy === "name")
+      copy.sort(
+        (a, b) =>
+          (a.name || "").localeCompare(b.name || "") * flip ||
+          a.id.localeCompare(b.id),
+      );
+    else if (sortBy === "events")
+      copy.sort(
+        (a, b) =>
+          (a.eventsTouching - b.eventsTouching) * flip ||
+          a.id.localeCompare(b.id),
+      );
+    else if (sortBy === "verdict") {
+      const rank = (v) =>
+        v === "contaminated" ? 3 : v === "uncertain" ? 2 : v === "correct" ? 1 : 0;
+      copy.sort(
+        (a, b) =>
+          (rank(a.verdict) - rank(b.verdict)) * flip ||
+          (b.eventsTouching - a.eventsTouching),
+      );
+    } else {
+      // "attention" — pending samples with the most events first; tied
+      // by descending event count. Decided samples come after.
+      copy.sort((a, b) => {
+        const aPending = a.verdict === "pending" ? 0 : 1;
+        const bPending = b.verdict === "pending" ? 0 : 1;
+        if (aPending !== bPending) return aPending - bPending;
+        return b.eventsTouching - a.eventsTouching || a.id.localeCompare(b.id);
+      });
+      if (sortDir === "asc") copy.reverse();
+    }
+    return copy;
+  }, [subjectFiltered, sortBy, sortDir]);
+
+  const totals = useMemo(() => {
+    const t = {
+      total: sampleRows.length,
+      contaminated: 0,
+      correct: 0,
+      uncertain: 0,
+      pending: 0,
+      keep: 0,
+      suppress: 0,
+    };
+    for (const r of sampleRows) {
+      t[r.verdict]++;
+      if (r.action === "keep") t.keep++;
+      else if (r.action === "suppress") t.suppress++;
+    }
+    return t;
+  }, [sampleRows]);
+
+  // Visible columns derived from what's loaded. The Context column
+  // hosts every metadata field as compact pills (cf. SampleContextCell);
+  // sample name gets its own column when the metadata exposes one.
+  // Action column joins in only when the suppress/keep feature is
+  // enabled in Configuration.
+  const hasContext =
+    !!metadata ||
+    !!plateMap;
+  const columns = [
+    { id: "sample", label: "Sample", sortKey: "id" },
+    metadata?.hasSampleNameCol && {
+      id: "name",
+      label: "Sample name",
+      sortKey: "name",
+    },
+    hasContext && { id: "context", label: "Context" },
+    { id: "events", label: "Events", sortKey: "events" },
+    { id: "verdict", label: "Verdict", sortKey: "verdict" },
+    actionEnabled && { id: "action", label: "Action" },
+  ].filter(Boolean);
+
+  const PAGE_SIZE = 200;
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    setPage(1);
+  }, [
+    sortBy,
+    sortDir,
+    sampleRows.length,
+    subjectFilter,
+    timepointFilter,
+    groupFilter,
+    biomeFilter,
+    controlFilter,
+    lowBiomassFilter,
+    lowSeqDepthFilter,
+  ]);
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const visible = sorted.slice(
+    (safePage - 1) * PAGE_SIZE,
+    safePage * PAGE_SIZE,
+  );
+
+  return (
+    <div>
+      <SectionTitle eyebrow="Samples" title="Per-sample curation">
+        Each sample carries its own <strong>verdict</strong> (contaminated /
+        correct / uncertain) and a downstream <strong>action</strong>{" "}
+        (keep / suppress) — both independent of any single event's evaluation.
+        Click an event count or the <em>Scatter / Events</em> chips to drill
+        into a sample's flagged contaminations.
+      </SectionTitle>
+
+      {/* Stat row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
+        <Stat label="Samples" value={totals.total} />
+        <Stat
+          label="Contaminated"
+          value={totals.contaminated}
+          tone={totals.contaminated > 0 ? "contaminated" : "neutral"}
+        />
+        <Stat
+          label="Correct"
+          value={totals.correct}
+          tone={totals.correct > 0 ? "correct" : "neutral"}
+        />
+        <Stat
+          label="Uncertain"
+          value={totals.uncertain}
+          tone={totals.uncertain > 0 ? "uncertain" : "neutral"}
+        />
+        <Stat
+          label="Pending"
+          value={totals.pending}
+          tone={totals.pending > 0 ? "pending" : "neutral"}
+        />
+        {actionEnabled && (
+          <>
+            <Stat
+              label="To keep"
+              value={totals.keep}
+              tone={totals.keep > 0 ? "keep" : "neutral"}
+            />
+            <Stat
+              label="To suppress"
+              value={totals.suppress}
+              tone={totals.suppress > 0 ? "suppress" : "neutral"}
+            />
+          </>
+        )}
+      </div>
+
+      {/* Shared filter bar — narrows the sample list to those touched
+          by an event matching the global filter (rate, probability,
+          sample-verdict scope, etc.). The bulk-apply button on this
+          bar opens the sample-level dialog (instead of the event-level
+          one used elsewhere). */}
+      {filter && setFilter && (
+        <EventFilterBar
+          filter={filter}
+          setFilter={setFilter}
+          metadata={metadata}
+          plateMap={plateMap}
+          runMetadata={runMetadata}
+          hasAb={hasAb}
+          events={events}
+          actionEnabled={actionEnabled}
+          onBulkApply={() => setBulkOpen(true)}
+          bulkApplyTitle="Bulk-apply a sample-level verdict / action to every sample currently visible"
+        />
+      )}
+
+      {/* Sample-context filter row — second filter row, scoped to
+          per-sample metadata fields (subject / timepoint / group /
+          biome / control flag / quality flags). Stacks BELOW the
+          shared event filter bar. Renders only when at least one
+          metadata column is loaded; otherwise the dropdowns would all
+          be empty. */}
+      {metadata && (
+        <SampleContextSearchBar
+          contextOptions={contextOptions}
+          subjectFilter={subjectFilter}
+          setSubjectFilter={setSubjectFilter}
+          timepointFilter={timepointFilter}
+          setTimepointFilter={setTimepointFilter}
+          groupFilter={groupFilter}
+          setGroupFilter={setGroupFilter}
+          biomeFilter={biomeFilter}
+          setBiomeFilter={setBiomeFilter}
+          controlFilter={controlFilter}
+          setControlFilter={setControlFilter}
+          lowBiomassFilter={lowBiomassFilter}
+          setLowBiomassFilter={setLowBiomassFilter}
+          lowSeqDepthFilter={lowSeqDepthFilter}
+          setLowSeqDepthFilter={setLowSeqDepthFilter}
+          anyActive={sampleFiltersActive}
+          onClear={clearSampleFilters}
+        />
+      )}
+
+      {/* Table */}
+      <div
+        className="overflow-x-auto"
+        style={{
+          background: "var(--bg-card)",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          boxShadow: "0 1px 2px rgba(39,86,98,0.04)",
+        }}
+      >
+        <table className="w-full text-[12px]" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead>
+            <tr
+              style={{
+                background: "var(--bg-soft)",
+                color: "var(--ink-muted)",
+                textAlign: "left",
+                fontFamily: '"Raleway", sans-serif',
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+              }}
+            >
+              {columns.map((col) => {
+                const sortable = !!col.sortKey;
+                const isActive = sortable && sortBy === col.sortKey;
+                return (
+                  <th
+                    key={col.id}
+                    className={`px-3 py-2.5 ${sortable ? "cursor-pointer select-none" : ""}`}
+                    style={{ borderBottom: "1px solid var(--border)" }}
+                    onClick={
+                      sortable
+                        ? () => {
+                            setSortBy(col.sortKey);
+                            setSortDir((d) =>
+                              isActive && d === "asc" ? "desc" : "asc",
+                            );
+                          }
+                        : undefined
+                    }
+                    title={sortable ? `Sort by ${col.label.toLowerCase()}` : undefined}
+                  >
+                    {col.label}
+                    {isActive && (
+                      <span style={{ marginLeft: 4, color: "#275662" }}>
+                        {sortDir === "asc" ? "↑" : "↓"}
+                      </span>
+                    )}
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((r, idx) => {
+              const notesOpen = openNotes.has(r.id);
+              const rowBg = idx % 2 === 0 ? "transparent" : "var(--bg-soft)";
+              const cellStyle = {
+                borderBottom: "1px solid var(--border)",
+                background: rowBg,
+                verticalAlign: "top",
+              };
+              const f = r.flags || {};
+              const placement = r.placement;
+              return (
+                <React.Fragment key={r.id}>
+                  <tr>
+                    {columns.map((col) => (
+                      <td
+                        key={col.id}
+                        className="px-3 py-3"
+                        style={cellStyle}
+                      >
+                        {col.id === "sample" && (
+                          <SampleIdCell
+                            row={r}
+                            notesOpen={notesOpen}
+                            onToggleNotes={() => toggleNotes(r.id)}
+                          />
+                        )}
+                        {col.id === "name" && (
+                          <SampleStringValue value={r.name} />
+                        )}
+                        {col.id === "context" && (
+                          <SampleContextCell
+                            row={r}
+                            onSubjectClick={(subj) =>
+                              setSubjectFilter(subj)
+                            }
+                            onTimepointClick={(tp) =>
+                              setTimepointFilter(tp)
+                            }
+                            onGroupClick={(grp) => setGroupFilter(grp)}
+                            onBiomeClick={(b) => setBiomeFilter(b)}
+                            onControlClick={() => setControlFilter("yes")}
+                            onLowBiomassClick={() =>
+                              setLowBiomassFilter("yes")
+                            }
+                            onLowSeqDepthClick={() =>
+                              setLowSeqDepthFilter("yes")
+                            }
+                            onPlateClick={
+                              onOpenPlate
+                                ? (plateId) => onOpenPlate(plateId)
+                                : null
+                            }
+                          />
+                        )}
+                        {col.id === "events" && (
+                          <SampleEventsCell
+                            row={r}
+                            onScopeToSamples={onScopeToSamples}
+                          />
+                        )}
+                        {col.id === "verdict" && (
+                          <SampleVerdictCell
+                            row={r}
+                            setSampleVerdict={setSampleVerdict}
+                          />
+                        )}
+                        {col.id === "action" && (
+                          <SampleActionCell
+                            row={r}
+                            setSampleAction={setSampleAction}
+                          />
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                  {notesOpen && (
+                    <tr>
+                      <td
+                        colSpan={columns.length}
+                        className="px-3 py-2"
+                        style={{
+                          background: "rgba(39,86,98,0.04)",
+                          borderBottom: "1px solid var(--border)",
+                        }}
+                      >
+                        <textarea
+                          value={r.notes}
+                          onChange={(e) => setSampleNote(r.id, e.target.value)}
+                          placeholder={`Notes for ${r.id} (control? low biomass? plate context?)`}
+                          rows={2}
+                          className="w-full px-2 py-1 text-[12px] rounded-sm outline-none"
+                          style={{
+                            border: "1px solid var(--border-strong)",
+                            background: "var(--bg-card)",
+                            color: "var(--ink)",
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+            {visible.length === 0 && (
+              <tr>
+                <td
+                  colSpan={columns.length}
+                  className="px-3 py-6 text-center text-[12px]"
+                  style={{ color: "var(--ink-muted)" }}
+                >
+                  No samples match the current filters.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {totalPages > 1 && (
+        <div className="mt-3">
+          <Pagination
+            page={safePage}
+            totalPages={totalPages}
+            onChange={setPage}
+          />
+        </div>
+      )}
+
+      {bulkOpen && (
+        <BulkSampleApplyDialog
+          samples={sorted}
+          actionEnabled={actionEnabled}
+          onClose={() => setBulkOpen(false)}
+          onApply={(ids, verdict, action, skipDecided) => {
+            for (const id of ids) {
+              const cur = sampleCuration?.[id] || {};
+              const hasDecision =
+                (cur.verdict && cur.verdict !== "pending") || cur.action;
+              if (skipDecided && hasDecision) continue;
+              if (verdict) setSampleVerdict(id, verdict);
+              if (action !== undefined) setSampleAction(id, action);
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+/** Modal dialog: bulk-apply a sample-level verdict and/or action to
+    every sample currently visible in the SamplesTab list (i.e. the
+    filtered + sorted set the user is looking at). */
+const BulkSampleApplyDialog = ({
+  samples,
+  actionEnabled,
+  onClose,
+  onApply,
+}) => {
+  const [verdict, setVerdict] = useState("");
+  const [action, setAction] = useState(""); // "" | "keep" | "suppress" | "clear"
+  const [skipDecided, setSkipDecided] = useState(true);
+  const matchedCount = samples.length;
+  const apply = () => {
+    if (!verdict && !action) {
+      onClose();
+      return;
+    }
+    const ids = samples.map((s) => s.id);
+    const actionVal =
+      action === "" ? undefined : action === "clear" ? null : action;
+    onApply(ids, verdict || null, actionVal, skipDecided);
+    onClose();
+  };
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(39,86,98,0.5)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--bg-card)",
+          borderRadius: 4,
+          padding: "20px 24px",
+          maxWidth: 540,
+          width: "100%",
+          boxShadow: "0 12px 32px rgba(0,0,0,0.2)",
+          borderLeft: "4px solid #00a3a6",
+        }}
+      >
+        <h3
+          style={{
+            fontSize: 16,
+            fontWeight: 700,
+            color: "var(--ink)",
+            fontFamily: '"Raleway", sans-serif',
+            marginBottom: 4,
+          }}
+        >
+          Bulk-apply to {matchedCount} sample{matchedCount !== 1 ? "s" : ""}
+        </h3>
+        <div
+          className="text-[11px] mb-4"
+          style={{ color: "var(--ink-muted)" }}
+        >
+          Applies to every sample currently visible in the table (filter +
+          sort already applied). Tweak the filters above the table to narrow
+          this set.
+        </div>
+
+        <div
+          className="text-[10px] uppercase tracking-[0.05em] mb-1"
+          style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+        >
+          Verdict
+        </div>
+        <div className="flex flex-wrap gap-1 mb-3">
+          {[
+            { id: "", label: "(no change)" },
+            { id: "pending", label: "Pending" },
+            { id: "contaminated", label: "Contaminated" },
+            { id: "correct", label: "Correct" },
+            { id: "uncertain", label: "Uncertain" },
+          ].map((opt) => {
+            const active = verdict === opt.id;
+            const tone = opt.id ? SAMPLE_VERDICT_TONE[opt.id] : null;
+            return (
+              <button
+                key={opt.id || "none"}
+                type="button"
+                onClick={() => setVerdict(opt.id)}
+                className="px-2 py-0.5 rounded-sm text-[11px]"
+                style={{
+                  background: active
+                    ? tone?.bg || "#275662"
+                    : "var(--bg-card)",
+                  color: active ? "#fff" : "var(--ink)",
+                  border: `1px solid ${active ? tone?.bg || "#275662" : "var(--border-strong)"}`,
+                  fontWeight: 700,
+                  fontFamily: '"Raleway", sans-serif',
+                  cursor: "pointer",
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {actionEnabled && (
+          <>
+            <div
+              className="text-[10px] uppercase tracking-[0.05em] mb-1"
+              style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+            >
+              Action
+            </div>
+            <div className="flex flex-wrap gap-1 mb-3">
+              {[
+                { id: "", label: "(no change)" },
+                { id: "clear", label: "(clear)" },
+                { id: "keep", label: "Keep" },
+                { id: "suppress", label: "Suppress" },
+              ].map((opt) => {
+                const active = action === opt.id;
+                const color =
+                  opt.id === "keep"
+                    ? "#e0b13a"
+                    : opt.id === "suppress"
+                      ? "#ed6e6c"
+                      : "#275662";
+                return (
+                  <button
+                    key={opt.id || "none"}
+                    type="button"
+                    onClick={() => setAction(opt.id)}
+                    className="px-2 py-0.5 rounded-sm text-[11px]"
+                    style={{
+                      background: active ? color : "var(--bg-card)",
+                      color: active ? "#fff" : "var(--ink)",
+                      border: `1px solid ${active ? color : "var(--border-strong)"}`,
+                      fontWeight: 700,
+                      fontFamily: '"Raleway", sans-serif',
+                      cursor: "pointer",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        <label
+          className="flex items-center gap-2 mb-4 text-[12px]"
+          style={{ color: "var(--ink)" }}
+        >
+          <input
+            type="checkbox"
+            checked={skipDecided}
+            onChange={(e) => setSkipDecided(e.target.checked)}
+          />
+          Don't overwrite samples that already have a verdict or action.
+        </label>
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 text-[12px] rounded-sm"
+            style={{
+              background: "var(--bg-card)",
+              color: "var(--ink)",
+              border: "1px solid var(--border-strong)",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={apply}
+            className="px-3 py-1.5 text-[12px] rounded-sm"
+            style={{
+              background: "#00a3a6",
+              color: "#fff",
+              border: "1px solid #00a3a6",
+              cursor: "pointer",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+            disabled={!verdict && action === ""}
+          >
+            Apply to {matchedCount}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 /* ---------- PLATE TAB ---------- */
 const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
   const [format, setFormat] = useState(
@@ -9839,12 +12435,8 @@ const BulkApplyByCriteriaDialog = ({
   });
   const [verdict, setVerdict] = useState("true_positive");
   const [comment, setComment] = useState("");
-  // Action override for the bulk apply. null = leave each event's
-  // existing action untouched. Only meaningful when the suppress/keep
-  // feature is enabled in Configuration.
-  const [bulkAction, setBulkAction] = useState(null);
   // When checked (default), the bulk apply skips events that already
-  // carry a verdict — protects the curator's prior work from being
+  // carry an evaluation — protects the curator's prior work from being
   // clobbered by a later sweeping rule.
   const [skipDecided, setSkipDecided] = useState(true);
 
@@ -9920,7 +12512,6 @@ const BulkApplyByCriteriaDialog = ({
       matched.map((e) => e.id),
       verdict,
       comment.trim(),
-      bulkAction,
     );
     onClose();
   };
@@ -9963,12 +12554,12 @@ const BulkApplyByCriteriaDialog = ({
             marginBottom: 6,
           }}
         >
-          Bulk apply verdict by criteria
+          Bulk apply evaluation by criteria
         </h3>
         <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 16 }}>
           Match every event whose rate, probability, introduced % and
           6-criteria status fit the filters below, then apply a single
-          verdict (and an optional shared note).
+          evaluation (and an optional shared note).
         </p>
 
         {/* Quick presets — one-click bulk actions for the two most common
@@ -10398,7 +12989,7 @@ const BulkApplyByCriteriaDialog = ({
             textTransform: "uppercase",
           }}
         >
-          Apply verdict
+          Apply evaluation
         </div>
         <label
           className="flex items-center gap-2 mb-3 select-none cursor-pointer"
@@ -10407,7 +12998,7 @@ const BulkApplyByCriteriaDialog = ({
             fontFamily: '"Raleway", sans-serif',
             fontSize: 12,
           }}
-          title="When checked, only events still marked Pending receive the new verdict. Already-curated events (TP / FP / Uncertain) are left untouched so a sweeping rule can't undo earlier work."
+          title="When checked, only events still marked Pending receive the new evaluation. Already-curated events (TP / FP / Uncertain) are left untouched so a sweeping rule can't undo earlier work."
         >
           <input
             type="checkbox"
@@ -10416,7 +13007,7 @@ const BulkApplyByCriteriaDialog = ({
             style={{ accentColor: "#00a3a6" }}
           />
           <span>
-            <strong>Don't overwrite previous verdicts</strong>{" "}
+            <strong>Don't overwrite previous evaluations</strong>{" "}
             <span style={{ color: "var(--ink-muted)" }}>
               (skip events already TP / FP / Uncertain)
             </span>
@@ -10453,92 +13044,18 @@ const BulkApplyByCriteriaDialog = ({
         </div>
 
         {actionEnabled && verdict === "true_positive" && (
-            <>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--ink-muted)",
-                  fontWeight: 700,
-                  fontFamily: '"Raleway", sans-serif',
-                  marginBottom: 6,
-                  letterSpacing: "0.05em",
-                  textTransform: "uppercase",
-                }}
-              >
-                Action
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 6,
-                  marginBottom: 16,
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                }}
-              >
-                {[
-                  {
-                    id: "keep",
-                    Icon: Save,
-                    label: "Keep",
-                    color: "#e0b13a",
-                    title:
-                      "Force every matched sample to keep. Click again to leave existing actions untouched.",
-                  },
-                  {
-                    id: "suppress",
-                    Icon: Trash2,
-                    label: "Suppress",
-                    color: "#ed6e6c",
-                    title:
-                      "Force every matched sample to suppress. Click again to leave existing actions untouched.",
-                  },
-                ].map((opt) => {
-                  const active = bulkAction === opt.id;
-                  const Icon = opt.Icon;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() =>
-                        setBulkAction(active ? null : opt.id)
-                      }
-                      title={opt.title}
-                      style={{
-                        padding: "6px 12px",
-                        fontSize: 12,
-                        background: active ? opt.color : "var(--bg-card)",
-                        color: active ? "#fff" : "var(--ink)",
-                        border: `1px solid ${
-                          active ? opt.color : "var(--border-strong)"
-                        }`,
-                        borderRadius: 2,
-                        cursor: "pointer",
-                        fontWeight: 700,
-                        fontFamily: '"Raleway", sans-serif',
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 6,
-                      }}
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                      {opt.label}
-                    </button>
-                  );
-                })}
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: "var(--ink-muted)",
-                    fontStyle: "italic",
-                  }}
-                >
-                  {bulkAction
-                    ? `Will overwrite the action on every matched sample.`
-                    : `No action chosen — existing actions on matched samples are preserved.`}
-                </span>
-              </div>
-            </>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--ink-muted)",
+                fontStyle: "italic",
+                marginBottom: 16,
+              }}
+            >
+              Sample-level actions (keep / suppress) are set on the
+              <strong style={{ color: "var(--ink)" }}> Samples</strong> tab —
+              this dialog only changes event evaluations.
+            </div>
           )}
 
         {/* Comment */}
@@ -10657,6 +13174,7 @@ const ValidateTab = ({
   setNote,
   actionEnabled,
   setAction,
+  sampleCuration,
   metadata,
   plateMap,
   bulkResetAllVerdicts,
@@ -10722,14 +13240,11 @@ const ValidateTab = ({
           (b.score - a.score) * flip,
       );
     } else if (queueSortBy === "action") {
-      // Group by EFFECTIVE action (defaults apply: TP→suppress, FP→keep)
-      // since the default is what will actually happen on export. Events
-      // with no resolvable action sort last; ties break by descending
-      // probability so the most-confident calls bubble up inside each
-      // bucket. Action only applies to TP, so FP / Uncertain / Pending
-      // sort to the no-action bucket.
-      const eff = (e) =>
-        e.verdict === "true_positive" ? e.action || "suppress" : null;
+      // Group by the action recorded on each event's TARGET sample.
+      // Events whose target has no action recorded sort last; ties
+      // break by descending probability so the most-confident calls
+      // bubble up inside each bucket.
+      const eff = (e) => sampleCuration?.[e.target]?.action || null;
       const rank = (v) => (v === "keep" ? 0 : v === "suppress" ? 1 : 2);
       copy.sort(
         (a, b) =>
@@ -10740,7 +13255,7 @@ const ValidateTab = ({
       copy.sort((a, b) => a.source.localeCompare(b.source) * flip);
     }
     return copy;
-  }, [filteredEvents, events, queueSortBy, queueSortDir]);
+  }, [filteredEvents, events, queueSortBy, queueSortDir, sampleCuration]);
   const sel = selected
     ? queue.find((e) => e.id === selected.id) ||
       events.find((e) => e.id === selected.id) ||
@@ -10958,10 +13473,10 @@ const ValidateTab = ({
               e.currentTarget.style.borderColor = "var(--border)";
               e.currentTarget.style.color = "#797870";
             }}
-            title="Clear all verdicts and notes; events return to the pending state"
+            title="Clear all evaluations and notes; events return to the pending state"
           >
             <X className="w-3.5 h-3.5 shrink-0" />
-            <span>Reset all verdicts ({decidedCount})</span>
+            <span>Reset all evaluations ({decidedCount})</span>
           </button>
         )}
         </div>
@@ -10982,7 +13497,7 @@ const ValidateTab = ({
             { id: "rate", label: "rate", full: "rate" },
             { id: "score", label: "prob", full: "probability" },
             { id: "introducedPct", label: "intro", full: "introduced" },
-            { id: "verdict", label: "verdict", full: "verdict" },
+            { id: "verdict", label: "evaluation", full: "evaluation" },
             ...(actionEnabled
               ? [{ id: "action", label: "action", full: "action" }]
               : []),
@@ -11129,8 +13644,8 @@ const ValidateTab = ({
                 ["P", "Reset current event to Pending"],
                 ["←", "Previous pending event (skip validated)"],
                 ["→", "Next pending event (skip validated)"],
-                ["↑", "Previous event (any verdict)"],
-                ["↓", "Next event (any verdict)"],
+                ["↑", "Previous event (any evaluation)"],
+                ["↓", "Next event (any evaluation)"],
                 ["?", "Toggle this help"],
                 ["Esc", "Close this help"],
               ].map(([key, desc]) => (
@@ -11842,7 +14357,7 @@ const ValidateTab = ({
               fontFamily: '"Raleway", sans-serif',
             }}
           >
-            Your verdict
+            Your evaluation
           </div>
           <div
             className="flex flex-wrap gap-2 items-center mb-4"
@@ -11915,9 +14430,11 @@ const ValidateTab = ({
                       hint: "Drop this contaminated sample from downstream analyses.",
                     },
                   ].map((opt) => {
-                    // The toolbar only renders for TP, so the default
-                    // is always "suppress".
-                    const active = (sel.action || "suppress") === opt.id;
+                    // Active state mirrors the action recorded on the
+                    // target sample. No implicit default — the chip is
+                    // only highlighted once the curator picks one.
+                    const active =
+                      sampleCuration?.[sel.target]?.action === opt.id;
                     const Icon = opt.Icon;
                     return (
                       <button
@@ -13317,7 +15834,7 @@ const LearnTab = () => {
               "A clear, narrow linear cluster parallel to y = x",
               "A reciprocal event exists in the events table for the opposite direction",
               "RF probability ≈ 1 even at low rates",
-              "Both events should generally receive the same verdict",
+              "Both events should generally receive the same evaluation",
             ]}
             watchOut="When you validate one direction, search the events table for the reciprocal pair (source and target swapped). Don't classify them inconsistently."
           />
@@ -13754,9 +16271,9 @@ const HelpTab = ({ onStartTour }) => {
             </li>
             <li>
               Add the abundance table — <strong>essential</strong> for
-              validating events; without it you only see the verdict-free
-              metadata and cannot inspect the source-vs-target abundance
-              profile of each pair.
+              validating events; without it you only see the
+              evaluation-free metadata and cannot inspect the
+              source-vs-target abundance profile of each pair.
             </li>
             <li>
               Optionally add sample metadata and the plate map — each one
@@ -13770,8 +16287,8 @@ const HelpTab = ({ onStartTour }) => {
             <li>
               Open Guided validation to walk through events one by one:
               read the assisted criteria, look at the plate position,
-              check the sample context, and assign a verdict (true positive
-              / false positive / uncertain).
+              check the sample context, and assign an evaluation (true
+              positive / false positive / uncertain).
             </li>
             <li>
               Export your curated TSV (or printable HTML report) from
@@ -14166,7 +16683,7 @@ const HelpTab = ({ onStartTour }) => {
                 Overview
               </h4>
               <p>
-                Counts of events by verdict, top contaminated samples, and
+                Counts of events by evaluation, top contaminated samples, and
                 run parameters parsed from the events file header.
               </p>
             </div>
@@ -14182,7 +16699,7 @@ const HelpTab = ({ onStartTour }) => {
                 and introduced % are rendered as coloured bars (rate
                 uses a log10 scale, probability uses a continuous
                 gradient). Every column is click-sortable except Context
-                — including Verdict, Action and Species count. Pagination
+                — including Evaluation, Action and Species count. Pagination
                 size is configurable (default 500) under the gear icon
                 → Items per page. Click a row to jump into Guided
                 validation.
@@ -14198,7 +16715,7 @@ const HelpTab = ({ onStartTour }) => {
                 axes are computed once per dataset from the abundance
                 matrix so all thumbnails are on identical bounds and
                 visually comparable. Sort by probability, rate,
-                introduced %, verdict, action (when enabled) or source
+                introduced %, evaluation, action (when enabled) or source
                 name; click an active sort button again to flip
                 ascending/descending. The shared filter bar above the
                 grid hides events below your probability / rate /
@@ -14221,11 +16738,11 @@ const HelpTab = ({ onStartTour }) => {
                 scale with the contamination rate (log-scaled). Pan with
                 drag, zoom with scroll. Click an edge to open the event
                 in Guided validation; hovering shows source → target,
-                rate, probability and current verdict in the bar at the
+                rate, probability and current evaluation in the bar at the
                 bottom.
               </p>
               <p style={{ marginTop: 6 }}>
-                Toolbar features: <strong>verdict checkboxes</strong>{" "}
+                Toolbar features: <strong>evaluation checkboxes</strong>{" "}
                 (pending / TP / FP / uncertain) and two threshold sliders
                 (min probability, min rate) hide edges without changing
                 the layout. The right sidebar lists every connected
@@ -14262,10 +16779,10 @@ const HelpTab = ({ onStartTour }) => {
                 metadata is loaded) and an informational plate-proximity
                 check, the plate position and a sample-context panel
                 showing every metadata flag for both source and target.
-                Assign a verdict (T / F / U / P) in a single click; when
+                Assign an evaluation (T / F / U / P) in a single click; when
                 the suppress/keep feature
                 is enabled in Configuration, a Keep / Suppress chip
-                pair appears inline next to the verdict row. The event
+                pair appears inline next to the evaluation row. The event
                 queue in the sidebar is sortable (rate / prob / intro /
                 pending / source) and auto-scrolls to keep the active
                 row in view as you navigate. See the Keyboard shortcuts
@@ -14282,10 +16799,10 @@ const HelpTab = ({ onStartTour }) => {
             <div>
               <h4 style={{ color: "var(--ink)", fontWeight: 700 }}>Export</h4>
               <p>
-                A single TSV with every event (verdict, action and
+                A single TSV with every event (evaluation, action and
                 notes included) plus a printable HTML report you can
                 save as PDF from the browser. Filter downstream using
-                the verdict / action columns if you only want TPs or
+                the evaluation / action columns if you only want TPs or
                 want to drop FPs. For a full reproducibility-grade
                 backup of the entire session (events + every loaded
                 file + UI state), use <strong>Download session</strong>{" "}
@@ -14600,8 +17117,8 @@ const HelpTab = ({ onStartTour }) => {
                 ["P", "Reset current event to Pending"],
                 ["←", "Previous PENDING event (skip already-validated)"],
                 ["→", "Next PENDING event (skip already-validated)"],
-                ["↑", "Previous event in the queue (any verdict)"],
-                ["↓", "Next event in the queue (any verdict)"],
+                ["↑", "Previous event in the queue (any evaluation)"],
+                ["↓", "Next event in the queue (any evaluation)"],
                 ["?", "Toggle the in-app shortcuts cheatsheet"],
                 ["Esc", "Close the cheatsheet"],
               ].map(([k, d]) => (
@@ -14661,9 +17178,9 @@ const HelpTab = ({ onStartTour }) => {
               well-to-well leakage.
             </li>
             <li>
-              <strong>Reset all verdicts</strong> — wipes every verdict
-              and note back to pending. Loaded files (events, abundance,
-              metadata, plate map) are not affected.
+              <strong>Reset all evaluations</strong> — wipes every
+              evaluation and note back to pending. Loaded files (events,
+              abundance, metadata, plate map) are not affected.
             </li>
             <li>
               <strong>Bulk apply by criteria…</strong> — opens a dialog
@@ -14671,7 +17188,7 @@ const HelpTab = ({ onStartTour }) => {
               in %, probability range, introduced % range, and pass /
               fail / any per criterion: shape, n on line, decade range,
               missing source species, above-line points, Spearman
-              profile dissimilarity), then apply one verdict (TP / FP
+              profile dissimilarity), then apply one evaluation (TP / FP
               / Uncertain / Reset) and an optional shared comment to
               every matched event. When the suppress/keep feature is
               enabled, an extra Action row lets you force the matched
@@ -14717,8 +17234,9 @@ const HelpTab = ({ onStartTour }) => {
               an <em>Action</em> column in the events table, an action
               filter on the filter bar, an action override in the Bulk
               apply dialog, an inline Keep / Suppress chip pair on the
-              verdict row in Guided validation (TP only), and a colored
-              halo on TP verdict buttons in the Scatterplot gallery
+              evaluation row in Guided validation (TP only), and a
+              colored halo on TP evaluation buttons in the Scatterplot
+              gallery
               showing the committed action at a glance (yellow = keep,
               salmon = suppress).
             </li>
@@ -14750,7 +17268,7 @@ const HelpTab = ({ onStartTour }) => {
             </p>
           </div>
           <p>
-            Parsing, scoring, network layout and verdict tracking all happen
+            Parsing, scoring, network layout and evaluation tracking all happen
             in client-side JavaScript. The static HTML/JS bundle is served
             from GitHub Pages. There is no analytics, no tracking pixel, no
             cookie set by the application itself.
@@ -14774,7 +17292,7 @@ const HelpTab = ({ onStartTour }) => {
             the save succeeds. What is persisted:
           </p>
           <ul className="list-disc pl-5 text-[13px]" style={{ color: "var(--ink-soft)", lineHeight: 1.7 }}>
-            <li>Loaded events (with verdicts and notes)</li>
+            <li>Loaded events (with evaluations and notes)</li>
             <li>CroCoDeEL run parameters from the file header</li>
             <li>Sample metadata, plate map, and species abundance table</li>
             <li>UI state: active tab, selected event, filters, sort order</li>
@@ -14799,7 +17317,7 @@ const HelpTab = ({ onStartTour }) => {
             falls back to saving without the abundance table (so your
             curation work is preserved); on the next visit you re-load only
             the abundance file. In the worst case the app keeps just the
-            events with verdicts and notes.
+            events with evaluations and notes.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Clearing storage.</strong>{" "}
@@ -14887,7 +17405,7 @@ const HelpTab = ({ onStartTour }) => {
               </p>
               <p>
                 No — the app auto-saves your full session (events,
-                verdicts, actions, notes, all loaded files, plus your
+                evaluations, actions, notes, all loaded files, plus your
                 active tab and filters) to your browser's localStorage
                 every time something changes. After a refresh you land
                 exactly where you left off. See the Privacy & how it
@@ -15487,14 +18005,15 @@ const ExportTab = ({
   runMetadata,
   hasAb,
   actionEnabled,
+  sampleCuration,
   onBulkApply,
   onExportTSV,
   onExportHTML,
 }) => {
   // Compute counts from the filtered subset so the stat row reflects what
-  // will actually go into the export. When the suppress/keep feature is
-  // on, we also tally effective actions — defaulting TP→suppress and
-  // FP→keep so the cards match the bulk-apply rules.
+  // will actually go into the export. Action lives on samples now —
+  // tally distinct target-sample actions across the events that pass
+  // the filter so the cards match the actual downstream effect.
   const counts = useMemo(() => {
     const c = {
       total: filteredEvents.length,
@@ -15505,20 +18024,21 @@ const ExportTab = ({
       suppress: 0,
       keep: 0,
     };
+    const seen = new Set();
     filteredEvents.forEach((e) => {
       if (e.verdict === "true_positive") c.tp++;
       else if (e.verdict === "false_positive") c.fp++;
       else if (e.verdict === "uncertain") c.uncertain++;
       else c.pending++;
-      // Action only applies to TP — FP / Uncertain / Pending don't
-      // contribute to the suppress / keep tally.
-      const effective =
-        e.verdict === "true_positive" ? e.action || "suppress" : null;
-      if (effective === "suppress") c.suppress++;
-      else if (effective === "keep") c.keep++;
+      if (e.target && !seen.has(e.target)) {
+        seen.add(e.target);
+        const a = sampleCuration?.[e.target]?.action;
+        if (a === "suppress") c.suppress++;
+        else if (a === "keep") c.keep++;
+      }
     });
     return c;
-  }, [filteredEvents]);
+  }, [filteredEvents, sampleCuration]);
 
   const totalLoaded = events.length;
   const isFiltered = filteredEvents.length !== totalLoaded;
@@ -15526,7 +18046,7 @@ const ExportTab = ({
   return (
     <div>
       <SectionTitle eyebrow="Export" title="Save your curated report">
-        Download a TSV with every event (verdict, action, notes) or a printable
+        Download a TSV with every event (evaluation, action, notes) or a printable
         HTML report. The filter bar below scopes the export — to back up the
         full session including loaded files and UI state, use{" "}
         <strong style={{ color: "var(--ink)" }}>Download session</strong> on the
@@ -15562,7 +18082,7 @@ const ExportTab = ({
           desc={
             isFiltered
               ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). Verdict, action and notes columns are included.`
-              : "Every event with its verdict, action and notes. Filter downstream using the verdict / action columns if you want to drop FPs or keep TPs only."
+              : "Every event with its evaluation, action and notes. Filter downstream using the evaluation / action columns if you want to drop FPs or keep TPs only."
           }
           action="Download TSV"
           onClick={() => onExportTSV(filteredEvents)}
@@ -16442,7 +18962,45 @@ export default function App() {
   // (filters, sort, active tab, selected event) is restored alongside
   // the data so the user lands exactly where they left off.
   const initial = typeof window !== "undefined" ? loadFromStorage() : null;
-  const [rawEvents, setRawEvents] = useState(initial?.rawEvents || []);
+  // Sample-level curation lives in its own map keyed by sample id. Each
+  // entry holds an optional verdict ("contaminated" / "correct" /
+  // "uncertain") and an optional downstream action ("keep" / "suppress")
+  // and notes. Distinct from event-level evaluations: a sample is judged
+  // as a whole, while every flagged event still carries its own
+  // evaluation (TP / FP / Uncertain / Pending).
+  // Migration: pre-refactor sessions stored the action on the event
+  // (`e.action`). We migrate those into sampleCuration[e.target] on the
+  // first load that detects them, then strip the field from the events.
+  const migrateLegacyAction = (rawEv, existingSC) => {
+    const sc = { ...(existingSC || {}) };
+    let touched = false;
+    for (const e of rawEv || []) {
+      if (e.action && e.target) {
+        const cur = sc[e.target] || {};
+        if (cur.action == null) {
+          sc[e.target] = { ...cur, action: e.action };
+          touched = true;
+        }
+      }
+    }
+    return { sampleCuration: sc, touched };
+  };
+  const initialMigration = migrateLegacyAction(
+    initial?.rawEvents,
+    initial?.sampleCuration,
+  );
+  const [rawEvents, setRawEvents] = useState(() => {
+    const ev = initial?.rawEvents || [];
+    if (!initialMigration.touched) return ev;
+    return ev.map((e) => {
+      if (!e.action) return e;
+      const { action: _drop, ...rest } = e;
+      return rest;
+    });
+  });
+  const [sampleCuration, setSampleCuration] = useState(
+    initialMigration.sampleCuration,
+  );
   const [runMetadata, setRunMetadata] = useState(initial?.runMetadata || null);
   const [ab, setAb] = useState(initial?.ab || null);
   const [metadata, setMetadata] = useState(initial?.metadata || null);
@@ -16604,12 +19162,16 @@ export default function App() {
     if (Array.isArray(f.verdicts)) verdicts = f.verdicts;
     else if (f.verdict && f.verdict !== "all") verdicts = [f.verdict];
     else verdicts = [...VERDICT_IDS];
+    const sampleVerdicts = Array.isArray(f.sampleVerdicts)
+      ? f.sampleVerdicts
+      : [...SAMPLE_VERDICT_IDS];
     return {
       q: f.q ?? "",
       minScore: f.minScore ?? 0,
       minRate: f.minRate ?? 0,
       minIntroduced: f.minIntroduced ?? 0,
       verdicts,
+      sampleVerdicts,
       subject: f.subject ?? (f.hideRelated ? "different" : "any"),
       group: f.group ?? "any",
       adjacent: f.adjacent ?? (f.adjacentOnly ? "adjacent" : "any"),
@@ -16667,7 +19229,7 @@ export default function App() {
         title: "Events table — sort and filter",
         body:
           "The Events table lists every flagged contamination event.\n\n" +
-          "Filter by rate / probability / introduced %, by verdict, by action, or by sample context (related, adjacent). Every column except Context is sortable — including Verdict and Action. Click a row to inspect that event in Guided validation.",
+          "Filter by rate / probability / introduced %, by evaluation, by action, or by sample context (related, adjacent). Every column except Context is sortable — including Evaluation and Action. Click a row to inspect that event in Guided validation.",
         action: "tabTable",
         highlight: '[data-tutorial="tab-table"]',
       },
@@ -16718,7 +19280,7 @@ export default function App() {
         highlight: '[data-tutorial="plate-controls"]',
       },
       {
-        title: "Guided validation — make verdicts",
+        title: "Guided validation — make evaluations",
         body:
           "This is where you decide each event: True positive (real contamination), False positive (biological signal), or Uncertain.\n\n" +
           "Six data-driven criteria summarise the evidence (line shape, species count on line, decade span, missing source species, above-line points, Spearman ρ between full source/target profiles), with same-individual joining the score when metadata is loaded. Plate position and sample context sit alongside, plus the introduced-species list — everything you need on one screen.",
@@ -16729,14 +19291,14 @@ export default function App() {
         title: "Keyboard shortcuts speed up curation",
         body:
           "Press T (True positive), F (False positive) or U (Uncertain) to validate the current event.\n\n" +
-          "Then ← / → jump to the previous/next pending event automatically; ↑ / ↓ step through the queue regardless of verdict.\n\n" +
+          "Then ← / → jump to the previous/next pending event automatically; ↑ / ↓ step through the queue regardless of evaluation.\n\n" +
           "Press ? in the app to see all shortcuts.",
         highlight: '[data-tutorial="verdict-buttons"]',
       },
       {
         title: "Export your curated report",
         body:
-          "When done, the Export tab produces a curated TSV with every event (verdict, action, notes) plus a JSON audit trail with metadata context and cascade flags. Filter downstream using the verdict / action columns if needed.",
+          "When done, the Export tab produces a curated TSV with every event (evaluation, action, notes) plus a JSON audit trail with metadata context and cascade flags. Filter downstream using the evaluation / action columns if needed.",
         action: "tabExport",
         highlight: '[data-tutorial="tab-export"]',
       },
@@ -16862,6 +19424,7 @@ export default function App() {
           version: 1,
           savedAt: new Date().toISOString(),
           rawEvents,
+          sampleCuration,
           runMetadata,
           metadata,
           plateMap,
@@ -16881,7 +19444,7 @@ export default function App() {
       }
     }, 1000);
     return () => clearTimeout(handle);
-  }, [rawEvents, runMetadata, metadata, plateMap, ab, analysisTitle, tab, selId, filter, sort]);
+  }, [rawEvents, sampleCuration, runMetadata, metadata, plateMap, ab, analysisTitle, tab, selId, filter, sort]);
 
   /* When a CroCoDeEL run header carries explicit cutoffs, pre-set the
      events-table filters to those values. The user can still lower them
@@ -17045,12 +19608,26 @@ export default function App() {
       if (filter.verdicts && filter.verdicts.length < VERDICT_IDS.length) {
         if (!filter.verdicts.includes(e.verdict || "pending")) return false;
       }
+      if (
+        filter.sampleVerdicts &&
+        filter.sampleVerdicts.length < SAMPLE_VERDICT_IDS.length
+      ) {
+        // Match when EITHER endpoint sample carries a verdict in the
+        // selected set — lets the curator pull "every event touching a
+        // contaminated sample" with one click. Samples without an
+        // explicit verdict count as "pending".
+        const sv = sampleCuration?.[e.source]?.verdict || "pending";
+        const tv = sampleCuration?.[e.target]?.verdict || "pending";
+        if (
+          !filter.sampleVerdicts.includes(sv) &&
+          !filter.sampleVerdicts.includes(tv)
+        )
+          return false;
+      }
       if (filter.action) {
-        // Action only applies to TP — TP defaults to "suppress" when no
-        // explicit action is set; FP / Uncertain / Pending have no action
-        // and never match an action filter.
-        const effective =
-          e.verdict === "true_positive" ? e.action || "suppress" : null;
+        // Action lives on the target sample — match events whose
+        // target's recorded action equals the requested filter.
+        const effective = sampleCuration[e.target]?.action || null;
         if (effective !== filter.action) return false;
       }
       // Subject filter — events are "same subject" only when both samples
@@ -17101,7 +19678,9 @@ export default function App() {
           case "verdict":
             return e.verdict || "pending";
           case "action":
-            return e.action || "";
+            return sampleCuration[e.target]?.action || "";
+          case "targetVerdict":
+            return sampleCuration[e.target]?.verdict || "pending";
           default:
             return e[sort.by];
         }
@@ -17116,7 +19695,7 @@ export default function App() {
       return sort.dir === "asc" ? av - bv : bv - av;
     });
     return res;
-  }, [events, filter, sort, metadata, plateMap, ab]);
+  }, [events, filter, sort, metadata, plateMap, ab, sampleCuration]);
 
   const counts = useMemo(() => {
     const c = {
@@ -17158,32 +19737,7 @@ export default function App() {
   const setVerdict = React.useCallback(
     (id, verdict) =>
       setRawEvents((prev) =>
-        prev.map((e) => {
-          if (e.id !== id) return e;
-          const next = { ...e, verdict };
-          // When the suppress/keep feature is on, reset the action to
-          // the verdict's default on every verdict change — TP ->
-          // suppress (drop the contaminated sample), FP -> keep (call
-          // was wrong, sample is fine). Other verdicts clear the
-          // action. The popover lets the user override afterwards.
-          if (actionEnabled) {
-            if (verdict === "true_positive") {
-              next.action = "suppress";
-            } else if (verdict === "false_positive") {
-              next.action = "keep";
-            } else {
-              next.action = null;
-            }
-          }
-          return next;
-        }),
-      ),
-    [actionEnabled],
-  );
-  const setAction = React.useCallback(
-    (id, action) =>
-      setRawEvents((prev) =>
-        prev.map((e) => (e.id === id ? { ...e, action } : e)),
+        prev.map((e) => (e.id === id ? { ...e, verdict } : e)),
       ),
     [],
   );
@@ -17193,6 +19747,80 @@ export default function App() {
         prev.map((e) => (e.id === id ? { ...e, notes } : e)),
       ),
     [],
+  );
+  // Sample-level setters. The action / verdict / notes for a sample
+  // live in `sampleCuration[sampleId]`. Toggling to null / empty value
+  // drops the corresponding key so an unset sample serializes empty.
+  const setSampleVerdict = React.useCallback((sampleId, verdict) => {
+    if (!sampleId) return;
+    setSampleCuration((prev) => {
+      const cur = prev[sampleId] || {};
+      const nextEntry = { ...cur };
+      if (verdict == null || verdict === "pending") delete nextEntry.verdict;
+      else nextEntry.verdict = verdict;
+      const next = { ...prev };
+      if (
+        nextEntry.verdict == null &&
+        nextEntry.action == null &&
+        !nextEntry.notes
+      ) {
+        delete next[sampleId];
+      } else {
+        next[sampleId] = nextEntry;
+      }
+      return next;
+    });
+  }, []);
+  const setSampleAction = React.useCallback((sampleId, action) => {
+    if (!sampleId) return;
+    setSampleCuration((prev) => {
+      const cur = prev[sampleId] || {};
+      const nextEntry = { ...cur };
+      if (action == null) delete nextEntry.action;
+      else nextEntry.action = action;
+      const next = { ...prev };
+      if (
+        nextEntry.verdict == null &&
+        nextEntry.action == null &&
+        !nextEntry.notes
+      ) {
+        delete next[sampleId];
+      } else {
+        next[sampleId] = nextEntry;
+      }
+      return next;
+    });
+  }, []);
+  const setSampleNote = React.useCallback((sampleId, notes) => {
+    if (!sampleId) return;
+    setSampleCuration((prev) => {
+      const cur = prev[sampleId] || {};
+      const nextEntry = { ...cur };
+      if (!notes) delete nextEntry.notes;
+      else nextEntry.notes = notes;
+      const next = { ...prev };
+      if (
+        nextEntry.verdict == null &&
+        nextEntry.action == null &&
+        !nextEntry.notes
+      ) {
+        delete next[sampleId];
+      } else {
+        next[sampleId] = nextEntry;
+      }
+      return next;
+    });
+  }, []);
+  // Backwards-compatible adapter for callers that still pass an event id
+  // when picking the keep/suppress action. The action conceptually lives
+  // on the target sample, so we resolve `eventId → event.target` and
+  // delegate to setSampleAction.
+  const setAction = React.useCallback(
+    (eventId, action) => {
+      const ev = rawEvents.find((e) => e.id === eventId);
+      if (ev?.target) setSampleAction(ev.target, action);
+    },
+    [rawEvents, setSampleAction],
   );
   // Stable navigation handler — picks an event and jumps to Guided
   // validation (or Scatter when no abundance is loaded). Reused by
@@ -17238,11 +19866,17 @@ export default function App() {
         verdict: data.verdict || "true_positive",
         notes: data.notes || "Manually added by user",
       };
-      if (actionEnabled && (data.action === "keep" || data.action === "suppress")) {
-        newEvent.action = data.action;
-      }
       return [...prev, newEvent];
     });
+    // Action lives on the target sample now — apply it after the event
+    // is staged so the next render reflects both pieces consistently.
+    if (
+      actionEnabled &&
+      data.target &&
+      (data.action === "keep" || data.action === "suppress")
+    ) {
+      setSampleAction(data.target, data.action);
+    }
   };
 
   /** Bulk-classify all same-subject events as false positives, with an
@@ -17349,19 +19983,15 @@ export default function App() {
       Guided validation. If `comment` is empty, existing notes are
       preserved untouched; otherwise the comment is prepended to each
       event's notes so prior context is never destroyed. */
-  const bulkApplyToEvents = (ids, verdict, comment, action) => {
+  const bulkApplyToEvents = (ids, verdict, comment) => {
     if (!ids || ids.length === 0) return;
     const idSet = new Set(ids);
     const stamp = new Date().toISOString().slice(0, 10);
-    // When a bulk action is provided ("keep" / "suppress") it overrides
-    // every matched event. Otherwise we leave each event's existing
-    // action untouched — the bulk apply only changes verdict + notes.
-    const overrideAction = action === "keep" || action === "suppress";
     setBulkConfirm({
       kind: "confirm",
       title: `Apply "${verdict.replace("_", " ")}" to ${ids.length} event${ids.length > 1 ? "s" : ""}?`,
       body:
-        `Existing verdicts on the matched events will be overwritten.` +
+        `Existing evaluations on the matched events will be overwritten.` +
         (comment
           ? `\n\nThe comment will be prepended to each event's notes (existing notes are preserved).`
           : `\n\nNo comment provided — existing notes are kept untouched.`),
@@ -17371,21 +20001,6 @@ export default function App() {
           prev.map((e) => {
             if (!idSet.has(e.id)) return e;
             const next = { ...e, verdict };
-            // Mirror per-event setVerdict's action defaulting so the bulk
-            // pathway doesn't leave stale actions behind: an explicit bulk
-            // action wins; otherwise reset to the verdict's default
-            // (TP→suppress, FP→keep, others→none).
-            if (actionEnabled) {
-              if (overrideAction) {
-                next.action = action;
-              } else if (verdict === "true_positive") {
-                next.action = "suppress";
-              } else if (verdict === "false_positive") {
-                next.action = "keep";
-              } else {
-                next.action = null;
-              }
-            }
             if (comment) {
               const tag = `[bulk ${stamp}] ${comment}`;
               next.notes = e.notes ? `${tag}\n\n${e.notes}` : tag;
@@ -17400,20 +20015,29 @@ export default function App() {
   const bulkResetAllVerdicts = () => {
     const decided = events.filter((e) => e.verdict !== "pending").length;
     const noted = events.filter((e) => e.notes && e.notes.length > 0).length;
-    if (decided === 0 && noted === 0) {
+    const sampleDecisions = Object.keys(sampleCuration).length;
+    if (decided === 0 && noted === 0 && sampleDecisions === 0) {
       setBulkConfirm({
         kind: "info",
         title: "Nothing to reset",
-        body: "No verdicts or notes have been set yet.",
+        body: "No evaluations, sample verdicts/actions or notes have been set yet.",
       });
       return;
+    }
+    const sampleParts = [];
+    if (sampleDecisions > 0) {
+      sampleParts.push(
+        `${sampleDecisions} sample-level verdict${sampleDecisions !== 1 ? "s" : ""} / action${sampleDecisions !== 1 ? "s" : ""}`,
+      );
     }
     setBulkConfirm({
       kind: "confirm",
       title: "Reset all curation work?",
       body:
-        `This will clear ${decided} verdict${decided !== 1 ? "s" : ""} and ` +
-        `${noted} note${noted !== 1 ? "s" : ""}, returning every event to the "pending" state.\n\n` +
+        `This will clear ${decided} event evaluation${decided !== 1 ? "s" : ""} and ` +
+        `${noted} note${noted !== 1 ? "s" : ""}` +
+        (sampleParts.length ? `, plus ${sampleParts.join(" / ")}` : "") +
+        `, returning every event to the "pending" state.\n\n` +
         "The files you opened (events, abundance, metadata, plate map) are NOT affected.",
       confirmLabel: "Reset everything",
       destructive: true,
@@ -17421,6 +20045,7 @@ export default function App() {
         setRawEvents((prev) =>
           prev.map((e) => ({ ...e, verdict: "pending", notes: "" })),
         );
+        setSampleCuration({});
       },
     });
   };
@@ -17556,6 +20181,7 @@ export default function App() {
 
         // Reset session state to avoid mixing files from different datasets
         setRawEvents(parsedEvents.events);
+        setSampleCuration({});
         setRunMetadata(parsedEvents.runMetadata);
         setAb(parsedAb);
         setMetadata(null);
@@ -17607,7 +20233,7 @@ export default function App() {
       kind: "confirm",
       title: `Replace your session with "${dataset.short_title || dataset.title}"?`,
       body:
-        "Loading this dataset will replace your currently-loaded events, abundance, metadata, plate map and verdicts.\n\n" +
+        "Loading this dataset will replace your currently-loaded events, abundance, metadata, plate map and evaluations.\n\n" +
         "The original files on disk are not affected — you can re-open them after exploring this dataset.",
       confirmLabel: "Replace and load",
       destructive: true,
@@ -17632,13 +20258,14 @@ export default function App() {
       kind: "confirm",
       title: "Replace your session with the demo dataset?",
       body:
-        "The guided tour walks through the bundled Lou et al. 2023 P3 demo dataset. To run it, your currently-loaded events, abundance, metadata, plate map and verdicts will be replaced.\n\n" +
+        "The guided tour walks through the bundled Lou et al. 2023 P3 demo dataset. To run it, your currently-loaded events, abundance, metadata, plate map and evaluations will be replaced.\n\n" +
         "The original files on disk are not affected — you can re-open them after the tour.",
       confirmLabel: "Replace and start tour",
       destructive: true,
       onConfirm: () => {
         // Clear current session so the welcome step can load demo cleanly
         setRawEvents([]);
+        setSampleCuration({});
         setRunMetadata(null);
         setAb(null);
         setMetadata(null);
@@ -17695,7 +20322,10 @@ export default function App() {
           e.introducedPct == null ? "" : (e.introducedPct / 100).toFixed(4),
           e.introduced.join(","),
           e.verdict,
-          e.action || "",
+          // Action lives on the target sample; surface it on the event
+          // row so downstream tools that consume this TSV see the same
+          // shape they did before the sample-level refactor.
+          sampleCuration?.[e.target]?.action || "",
           (e.notes || "").replace(/\t/g, " "),
         ].join("\t"),
       );
@@ -17703,6 +20333,38 @@ export default function App() {
     downloadFile(
       lines.join("\n"),
       `contamination_events_curated.tsv`,
+      "text/tab-separated-values",
+    );
+  };
+
+  /** Sample-level curation export. One row per sample that carries an
+      explicit verdict / action / notes — empty samples are not emitted
+      so the file stays compact on large datasets where most samples
+      are not yet decided. */
+  const exportSamplesReport = () => {
+    const ids = Object.keys(sampleCuration || {}).sort();
+    const header = ["sample_id", "sample_name", "verdict", "action", "notes"];
+    const lines = [];
+    if (analysisTitle) {
+      lines.push(`# study: ${analysisTitle.replace(/[\t\n\r]/g, " ")}`);
+    }
+    lines.push(header.join("\t"));
+    ids.forEach((id) => {
+      const c = sampleCuration[id] || {};
+      if (!c.verdict && !c.action && !c.notes) return;
+      lines.push(
+        [
+          id,
+          sampleName(metadata, id) || "",
+          c.verdict || "",
+          c.action || "",
+          (c.notes || "").replace(/\t/g, " "),
+        ].join("\t"),
+      );
+    });
+    downloadFile(
+      lines.join("\n"),
+      "samples_curated.tsv",
       "text/tab-separated-values",
     );
   };
@@ -17718,7 +20380,7 @@ export default function App() {
     if (!Array.isArray(json.events)) {
       throw new Error('Missing "events" array in the session JSON.');
     }
-    const restoredEvents = json.events.map((e, i) => ({
+    const restoredEventsWithLegacyAction = json.events.map((e, i) => ({
       id: e.id != null ? e.id : i,
       source: e.source,
       target: e.target,
@@ -17730,7 +20392,24 @@ export default function App() {
       notes: e.notes || "",
       cascade: e.cascade || undefined,
     }));
+    // Preferred: a top-level sample_curation map. Fall back to migrating
+    // any legacy per-event `action` fields when the JSON predates the
+    // sample-level model.
+    const restoredSampleCuration =
+      json.sample_curation && typeof json.sample_curation === "object"
+        ? { ...json.sample_curation }
+        : {};
+    const migratedFromEvents = migrateLegacyAction(
+      restoredEventsWithLegacyAction,
+      restoredSampleCuration,
+    );
+    const restoredEvents = restoredEventsWithLegacyAction.map((e) => {
+      if (!e.action) return e;
+      const { action: _drop, ...rest } = e;
+      return rest;
+    });
     setRawEvents(restoredEvents);
+    setSampleCuration(migratedFromEvents.sampleCuration);
     setRunMetadata(json.run_metadata || null);
     setMetadata(json.metadata || null);
     setPlateMap(json.plate_map || null);
@@ -17779,6 +20458,11 @@ export default function App() {
         filter,
         sort,
       },
+      // Sample-level curation: verdict / action / notes per sample.
+      // Action lives here (not on the event) since the curator's
+      // downstream decision is bound to the sample, not to a single
+      // flagged event touching it.
+      sample_curation: sampleCuration,
       events: events.map((e) => ({
         id: e.id,
         source: e.source,
@@ -17787,7 +20471,7 @@ export default function App() {
         probability: e.score,
         introduced_species: e.introduced,
         verdict: e.verdict,
-        action: e.action || null,
+        action: sampleCuration[e.target]?.action || null,
         notes: e.notes,
         relatedness: areRelated(metadata, e.source, e.target),
         plate_distance: plateDistance(plateMap, e.source, e.target),
@@ -17816,6 +20500,7 @@ export default function App() {
     // header in the report matches what's actually rendered below.
     // Action only applies to TP — FP / Uncertain / Pending don't
     // contribute to the suppress / keep tally.
+    const seenTargets = new Set();
     const counts = list.reduce(
       (acc, e) => {
         acc.total++;
@@ -17823,10 +20508,15 @@ export default function App() {
         else if (e.verdict === "false_positive") acc.fp++;
         else if (e.verdict === "uncertain") acc.uncertain++;
         else acc.pending++;
-        const eff =
-          e.verdict === "true_positive" ? e.action || "suppress" : null;
-        if (eff === "suppress") acc.suppress++;
-        else if (eff === "keep") acc.keep++;
+        // Action lives on samples — count distinct target-sample
+        // actions across the events in this report so the suppress /
+        // keep cards reflect the actual downstream effect.
+        if (e.target && !seenTargets.has(e.target)) {
+          seenTargets.add(e.target);
+          const a = sampleCuration?.[e.target]?.action;
+          if (a === "suppress") acc.suppress++;
+          else if (a === "keep") acc.keep++;
+        }
         return acc;
       },
       { total: 0, tp: 0, fp: 0, uncertain: 0, pending: 0, suppress: 0, keep: 0 },
@@ -17855,18 +20545,17 @@ export default function App() {
     };
 
     // Action chip — the curator's "what to do with the contaminated
-    // sample" choice. Action only applies to TP; everything else has
-    // no chip. TP defaults to "suppress" when no explicit action is
-    // recorded, with an italic "(default)" suffix.
+    // sample" choice. Action lives on the target sample; render the
+    // chip whenever an action is recorded for the event's target,
+    // regardless of the event's own evaluation.
     const actionPill = (e) => {
-      if (e.verdict !== "true_positive") return "";
-      const eff = e.action || "suppress";
+      const eff = sampleCuration?.[e.target]?.action;
+      if (!eff) return "";
       const tone =
         eff === "suppress"
           ? { bg: "#ed6e6c", label: "Suppress" }
           : { bg: "#00a3a6", label: "Keep" };
-      const isDefault = !e.action;
-      return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>${isDefault ? ' <em style="color:#797870;font-size:9px;">(default)</em>' : ""}`;
+      return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
 
     // Build a one-paragraph summary of the active filter so the reader
@@ -18190,7 +20879,7 @@ export default function App() {
               <tr><th>Contamination rate</th><td>${(e.rate * 100).toFixed(2)}%</td></tr>
               <tr><th>RF probability</th><td>${e.score.toFixed(3)}</td></tr>
               ${e.introducedPct == null ? "" : `<tr><th>Introduced (% of target species)</th><td>${e.introducedPct.toFixed(1)}%</td></tr>`}
-              <tr><th>Verdict</th><td>${verdictPill(e.verdict)}</td></tr>
+              <tr><th>Evaluation</th><td>${verdictPill(e.verdict)}</td></tr>
               ${reportActionEnabled ? `<tr><th>Action</th><td>${actionPill(e) || "<em style='color:#797870;'>none</em>"}</td></tr>` : ""}
               ${subjectRow}
               ${platePosRow}
@@ -18538,7 +21227,7 @@ export default function App() {
         <th>Probability</th>
         <th>Introduced %</th>
         <th>Sp.</th>
-        <th>Verdict</th>
+        <th>Evaluation</th>
         ${reportActionEnabled ? "<th>Action</th>" : ""}
         <th>Related</th>
         <th>Plate</th>
@@ -19008,12 +21697,13 @@ export default function App() {
                         kind: "confirm",
                         title: "Clear the entire session?",
                         body:
-                          "This removes the loaded events, abundance, metadata and plate map, plus all your verdicts and notes.\n\n" +
+                          "This removes the loaded events, abundance, metadata and plate map, plus all your evaluations and notes.\n\n" +
                           "The original files on disk are not affected.",
                         confirmLabel: "Clear session",
                         destructive: true,
                         onConfirm: () => {
                           setRawEvents([]);
+                          setSampleCuration({});
                           setRunMetadata(null);
                           setAb(null);
                           setMetadata(null);
@@ -19100,6 +21790,7 @@ export default function App() {
                 rawEvents.length
                   ? () => {
                       setRawEvents([]);
+                      setSampleCuration({});
                       setRunMetadata(null);
                       setSelId(null);
                     }
@@ -19210,16 +21901,17 @@ export default function App() {
       {/* ==================== CONTENT ==================== */}
       <div className="max-w-7xl mx-auto px-6 py-5">
         <nav
-          className="flex flex-wrap gap-0 mb-6"
+          className="flex gap-0 mb-6 whitespace-nowrap"
           style={{ borderBottom: "2px solid #e6e8e8" }}
         >
             {[
               { id: "overview", label: "Overview", icon: BookOpen, requiresData: false },
-              { id: "table", label: "Events table", icon: Droplets, requiresData: true },
-              { id: "scatter", label: "Scatterplots", icon: ScatterIcon, requiresData: true },
+              { id: "table", label: "Events", icon: Droplets, requiresData: true },
+              { id: "scatter", label: "Scatter", icon: ScatterIcon, requiresData: true },
+              { id: "validate", label: "Validate", icon: ClipboardCheck, requiresData: true },
+              { id: "samples", label: "Samples", icon: Beaker, requiresData: true },
               { id: "network", label: "Network", icon: GitBranch, requiresData: true },
-              { id: "plate", label: "Plate map", icon: Grid3x3, requiresData: true },
-              { id: "validate", label: "Guided validation", icon: ClipboardCheck, requiresData: true },
+              { id: "plate", label: "Plate", icon: Grid3x3, requiresData: true },
               { id: "export", label: "Export", icon: Download, requiresData: true },
               { id: "datasets", label: "Datasets", icon: Library, requiresData: false, secondary: true },
               { id: "learn", label: "Learn", icon: GraduationCap, requiresData: false, secondary: true, accent: "#423089" },
@@ -19228,11 +21920,6 @@ export default function App() {
               const Icon = t.icon;
               const active = tab === t.id;
               const disabled = t.requiresData && events.length === 0;
-              // First "secondary" tab gets pushed to the right so all
-              // secondary tabs (Learn, Help) sit visually apart from the
-              // workflow tabs.
-              const isFirstSecondary =
-                t.secondary && (!arr[idx - 1] || !arr[idx - 1].secondary);
               const accent = t.accent || "#00a3a6";
               return (
                 <button
@@ -19245,9 +21932,8 @@ export default function App() {
                       ? "Load contamination_events.tsv first"
                       : undefined
                   }
-                  className="px-5 py-3 text-[13px] flex items-center gap-2"
+                  className="px-3 py-3 text-[13px] flex flex-1 items-center justify-center gap-1.5 min-w-0"
                   style={{
-                    marginLeft: isFirstSecondary ? "auto" : undefined,
                     borderBottom: active
                       ? `3px solid ${accent}`
                       : "3px solid transparent",
@@ -19289,6 +21975,7 @@ export default function App() {
               onLoadDemo={loadDemo}
               demoLoading={demoLoading}
               actionEnabled={actionEnabled}
+              sampleCuration={sampleCuration}
             />
           )}
           {tab === "table" && (
@@ -19310,6 +21997,7 @@ export default function App() {
               hasAb={!!ab}
               actionEnabled={actionEnabled}
               setAction={setAction}
+              sampleCuration={sampleCuration}
               pageSize={eventsPageSize}
             />
           )}
@@ -19331,6 +22019,8 @@ export default function App() {
               }
               actionEnabled={actionEnabled}
               setAction={setAction}
+              sampleCuration={sampleCuration}
+              setSampleVerdict={setSampleVerdict}
               pageSize={galleryPageSize}
               explorePairsForm={explorePairsForm}
               setExplorePairsForm={setExplorePairsForm}
@@ -19351,10 +22041,12 @@ export default function App() {
                 bulkApplyToEvents ? () => setBulkApplyOpen(true) : undefined
               }
               onApplyToEventIds={bulkApplyToEvents}
+              onApplySampleAction={setSampleAction}
               hasAb={!!ab}
               colorScheme={networkColorScheme}
               setColorScheme={setNetworkColorScheme}
               onScopeToSamples={scopeToSamples}
+              sampleCuration={sampleCuration}
             />
           )}
           {tab === "plate" && (
@@ -19388,6 +22080,7 @@ export default function App() {
               setNote={setNote}
               actionEnabled={actionEnabled}
               setAction={setAction}
+              sampleCuration={sampleCuration}
               metadata={metadata}
               plateMap={plateMap}
               bulkResetAllVerdicts={bulkResetAllVerdicts}
@@ -19398,6 +22091,30 @@ export default function App() {
               }}
               bulkApplyOpen={bulkApplyOpen}
               onOpenBulkApply={() => setBulkApplyOpen(true)}
+            />
+          )}
+          {tab === "samples" && (
+            <SamplesTab
+              events={events}
+              filteredEvents={filtered}
+              filter={filter}
+              setFilter={setFilter}
+              runMetadata={runMetadata}
+              metadata={metadata}
+              plateMap={plateMap}
+              ab={ab}
+              hasAb={!!ab}
+              sampleCuration={sampleCuration}
+              setSampleVerdict={setSampleVerdict}
+              setSampleAction={setSampleAction}
+              setSampleNote={setSampleNote}
+              actionEnabled={actionEnabled}
+              onScopeToSamples={scopeToSamples}
+              onExportSamplesTSV={exportSamplesReport}
+              onOpenPlate={(plateId) => {
+                setFocusPlate(plateId || null);
+                setTab("plate");
+              }}
             />
           )}
           {tab === "export" && (
@@ -19411,6 +22128,7 @@ export default function App() {
               runMetadata={runMetadata}
               hasAb={!!ab}
               actionEnabled={actionEnabled}
+              sampleCuration={sampleCuration}
               onBulkApply={
                 bulkApplyToEvents ? () => setBulkApplyOpen(true) : undefined
               }
