@@ -96,8 +96,8 @@
       "samples_count": 17,
       "events_count": 26,
       "profiler": "Meteor",
-      "citation": "Goulet et al. 2025, bioRxiv (CroCoDeEL paper)",
-      "paper_url": "https://doi.org/10.1101/2025.01.15.633153",
+      "citation": "Goulet et al. 2026, Nature Communications (CroCoDeEL paper)",
+      "paper_url": "https://doi.org/10.1038/s41467-026-72637-9",
       "dataverse_url": "https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/N6JSHQ",
       "files": {
         "events": "PRJEB83730/contamination_events.tsv",
