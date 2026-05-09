@@ -7,7 +7,6 @@ import {
   AlertCircle,
   AlertOctagon,
   BadgeCheck,
-  Bookmark,
   CheckCircle2,
   Circle,
   XCircle,
@@ -25,9 +24,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Search,
-  SlidersHorizontal,
   ListChecks,
-  CheckCheck,
   BookOpen,
   GraduationCap,
   Grid3x3,
@@ -1428,7 +1425,7 @@ const Stat = ({ label, value, tone = "neutral" }) => {
     contaminated: { background: "#ed6e6c", color: "white" },
     correct: { background: "#00a3a6", color: "white" },
     uncertain: { background: "#d97a3c", color: "white" },
-    pending: { background: "#9aaab0", color: "white" },
+    pending: { background: "#6b7a82", color: "white" },
     keep: { background: "#e0b13a", color: "white" },
     suppress: { background: "#ed6e6c", color: "white" },
     cascade: { background: "#423089", color: "white" },
@@ -4361,6 +4358,11 @@ const Th = ({ children, right, onClick, title }) => (
       color: "var(--ink)",
       fontWeight: 800,
       fontFamily: '"Raleway", sans-serif',
+      position: "sticky",
+      top: 0,
+      zIndex: 10,
+      background: "var(--bg-soft)",
+      borderBottom: "2px solid #00a3a6",
     }}
   >
     {children}
@@ -5009,7 +5011,7 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
   const { keepCount, suppressCount } = useMemo(() => {
     let keep = 0;
     let supp = 0;
-    if (actionEnabled && sampleCuration) {
+    if (sampleCuration) {
       for (const id of Object.keys(sampleCuration)) {
         const a = sampleCuration[id]?.action;
         if (a === "keep") keep++;
@@ -5017,7 +5019,7 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
       }
     }
     return { keepCount: keep, suppressCount: supp };
-  }, [actionEnabled, sampleCuration]);
+  }, [sampleCuration]);
 
   // Number of connected components in the contamination network — gives
   // a sense of how clustered the events are.
@@ -5142,20 +5144,16 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
 
       {(events.length > 0 || metadata || plateMap || cascadeCount > 0) && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 xl:grid-cols-7 gap-3 mb-10">
-          {actionEnabled && (
-            <Stat
-              label="Samples to keep"
-              value={keepCount}
-              tone={keepCount > 0 ? "keep" : "neutral"}
-            />
-          )}
-          {actionEnabled && (
-            <Stat
-              label="Samples to suppress"
-              value={suppressCount}
-              tone={suppressCount > 0 ? "suppress" : "neutral"}
-            />
-          )}
+          <Stat
+            label="Samples to keep"
+            value={keepCount}
+            tone={keepCount > 0 ? "keep" : "neutral"}
+          />
+          <Stat
+            label="Samples to suppress"
+            value={suppressCount}
+            tone={suppressCount > 0 ? "suppress" : "neutral"}
+          />
           {events.length > 0 && (
             <Stat
               label="Connected components"
@@ -6413,12 +6411,12 @@ const EventsTable = ({
       </EventFilterBar>
 
       <div
-        className="rounded-sm overflow-x-auto"
+        className="rounded-sm"
         style={{ border: "1px solid var(--border)" }}
       >
         <table className="w-full text-[13px]">
           <thead>
-            <tr style={{ background: "var(--bg-soft)", borderBottom: "2px solid #00a3a6" }}>
+            <tr>
               <Th
                 onClick={() => toggleSort("source")}
                 title="Source sample — the contaminant. Click to sort alphabetically."
@@ -6760,7 +6758,7 @@ const EventsTable = ({
             {events.length === 0 && (
               <tr>
                 <td
-                  colSpan={9 + (hasContext ? 1 : 0) + (actionEnabled ? 1 : 0)}
+                  colSpan={10 + (hasContext ? 1 : 0)}
                   className="px-3 py-8 text-center text-[13px]"
                   style={{ color: "var(--ink-muted)" }}
                 >
@@ -7274,7 +7272,7 @@ const GalleryCard = React.memo(function GalleryCard({
                 { id: "true_positive", color: "#00a3a6", label: "TP" },
                 { id: "false_positive", color: "#ed6e6c", label: "FP" },
                 { id: "uncertain", color: "#d97a3c", label: "Uncertain" },
-                { id: "pending", color: "#9aaab0", label: "Pending" },
+                { id: "pending", color: "#6b7a82", label: "Pending" },
               ].map((opt) => {
                 const active = event.verdict === opt.id;
                 return (
@@ -7972,7 +7970,7 @@ const ExplorePairs = ({
       verdict,
       targetVerdict,
       notes,
-      action: actionEnabled ? action : undefined,
+      action,
     });
     const verdictLabel =
       verdict === "true_positive"
@@ -8233,9 +8231,9 @@ const ExplorePairs = ({
           </div>
         </div>
 
-        {/* Action on target sample — only when the suppress/keep feature
-            is on and the event verdict is TP. FPs carry no action. */}
-        {actionEnabled && verdict === "true_positive" && (
+        {/* Action on target sample — only when the event verdict is TP.
+            FPs carry no action. */}
+        {verdict === "true_positive" && (
             <div className="mb-3">
               <label
                 className="text-[10px] tracking-[0.1em] uppercase block mb-2"
@@ -8896,9 +8894,7 @@ const ScatterTab = ({
           { id: "introducedPct", label: "introduced" },
           { id: "pending", label: "evaluation" },
           { id: "targetVerdict", label: "target verdict" },
-          ...(actionEnabled
-            ? [{ id: "action", label: "target action" }]
-            : []),
+          { id: "action", label: "target action" },
           { id: "source", label: "source" },
           { id: "target", label: "target" },
         ].map((opt) => {
@@ -9121,7 +9117,7 @@ const SAMPLE_VERDICT_TONE = {
   contaminated: { bg: "#ed6e6c", label: "Contaminated" },
   correct: { bg: "#00a3a6", label: "Correct" },
   uncertain: { bg: "#d97a3c", label: "Uncertain" },
-  pending: { bg: "#9aaab0", label: "Pending" },
+  pending: { bg: "#6b7a82", label: "Pending" },
 };
 
 /** Compact metadata pill block shown in the SamplesTab "Context"
@@ -9727,7 +9723,7 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
         { k: "tp", color: "#00a3a6", title: "True positive" },
         { k: "fp", color: "#ed6e6c", title: "False positive" },
         { k: "uncertain", color: "#d97a3c", title: "Uncertain" },
-        { k: "pending", color: "#9aaab0", title: "Pending" },
+        { k: "pending", color: "#6b7a82", title: "Pending" },
       ].map((c) =>
         breakdown[c.k] > 0 ? (
           <span
@@ -10673,10 +10669,10 @@ const SamplesTab = ({
     for (const id of neverTargetSamples) {
       const cur = sampleCuration?.[id] || {};
       if (!cur.verdict) setSampleVerdict(id, "correct");
-      if (actionEnabled && !cur.action) setSampleAction(id, "keep");
+      if (!cur.action) setSampleAction(id, "keep");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [neverTargetSamples, actionEnabled]);
+  }, [neverTargetSamples]);
 
   // Build the universe of samples — only those touched by an event
   // currently passing the shared filter bar (rate / probability /
@@ -10686,7 +10682,12 @@ const SamplesTab = ({
   // are computed from the filtered set so they match what the user
   // sees in the other tabs.
   const eventsForSamples = filteredEvents || events;
-  const sampleRows = useMemo(() => {
+  // Heavy aggregates that depend on the events list, abundance, metadata
+  // and plate map but NOT on sampleCuration. Splitting this out means a
+  // verdict-click (which only mutates sampleCuration) doesn't trigger a
+  // full O(events × samples) rebuild — the cheap row merge below picks
+  // up the new verdict / action / notes in O(samples) instead.
+  const sampleAggregates = useMemo(() => {
     const ids = new Set();
     for (const e of eventsForSamples) {
       if (e.source) ids.add(e.source);
@@ -10704,11 +10705,6 @@ const SamplesTab = ({
       const touching = eventsBySample.get(id) || [];
       let asSource = 0;
       let asTarget = 0;
-      // Aggregates over the events that *target* this sample — i.e.
-      // the events that may explain why the sample is contaminated.
-      // Used by the per-targeting-event sliders below the context
-      // search bar to filter samples by the worst (max) attributes
-      // among their incoming contaminations.
       let maxTargetRate = null;
       let maxTargetScore = null;
       let maxTargetIntroducedCount = null;
@@ -10748,19 +10744,12 @@ const SamplesTab = ({
         }
         bumpEval(evalCounts, e);
       }
-      const cur = sampleCuration?.[id] || {};
-      const verdict = cur.verdict || "pending";
-      const action = cur.action || null;
-      const notes = cur.notes || "";
       const suggested = suggestSampleVerdict(id, eventsForSamples);
       const flags = flagSample(id, metadata);
       const placement = plateMap?.bySample?.[id] || null;
       return {
         id,
         name: sampleName(metadata, id) || "",
-        verdict,
-        action,
-        notes,
         suggested,
         asSource,
         asTarget,
@@ -10775,7 +10764,23 @@ const SamplesTab = ({
         maxTargetIntroducedCount,
       };
     });
-  }, [eventsForSamples, ab, metadata, plateMap, sampleCuration]);
+  }, [eventsForSamples, ab, metadata, plateMap]);
+  // Cheap row-by-row merge of the curation layer onto the precomputed
+  // aggregates. Re-runs on every sampleCuration write but is O(samples)
+  // not O(events × samples).
+  const sampleRows = useMemo(
+    () =>
+      sampleAggregates.map((agg) => {
+        const cur = sampleCuration?.[agg.id] || {};
+        return {
+          ...agg,
+          verdict: cur.verdict || "pending",
+          action: cur.action || null,
+          notes: cur.notes || "",
+        };
+      }),
+    [sampleAggregates, sampleCuration],
+  );
 
   const subjectFiltered = useMemo(() => {
     if (!sampleFiltersActive) return sampleRows;
@@ -10933,7 +10938,7 @@ const SamplesTab = ({
       },
     },
     { id: "verdict", label: "Verdict", sortKey: "verdict" },
-    actionEnabled && { id: "action", label: "Action", sortKey: "action" },
+    { id: "action", label: "Action", sortKey: "action" },
   ].filter(Boolean);
 
   const PAGE_SIZE = pageSize || 200;
@@ -11103,13 +11108,13 @@ const SamplesTab = ({
           e.preventDefault();
           break;
         case "k":
-          if (actionEnabled && focusedId) {
+          if (focusedId) {
             setSampleAction(focusedId, "keep");
             e.preventDefault();
           }
           break;
         case "s":
-          if (actionEnabled && focusedId) {
+          if (focusedId) {
             setSampleAction(focusedId, "suppress");
             e.preventDefault();
           }
@@ -11121,7 +11126,7 @@ const SamplesTab = ({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedId, focusedIdx, sorted, bulkOpen, actionEnabled, safePage]);
+  }, [focusedId, focusedIdx, sorted, bulkOpen, safePage]);
 
   return (
     <div>
@@ -11230,7 +11235,6 @@ const SamplesTab = ({
 
       {/* Table */}
       <div
-        className="overflow-x-auto"
         style={{
           background: "var(--bg-card)",
           border: "1px solid var(--border)",
@@ -11280,7 +11284,7 @@ const SamplesTab = ({
                       borderBottom: "1px solid var(--border)",
                       position: "sticky",
                       top: 0,
-                      zIndex: 2,
+                      zIndex: 10,
                       background: "var(--bg-soft)",
                       minWidth: col.minWidth || undefined,
                     }}
@@ -20684,10 +20688,16 @@ function indexedDBSupported() {
 
 /** Open (or create) the session database. The schema is one
     keyed-object store; we don't bother with auto-incrementing keys.
-    Re-opens on every call but the underlying connection is cheap and
-    Chromium / Firefox cache the open handle internally. */
+    The handle is cached at module scope so subsequent reads / writes
+    skip the open round-trip — important on the 1 s auto-save cadence
+    where the DB would otherwise be re-opened several times per
+    second. The cache is cleared on the connection's `close` /
+    `versionchange` events so we recover gracefully if another tab
+    upgrades the schema. */
+let dbHandlePromise = null;
 function openDB() {
-  return new Promise((resolve, reject) => {
+  if (dbHandlePromise) return dbHandlePromise;
+  dbHandlePromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -20695,11 +20705,38 @@ function openDB() {
         db.createObjectStore(STORE);
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-    req.onblocked = () =>
+    req.onsuccess = () => {
+      const db = req.result;
+      // If another tab opens the DB with a higher version, our handle
+      // is invalidated — drop it and let the next call re-open.
+      db.onversionchange = () => {
+        try {
+          db.close();
+        } catch {
+          // ignore
+        }
+        if (dbHandlePromise === thisPromise) dbHandlePromise = null;
+      };
+      db.onclose = () => {
+        if (dbHandlePromise === thisPromise) dbHandlePromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      dbHandlePromise = null;
+      reject(req.error);
+    };
+    req.onblocked = () => {
+      dbHandlePromise = null;
       reject(new Error("IndexedDB open blocked — close other tabs running this app"));
+    };
   });
+  // Local copy so the .onversionchange / .onclose closure can compare
+  // against *this* handle — a stale guard might otherwise null out a
+  // newer one.
+  // eslint-disable-next-line no-var
+  var thisPromise = dbHandlePromise;
+  return dbHandlePromise;
 }
 
 function idbGet(key) {
@@ -22674,6 +22711,20 @@ function AppMain({ initial }) {
       have a manual verdict are skipped (to avoid overwriting user
       decisions). User notes are preserved by prepending the auto-note. */
   const [bulkConfirm, setBulkConfirm] = useState(null); // null | { kind, count, onConfirm }
+  // Global Escape handler — closes the topmost dialog (config /
+  // bulk-confirm) so keyboard users aren't trapped behind a backdrop
+  // click target. Bulk-apply, popovers and tour-style overlays own
+  // their own keyboard handling and aren't included here.
+  useEffect(() => {
+    if (!configOpen && !bulkConfirm) return undefined;
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (bulkConfirm) setBulkConfirm(null);
+      else if (configOpen) setConfigOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [configOpen, bulkConfirm]);
 
   const bulkMarkSameSubjectAsFP = () => {
     if (!metadata) {
@@ -23341,6 +23392,14 @@ function AppMain({ initial }) {
       const { action: _drop, ...rest } = e;
       return rest;
     });
+    // Wipe IndexedDB synchronously (fire-and-forget) so a fast F5
+    // before the 1 s auto-save debounce fires can't restore the
+    // *previous* session. The next auto-save will write the imported
+    // data fresh; force the abundance side payload to be rewritten by
+    // resetting lastSavedAbRef so the loader can't splice in the old
+    // matrix.
+    clearStorage();
+    lastSavedAbRef.current = null;
     setRawEvents(restoredEvents);
     setSampleCuration(migratedFromEvents.sampleCuration);
     setRunMetadata(json.run_metadata || null);
@@ -23428,11 +23487,10 @@ function AppMain({ initial }) {
   const exportHTMLReport = (eventsList, opts) => {
     const list = Array.isArray(eventsList) ? eventsList : events;
     const reportFilter = opts && opts.filter ? opts.filter : null;
-    const reportActionEnabled = !!(opts && opts.actionEnabled);
     // Recompute the verdict tally over the filtered subset so the
     // header in the report matches what's actually rendered below.
-    // Action only applies to TP — FP / Uncertain / Pending don't
-    // contribute to the suppress / keep tally.
+    // The suppress / keep counts are tallied across distinct target
+    // samples (action lives on the sample, not the event).
     const seenTargets = new Set();
     const counts = list.reduce(
       (acc, e) => {
@@ -23491,6 +23549,25 @@ function AppMain({ initial }) {
       return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
 
+    // Sample-level verdict chip — the curator's call on the target
+    // sample as a whole (contaminated / correct / uncertain /
+    // pending). Cohabits with the event evaluation; we render
+    // whatever lives in sampleCuration for the target, defaulting to
+    // "Pending" with a muted chip when the sample hasn't been
+    // curated yet.
+    const sampleVerdictPill = (e) => {
+      const v = sampleCuration?.[e.target]?.verdict || "pending";
+      const tone =
+        v === "contaminated"
+          ? { bg: "#ed6e6c", label: "Contaminated" }
+          : v === "correct"
+            ? { bg: "#00a3a6", label: "Correct" }
+            : v === "uncertain"
+              ? { bg: "#d97a3c", label: "Uncertain" }
+              : { bg: "#e6e8e8", label: "Pending", textColor: "#5a5550" };
+      return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
+    };
+
     // Build a one-paragraph summary of the active filter so the reader
     // knows what subset they're looking at. Only mentions fields that
     // diverge from the defaults; returns null when nothing is active.
@@ -23526,9 +23603,6 @@ function AppMain({ initial }) {
           `verdict: ${reportFilter.verdicts.map((v) => labels[v] || v).join(", ")}`,
         );
       }
-      if (reportFilter.action) {
-        parts.push(`action: ${reportFilter.action}`);
-      }
       if (reportFilter.subject && reportFilter.subject !== "any") {
         parts.push(`subject: ${reportFilter.subject}`);
       }
@@ -23545,9 +23619,8 @@ function AppMain({ initial }) {
         language of the main Scatterplot component (deep teal points
         for off-line, salmon for on-line, black dashed y=x, salmon
         dashed contamination line). Uses log axes from 1e-5 to 1e0. */
-    const renderScatterSVG = (event) => {
+    const renderScatterSVG = (event, sc) => {
       if (!ab) return "<em style='color:#797870'>abundance table required</em>";
-      const sc = buildScatter(ab, event);
       if (!sc || sc.error || sc.points.length === 0) {
         return `<em style='color:#797870'>${escapeHTML(sc?.error || "no plot available")}</em>`;
       }
@@ -23625,8 +23698,7 @@ function AppMain({ initial }) {
 
     /** Render the diagnostic checks for an event as a small list, plus
         a side table with the underlying numerical values. */
-    const renderDiagChecks = (event) => {
-      const sc = buildScatter(ab, event);
+    const renderDiagChecks = (event, sc) => {
       if (!sc || sc.error) return "<em style='color:#797870'>abundance table required</em>";
       const di = lineDiagnostics(sc);
       const ab2 = pointsAboveLine(sc);
@@ -23749,7 +23821,8 @@ function AppMain({ initial }) {
           <td class="num">${e.introducedPct == null ? "—" : `${e.introducedPct.toFixed(1)}%`}</td>
           <td class="num">${e.introduced?.length ?? 0}</td>
           <td>${verdictPill(e.verdict)}</td>
-          ${reportActionEnabled ? `<td>${actionPill(e)}</td>` : ""}
+          <td>${sampleVerdictPill(e)}</td>
+          <td>${actionPill(e)}</td>
           <td>${relCell}</td>
           <td>${plateCell}</td>
           <td>${e.cascade ? "yes" : ""}</td>
@@ -23760,6 +23833,11 @@ function AppMain({ initial }) {
 
     const detailPages = list
       .map((e, i) => {
+        // Build the scatter bundle once per event and thread it
+        // through both renderers — buildScatter is O(species) and
+        // running it twice per event is the dominant export cost on
+        // big reports.
+        const sc = ab ? buildScatter(ab, e) : null;
         const rel = areRelated(metadata, e.source, e.target);
         const pd = plateDistance(plateMap, e.source, e.target);
         // Print up to 80 introduced species in the per-event detail —
@@ -23812,8 +23890,9 @@ function AppMain({ initial }) {
               <tr><th>Contamination rate</th><td>${(e.rate * 100).toFixed(2)}%</td></tr>
               <tr><th>RF probability</th><td>${e.score.toFixed(3)}</td></tr>
               ${e.introducedPct == null ? "" : `<tr><th>Introduced (% of target species)</th><td>${e.introducedPct.toFixed(1)}%</td></tr>`}
-              <tr><th>Evaluation</th><td>${verdictPill(e.verdict)}</td></tr>
-              ${reportActionEnabled ? `<tr><th>Action</th><td>${actionPill(e) || "<em style='color:#797870;'>none</em>"}</td></tr>` : ""}
+              <tr><th>Evaluation (event)</th><td>${verdictPill(e.verdict)}</td></tr>
+              <tr><th>Verdict on target sample</th><td>${sampleVerdictPill(e)}</td></tr>
+              <tr><th>Action on target sample</th><td>${actionPill(e) || "<em style='color:#797870;'>none</em>"}</td></tr>
               ${subjectRow}
               ${platePosRow}
               <tr><th>Introduced species</th><td>${e.introduced?.length || 0} total. ${introducedList}${introducedExtra}</td></tr>
@@ -23826,14 +23905,14 @@ function AppMain({ initial }) {
           <h3>Event ${i + 1} of ${list.length} · ${escapeHTML(e.source)} → ${escapeHTML(e.target)}</h3>
           <div class="event-grid">
             <div class="event-plot">
-              ${renderScatterSVG(e)}
+              ${renderScatterSVG(e, sc)}
             </div>
             <div class="event-info">
               ${contextBlock}
             </div>
           </div>
           <h4>Diagnostic checks</h4>
-          ${renderDiagChecks(e)}
+          ${renderDiagChecks(e, sc)}
           ${cascadeBlock}
         </div>`;
       })
@@ -23914,7 +23993,7 @@ function AppMain({ initial }) {
   }
   .summary {
     display: grid;
-    grid-template-columns: repeat(${reportActionEnabled ? 7 : 5}, 1fr);
+    grid-template-columns: repeat(7, 1fr);
     gap: 12px;
     margin: 16px 0;
   }
@@ -24106,8 +24185,8 @@ function AppMain({ initial }) {
     <div class="stat fp"><div class="label">False positive</div><div class="value">${counts.fp}</div></div>
     <div class="stat unc"><div class="label">Uncertain</div><div class="value">${counts.uncertain}</div></div>
     <div class="stat"><div class="label">Pending</div><div class="value">${counts.pending}</div></div>
-    ${reportActionEnabled ? `<div class="stat suppress"><div class="label">To suppress</div><div class="value">${counts.suppress}</div></div>` : ""}
-    ${reportActionEnabled ? `<div class="stat keep"><div class="label">To keep</div><div class="value">${counts.keep}</div></div>` : ""}
+    <div class="stat suppress"><div class="label">To suppress</div><div class="value">${counts.suppress}</div></div>
+    <div class="stat keep"><div class="label">To keep</div><div class="value">${counts.keep}</div></div>
   </div>
   ${
     filterSummary
@@ -24126,7 +24205,6 @@ function AppMain({ initial }) {
         : "<em style='font-weight:400;color:#797870;'>not loaded</em>"
     }</div></div>
     <div class="item"><div class="k">Plate map</div><div class="v">${plateMap ? `${Object.keys(plateMap.bySample).length} samples · ${plateMap.format.rows}×${plateMap.format.cols}` : "<em style='font-weight:400;color:#797870;'>not loaded</em>"}</div></div>
-    <div class="item"><div class="k">Suppress / keep</div><div class="v">${reportActionEnabled ? "enabled" : "<em style='font-weight:400;color:#797870;'>disabled</em>"}</div></div>
   </div>
 
   ${runMetaSection}
@@ -24161,7 +24239,8 @@ function AppMain({ initial }) {
         <th>Introduced %</th>
         <th>Sp.</th>
         <th>Evaluation</th>
-        ${reportActionEnabled ? "<th>Action</th>" : ""}
+        <th>Target verdict</th>
+        <th>Target action</th>
         <th>Related</th>
         <th>Plate</th>
         <th>Cascade</th>
@@ -24796,6 +24875,8 @@ function AppMain({ initial }) {
         {err && (
           <div className="max-w-7xl mx-auto px-6 pb-4">
             <div
+              role="alert"
+              aria-live="assertive"
               className="flex items-center gap-2 text-sm px-3 py-2 rounded-sm"
               style={{
                 background: "var(--bg-alert)",
@@ -25283,11 +25364,10 @@ function AppMain({ initial }) {
               <InraeLogo height={28} />
             </div>
             <div
-              className="text-[11px] mt-4 max-w-2xl leading-relaxed"
+              className="text-[14px] mt-4 max-w-2xl leading-relaxed"
               style={{ color: "var(--ink-muted)" }}
             >
-              Interpretation aid for CroCoDeEL results. Cite: Goulet L. et al.,
-              Nature Communications 2026,{" "}
+              Citation: Goulet L. et al., Nature Communications 2026,{" "}
               <a
                 href="https://doi.org/10.1038/s41467-026-72637-9"
                 target="_blank"
@@ -25790,6 +25870,13 @@ function LoadingProgress({ active, label, sub, progress }) {
   );
   return (
     <div
+      role="status"
+      aria-live="polite"
+      aria-label={
+        pct != null
+          ? `${display.label || "Loading"} ${Math.round(pct * 100)} percent`
+          : display.label || "Loading"
+      }
       style={{
         position: "fixed",
         inset: 0,
