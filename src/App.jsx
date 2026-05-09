@@ -3777,6 +3777,7 @@ const UploadCard = ({
   onClear,
   info,
   confirmDialog,
+  emptyAction,
 }) => {
   const [drag, setDrag] = useState(false);
   const loaded = !!filename;
@@ -3845,6 +3846,9 @@ const UploadCard = ({
           {primary && <Pill tone="ink">required</Pill>}
         </div>
         <div className="text-[12px] text-stone-600 mt-0.5">{hint}</div>
+        {!loaded && emptyAction && (
+          <div className="mt-1.5">{emptyAction}</div>
+        )}
         {loaded && (
           <div
             className="text-[12px] mt-1"
@@ -20959,6 +20963,114 @@ function yieldToBrowser() {
   return new Promise((r) => setTimeout(r, 0));
 }
 
+/* ----------------------------------------------------------------------------
+   PYODIDE BRIDGE — RUN CROCODEEL IN THE BROWSER (via Web Worker)
+   ----------------------------------------------------------------------------
+   The CroCoDeEL pipeline runs inside a dedicated Web Worker so the
+   ~30 MB Pyodide download + the multi-second blocking analysis don't
+   freeze the main thread (Chrome would otherwise raise a "page not
+   responding" prompt). The worker holds the runtime warm across runs.
+   Communication is plain postMessage:
+     main → worker: { type: "run", abundance: <TSV string> }
+     worker → main: { type: "progress" | "done" | "error", … } */
+// Cached worker handle so the runtime + installed packages persist
+// across runs in the same tab.
+let crocodeelWorker = null;
+// `currentRunReject` holds the rejection callback of the in-flight
+// promise so a user-initiated abort can both terminate the worker
+// (the only way Pyodide can be stopped mid-execution — it doesn't
+// expose Python-level interrupts here) and surface a clean error.
+let currentRunReject = null;
+function getCrocodeelWorker() {
+  if (crocodeelWorker) return crocodeelWorker;
+  crocodeelWorker = new Worker(
+    new URL("./crocodeel.worker.js", import.meta.url),
+  );
+  return crocodeelWorker;
+}
+function abortCrocodeelRun() {
+  if (crocodeelWorker) {
+    try {
+      crocodeelWorker.terminate();
+    } catch {
+      // ignore
+    }
+    crocodeelWorker = null;
+  }
+  if (currentRunReject) {
+    const reject = currentRunReject;
+    currentRunReject = null;
+    reject(new Error("__CROCODEEL_ABORTED__"));
+  }
+}
+
+async function runCrocodeelInBrowser(abundanceText, opts) {
+  const {
+    probCutoff = 0.5,
+    rateCutoff = 0.0,
+    filterLowAb = 0,
+    onProgress,
+    onLog,
+    onVersion,
+  } = opts || {};
+  return new Promise((resolve, reject) => {
+    let worker;
+    try {
+      worker = getCrocodeelWorker();
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    currentRunReject = reject;
+    const cleanup = () => {
+      worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError);
+      currentRunReject = null;
+    };
+    const onMessage = (ev) => {
+      const msg = ev.data;
+      if (!msg) return;
+      if (msg.type === "progress") {
+        onProgress?.({ label: msg.label, progress: null });
+      } else if (msg.type === "log") {
+        onLog?.(msg);
+      } else if (msg.type === "version") {
+        onVersion?.(msg);
+      } else if (msg.type === "done") {
+        cleanup();
+        resolve(msg.tsv);
+      } else if (msg.type === "error") {
+        cleanup();
+        try {
+          worker.terminate();
+        } catch {
+          // ignore
+        }
+        crocodeelWorker = null;
+        reject(new Error(msg.message + (msg.stack ? "\n" + msg.stack : "")));
+      }
+    };
+    const onError = (e) => {
+      cleanup();
+      try {
+        worker.terminate();
+      } catch {
+        // ignore
+      }
+      crocodeelWorker = null;
+      reject(new Error(e.message || "CroCoDeEL worker crashed"));
+    };
+    worker.addEventListener("message", onMessage);
+    worker.addEventListener("error", onError);
+    worker.postMessage({
+      type: "run",
+      abundance: abundanceText,
+      probCutoff,
+      rateCutoff,
+      filterLowAb,
+    });
+  });
+}
 /** Format a byte count with a short SI-style suffix. Used in the
     loading overlay to show a friendly "12.4 MB" instead of the raw
     byte count. */
@@ -21751,6 +21863,9 @@ function AppMain({ initial }) {
   // Konami easter egg — ↑ ↑ ↓ ↓ ← → ← → B A unlocks the Croc Arcade.
   const [arcadeOpen, setArcadeOpen] = useState(false);
   useKonamiCode(() => setArcadeOpen(true));
+  // In-browser CroCoDeEL run page — opened from the events upload
+  // card's empty state when the user has only an abundance table.
+  const [runCrocodeelOpen, setRunCrocodeelOpen] = useState(false);
   // Theme picker — light / dark / auto-os / auto-time. Persisted in
   // localStorage so the choice survives session resets. For schedule
   // mode the dark window is also user-configurable (default 19:00 -
@@ -24777,6 +24892,28 @@ function AppMain({ initial }) {
               onFile={loadEvents}
               primary
               inputRef={eventFileRef}
+              emptyAction={
+                <button
+                  type="button"
+                  onClick={() => setRunCrocodeelOpen(true)}
+                  className="text-[12px] inline-flex items-center gap-1"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    color: "#00a3a6",
+                    fontWeight: 600,
+                    fontFamily: '"Raleway", sans-serif',
+                    textDecoration: "underline",
+                    textUnderlineOffset: 2,
+                    cursor: "pointer",
+                  }}
+                  title="Open the in-browser CroCoDeEL runner"
+                >
+                  <Beaker className="w-3 h-3" />
+                  No file? Run CroCoDeEL in your browser →
+                </button>
+              }
               info={
                 <>
                   <div style={{ fontWeight: 700, marginBottom: 4 }}>
@@ -25721,6 +25858,24 @@ function AppMain({ initial }) {
           loadDataset. Idle when `loading` is null. */}
       <LoadingProgress active={!!loading} {...(loading || {})} />
       {arcadeOpen && <CrocArcade onClose={() => setArcadeOpen(false)} />}
+      {runCrocodeelOpen && (
+        <RunCrocodeelPage
+          ab={ab}
+          onClose={() => setRunCrocodeelOpen(false)}
+          onLoadAbundance={loadAbundance}
+          onAdoptEvents={(parsed) => {
+            setRawEvents(parsed.events);
+            setSampleCuration({});
+            setFilter(defaultFilter());
+            setRunMetadata(parsed.runMetadata);
+            if (!analysisTitle) {
+              setAnalysisTitle("CroCoDeEL run (in-browser)");
+            }
+            setRunCrocodeelOpen(false);
+            setTab("overview");
+          }}
+        />
+      )}
       {lastSamplesDrill && tab !== "samples" && (
         <div
           style={{
@@ -26479,6 +26634,877 @@ function CrocArcade({ onClose }) {
       >
         Close
       </button>
+    </div>
+  );
+}
+
+/* ============================================================================
+   RUN-CROCODEEL PAGE
+   ============================================================================
+   A dedicated full-screen view that boots Pyodide, runs CroCoDeEL on
+   the loaded abundance table, and surfaces the resulting events back
+   to the main app on confirmation. Reachable from the events
+   upload-card empty state ("no file? Run CroCoDeEL in your
+   browser"). */
+function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
+  const [phase, setPhase] = useState("idle"); // idle | running | done | error
+  const [progress, setProgress] = useState(null);
+  const [error, setError] = useState(null);
+  const [resultTSV, setResultTSV] = useState(null);
+  const [resultEvents, setResultEvents] = useState(null);
+  const fileInputRef = useRef(null);
+  // Run options — defaults match CroCoDeEL's documented values; the
+  // worker reports the live `Defaults` after install (see `pkgInfo`)
+  // so the curator can spot drift.
+  const [probCutoff, setProbCutoff] = useState(0.5);
+  // Log-scaled rate cutoff: a small "off" zone at the very left
+  // (slider <= 0) snaps to 0 (no rate filter), then 0..1 maps to
+  // 0.001 % … 99 % on a log scale.
+  const RATE_LOG_MIN = -5; // log10(1e-5) — 0.001 %
+  const RATE_LOG_MAX = Math.log10(0.99);
+  const RATE_OFF_SENTINEL = -0.06; // small, easy-to-grab notch at the left edge
+  const sliderToRate = (s) => {
+    if (s <= 0) return 0;
+    return Math.pow(10, RATE_LOG_MIN + s * (RATE_LOG_MAX - RATE_LOG_MIN));
+  };
+  const rateToSlider = (r) => {
+    if (!r || r <= 0) return RATE_OFF_SENTINEL;
+    const logR = Math.log10(r);
+    return Math.max(
+      0,
+      Math.min(1, (logR - RATE_LOG_MIN) / (RATE_LOG_MAX - RATE_LOG_MIN)),
+    );
+  };
+  const [rateCutoff, setRateCutoff] = useState(0);
+  // --filter-low-ab equivalent: multiplier passed to CroCoDeEL's
+  // low-abundance species filter. 0 means "off". Recommended for
+  // MetaPhlAn4 output where species below the LOD pollute the line.
+  const [filterLowAb, setFilterLowAb] = useState(0);
+  const [showOutput, setShowOutput] = useState(false);
+  const [pkgInfo, setPkgInfo] = useState(null); // { version, defaults }
+  const [logLines, setLogLines] = useState([]);
+  // Latest parsed tqdm-style progress: { percent, current, total, suffix }.
+  // Updated as new log lines arrive; surfaced as a real <progress> bar
+  // above the spinner.
+  const [tqdmProgress, setTqdmProgress] = useState(null);
+  const logBoxRef = useRef(null);
+
+  const TQDM_RE = /(\d+(?:\.\d+)?)%\|[^|]*\|\s*(\d+)\/(\d+)([^\n\r]*)/;
+  const parseTqdm = (line) => {
+    const m = line.match(TQDM_RE);
+    if (!m) return null;
+    return {
+      percent: parseFloat(m[1]),
+      current: parseInt(m[2], 10),
+      total: parseInt(m[3], 10),
+      suffix: (m[4] || "").trim(),
+    };
+  };
+
+  const samplesCount = ab?.samples?.length || 0;
+  const speciesCount = ab?.species?.length || 0;
+
+  // Auto-scroll the log to the bottom on each append.
+  useEffect(() => {
+    if (!logBoxRef.current) return;
+    logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+  }, [logLines]);
+
+  const handleRun = async () => {
+    setError(null);
+    setLogLines([]);
+    setTqdmProgress(null);
+    setPhase("running");
+    setProgress({ label: "Preparing abundance table…" });
+    try {
+      const tsv = abundanceToTSV(ab);
+      const eventsTsv = await runCrocodeelInBrowser(tsv, {
+        probCutoff,
+        rateCutoff,
+        filterLowAb,
+        onProgress: (p) => setProgress({ label: p.label }),
+        onLog: (m) => {
+          const line = m.line || "";
+          const tq = parseTqdm(line);
+          if (tq) setTqdmProgress(tq);
+          setLogLines((prev) => [...prev, { stream: m.stream, line }]);
+        },
+        onVersion: (m) =>
+          setPkgInfo({
+            version: m.version,
+            defaults: m.defaults || {},
+          }),
+      });
+      setProgress({ label: "Parsing CroCoDeEL output…" });
+      const parsed = parseEvents(eventsTsv);
+      setResultTSV(eventsTsv);
+      setResultEvents(parsed);
+      setPhase("done");
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (msg.includes("__CROCODEEL_ABORTED__")) {
+        setPhase("idle");
+      } else {
+        setError(msg);
+        setPhase("error");
+      }
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const handleStop = () => {
+    abortCrocodeelRun();
+  };
+
+  const running = phase === "running";
+
+  const adopt = () => {
+    if (!resultEvents) return;
+    onAdoptEvents(resultEvents, resultTSV);
+  };
+
+  const sectionLabelStyle = {
+    color: "#ed6e6c",
+    fontWeight: 700,
+    fontFamily: '"Raleway", sans-serif',
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Run CroCoDeEL in your browser"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "var(--bg, #faf7f0)",
+        zIndex: 8000,
+        overflow: "auto",
+      }}
+    >
+      <div
+        className="max-w-3xl mx-auto px-6 py-8"
+        style={{ color: "var(--ink)", fontFamily: '"Raleway", sans-serif' }}
+      >
+        <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
+          <div>
+            <div
+              className="text-[10px] tracking-[0.15em] uppercase mb-1"
+              style={sectionLabelStyle}
+            >
+              In-browser pipeline
+            </div>
+            <h1
+              className="text-[26px]"
+              style={{ fontWeight: 800, color: "var(--ink)" }}
+            >
+              Run CroCoDeEL on this abundance table
+            </h1>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 text-[12px] rounded-sm flex items-center gap-1.5"
+            style={{
+              background: "var(--bg-card)",
+              color: "var(--ink-muted)",
+              border: "1px solid var(--border)",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            <X className="w-3 h-3" />
+            Close
+          </button>
+        </div>
+
+        <div
+          className="p-4 rounded-sm mb-6"
+          style={{
+            background: "var(--bg-info)",
+            border: "1px solid #00a3a6",
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: "var(--ink-soft)",
+          }}
+        >
+          <p>
+            <strong style={{ color: "var(--ink)" }}>Everything happens client-side.</strong>{" "}
+            Pyodide (CPython compiled to WebAssembly) is fetched from
+            jsDelivr the first time you run this — about 30 MB once,
+            then cached. CroCoDeEL is then installed via{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>micropip</code>
+            {" "}and your abundance table is handed to it as an
+            in-memory DataFrame. No data ever leaves your browser.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            Cold start typically takes <strong>5–10 seconds</strong>;
+            the analysis itself is comparable to running CroCoDeEL on
+            your laptop, with a 2–5× WebAssembly overhead. Subsequent
+            runs in the same tab skip the cold start.
+          </p>
+        </div>
+
+        <div
+          className="p-4 rounded-sm mb-6"
+          style={{
+            background: "var(--bg-soft)",
+            border: "1px solid var(--border)",
+            fontSize: 13,
+            lineHeight: 1.6,
+          }}
+        >
+          <div
+            className="text-[10px] tracking-[0.15em] uppercase mb-2"
+            style={sectionLabelStyle}
+          >
+            Abundance table
+          </div>
+          {ab ? (
+            <div style={{ color: "var(--ink)", fontWeight: 600 }}>
+              ✓ {samplesCount} samples × {speciesCount} species
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 flex-wrap">
+              <span style={{ color: "var(--ink-muted)" }}>
+                No abundance table loaded yet — pick one to feed
+                CroCoDeEL.
+              </span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".tsv,.txt,.csv,.tab"
+                className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  try {
+                    if (onLoadAbundance) await onLoadAbundance(f);
+                  } catch {
+                    // err is surfaced by the caller via setErr; we
+                    // stay on this page so the user can retry.
+                  } finally {
+                    e.target.value = "";
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={running}
+                className="px-3 py-1.5 text-[12px] rounded-sm flex items-center gap-1.5"
+                style={{
+                  background: "#275662",
+                  color: "#fff",
+                  border: "none",
+                  fontWeight: 700,
+                  letterSpacing: "0.02em",
+                  cursor: running ? "not-allowed" : "pointer",
+                  opacity: running ? 0.5 : 1,
+                }}
+              >
+                <FolderOpen className="w-3 h-3" />
+                Load species_abundance.tsv
+              </button>
+            </div>
+          )}
+        </div>
+
+        {ab && (
+          <div
+            className="p-4 rounded-sm mb-6"
+            style={{
+              background: "var(--bg-soft)",
+              border: "1px solid var(--border)",
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            <div
+              className="text-[10px] tracking-[0.15em] uppercase mb-3 flex items-center justify-between"
+              style={sectionLabelStyle}
+            >
+              <span>Run options</span>
+              {pkgInfo?.version && (
+                <span
+                  style={{
+                    color: "var(--ink-muted)",
+                    fontFamily: "ui-monospace, monospace",
+                    fontWeight: 500,
+                    textTransform: "none",
+                    letterSpacing: 0,
+                    fontSize: 11,
+                  }}
+                  title={
+                    Object.keys(pkgInfo.defaults || {}).length
+                      ? "Live Defaults from the installed CroCoDeEL — " +
+                        Object.entries(pkgInfo.defaults)
+                          .map(([k, v]) => `${k}=${v}`)
+                          .join(", ")
+                      : undefined
+                  }
+                >
+                  crocodeel {pkgInfo.version}
+                </span>
+              )}
+            </div>
+            {(() => {
+              const labelStyle = {
+                color: "var(--ink-muted)",
+                fontWeight: 700,
+              };
+              const valueStyle = {
+                minWidth: 56,
+                textAlign: "right",
+                fontFamily: "ui-monospace, monospace",
+                fontSize: 12,
+                fontWeight: 700,
+                color: "var(--ink)",
+              };
+              const sliderStyle = {
+                flex: 1,
+                accentColor: "#00a3a6",
+                opacity: running ? 0.5 : 1,
+                cursor: running ? "not-allowed" : "pointer",
+              };
+              return (
+                <div className="flex flex-col gap-3 mb-3">
+                  <label className="flex flex-col gap-1.5">
+                    <span
+                      className="text-[10px] uppercase tracking-[0.05em] flex items-center justify-between"
+                      style={labelStyle}
+                    >
+                      <span>Probability cutoff</span>
+                      <span style={{ color: "var(--ink-muted)", fontWeight: 500, textTransform: "none", letterSpacing: 0 }}>
+                        Keep events with{" "}
+                        <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                          probability ≥
+                        </code>{" "}
+                        this value
+                      </span>
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={probCutoff}
+                        onChange={(e) =>
+                          setProbCutoff(parseFloat(e.target.value))
+                        }
+                        disabled={running}
+                        style={sliderStyle}
+                      />
+                      <span style={valueStyle}>{probCutoff.toFixed(2)}</span>
+                    </div>
+                  </label>
+                  <label className="flex flex-col gap-1.5">
+                    <span
+                      className="text-[10px] uppercase tracking-[0.05em] flex items-center justify-between"
+                      style={labelStyle}
+                    >
+                      <span>Rate cutoff</span>
+                      <span style={{ color: "var(--ink-muted)", fontWeight: 500, textTransform: "none", letterSpacing: 0 }}>
+                        Drop events with{" "}
+                        <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                          rate &lt;
+                        </code>{" "}
+                        this value · off / 0.001 % … 99 %
+                      </span>
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={RATE_OFF_SENTINEL}
+                        max={1}
+                        step={0.001}
+                        value={rateToSlider(rateCutoff)}
+                        onChange={(e) =>
+                          setRateCutoff(
+                            sliderToRate(parseFloat(e.target.value)),
+                          )
+                        }
+                        disabled={running}
+                        style={sliderStyle}
+                      />
+                      <span style={valueStyle}>
+                        {rateCutoff === 0
+                          ? "off"
+                          : `${(rateCutoff * 100).toFixed(
+                              rateCutoff < 0.01 ? 3 : rateCutoff < 0.1 ? 2 : 1,
+                            )} %`}
+                      </span>
+                    </div>
+                  </label>
+                </div>
+              );
+            })()}
+            {pkgInfo?.defaults &&
+              Object.keys(pkgInfo.defaults).length > 0 && (
+                <div
+                  className="text-[11px] mb-2"
+                  style={{ color: "var(--ink-muted)" }}
+                >
+                  Live CroCoDeEL Defaults:{" "}
+                  {Object.entries(pkgInfo.defaults)
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join(" · ")}
+                </div>
+              )}
+            <div
+              className="flex items-center gap-3 mb-2"
+              style={{ opacity: running ? 0.5 : 1 }}
+              title="Equivalent to the --filter-low-ab CLI flag. Drops species with median abundance below the LOD multiplied by this factor. 0 disables the filter."
+            >
+              <span
+                className="text-[10px] uppercase tracking-[0.05em]"
+                style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+              >
+                <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                  --filter-low-ab
+                </code>
+              </span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={filterLowAb}
+                onChange={(e) =>
+                  setFilterLowAb(Math.max(0, parseInt(e.target.value, 10) || 0))
+                }
+                disabled={running}
+                className="px-2 py-1 text-[12px] rounded-sm"
+                style={{
+                  background: "var(--bg-card)",
+                  border: "1px solid var(--border)",
+                  color: "var(--ink)",
+                  fontFamily: "ui-monospace, monospace",
+                  width: 80,
+                  cursor: running ? "not-allowed" : "auto",
+                }}
+              />
+              <span
+                className="text-[11px]"
+                style={{ color: "var(--ink-muted)" }}
+              >
+                {filterLowAb > 0 ? (
+                  <>
+                    Drop species with median abundance below{" "}
+                    <strong style={{ color: "var(--ink)" }}>
+                      {filterLowAb}× LOD
+                    </strong>
+                    .
+                  </>
+                ) : (
+                  <>0 = disabled. </>
+                )}
+                <span style={{ fontStyle: "italic" }}>
+                  Recommended for MetaPhlAn 4 output (try 20).
+                </span>
+              </span>
+            </div>
+            <label
+              className="flex items-center gap-2 text-[12px] cursor-pointer select-none mt-1"
+              style={{ color: "var(--ink-soft)" }}
+            >
+              <input
+                type="checkbox"
+                checked={showOutput}
+                onChange={(e) => setShowOutput(e.target.checked)}
+                style={{ accentColor: "#00a3a6" }}
+              />
+              Show real-time CroCoDeEL output
+            </label>
+          </div>
+        )}
+
+        {phase === "idle" && ab && samplesCount > 200 && (
+          <div
+            role="alert"
+            className="p-4 rounded-sm mb-4 flex items-start gap-3"
+            style={{
+              background: "#fff3cd",
+              border: "1px solid #e3a100",
+              borderLeft: "3px solid #d97a3c",
+              color: "#6b4500",
+              fontSize: 13,
+              lineHeight: 1.55,
+            }}
+          >
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                Large dataset — browser run not recommended.
+              </div>
+              Your abundance table has{" "}
+              <strong>{samplesCount} samples</strong> ({speciesCount}{" "}
+              species). CroCoDeEL's pairwise search is O(n²) on the
+              sample count and Pyodide is 2–5× slower than native
+              Python; runs of this size can take several minutes and
+              push the browser tab close to its memory limit. For
+              anything &gt; 200 samples, prefer the native CLI on a
+              laptop / cluster and load the resulting{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                contamination_events.tsv
+              </code>{" "}
+              here instead. You can still run if you want — just
+              expect a long wait.
+            </div>
+          </div>
+        )}
+        {phase === "idle" && ab && (
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleRun}
+              className="px-4 py-2 text-[13px] rounded-sm flex items-center gap-2"
+              style={{
+                background: "#00a3a6",
+                color: "#fff",
+                border: "none",
+                fontWeight: 700,
+                letterSpacing: "0.02em",
+                cursor: "pointer",
+              }}
+            >
+              <Beaker className="w-4 h-4" />
+              Run CroCoDeEL
+            </button>
+            <span
+              className="text-[12px]"
+              style={{ color: "var(--ink-muted)" }}
+            >
+              First click downloads ~30 MB; subsequent clicks reuse
+              the cache.
+            </span>
+          </div>
+        )}
+
+        {phase === "running" && (
+          <div
+            className="p-5 rounded-sm"
+            style={{
+              background: "var(--bg-card)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <div className="flex items-center gap-4">
+              <div
+                style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: "50%",
+                  border: "3px solid #d8e3e6",
+                  borderTopColor: "#00a3a6",
+                  animation: "crocodeel-spin 0.9s linear infinite",
+                  flexShrink: 0,
+                }}
+              />
+              <div className="flex-1 min-w-0">
+                <div style={{ fontSize: 13, fontWeight: 700 }}>
+                  {progress?.label || "Working…"}
+                </div>
+                <div
+                  className="text-[11px] mt-1"
+                  style={{ color: "var(--ink-muted)" }}
+                >
+                  Runs in a Web Worker — the interface stays
+                  responsive while the analysis works.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleStop}
+                className="px-3 py-1.5 text-[12px] rounded-sm flex items-center gap-1.5 shrink-0"
+                style={{
+                  background: "transparent",
+                  color: "#ed6e6c",
+                  border: "1px solid #ed6e6c",
+                  fontWeight: 700,
+                  letterSpacing: "0.02em",
+                  cursor: "pointer",
+                }}
+                title="Terminate the worker — the next run boots Pyodide from scratch"
+              >
+                <X className="w-3 h-3" />
+                Stop
+              </button>
+            </div>
+            {tqdmProgress && (
+              <div className="mt-3">
+                <div
+                  className="flex items-baseline justify-between text-[11px] mb-1"
+                  style={{ color: "var(--ink-soft)" }}
+                >
+                  <span style={{ fontWeight: 700, color: "var(--ink)" }}>
+                    {tqdmProgress.current.toLocaleString()} /{" "}
+                    {tqdmProgress.total.toLocaleString()} sample pairs
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: "ui-monospace, monospace",
+                      color: "var(--ink-muted)",
+                    }}
+                  >
+                    {tqdmProgress.suffix}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    height: 6,
+                    borderRadius: 3,
+                    background: "var(--bg-soft)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${Math.max(0, Math.min(100, tqdmProgress.percent))}%`,
+                      background: "#00a3a6",
+                      transition: "width 200ms linear",
+                    }}
+                  />
+                </div>
+                <div
+                  className="text-[10px] mt-1 text-right"
+                  style={{
+                    color: "var(--ink-muted)",
+                    fontFamily: "ui-monospace, monospace",
+                  }}
+                >
+                  {tqdmProgress.percent.toFixed(1)} %
+                </div>
+              </div>
+            )}
+            <style>{`@keyframes crocodeel-spin { to { transform: rotate(360deg); } }`}</style>
+          </div>
+        )}
+        {showOutput && (phase === "running" || phase === "done" || phase === "error") && (
+          <div
+            className="mt-4 rounded-sm"
+            style={{
+              background: "#0f1518",
+              border: "1px solid #275662",
+            }}
+          >
+            <div
+              className="px-3 py-2 text-[10px] uppercase tracking-[0.1em] flex items-center justify-between"
+              style={{
+                color: "#9aaab0",
+                borderBottom: "1px solid #275662",
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+              }}
+            >
+              <span>CroCoDeEL output (stdout · stderr)</span>
+              <button
+                type="button"
+                onClick={() => setLogLines([])}
+                style={{
+                  background: "transparent",
+                  border: "1px solid #275662",
+                  color: "#9aaab0",
+                  fontFamily: '"Raleway", sans-serif',
+                  padding: "1px 6px",
+                  borderRadius: 3,
+                  fontSize: 9,
+                  cursor: "pointer",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.1em",
+                }}
+                title="Clear the log buffer"
+              >
+                Clear
+              </button>
+            </div>
+            <div
+              ref={logBoxRef}
+              style={{
+                maxHeight: 240,
+                overflow: "auto",
+                fontFamily: "ui-monospace, monospace",
+                fontSize: 11,
+                lineHeight: 1.45,
+                padding: "8px 12px",
+                color: "#d6dde0",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+              }}
+            >
+              {logLines.length === 0 ? (
+                <span style={{ color: "#6b7a82", fontStyle: "italic" }}>
+                  Waiting for CroCoDeEL output…
+                </span>
+              ) : (
+                logLines.map((l, i) => {
+                  // Most stderr writes from CroCoDeEL are tqdm
+                  // progress / Python `logging` info-level — colouring
+                  // them as errors is misleading. Only redden lines
+                  // that look like an actual error or warning.
+                  const looksLikeError =
+                    l.stream === "stderr" &&
+                    /\b(error|exception|traceback|warning)\b/i.test(l.line);
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        color: looksLikeError ? "#ed6e6c" : "#d6dde0",
+                        opacity: l.stream === "stderr" ? 0.92 : 1,
+                      }}
+                    >
+                      {l.line}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {phase === "error" && (
+          <div
+            role="alert"
+            className="p-4 rounded-sm flex items-start gap-3"
+            style={{
+              background: "var(--bg-alert)",
+              border: "1px solid #ed6e6c",
+              color: "#8a2422",
+              fontSize: 13,
+              lineHeight: 1.55,
+            }}
+          >
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                CroCoDeEL did not finish.
+              </div>
+              <pre
+                className="whitespace-pre-wrap"
+                style={{
+                  fontFamily: "ui-monospace, monospace",
+                  fontSize: 11,
+                }}
+              >
+                {error}
+              </pre>
+              <button
+                type="button"
+                onClick={() => setPhase("idle")}
+                className="mt-3 px-3 py-1.5 text-[12px] rounded-sm"
+                style={{
+                  background: "#fff",
+                  color: "#8a2422",
+                  border: "1px solid #ed6e6c",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+        )}
+
+        {phase === "done" && resultEvents && (
+          <div>
+            <div
+              className="p-4 rounded-sm mb-4"
+              style={{
+                background: "rgba(0,163,166,0.08)",
+                border: "1px solid #00a3a6",
+                fontSize: 13,
+                lineHeight: 1.6,
+              }}
+            >
+              <div
+                className="text-[10px] tracking-[0.15em] uppercase mb-2"
+                style={sectionLabelStyle}
+              >
+                CroCoDeEL is done
+              </div>
+              <div style={{ color: "var(--ink)" }}>
+                <strong>{resultEvents.events.length}</strong> contamination
+                event{resultEvents.events.length === 1 ? "" : "s"} detected.
+              </div>
+              <div
+                className="text-[12px] mt-2"
+                style={{ color: "var(--ink-soft)" }}
+              >
+                ✓ Abundance table ({samplesCount} samples × {speciesCount}{" "}
+                species) is already loaded in your session and will travel with
+                the events you adopt below.
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={adopt}
+                className="px-4 py-2 text-[13px] rounded-sm flex items-center gap-2"
+                style={{
+                  background: "#00a3a6",
+                  color: "#fff",
+                  border: "none",
+                  fontWeight: 700,
+                  letterSpacing: "0.02em",
+                  cursor: "pointer",
+                }}
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                Use these events + abundance in this session
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadText(resultTSV, "contamination_events.tsv")}
+                className="px-3 py-1.5 text-[12px] rounded-sm flex items-center gap-1.5"
+                style={{
+                  background: "var(--bg-card)",
+                  color: "var(--ink)",
+                  border: "1px solid var(--border-strong)",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <Download className="w-3 h-3" />
+                Download events TSV
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  downloadText(abundanceToTSV(ab), "species_abundance.tsv")
+                }
+                className="px-3 py-1.5 text-[12px] rounded-sm flex items-center gap-1.5"
+                style={{
+                  background: "var(--bg-card)",
+                  color: "var(--ink)",
+                  border: "1px solid var(--border-strong)",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+                title="Download a clean copy of the abundance table you fed CroCoDeEL"
+              >
+                <Download className="w-3 h-3" />
+                Download abundance TSV
+              </button>
+              <button
+                type="button"
+                onClick={() => setPhase("idle")}
+                className="px-3 py-1.5 text-[12px] rounded-sm"
+                style={{
+                  background: "transparent",
+                  color: "var(--ink-muted)",
+                  border: "1px solid var(--border)",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Re-run
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
