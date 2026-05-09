@@ -5575,7 +5575,11 @@ const EventFilterBar = ({
               <button
                 type="button"
                 onClick={() =>
-                  setFilter({ ...filter, scopeSamples: null })
+                  setFilter({
+                    ...filter,
+                    scopeSamples: null,
+                    scopeSide: "either",
+                  })
                 }
                 title="Clear the sample scope and go back to all events"
                 className="flex items-center gap-1 rounded-sm"
@@ -5594,7 +5598,11 @@ const EventFilterBar = ({
                   flexShrink: 0,
                 }}
               >
-                scope · {filter.scopeSamples.length}
+                {filter.scopeSide === "source"
+                  ? `as source · ${filter.scopeSamples.length}`
+                  : filter.scopeSide === "target"
+                    ? `as target · ${filter.scopeSamples.length}`
+                    : `scope · ${filter.scopeSamples.length}`}
                 <X className="w-3 h-3" />
               </button>
             )}
@@ -9494,11 +9502,91 @@ const SampleStringValue = ({ value, mono }) => {
 
 
 /** Combined event count + breakdown chips + drill-in buttons for
-    the Events column. The drill-in buttons live here (rather than in
-    a dedicated column) so the count and the navigation hints stay
-    visually grouped. Memoised so unchanged rows don't re-render
+    the per-side Events columns (Events as source / Events as target).
+    The drill-in buttons live on the target side only — that's the
+    actionable side (events that may explain why this sample is
+    contaminated). Memoised so unchanged rows don't re-render
     when something elsewhere in the table flips state. */
-const SampleEventsCell = React.memo(function SampleEventsCell({ row, onScopeToSamples, onDrillSample }) {
+const SampleEventsCell = React.memo(function SampleEventsCell({
+  row,
+  side,
+  collapsed = false,
+  onToggleCollapsed,
+  onScopeToSamples,
+  onDrillSample,
+}) {
+  const isTarget = side === "target";
+  const count = isTarget ? row.asTarget : row.asSource;
+  const breakdown = isTarget ? row.evalCountsAsTarget : row.evalCountsAsSource;
+  if (count === 0) {
+    return (
+      <span
+        style={{
+          color: "var(--border-strong)",
+          fontStyle: "italic",
+          fontSize: 11,
+          fontFamily: '"Raleway", sans-serif',
+        }}
+      >
+        —
+      </span>
+    );
+  }
+  const collapseToggle = onToggleCollapsed ? (
+    <button
+      type="button"
+      onClick={onToggleCollapsed}
+      title={collapsed ? "Show breakdown and drill-ins" : "Hide breakdown and drill-ins"}
+      style={{
+        marginLeft: 6,
+        display: "inline-flex",
+        alignItems: "center",
+        height: 18,
+        padding: "0 5px",
+        borderRadius: 9,
+        background: "transparent",
+        border: "1px dashed var(--border)",
+        color: "var(--ink-muted)",
+        cursor: "pointer",
+        fontFamily: '"Raleway", sans-serif',
+        fontSize: 10,
+        fontWeight: 600,
+      }}
+    >
+      {collapsed ? (
+        <ChevronRight className="w-3 h-3" />
+      ) : (
+        <ChevronDown className="w-3 h-3" />
+      )}
+    </button>
+  ) : null;
+  if (collapsed) {
+    return (
+      <div style={{ display: "inline-flex", alignItems: "center" }}>
+        <span
+          style={{
+            color: "var(--ink)",
+            fontFamily: '"Raleway", sans-serif',
+            fontWeight: 700,
+            fontSize: 13,
+          }}
+        >
+          {count}
+          <span
+            style={{
+              color: "var(--ink-muted)",
+              fontWeight: 500,
+              fontSize: 11,
+              marginLeft: 4,
+            }}
+          >
+            event{count !== 1 ? "s" : ""}
+          </span>
+        </span>
+        {collapseToggle}
+      </div>
+    );
+  }
   return (
   <>
     <div
@@ -9508,33 +9596,26 @@ const SampleEventsCell = React.memo(function SampleEventsCell({ row, onScopeToSa
         fontWeight: 700,
         fontSize: 13,
         lineHeight: 1.1,
+        display: "inline-flex",
+        alignItems: "center",
       }}
     >
-      {row.eventsTouching}
-      <span
-        style={{
-          color: "var(--ink-muted)",
-          fontWeight: 500,
-          fontSize: 11,
-          marginLeft: 4,
-        }}
-      >
-        event{row.eventsTouching !== 1 ? "s" : ""}
+      <span>
+        {count}
+        <span
+          style={{
+            color: "var(--ink-muted)",
+            fontWeight: 500,
+            fontSize: 11,
+            marginLeft: 4,
+          }}
+        >
+          event{count !== 1 ? "s" : ""}
+        </span>
       </span>
+      {collapseToggle}
     </div>
-    {row.eventsTouching > 0 && (
-      <div
-        style={{
-          color: "var(--ink-muted)",
-          fontSize: 10,
-          fontFamily: '"Raleway", sans-serif',
-          marginTop: 2,
-        }}
-      >
-        {row.asTarget} as target · {row.asSource} as source
-      </div>
-    )}
-    {row.maxTargetRate != null &&
+    {isTarget && row.maxTargetRate != null &&
       (() => {
         // Worst-rate contamination targeting this sample, regardless
         // of evaluation. Tone matches the events-table rate scale:
@@ -9582,58 +9663,56 @@ const SampleEventsCell = React.memo(function SampleEventsCell({ row, onScopeToSa
           </div>
         );
       })()}
-    {row.eventsTouching > 0 && (
-      <div className="flex gap-1 flex-wrap" style={{ marginTop: 4 }}>
-        {[
-          { k: "tp", color: "#00a3a6", title: "True positive" },
-          { k: "fp", color: "#ed6e6c", title: "False positive" },
-          { k: "uncertain", color: "#d97a3c", title: "Uncertain" },
-          { k: "pending", color: "#9aaab0", title: "Pending" },
-        ].map((c) =>
-          row.evalCounts[c.k] > 0 ? (
+    <div className="flex gap-1 flex-wrap" style={{ marginTop: 4 }}>
+      {[
+        { k: "tp", color: "#00a3a6", title: "True positive" },
+        { k: "fp", color: "#ed6e6c", title: "False positive" },
+        { k: "uncertain", color: "#d97a3c", title: "Uncertain" },
+        { k: "pending", color: "#9aaab0", title: "Pending" },
+      ].map((c) =>
+        breakdown[c.k] > 0 ? (
+          <span
+            key={c.k}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              height: 18,
+              padding: "0 6px",
+              borderRadius: 9,
+              background: `${c.color}1f`,
+              color: c.color,
+              fontSize: 10,
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+            }}
+            title={`${c.title}: ${breakdown[c.k]}`}
+          >
             <span
-              key={c.k}
               style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 4,
-                height: 18,
-                padding: "0 6px",
-                borderRadius: 9,
-                background: `${c.color}1f`,
-                color: c.color,
-                fontSize: 10,
-                fontWeight: 700,
-                fontFamily: '"Raleway", sans-serif',
-                letterSpacing: "0.04em",
-                textTransform: "uppercase",
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: c.color,
               }}
-              title={`${c.title}: ${row.evalCounts[c.k]}`}
-            >
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  background: c.color,
-                }}
-              />
-              {c.k}
-              <span style={{ fontWeight: 800, marginLeft: 1 }}>
-                {row.evalCounts[c.k]}
-              </span>
+            />
+            {c.k}
+            <span style={{ fontWeight: 800, marginLeft: 1 }}>
+              {breakdown[c.k]}
             </span>
-          ) : null,
-        )}
-      </div>
-    )}
-    <div className="flex gap-1.5" style={{ marginTop: 6 }}>
+          </span>
+        ) : null,
+      )}
+    </div>
+    <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 6 }}>
       <button
         type="button"
         onClick={() =>
           onDrillSample
-            ? onDrillSample(row.id, "scatter")
-            : onScopeToSamples([row.id], "scatter")
+            ? onDrillSample(row.id, "scatter", side)
+            : onScopeToSamples([row.id], "scatter", side)
         }
         style={{
           display: "inline-flex",
@@ -9650,7 +9729,7 @@ const SampleEventsCell = React.memo(function SampleEventsCell({ row, onScopeToSa
           fontSize: 11,
           fontWeight: 600,
         }}
-        title="Open these events in the Scatter gallery"
+        title={`Open the events where ${row.id} is the ${side} in the Scatter gallery`}
       >
         <ScatterIcon className="w-3 h-3" />
         Scatter
@@ -9659,8 +9738,8 @@ const SampleEventsCell = React.memo(function SampleEventsCell({ row, onScopeToSa
         type="button"
         onClick={() =>
           onDrillSample
-            ? onDrillSample(row.id, "table")
-            : onScopeToSamples([row.id], "table")
+            ? onDrillSample(row.id, "table", side)
+            : onScopeToSamples([row.id], "table", side)
         }
         style={{
           display: "inline-flex",
@@ -9677,7 +9756,7 @@ const SampleEventsCell = React.memo(function SampleEventsCell({ row, onScopeToSa
           fontSize: 11,
           fontWeight: 600,
         }}
-        title="Open these events in the Events table"
+        title={`Open the events where ${row.id} is the ${side} in the Events table`}
       >
         <Droplets className="w-3 h-3" />
         Events
@@ -9686,8 +9765,8 @@ const SampleEventsCell = React.memo(function SampleEventsCell({ row, onScopeToSa
         type="button"
         onClick={() =>
           onDrillSample
-            ? onDrillSample(row.id, "network")
-            : onScopeToSamples([row.id], "network")
+            ? onDrillSample(row.id, "network", side)
+            : onScopeToSamples([row.id], "network", side)
         }
         style={{
           display: "inline-flex",
@@ -9704,7 +9783,7 @@ const SampleEventsCell = React.memo(function SampleEventsCell({ row, onScopeToSa
           fontSize: 11,
           fontWeight: 600,
         }}
-        title="Open the contamination network scoped to this sample"
+        title={`Open the contamination network scoped to events where ${row.id} is the ${side}`}
       >
         <GitBranch className="w-3 h-3" />
         Network
@@ -9837,8 +9916,10 @@ const SampleContextSearchBar = ({
   setLowBiomassFilter,
   lowSeqDepthFilter,
   setLowSeqDepthFilter,
-  minEvents,
-  setMinEvents,
+  minSourceEvents,
+  setMinSourceEvents,
+  minTargetEvents,
+  setMinTargetEvents,
   anyActive,
   onClear,
   hasMetadata = true,
@@ -10137,104 +10218,133 @@ const SampleContextSearchBar = ({
             no metadata loaded — context filters unavailable
           </span>
         )}
-        {/* Min-events counter — keep only samples touched by at least
-            N events. 0 = no constraint. */}
-        {typeof setMinEvents === "function" && (
-          <div
-            className="flex items-center gap-1 rounded-md"
-            style={{
-              padding: "2px 4px 2px 8px",
-              background: minEvents > 0 ? "rgba(0,163,166,0.10)" : "var(--bg-card)",
-              border: minEvents > 0
-                ? "1px solid #00a3a6"
-                : "1px solid var(--border)",
-              fontFamily: '"Raleway", sans-serif',
-              fontSize: 11,
-            }}
-            title="Minimum number of events touching a sample for it to appear in the table. Use the - / + buttons or type a number."
-          >
-            <ListChecks
-              className="w-3 h-3"
-              style={{ color: "var(--ink-muted)", flexShrink: 0 }}
-            />
-            <span
+        {/* Min-events counters — split per side. Keep only samples
+            touched by at least N events as source / as target.
+            0 = no constraint on that side. */}
+        {[
+          {
+            sideKey: "source",
+            label: "≥ source",
+            value: minSourceEvents,
+            setter: setMinSourceEvents,
+            tooltip:
+              "Minimum number of events where the sample is the SOURCE. Use the - / + buttons or type a number.",
+            decLabel: "Decrease minimum source events",
+            incLabel: "Increase minimum source events",
+            inputLabel: "Minimum source-side events to show a sample",
+          },
+          {
+            sideKey: "target",
+            label: "≥ target",
+            value: minTargetEvents,
+            setter: setMinTargetEvents,
+            tooltip:
+              "Minimum number of events where the sample is the TARGET (i.e. flagged as contaminated). Use the - / + buttons or type a number.",
+            decLabel: "Decrease minimum target events",
+            incLabel: "Increase minimum target events",
+            inputLabel: "Minimum target-side events to show a sample",
+          },
+        ]
+          .filter((c) => typeof c.setter === "function")
+          .map((c) => (
+            <div
+              key={c.sideKey}
+              className="flex items-center gap-1 rounded-md"
               style={{
-                color: "var(--ink-muted)",
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "0.04em",
-                fontSize: 10,
-              }}
-            >
-              ≥ events
-            </span>
-            <button
-              type="button"
-              onClick={() => setMinEvents(Math.max(0, (minEvents || 0) - 1))}
-              disabled={!minEvents}
-              style={{
-                width: 18,
-                height: 18,
-                padding: 0,
-                background: "transparent",
-                border: "1px solid var(--border-strong)",
-                borderRadius: 3,
-                color: !minEvents ? "var(--border-strong)" : "var(--ink)",
-                cursor: !minEvents ? "default" : "pointer",
-                fontWeight: 700,
-                fontSize: 12,
-                lineHeight: 1,
+                padding: "2px 4px 2px 8px",
+                background:
+                  c.value > 0 ? "rgba(0,163,166,0.10)" : "var(--bg-card)",
+                border:
+                  c.value > 0
+                    ? "1px solid #00a3a6"
+                    : "1px solid var(--border)",
                 fontFamily: '"Raleway", sans-serif',
-              }}
-              aria-label="Decrease minimum events"
-            >
-              −
-            </button>
-            <input
-              type="number"
-              min={0}
-              value={minEvents || 0}
-              onChange={(e) => {
-                const v = parseInt(e.target.value, 10);
-                setMinEvents(Number.isFinite(v) && v > 0 ? v : 0);
-              }}
-              style={{
-                width: 36,
-                padding: "1px 4px",
-                background: "var(--bg-card)",
-                border: "1px solid var(--border)",
-                color: "var(--ink)",
-                borderRadius: 3,
-                fontFamily: "ui-monospace, monospace",
-                fontWeight: 600,
-                textAlign: "center",
                 fontSize: 11,
               }}
-              aria-label="Minimum events to show a sample"
-            />
-            <button
-              type="button"
-              onClick={() => setMinEvents((minEvents || 0) + 1)}
-              style={{
-                width: 18,
-                height: 18,
-                padding: 0,
-                background: "transparent",
-                border: "1px solid var(--border-strong)",
-                borderRadius: 3,
-                color: "var(--ink)",
-                cursor: "pointer",
-                fontWeight: 700,
-                fontSize: 12,
-                lineHeight: 1,
-                fontFamily: '"Raleway", sans-serif',
-              }}
-              aria-label="Increase minimum events"
+              title={c.tooltip}
             >
-              +
-            </button>
-          </div>
-        )}
+              <ListChecks
+                className="w-3 h-3"
+                style={{ color: "var(--ink-muted)", flexShrink: 0 }}
+              />
+              <span
+                style={{
+                  color: "var(--ink-muted)",
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                  fontSize: 10,
+                }}
+              >
+                {c.label}
+              </span>
+              <button
+                type="button"
+                onClick={() => c.setter(Math.max(0, (c.value || 0) - 1))}
+                disabled={!c.value}
+                style={{
+                  width: 18,
+                  height: 18,
+                  padding: 0,
+                  background: "transparent",
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: 3,
+                  color: !c.value ? "var(--border-strong)" : "var(--ink)",
+                  cursor: !c.value ? "default" : "pointer",
+                  fontWeight: 700,
+                  fontSize: 12,
+                  lineHeight: 1,
+                  fontFamily: '"Raleway", sans-serif',
+                }}
+                aria-label={c.decLabel}
+              >
+                −
+              </button>
+              <input
+                type="number"
+                min={0}
+                value={c.value || 0}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  c.setter(Number.isFinite(v) && v > 0 ? v : 0);
+                }}
+                style={{
+                  width: 36,
+                  padding: "1px 4px",
+                  background: "var(--bg-card)",
+                  border: "1px solid var(--border)",
+                  color: "var(--ink)",
+                  borderRadius: 3,
+                  fontFamily: "ui-monospace, monospace",
+                  fontWeight: 600,
+                  textAlign: "center",
+                  fontSize: 11,
+                }}
+                aria-label={c.inputLabel}
+              />
+              <button
+                type="button"
+                onClick={() => c.setter((c.value || 0) + 1)}
+                style={{
+                  width: 18,
+                  height: 18,
+                  padding: 0,
+                  background: "transparent",
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: 3,
+                  color: "var(--ink)",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                  fontSize: 12,
+                  lineHeight: 1,
+                  fontFamily: '"Raleway", sans-serif',
+                }}
+                aria-label={c.incLabel}
+              >
+                +
+              </button>
+            </div>
+          ))}
         {anyActive && (
           <button
             type="button"
@@ -10373,10 +10483,18 @@ const SamplesTab = ({
   const [lowSeqDepthFilter, setLowSeqDepthFilter] = useState(
     persisted.lowSeqDepthFilter ?? "any",
   );
-  // Minimum-event-count filter — keep only samples touched by at
-  // least this many events. 0 = no constraint. Adjustable via the
-  // +/- counter inside the Context search bar.
-  const [minEvents, setMinEvents] = useState(persisted.minEvents ?? 0);
+  // Minimum-event-count filters — keep only samples touched by at
+  // least this many events on the chosen side. 0 = no constraint.
+  // Adjustable via the +/- counters inside the Context search bar.
+  // Legacy persisted state used a single `minEvents` field; promote
+  // it to the target side (the side most curators were filtering on)
+  // so saved sessions don't lose their filter on first load.
+  const [minSourceEvents, setMinSourceEvents] = useState(
+    persisted.minSourceEvents ?? 0,
+  );
+  const [minTargetEvents, setMinTargetEvents] = useState(
+    persisted.minTargetEvents ?? persisted.minEvents ?? 0,
+  );
   const sampleFiltersActive =
     subjectFilter ||
     timepointFilter ||
@@ -10385,7 +10503,8 @@ const SamplesTab = ({
     controlFilter !== "any" ||
     lowBiomassFilter !== "any" ||
     lowSeqDepthFilter !== "any" ||
-    minEvents > 0;
+    minSourceEvents > 0 ||
+    minTargetEvents > 0;
   const clearSampleFilters = () => {
     setSubjectFilter(null);
     setTimepointFilter(null);
@@ -10394,7 +10513,8 @@ const SamplesTab = ({
     setControlFilter("any");
     setLowBiomassFilter("any");
     setLowSeqDepthFilter("any");
-    setMinEvents(0);
+    setMinSourceEvents(0);
+    setMinTargetEvents(0);
   };
 
   // Build the sorted unique value lists used to populate the dropdowns.
@@ -10449,6 +10569,26 @@ const SamplesTab = ({
       else next.add(id);
       return next;
     });
+  // Collapsed-events sets: when a sample id is in the set, the
+  // corresponding events cell collapses to just the count chip.
+  // Default = empty (all expanded). Header "all / none" buttons in
+  // each Events column toggle the entire visible set.
+  const [collapsedSourceEvents, setCollapsedSourceEvents] = useState(
+    () => new Set(persisted.collapsedSourceEvents || []),
+  );
+  const [collapsedTargetEvents, setCollapsedTargetEvents] = useState(
+    () => new Set(persisted.collapsedTargetEvents || []),
+  );
+  const toggleCollapsedEvents = (id, side) => {
+    const setter =
+      side === "source" ? setCollapsedSourceEvents : setCollapsedTargetEvents;
+    setter((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // Build the universe of samples — only those touched by an event
   // currently passing the shared filter bar (rate / probability /
@@ -10485,10 +10625,22 @@ const SamplesTab = ({
       let maxTargetScore = null;
       let maxTargetIntroducedCount = null;
       const evalCounts = { tp: 0, fp: 0, uncertain: 0, pending: 0 };
+      const evalCountsAsSource = { tp: 0, fp: 0, uncertain: 0, pending: 0 };
+      const evalCountsAsTarget = { tp: 0, fp: 0, uncertain: 0, pending: 0 };
+      const bumpEval = (bucket, e) => {
+        if (e.verdict === "true_positive") bucket.tp++;
+        else if (e.verdict === "false_positive") bucket.fp++;
+        else if (e.verdict === "uncertain") bucket.uncertain++;
+        else bucket.pending++;
+      };
       for (const e of touching) {
-        if (e.source === id) asSource++;
+        if (e.source === id) {
+          asSource++;
+          bumpEval(evalCountsAsSource, e);
+        }
         if (e.target === id) {
           asTarget++;
+          bumpEval(evalCountsAsTarget, e);
           if (typeof e.rate === "number") {
             if (maxTargetRate == null || e.rate > maxTargetRate)
               maxTargetRate = e.rate;
@@ -10506,10 +10658,7 @@ const SamplesTab = ({
           )
             maxTargetIntroducedCount = introCount;
         }
-        if (e.verdict === "true_positive") evalCounts.tp++;
-        else if (e.verdict === "false_positive") evalCounts.fp++;
-        else if (e.verdict === "uncertain") evalCounts.uncertain++;
-        else evalCounts.pending++;
+        bumpEval(evalCounts, e);
       }
       const cur = sampleCuration?.[id] || {};
       const verdict = cur.verdict || "pending";
@@ -10529,6 +10678,8 @@ const SamplesTab = ({
         asTarget,
         eventsTouching: touching.length,
         evalCounts,
+        evalCountsAsSource,
+        evalCountsAsTarget,
         flags,
         placement,
         maxTargetRate,
@@ -10552,7 +10703,8 @@ const SamplesTab = ({
       if (lowBiomassFilter === "no" && f.isLowBiomass) return false;
       if (lowSeqDepthFilter === "yes" && !f.isLowSequencingDepth) return false;
       if (lowSeqDepthFilter === "no" && f.isLowSequencingDepth) return false;
-      if (minEvents > 0 && r.eventsTouching < minEvents) return false;
+      if (minSourceEvents > 0 && r.asSource < minSourceEvents) return false;
+      if (minTargetEvents > 0 && r.asTarget < minTargetEvents) return false;
       return true;
     });
   }, [
@@ -10565,7 +10717,8 @@ const SamplesTab = ({
     controlFilter,
     lowBiomassFilter,
     lowSeqDepthFilter,
-    minEvents,
+    minSourceEvents,
+    minTargetEvents,
   ]);
 
   const sorted = useMemo(() => {
@@ -10584,6 +10737,16 @@ const SamplesTab = ({
         (a, b) =>
           (a.eventsTouching - b.eventsTouching) * flip ||
           a.id.localeCompare(b.id),
+      );
+    else if (sortBy === "asSource")
+      copy.sort(
+        (a, b) =>
+          (a.asSource - b.asSource) * flip || a.id.localeCompare(b.id),
+      );
+    else if (sortBy === "asTarget")
+      copy.sort(
+        (a, b) =>
+          (a.asTarget - b.asTarget) * flip || a.id.localeCompare(b.id),
       );
     else if (sortBy === "verdict") {
       const rank = (v) =>
@@ -10640,8 +10803,40 @@ const SamplesTab = ({
       label: "Sample name",
       sortKey: "name",
     },
-    hasContext && { id: "context", label: "Context" },
-    { id: "events", label: "Events", sortKey: "events" },
+    hasContext && {
+      id: "context",
+      label: "Context",
+      bulkToggle: {
+        allTitle: "Expand all sample contexts",
+        noneTitle: "Collapse all sample contexts",
+        onAll: () => setOpenContexts(new Set(sorted.map((r) => r.id))),
+        onNone: () => setOpenContexts(new Set()),
+      },
+    },
+    {
+      id: "eventsSource",
+      label: "Events as source",
+      sortKey: "asSource",
+      bulkToggle: {
+        allTitle: "Show breakdown + drill-ins for every source-events cell",
+        noneTitle: "Hide breakdown + drill-ins on every source-events cell (keep counts)",
+        onAll: () => setCollapsedSourceEvents(new Set()),
+        onNone: () =>
+          setCollapsedSourceEvents(new Set(sorted.map((r) => r.id))),
+      },
+    },
+    {
+      id: "eventsTarget",
+      label: "Events as target",
+      sortKey: "asTarget",
+      bulkToggle: {
+        allTitle: "Show breakdown + drill-ins for every target-events cell",
+        noneTitle: "Hide breakdown + drill-ins on every target-events cell (keep counts)",
+        onAll: () => setCollapsedTargetEvents(new Set()),
+        onNone: () =>
+          setCollapsedTargetEvents(new Set(sorted.map((r) => r.id))),
+      },
+    },
     { id: "verdict", label: "Verdict", sortKey: "verdict" },
     actionEnabled && { id: "action", label: "Action" },
   ].filter(Boolean);
@@ -10659,6 +10854,8 @@ const SamplesTab = ({
     uiRef.current.page = page;
     uiRef.current.openNotes = Array.from(openNotes);
     uiRef.current.openContexts = Array.from(openContexts);
+    uiRef.current.collapsedSourceEvents = Array.from(collapsedSourceEvents);
+    uiRef.current.collapsedTargetEvents = Array.from(collapsedTargetEvents);
     uiRef.current.subjectFilter = subjectFilter;
     uiRef.current.timepointFilter = timepointFilter;
     uiRef.current.groupFilter = groupFilter;
@@ -10666,7 +10863,8 @@ const SamplesTab = ({
     uiRef.current.controlFilter = controlFilter;
     uiRef.current.lowBiomassFilter = lowBiomassFilter;
     uiRef.current.lowSeqDepthFilter = lowSeqDepthFilter;
-    uiRef.current.minEvents = minEvents;
+    uiRef.current.minSourceEvents = minSourceEvents;
+    uiRef.current.minTargetEvents = minTargetEvents;
   }, [
     uiRef,
     sortBy,
@@ -10674,6 +10872,8 @@ const SamplesTab = ({
     page,
     openNotes,
     openContexts,
+    collapsedSourceEvents,
+    collapsedTargetEvents,
     subjectFilter,
     timepointFilter,
     groupFilter,
@@ -10681,7 +10881,8 @@ const SamplesTab = ({
     controlFilter,
     lowBiomassFilter,
     lowSeqDepthFilter,
-    minEvents,
+    minSourceEvents,
+    minTargetEvents,
   ]);
   // Reset to page 1 when sort or any filter changes — but NOT on the
   // first render: that would clobber the page restored from uiRef.
@@ -10703,7 +10904,8 @@ const SamplesTab = ({
     controlFilter,
     lowBiomassFilter,
     lowSeqDepthFilter,
-    minEvents,
+    minSourceEvents,
+    minTargetEvents,
   ]);
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(Math.max(1, page), totalPages);
@@ -10808,8 +11010,10 @@ const SamplesTab = ({
         setLowBiomassFilter={setLowBiomassFilter}
         lowSeqDepthFilter={lowSeqDepthFilter}
         setLowSeqDepthFilter={setLowSeqDepthFilter}
-        minEvents={minEvents}
-        setMinEvents={setMinEvents}
+        minSourceEvents={minSourceEvents}
+        setMinSourceEvents={setMinSourceEvents}
+        minTargetEvents={minTargetEvents}
+        setMinTargetEvents={setMinTargetEvents}
         anyActive={sampleFiltersActive}
         onClear={clearSampleFilters}
         hasMetadata={!!metadata}
@@ -10842,7 +11046,23 @@ const SamplesTab = ({
               {columns.map((col) => {
                 const sortable = !!col.sortKey;
                 const isActive = sortable && sortBy === col.sortKey;
-                const isContextCol = col.id === "context";
+                const bulk = col.bulkToggle;
+                const bulkBtnStyle = {
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 2,
+                  padding: "1px 5px",
+                  borderRadius: 8,
+                  background: "transparent",
+                  border: "1px solid var(--border)",
+                  color: "var(--ink-muted)",
+                  cursor: "pointer",
+                  fontSize: 9,
+                  fontFamily: '"Raleway", sans-serif',
+                  fontWeight: 700,
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                };
                 return (
                   <th
                     key={col.id}
@@ -10860,76 +11080,42 @@ const SamplesTab = ({
                     }
                     title={sortable ? `Sort by ${col.label.toLowerCase()}` : undefined}
                   >
-                    {isContextCol ? (
-                      <span className="inline-flex items-center gap-2">
-                        <span>{col.label}</span>
-                        <button
-                          type="button"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            setOpenContexts(
-                              new Set(sorted.map((r) => r.id)),
-                            );
-                          }}
-                          title="Expand all sample contexts"
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 2,
-                            padding: "1px 5px",
-                            borderRadius: 8,
-                            background: "transparent",
-                            border: "1px solid var(--border)",
-                            color: "var(--ink-muted)",
-                            cursor: "pointer",
-                            fontSize: 9,
-                            fontFamily: '"Raleway", sans-serif',
-                            fontWeight: 700,
-                            letterSpacing: "0.04em",
-                            textTransform: "uppercase",
-                          }}
-                        >
-                          <ChevronDown className="w-3 h-3" />
-                          all
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            setOpenContexts(new Set());
-                          }}
-                          title="Collapse all sample contexts"
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 2,
-                            padding: "1px 5px",
-                            borderRadius: 8,
-                            background: "transparent",
-                            border: "1px solid var(--border)",
-                            color: "var(--ink-muted)",
-                            cursor: "pointer",
-                            fontSize: 9,
-                            fontFamily: '"Raleway", sans-serif',
-                            fontWeight: 700,
-                            letterSpacing: "0.04em",
-                            textTransform: "uppercase",
-                          }}
-                        >
-                          <ChevronRight className="w-3 h-3" />
-                          none
-                        </button>
-                      </span>
-                    ) : (
-                      <>
-                        {col.label}
-                        {isActive && (
-                          <span style={{ marginLeft: 4, color: "#275662" }}>
-                            {sortDir === "asc" ? "↑" : "↓"}
-                          </span>
-                        )}
-                      </>
-                    )}
+                    <span className="inline-flex items-center gap-2">
+                      <span>{col.label}</span>
+                      {isActive && (
+                        <span style={{ color: "#275662" }}>
+                          {sortDir === "asc" ? "↑" : "↓"}
+                        </span>
+                      )}
+                      {bulk && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              bulk.onAll();
+                            }}
+                            title={bulk.allTitle}
+                            style={bulkBtnStyle}
+                          >
+                            <ChevronDown className="w-3 h-3" />
+                            all
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              bulk.onNone();
+                            }}
+                            title={bulk.noneTitle}
+                            style={bulkBtnStyle}
+                          >
+                            <ChevronRight className="w-3 h-3" />
+                            none
+                          </button>
+                        </>
+                      )}
+                    </span>
                   </th>
                 );
               })}
@@ -11000,9 +11186,26 @@ const SamplesTab = ({
                             }
                           />
                         )}
-                        {col.id === "events" && (
+                        {col.id === "eventsSource" && (
                           <SampleEventsCell
                             row={r}
+                            side="source"
+                            collapsed={collapsedSourceEvents.has(r.id)}
+                            onToggleCollapsed={() =>
+                              toggleCollapsedEvents(r.id, "source")
+                            }
+                            onScopeToSamples={onScopeToSamples}
+                            onDrillSample={onDrillSample}
+                          />
+                        )}
+                        {col.id === "eventsTarget" && (
+                          <SampleEventsCell
+                            row={r}
+                            side="target"
+                            collapsed={collapsedTargetEvents.has(r.id)}
+                            onToggleCollapsed={() =>
+                              toggleCollapsedEvents(r.id, "target")
+                            }
                             onScopeToSamples={onScopeToSamples}
                             onDrillSample={onDrillSample}
                           />
@@ -11321,6 +11524,10 @@ const BulkContextSection = ({
     metric is a min / max number-input pair. Empty bound = no
     constraint. Rates are entered in percent. */
 const BulkTargetingSection = ({
+  srcCountMin,
+  setSrcCountMin,
+  srcCountMax,
+  setSrcCountMax,
   tgtCountMin,
   setTgtCountMin,
   tgtCountMax,
@@ -11396,16 +11603,31 @@ const BulkTargetingSection = ({
         className="text-[10px] uppercase tracking-[0.05em] mb-1"
         style={{ color: "var(--ink-muted)", fontWeight: 700 }}
       >
-        Stats of the events targeting each sample
+        Per-side event counts
       </div>
       <div className="flex flex-wrap gap-1.5 mb-3">
         {metricChip(
-          "events",
-          "Number of events targeting each sample. Keep samples whose event count is in [min, max].",
+          "source events",
+          "Number of events where the sample is the SOURCE. Keep samples whose source-event count is in [min, max].",
+          ListChecks,
+          numberInput(srcCountMin, setSrcCountMin, "min", "1"),
+          numberInput(srcCountMax, setSrcCountMax, "max", "1"),
+        )}
+        {metricChip(
+          "target events",
+          "Number of events where the sample is the TARGET (i.e. flagged as contaminated). Keep samples whose target-event count is in [min, max].",
           ListChecks,
           numberInput(tgtCountMin, setTgtCountMin, "min", "1"),
           numberInput(tgtCountMax, setTgtCountMax, "max", "1"),
         )}
+      </div>
+      <div
+        className="text-[10px] uppercase tracking-[0.05em] mb-1"
+        style={{ color: "var(--ink-muted)", fontWeight: 700 }}
+      >
+        Stats of the events targeting each sample
+      </div>
+      <div className="flex flex-wrap gap-1.5 mb-3">
         {metricChip(
           "rate %",
           "Maximum rate (in %) among the events targeting each sample.",
@@ -11478,8 +11700,11 @@ const BulkSampleApplyDialog = ({
   const [ctxControl, setCtxControl] = useState("any");
   const [ctxLowBiomass, setCtxLowBiomass] = useState("any");
   const [ctxLowSeqDepth, setCtxLowSeqDepth] = useState("any");
-  // Targeting-event stat thresholds. Empty string = no bound. Rates
-  // are entered as percentages (0–100); converted before comparison.
+  // Per-side event-count thresholds + targeting-event stat thresholds.
+  // Empty string = no bound. Rates are entered as percentages (0–100);
+  // converted before comparison.
+  const [srcCountMin, setSrcCountMin] = useState("");
+  const [srcCountMax, setSrcCountMax] = useState("");
   const [tgtCountMin, setTgtCountMin] = useState("");
   const [tgtCountMax, setTgtCountMax] = useState("");
   const [tgtRateMin, setTgtRateMin] = useState("");
@@ -11503,6 +11728,8 @@ const BulkSampleApplyDialog = ({
       const x = parseFloat(v);
       return Number.isFinite(x) ? x : null;
     };
+    const sCountMin = num(srcCountMin);
+    const sCountMax = num(srcCountMax);
     const cMin = num(tgtCountMin);
     const cMax = num(tgtCountMax);
     const rMin = num(tgtRateMin);
@@ -11533,6 +11760,8 @@ const BulkSampleApplyDialog = ({
       // events, its max* fields are null and any non-zero min bound
       // excludes it (the user is asking for samples touched by an
       // event with that property).
+      if (sCountMin != null && s.asSource < sCountMin) return false;
+      if (sCountMax != null && s.asSource > sCountMax) return false;
       if (cMin != null && s.asTarget < cMin) return false;
       if (cMax != null && s.asTarget > cMax) return false;
       if (rMin != null) {
@@ -11581,6 +11810,8 @@ const BulkSampleApplyDialog = ({
     ctxControl,
     ctxLowBiomass,
     ctxLowSeqDepth,
+    srcCountMin,
+    srcCountMax,
     tgtCountMin,
     tgtCountMax,
     tgtRateMin,
@@ -11696,6 +11927,10 @@ const BulkSampleApplyDialog = ({
             events that target each sample (count, max rate, max
             probability, max introduced species count). */}
         <BulkTargetingSection
+          srcCountMin={srcCountMin}
+          setSrcCountMin={setSrcCountMin}
+          srcCountMax={srcCountMax}
+          setSrcCountMax={setSrcCountMax}
           tgtCountMin={tgtCountMin}
           setTgtCountMin={setTgtCountMin}
           tgtCountMax={tgtCountMax}
@@ -20892,7 +21127,7 @@ export default function App() {
           setLastSamplesDrill(f.scopeSamples[0]);
         }
         return Array.isArray(f.scopeSamples) && f.scopeSamples.length > 0
-          ? { ...f, scopeSamples: null }
+          ? { ...f, scopeSamples: null, scopeSide: "either" }
           : f;
       });
       const y = samplesUIRef.current.scrollY || 0;
@@ -21096,6 +21331,7 @@ export default function App() {
     group: "any",
     adjacent: "any",
     scopeSamples: null,
+    scopeSide: "either",
   });
   const [filter, setFilter] = useState(() => {
     // Migrate legacy boolean fields (hideRelated / adjacentOnly) to the
@@ -21129,8 +21365,13 @@ export default function App() {
       // Optional sample-list scope. When set, only events whose source
       // or target is in this array pass the filter — used by the
       // Network tab to drill into one component's events from Scatter
-      // or the Events table.
+      // or the Events table. `scopeSide` narrows the match to one side
+      // ("source" or "target"); default "either" matches both.
       scopeSamples: Array.isArray(f.scopeSamples) ? f.scopeSamples : null,
+      scopeSide:
+        f.scopeSide === "source" || f.scopeSide === "target"
+          ? f.scopeSide
+          : "either",
     };
   });
   const [sort, setSort] = useState(initial?.sort || { by: "score", dir: "desc" });
@@ -21559,9 +21800,17 @@ export default function App() {
       Array.isArray(filter.scopeSamples) && filter.scopeSamples.length > 0
         ? new Set(filter.scopeSamples)
         : null;
+    const scopeSide = filter.scopeSide || "either";
     let res = events.filter((e) => {
-      if (scopeSet && !scopeSet.has(e.source) && !scopeSet.has(e.target))
-        return false;
+      if (scopeSet) {
+        if (scopeSide === "source") {
+          if (!scopeSet.has(e.source)) return false;
+        } else if (scopeSide === "target") {
+          if (!scopeSet.has(e.target)) return false;
+        } else if (!scopeSet.has(e.source) && !scopeSet.has(e.target)) {
+          return false;
+        }
+      }
       if (e.score < filter.minScore) return false;
       if (e.rate < filter.minRate) return false;
       if (minIntro > 0) {
@@ -21808,9 +22057,15 @@ export default function App() {
   // component or a node's neighbourhood into the Scatter gallery /
   // Events table without losing the node-driven context. The scope
   // shows up as a clearable pill in the EventFilterBar.
-  const scopeToSamples = React.useCallback((sampleIds, targetTab) => {
+  const scopeToSamples = React.useCallback((sampleIds, targetTab, side) => {
     if (!Array.isArray(sampleIds) || sampleIds.length === 0) return;
-    setFilter((f) => ({ ...f, scopeSamples: [...sampleIds] }));
+    const nextSide =
+      side === "source" || side === "target" ? side : "either";
+    setFilter((f) => ({
+      ...f,
+      scopeSamples: [...sampleIds],
+      scopeSide: nextSide,
+    }));
     if (targetTab) setTab(targetTab);
   }, []);
 
@@ -21821,10 +22076,10 @@ export default function App() {
   // dismiss on the floating chip.
   const [lastSamplesDrill, setLastSamplesDrill] = useState(null);
   const drillFromSamples = React.useCallback(
-    (sampleId, targetTab) => {
+    (sampleId, targetTab, side) => {
       if (!sampleId) return;
       setLastSamplesDrill(sampleId);
-      scopeToSamples([sampleId], targetTab);
+      scopeToSamples([sampleId], targetTab, side);
     },
     [scopeToSamples],
   );
