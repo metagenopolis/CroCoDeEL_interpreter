@@ -903,21 +903,24 @@ function missingAbundantFromSource(ab, source, target, rate) {
 
 function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
   let good = 0;
+  // Each reason carries a stable `key` so the Validate panel can pair
+  // the colloquial summary line with its matching Criterion card
+  // even when some entries are missing (no abundance loaded etc.).
   const reasons = [];
   if (diag && diag.r2 != null) {
     if (diag.r2 > 0.8) {
       good++;
-      reasons.push({ ok: true, label: `Straight line (R² = ${diag.r2.toFixed(2)})` });
+      reasons.push({ key: "r2", ok: true, label: `Straight line (R² = ${diag.r2.toFixed(2)})` });
     } else {
-      reasons.push({ ok: false, label: `Dispersed line (R² = ${diag.r2.toFixed(2)})` });
+      reasons.push({ key: "r2", ok: false, label: `Dispersed line (R² = ${diag.r2.toFixed(2)})` });
     }
   }
   if (diag && diag.n != null) {
     if (diag.n > 10) {
       good++;
-      reasons.push({ ok: true, label: `${diag.n} species on line (> 10)` });
+      reasons.push({ key: "n", ok: true, label: `${diag.n} species on line (> 10)` });
     } else {
-      reasons.push({ ok: false, label: `Only ${diag.n} species on line` });
+      reasons.push({ key: "n", ok: false, label: `Only ${diag.n} species on line` });
     }
   }
   // Decade range of the contamination line — a real (mechanical)
@@ -932,11 +935,13 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
     if (dr >= 1.5) {
       good++;
       reasons.push({
+        key: "decade",
         ok: true,
         label: `Line spans ${dr.toFixed(1)} decades of abundance (≥ 1.5)`,
       });
     } else {
       reasons.push({
+        key: "decade",
         ok: false,
         label: `Line concentrated in ${dr.toFixed(1)} decades — possibly only abundant species shared`,
       });
@@ -953,6 +958,7 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
       // No core species had any predictable contribution (rate ≈ 0 or
       // empty source). Cannot inform the verdict.
       reasons.push({
+        key: "missing",
         ok: true,
         label: `Missing-species check not informative (no species expected in target given rate)`,
       });
@@ -960,22 +966,27 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
     } else if (missingCount === 0) {
       good++;
       reasons.push({
+        key: "missing",
         ok: true,
         label: `All ${evaluated} expected source species present in target`,
       });
     } else if (pValue >= 0.05) {
       // Observed misses are consistent with Poisson-binomial sampling
       // noise under H_real — fold them into the "tolerable" bucket and
-      // keep the criterion as a pass.
+      // keep the criterion as a pass. Headline stays short so the
+      // card row doesn't spill over; the p-value / expected count
+      // are surfaced in the dropdown's technical readout.
       good++;
       reasons.push({
+        key: "missing",
         ok: true,
-        label: `${missingCount}/${evaluated} missing — within Poisson sampling noise (p = ${pValue.toFixed(2)}, expected ≈ ${expectedMissing.toFixed(1)})`,
+        label: `${missingCount}/${evaluated} missing — within Poisson noise`,
       });
     } else {
       reasons.push({
+        key: "missing",
         ok: false,
-        label: `${missingCount}/${evaluated} expected source species missing — significantly more than Poisson noise (p = ${pValue.toExponential(1)}, expected ≈ ${expectedMissing.toFixed(1)})`,
+        label: `${missingCount}/${evaluated} expected species missing — beyond Poisson noise`,
       });
     }
   }
@@ -993,20 +1004,23 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
     const { count: nAbove, maxDist, farAbove } = aboveInfo;
     if (nAbove === 0) {
       good++;
-      reasons.push({ ok: true, label: `No points above the line` });
+      reasons.push({ key: "above", ok: true, label: `No points above the line` });
     } else if (maxDist < 0.5) {
       good++;
       reasons.push({
+        key: "above",
         ok: true,
         label: `${nAbove} points above the line, all within 0.5 decade (tolerable)`,
       });
     } else if (cascade) {
       reasons.push({
+        key: "above",
         ok: false,
         label: `${nAbove} points above the line (${farAbove} ≥ 0.5 decade, max ${maxDist.toFixed(1)}) — explained by detected cascade`,
       });
     } else {
       reasons.push({
+        key: "above",
         ok: false,
         label: `${nAbove} points above the line (${farAbove} ≥ 0.5 decade, max ${maxDist.toFixed(1)}) — strong biological signal, no cascade detected`,
       });
@@ -1022,11 +1036,13 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
     if (rho < 0.7) {
       good++;
       reasons.push({
+        key: "spearman",
         ok: true,
         label: `Source / target profiles distinct (Spearman ρ = ${rho.toFixed(2)})`,
       });
     } else {
       reasons.push({
+        key: "spearman",
         ok: false,
         label: `Source / target profiles too correlated (Spearman ρ = ${rho.toFixed(2)} ≥ 0.7) — possible longitudinal / same-subject persistence`,
       });
@@ -1043,6 +1059,7 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
     if (relatedness.related === false) {
       good++;
       reasons.push({
+        key: "relatedness",
         ok: true,
         label: `Source and target are different subjects`,
       });
@@ -1052,6 +1069,7 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
           ? `same group (${relatedness.value})`
           : `same subject (${relatedness.value})`;
       reasons.push({
+        key: "relatedness",
         ok: false,
         label: `Source and target share the ${baseText} — biological similarity is likely`,
       });
@@ -4341,64 +4359,136 @@ const Th = ({ children, right, onClick, title }) => (
 );
 
 /* ---------- validation criteria ---------- */
-const Criterion = ({ n, title, wiki, pass, value }) => {
+/** A single diagnostic-criterion card.
+    The collapsed row shows ✓/✗ + a colloquial one-liner ("summary",
+    e.g. "Straight line (R² = 0.99)") that the curator can scan
+    quickly. Clicking the row expands a panel with the criterion
+    title, the long-form wiki rationale and the technical readout —
+    one block per check, no second list of reasons elsewhere. */
+const Criterion = ({ n, title, wiki, pass, value, summary }) => {
   const color = pass == null ? "var(--border)" : pass ? "#00a3a6" : "#ed6e6c";
-  // Per-criterion description is hidden by default — click the title row
-  // to expand the wiki blurb when needed.
   const [showWiki, setShowWiki] = useState(false);
+  // Collapsed line shows the colloquial summary when available
+  // ("Straight line (R² = 0.99)") because it reads more naturally
+  // than the raw technical value. Long lines are allowed to wrap;
+  // the wiki rationale stays in the dropdown.
+  const headline = summary || value || title;
   return (
-    <div className="pl-3 py-2 mb-2" style={{ borderLeft: `4px solid ${color}` }}>
+    <div
+      className="py-1 mb-1"
+      style={{ borderLeft: `2px solid ${color}`, paddingLeft: 8 }}
+    >
       <button
         type="button"
         onClick={() => setShowWiki((v) => !v)}
-        className="flex items-baseline gap-2 w-full text-left"
-        style={{ background: "transparent", border: 0, padding: 0, cursor: "pointer" }}
-        title={showWiki ? "Hide description" : "Show description"}
+        className="flex items-center gap-1.5 w-full text-left"
+        style={{
+          background: "transparent",
+          border: 0,
+          padding: 0,
+          cursor: "pointer",
+          minWidth: 0,
+        }}
+        title={
+          showWiki
+            ? "Hide description"
+            : headline
+              ? `${headline} — click for details`
+              : "Show description"
+        }
         aria-expanded={showWiki}
       >
         <span
-          className="text-[10px]"
           style={{
-            color: "#ed6e6c",
-            fontWeight: 800,
-            fontFamily: '"Raleway", sans-serif',
+            color: "var(--ink-muted)",
+            fontWeight: 700,
+            fontFamily: "ui-monospace, monospace",
+            fontSize: 10,
+            minWidth: 16,
+            flexShrink: 0,
           }}
         >
           {n}
         </span>
+        {pass == null ? (
+          <span
+            className="shrink-0 inline-block rounded-full"
+            style={{
+              width: 10,
+              height: 10,
+              border: "1px dashed var(--border-strong)",
+            }}
+          />
+        ) : pass ? (
+          <CheckCircle2
+            className="shrink-0"
+            style={{ color: "#00a3a6", width: 12, height: 12 }}
+          />
+        ) : (
+          <XCircle
+            className="shrink-0"
+            style={{ color: "#ed6e6c", width: 12, height: 12 }}
+          />
+        )}
         <span
           style={{
             color: "var(--ink)",
-            fontWeight: 700,
-            fontSize: 15,
+            fontWeight: 600,
+            fontSize: 12,
             fontFamily: '"Raleway", sans-serif',
+            lineHeight: 1.35,
+            flex: 1,
+            minWidth: 0,
           }}
         >
-          {title}
+          {headline}
         </span>
         {showWiki ? (
-          <ChevronUp className="w-3.5 h-3.5 ml-auto" style={{ color: "var(--ink-muted)" }} />
+          <ChevronUp className="shrink-0" style={{ color: "var(--ink-muted)", width: 12, height: 12 }} />
         ) : (
-          <ChevronDown className="w-3.5 h-3.5 ml-auto" style={{ color: "var(--ink-muted)" }} />
+          <ChevronDown className="shrink-0" style={{ color: "var(--ink-muted)", width: 12, height: 12 }} />
         )}
       </button>
       {showWiki && (
-        <div className="text-[12px] italic mt-1 mb-1" style={{ color: "var(--ink-muted)" }}>
-          {wiki}
+        <div className="mt-1.5" style={{ paddingLeft: 22 }}>
+          <div
+            className="text-[11px]"
+            style={{
+              color: "var(--ink-muted)",
+              fontWeight: 700,
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+              marginBottom: 2,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            {title}
+          </div>
+          <div
+            className="text-[12px] italic"
+            style={{ color: "var(--ink-muted)", lineHeight: 1.45 }}
+          >
+            {wiki}
+          </div>
+          {value && summary && value !== summary && (
+            <div
+              className="mt-1 text-[12px]"
+              style={{
+                fontWeight: 600,
+                fontFamily: '"Raleway", sans-serif',
+                color:
+                  pass == null
+                    ? "var(--ink-muted)"
+                    : pass
+                      ? "#00a3a6"
+                      : "#ed6e6c",
+              }}
+            >
+              {pass == null ? value : pass ? `✓ ${value}` : `✗ ${value}`}
+            </div>
+          )}
         </div>
       )}
-      <div
-        className="text-[13px]"
-        style={{ fontWeight: 600, fontFamily: '"Raleway", sans-serif' }}
-      >
-        {pass == null ? (
-          <span style={{ color: "var(--ink-muted)" }}>{value}</span>
-        ) : pass ? (
-          <span style={{ color: "#00a3a6" }}>✓ {value}</span>
-        ) : (
-          <span style={{ color: "#ed6e6c" }}>✗ {value}</span>
-        )}
-      </div>
     </div>
   );
 };
@@ -4417,16 +4507,21 @@ const ContextualCriterion = ({ n, title, hint, verdict }) => {
     "#797870";
   return (
     <div
-      className="pl-3 py-2 mb-2"
-      style={{ borderLeft: `4px solid ${color}`, background: "var(--bg-softer)" }}
+      className="py-1 mb-1"
+      style={{
+        borderLeft: `2px solid ${color}`,
+        background: "var(--bg-softer)",
+        paddingLeft: 8,
+      }}
     >
-      <div className="flex items-baseline gap-2">
+      <div className="flex items-center gap-1.5">
         <span
-          className="text-[10px]"
           style={{
             color: "#423089",
-            fontWeight: 800,
-            fontFamily: '"Raleway", sans-serif',
+            fontWeight: 700,
+            fontFamily: "ui-monospace, monospace",
+            fontSize: 10,
+            minWidth: 16,
           }}
         >
           {n}
@@ -4434,15 +4529,16 @@ const ContextualCriterion = ({ n, title, hint, verdict }) => {
         <span
           style={{
             color: "var(--ink)",
-            fontWeight: 700,
-            fontSize: 15,
+            fontWeight: 600,
+            fontSize: 12,
             fontFamily: '"Raleway", sans-serif',
+            lineHeight: 1.35,
           }}
         >
           {title}
         </span>
         <span
-          className="text-[10px] uppercase tracking-widest"
+          className="ml-auto text-[9px] uppercase tracking-widest"
           style={{
             color: "var(--ink-muted)",
             fontWeight: 600,
@@ -4452,15 +4548,20 @@ const ContextualCriterion = ({ n, title, hint, verdict }) => {
           context
         </span>
       </div>
-      <div className="text-[12px] italic mb-1" style={{ color: "var(--ink-muted)" }}>
+      <div
+        className="text-[11px] italic mt-0.5"
+        style={{ color: "var(--ink-muted)", paddingLeft: 22 }}
+      >
         {hint}
       </div>
       <div
-        className="text-[13px]"
+        className="text-[12px]"
         style={{
           color: textColor,
           fontWeight: 600,
           fontFamily: '"Raleway", sans-serif',
+          paddingLeft: 22,
+          marginTop: 2,
         }}
       >
         {verdict.text}
@@ -7686,7 +7787,16 @@ const ExplorePairs = ({
   // tab switches — see EXPLORE_PAIRS_DEFAULTS in App. The component
   // reads from `formState` and writes via small wrapper setters so the
   // call sites below stay readable.
-  const { src, tgt, rateLog, probability, verdict, action, notes } = formState;
+  const {
+    src,
+    tgt,
+    rateLog,
+    probability,
+    verdict,
+    targetVerdict,
+    action,
+    notes,
+  } = formState;
   const setField = (key) => (val) =>
     setFormState((prev) => ({ ...prev, [key]: val }));
   const setSrc = setField("src");
@@ -7694,17 +7804,28 @@ const ExplorePairs = ({
   const setRateLog = setField("rateLog");
   const setProbability = setField("probability");
   const setVerdict = setField("verdict");
+  const setTargetVerdict = setField("targetVerdict");
   const setAction = setField("action");
   const setNotes = setField("notes");
   const [feedback, setFeedback] = useState(null);
 
-  // Reset action whenever the verdict changes — TP defaults to suppress,
-  // everything else clears the action.
+  // Sync the sample-level pickers to the event verdict — TP → suppress
+  // + contaminated, FP → no action + correct, Uncertain → no action +
+  // uncertain. These are smart defaults; the curator can still override
+  // either picker after picking the event verdict.
   useEffect(() => {
-    if (verdict === "true_positive") setAction("suppress");
-    else setAction(null);
-    // setAction is recreated each render but writes to the parent
-    // state, so we intentionally exclude it from the dep array.
+    if (verdict === "true_positive") {
+      setAction("suppress");
+      setTargetVerdict("contaminated");
+    } else if (verdict === "false_positive") {
+      setAction(null);
+      setTargetVerdict("correct");
+    } else {
+      setAction(null);
+      setTargetVerdict("uncertain");
+    }
+    // setAction / setTargetVerdict are recreated each render but write
+    // to the parent state, so we intentionally exclude them from deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [verdict]);
 
@@ -7816,6 +7937,7 @@ const ExplorePairs = ({
       score: probability,
       introduced: introducedFromLine,
       verdict,
+      targetVerdict,
       notes,
       action: actionEnabled ? action : undefined,
     });
@@ -7836,6 +7958,7 @@ const ExplorePairs = ({
     setRateLog(-2);
     setProbability(0.9);
     setVerdict("true_positive");
+    setTargetVerdict("contaminated");
     setNotes("Manually added by user");
   };
 
@@ -8001,7 +8124,7 @@ const ExplorePairs = ({
               fontFamily: '"Raleway", sans-serif',
             }}
           >
-            Evaluation
+            Evaluation (event)
           </label>
           <div className="flex gap-2 flex-wrap">
             {[
@@ -8032,8 +8155,53 @@ const ExplorePairs = ({
           </div>
         </div>
 
-        {/* Action picker — only when the suppress/keep feature is on
-            and the verdict is TP. FPs carry no action. */}
+        {/* Verdict on target sample — sample-level layer that
+            cohabits with the event evaluation above. Defaults are
+            wired to the event verdict (TP → contaminated, FP →
+            correct, Uncertain → uncertain) but can be overridden. */}
+        <div className="mb-3">
+          <label
+            className="text-[10px] tracking-[0.1em] uppercase block mb-2"
+            style={{
+              color: "var(--ink-muted)",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            Verdict on target sample
+          </label>
+          <div className="flex gap-2 flex-wrap">
+            {SAMPLE_VERDICT_OPTIONS.map((v) => {
+              const tone = SAMPLE_VERDICT_TONE[v.id] || {};
+              const accent = tone.bg || "var(--border-strong)";
+              const active = targetVerdict === v.id;
+              return (
+                <button
+                  key={v.id}
+                  type="button"
+                  onClick={() => setTargetVerdict(v.id)}
+                  className="px-3 py-1.5 text-[11px] rounded-sm flex items-center gap-1.5"
+                  style={{
+                    background: active ? accent : "var(--bg-card)",
+                    color: active ? "#fff" : "var(--ink)",
+                    border: `1px solid ${active ? accent : "var(--border)"}`,
+                    fontWeight: 700,
+                    fontFamily: '"Raleway", sans-serif',
+                    textTransform: "capitalize",
+                    cursor: "pointer",
+                  }}
+                  title={`Tag the target sample (${tgt || "—"}) as ${v.label}`}
+                >
+                  {active && <CheckCircle2 className="w-3 h-3" />}
+                  {v.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Action on target sample — only when the suppress/keep feature
+            is on and the event verdict is TP. FPs carry no action. */}
         {actionEnabled && verdict === "true_positive" && (
             <div className="mb-3">
               <label
@@ -8044,7 +8212,7 @@ const ExplorePairs = ({
                   fontFamily: '"Raleway", sans-serif',
                 }}
               >
-                Action
+                Action on target sample
               </label>
               <div className="flex gap-2 flex-wrap">
                 {[
@@ -8936,6 +9104,8 @@ const SampleContextCell = ({
   onLowBiomassClick,
   onLowSeqDepthClick,
   onPlateClick,
+  isOpen = true,
+  onToggleOpen,
 }) => {
   const f = row.flags || {};
   const placement = row.placement || null;
@@ -9194,6 +9364,41 @@ const SampleContextCell = ({
       </span>
     );
   }
+  const total = groups.reduce((acc, g) => acc + g.length, 0);
+  const toggleBtn = onToggleOpen ? (
+    <button
+      type="button"
+      onClick={onToggleOpen}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        height: 20,
+        padding: "0 7px",
+        borderRadius: 10,
+        background: "transparent",
+        border: "1px dashed var(--border)",
+        color: "var(--ink-muted)",
+        fontFamily: '"Raleway", sans-serif',
+        fontSize: 10,
+        fontWeight: 600,
+        textTransform: "uppercase",
+        letterSpacing: "0.04em",
+        cursor: "pointer",
+      }}
+      title={isOpen ? "Hide context" : "Show context"}
+    >
+      {isOpen ? (
+        <ChevronDown className="w-3 h-3" />
+      ) : (
+        <ChevronRight className="w-3 h-3" />
+      )}
+      {isOpen ? "hide" : `context (${total})`}
+    </button>
+  ) : null;
+  if (!isOpen && onToggleOpen) {
+    return <div className="flex flex-wrap gap-1.5">{toggleBtn}</div>;
+  }
   return (
     <div className="flex flex-col gap-1">
       {groups.map((g, i) => (
@@ -9201,6 +9406,7 @@ const SampleContextCell = ({
           {g}
         </div>
       ))}
+      {toggleBtn && <div>{toggleBtn}</div>}
     </div>
   );
 };
@@ -10233,6 +10439,16 @@ const SamplesTab = ({
       else next.add(id);
       return next;
     });
+  const [openContexts, setOpenContexts] = useState(
+    () => new Set(persisted.openContexts || []),
+  );
+  const toggleContext = (id) =>
+    setOpenContexts((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   // Build the universe of samples — only those touched by an event
   // currently passing the shared filter bar (rate / probability /
@@ -10442,6 +10658,7 @@ const SamplesTab = ({
     uiRef.current.sortDir = sortDir;
     uiRef.current.page = page;
     uiRef.current.openNotes = Array.from(openNotes);
+    uiRef.current.openContexts = Array.from(openContexts);
     uiRef.current.subjectFilter = subjectFilter;
     uiRef.current.timepointFilter = timepointFilter;
     uiRef.current.groupFilter = groupFilter;
@@ -10456,6 +10673,7 @@ const SamplesTab = ({
     sortDir,
     page,
     openNotes,
+    openContexts,
     subjectFilter,
     timepointFilter,
     groupFilter,
@@ -10624,6 +10842,7 @@ const SamplesTab = ({
               {columns.map((col) => {
                 const sortable = !!col.sortKey;
                 const isActive = sortable && sortBy === col.sortKey;
+                const isContextCol = col.id === "context";
                 return (
                   <th
                     key={col.id}
@@ -10641,11 +10860,75 @@ const SamplesTab = ({
                     }
                     title={sortable ? `Sort by ${col.label.toLowerCase()}` : undefined}
                   >
-                    {col.label}
-                    {isActive && (
-                      <span style={{ marginLeft: 4, color: "#275662" }}>
-                        {sortDir === "asc" ? "↑" : "↓"}
+                    {isContextCol ? (
+                      <span className="inline-flex items-center gap-2">
+                        <span>{col.label}</span>
+                        <button
+                          type="button"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            setOpenContexts(
+                              new Set(sorted.map((r) => r.id)),
+                            );
+                          }}
+                          title="Expand all sample contexts"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 2,
+                            padding: "1px 5px",
+                            borderRadius: 8,
+                            background: "transparent",
+                            border: "1px solid var(--border)",
+                            color: "var(--ink-muted)",
+                            cursor: "pointer",
+                            fontSize: 9,
+                            fontFamily: '"Raleway", sans-serif',
+                            fontWeight: 700,
+                            letterSpacing: "0.04em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          <ChevronDown className="w-3 h-3" />
+                          all
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            setOpenContexts(new Set());
+                          }}
+                          title="Collapse all sample contexts"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 2,
+                            padding: "1px 5px",
+                            borderRadius: 8,
+                            background: "transparent",
+                            border: "1px solid var(--border)",
+                            color: "var(--ink-muted)",
+                            cursor: "pointer",
+                            fontSize: 9,
+                            fontFamily: '"Raleway", sans-serif',
+                            fontWeight: 700,
+                            letterSpacing: "0.04em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          <ChevronRight className="w-3 h-3" />
+                          none
+                        </button>
                       </span>
+                    ) : (
+                      <>
+                        {col.label}
+                        {isActive && (
+                          <span style={{ marginLeft: 4, color: "#275662" }}>
+                            {sortDir === "asc" ? "↑" : "↓"}
+                          </span>
+                        )}
+                      </>
                     )}
                   </th>
                 );
@@ -10693,6 +10976,8 @@ const SamplesTab = ({
                         {col.id === "context" && (
                           <SampleContextCell
                             row={r}
+                            isOpen={openContexts.has(r.id)}
+                            onToggleOpen={() => toggleContext(r.id)}
                             onSubjectClick={(subj) =>
                               setSubjectFilter(subj)
                             }
@@ -14412,6 +14697,11 @@ const ValidateTab = ({
   const related = areRelated(metadata, sel.source, sel.target);
   const pd = plateDistance(plateMap, sel.source, sel.target);
 
+  const hasSampleInfoPanel = !!(
+    (plateMap && pd?.samePlate) ||
+    (metadata && (metadata.bySample[sel.source] || metadata.bySample[sel.target]))
+  );
+
   // Picked species — clicking a chip in the "Introduced species" list
   // pins the matching point in the scatterplot with a violet ring.
   // Reset whenever the focused event changes since the species set is
@@ -14487,17 +14777,17 @@ const ValidateTab = ({
   // normally). We attach the listener to window and check the focused
   // element on each keypress.
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
-  // The detailed criteria rows are hidden by default — the score card
-  // above already conveys the headline. Click the toggle to expand.
-  const [showCriteriaDetails, setShowCriteriaDetails] = useState(false);
-  // Other supporting panels are also collapsed by default to keep the
+  // Other supporting panels are collapsed by default to keep the
   // validation column compact; the user can pop each open as needed.
+  // The detailed criteria rows themselves are now always rendered —
+  // the score card above gives the headline, the per-criterion
+  // verdict lines fill in the why.
   const [showIntroduced, setShowIntroduced] = useState(false);
   // Single toggle for the combined plate-position + sample-context box.
   // Open by default — the plate map is the most useful at-a-glance signal
   // when validating; users can collapse it if it's not informative for
   // their dataset.
-  const [showSampleInfo, setShowSampleInfo] = useState(true);
+  const [showSampleInfo, setShowSampleInfo] = useState(false);
   const [showDiagBlurb, setShowDiagBlurb] = useState(false);
   useEffect(() => {
     const handler = (e) => {
@@ -14647,14 +14937,14 @@ const ValidateTab = ({
             { id: "verdict", label: "eval", full: "event evaluation" },
             {
               id: "targetVerdict",
-              label: "verdict",
+              label: "verd",
               full: "target sample verdict",
             },
             ...(actionEnabled
               ? [
                   {
                     id: "action",
-                    label: "action",
+                    label: "act",
                     full: "target sample action",
                   },
                 ]
@@ -14872,7 +15162,7 @@ const ValidateTab = ({
         />
 
         <div className="grid md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-6 mt-6">
-          <div>
+          <div className="flex flex-col">
             {hasAb ? (
               <Scatterplot
                 scatter={scatter}
@@ -14921,9 +15211,84 @@ const ValidateTab = ({
               Color contamination-line points
             </label>
 
+            {hasSampleInfoPanel && sel.introduced.length > 0 && (
+              <div
+                className="p-3 rounded-sm text-[12px]"
+                style={{ background: "var(--bg-soft)", border: "1px solid var(--border)", marginTop: "auto" }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setShowIntroduced((v) => !v)}
+                  className="flex items-center gap-1.5 text-[10px] tracking-[0.15em] uppercase w-full text-left"
+                  style={{
+                    background: "transparent",
+                    border: 0,
+                    padding: 0,
+                    cursor: "pointer",
+                    color: "#ed6e6c",
+                    fontWeight: 700,
+                    fontFamily: '"Raleway", sans-serif',
+                  }}
+                  aria-expanded={showIntroduced}
+                >
+                  {showIntroduced ? (
+                    <ChevronDown className="w-3 h-3" />
+                  ) : (
+                    <ChevronRight className="w-3 h-3" />
+                  )}
+                  Introduced species ({sel.introduced.length})
+                </button>
+                {showIntroduced && (
+                  <div
+                    className="flex flex-wrap gap-1 max-h-28 overflow-auto p-2 rounded-sm mt-3"
+                    style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
+                  >
+                    {sel.introduced.slice(0, 80).map((s, i) => {
+                      const active = pickedSpecies.includes(s);
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => togglePickedSpecies(s)}
+                          title={
+                            active
+                              ? "Click to unpin this species in the plot"
+                              : "Click to pin this species in the plot"
+                          }
+                          className="text-[11px] px-1.5 py-0.5 rounded-sm"
+                          style={{
+                            background: active
+                              ? "rgba(66,48,137,0.12)"
+                              : "var(--bg-soft)",
+                            color: active ? "#423089" : "var(--ink)",
+                            border: active
+                              ? "1px solid #423089"
+                              : "1px solid transparent",
+                            fontFamily: "system-ui, monospace",
+                            fontWeight: active ? 700 : 400,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {s}
+                        </button>
+                      );
+                    })}
+                    {sel.introduced.length > 80 && (
+                      <span
+                        className="text-[11px] px-1.5 py-0.5"
+                        style={{ color: "var(--ink-muted)" }}
+                      >
+                        + {sel.introduced.length - 80} more
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
           </div>
 
-          <div>
+          <div className="flex flex-col">
             <div
               className="p-4 mb-4 rounded-sm"
               style={{
@@ -15033,29 +15398,11 @@ const ValidateTab = ({
                   contamination.
                 </div>
               )}
-              <div className="space-y-1.5">
-                {autoScore.reasons.length === 0 && (
-                  <div className="text-[12px]" style={{ color: "var(--ink-muted)" }}>
-                    Open the abundance table to compute.
-                  </div>
-                )}
-                {autoScore.reasons.map((r, i) => (
-                  <div key={i} className="flex items-start gap-2 text-[12px]">
-                    {r.ok ? (
-                      <CheckCircle2
-                        className="w-3.5 h-3.5 shrink-0 mt-0.5"
-                        style={{ color: "#00a3a6" }}
-                      />
-                    ) : (
-                      <XCircle
-                        className="w-3.5 h-3.5 shrink-0 mt-0.5"
-                        style={{ color: "#ed6e6c" }}
-                      />
-                    )}
-                    <span style={{ color: "var(--ink)" }}>{r.label}</span>
-                  </div>
-                ))}
-              </div>
+              {autoScore.reasons.length === 0 && (
+                <div className="text-[12px]" style={{ color: "var(--ink-muted)" }}>
+                  Open the abundance table to compute.
+                </div>
+              )}
               {(() => {
                 // Aggregate signal: when same-subject (or same group) +
                 // correlated profiles (Spearman ρ ≥ 0.7) + at least one
@@ -15106,30 +15453,11 @@ const ValidateTab = ({
                   </div>
                 );
               })()}
-              <button
-                type="button"
-                onClick={() => setShowCriteriaDetails((v) => !v)}
-                className="flex items-center gap-1 mt-3 text-[11px] tracking-[0.1em] uppercase"
-                style={{
-                  background: "transparent",
-                  border: 0,
-                  padding: 0,
-                  cursor: "pointer",
-                  color: "var(--ink)",
-                  fontWeight: 700,
-                  fontFamily: '"Raleway", sans-serif',
-                }}
-                aria-expanded={showCriteriaDetails}
-              >
-                {showCriteriaDetails ? (
-                  <ChevronDown className="w-3.5 h-3.5" />
-                ) : (
-                  <ChevronRight className="w-3.5 h-3.5" />
-                )}
-                {showCriteriaDetails ? "Hide all criteria" : "Show all criteria"}
-              </button>
-              {showCriteriaDetails && (
-                <div className="mt-4">
+              {(() => {
+                const summaryFor = (key) =>
+                  autoScore.reasons.find((r) => r.key === key)?.label;
+                return (
+              <div className="mt-4">
                 <Criterion
                   n="01"
                   title="Shape of the contamination line"
@@ -15140,6 +15468,7 @@ const ValidateTab = ({
                       ? `R² = ${diag.r2.toFixed(3)}`
                       : "abundance table required"
                   }
+                  summary={summaryFor("r2")}
                 />
                 <Criterion
                   n="02"
@@ -15149,6 +15478,7 @@ const ValidateTab = ({
                   value={
                     diag?.n != null ? `${diag.n} species` : "abundance table required"
                   }
+                  summary={summaryFor("n")}
                 />
                 <Criterion
                   n="03"
@@ -15160,11 +15490,69 @@ const ValidateTab = ({
                       ? `${diag.decadeRange.toFixed(1)} decades`
                       : "abundance table required"
                   }
+                  summary={summaryFor("decade")}
                 />
                 <Criterion
                   n="04"
                   title="Abundant source species present in target"
-                  wiki="Every source species should appear in the target if the contamination is real. We model Poisson sampling: the target depth is estimated from the LOD (N ≈ 1 / LOD), each species has an expected count λ = N × rate × source, and is missed by chance with probability e^(-λ). The number of misses across all source species is a Poisson-binomial sum (rare species contribute almost nothing to the variance, so no abundance pre-filter is needed); the criterion fails when the observed miss count exceeds its expectation under H_real with p < 0.05 (one-sided normal approximation). Adapts to sequencing depth and rate."
+                  wiki={
+                    <>
+                      Every source species should appear in the target if the
+                      contamination is real. We model Poisson sampling: the
+                      target depth is estimated from the LOD (N ≈ 1 / LOD),
+                      each species has an expected count{" "}
+                      <span style={{ fontFamily: "ui-monospace, monospace" }}>
+                        λ = N × rate × source
+                      </span>
+                      , and is missed by chance with probability{" "}
+                      <span style={{ fontFamily: "ui-monospace, monospace" }}>
+                        e^(−λ)
+                      </span>
+                      . The number of misses across all source species is a
+                      Poisson-binomial sum.
+                      <div
+                        style={{
+                          marginTop: 6,
+                          padding: "6px 8px",
+                          borderLeft: "2px solid var(--border-strong)",
+                          background: "var(--bg-soft)",
+                          fontStyle: "normal",
+                          color: "var(--ink)",
+                          fontSize: 11,
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        How to read{" "}
+                        <span style={{ fontFamily: "ui-monospace, monospace" }}>
+                          x / N missing (p = …, expected ≈ …)
+                        </span>{" "}
+                        :
+                        <ul
+                          className="list-disc"
+                          style={{ paddingLeft: 16, marginTop: 4 }}
+                        >
+                          <li>
+                            <strong>x / N missing</strong> — observed: among
+                            the N source species the model could test, x are
+                            absent from the target.
+                          </li>
+                          <li>
+                            <strong>expected ≈</strong> mean number of misses
+                            the Poisson model predicts <em>if</em> the
+                            contamination is genuine. If x is around expected,
+                            the misses are probably sampling noise.
+                          </li>
+                          <li>
+                            <strong>p =</strong> probability of seeing at
+                            least x misses by Poisson chance alone under "the
+                            call is real". Pass when p ≥ 0.05 (consistent
+                            with chance); fail when p &lt; 0.05 (more misses
+                            than chance can explain → likely false positive).
+                          </li>
+                        </ul>
+                      </div>
+                    </>
+                  }
                   pass={
                     missing != null
                       ? missing.evaluated === 0 || missing.count <= 2
@@ -15174,9 +15562,17 @@ const ValidateTab = ({
                     missing != null
                       ? missing.evaluated === 0
                         ? "no species testable"
-                        : `${missing.count} / ${missing.evaluated} missing`
+                        : missing.pValue != null &&
+                            missing.expectedMissing != null
+                          ? `${missing.count} / ${missing.evaluated} missing (p = ${
+                              missing.pValue >= 0.001
+                                ? missing.pValue.toFixed(2)
+                                : missing.pValue.toExponential(1)
+                            }, expected ≈ ${missing.expectedMissing.toFixed(1)})`
+                          : `${missing.count} / ${missing.evaluated} missing`
                       : "abundance table required"
                   }
+                  summary={summaryFor("missing")}
                 />
                 <Criterion
                   n="05"
@@ -15194,6 +15590,7 @@ const ValidateTab = ({
                             : `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)})`
                       : "abundance table required"
                   }
+                  summary={summaryFor("above")}
                 />
                 <Criterion
                   n="06"
@@ -15205,6 +15602,7 @@ const ValidateTab = ({
                       ? `ρ = ${diag.spearman.toFixed(2)}`
                       : "abundance table required"
                   }
+                  summary={summaryFor("spearman")}
                 />
 
                 {metadata && (
@@ -15252,17 +15650,17 @@ const ValidateTab = ({
                     }
                   />
                 )}
-                </div>
-              )}
+              </div>
+                );
+              })()}
             </div>
 
           {/* Combined sample-info box — plate position + metadata.
               Single outer toggle controls both sub-sections. */}
-          {((plateMap && pd?.samePlate) ||
-            (metadata && (metadata.bySample[sel.source] || metadata.bySample[sel.target]))) && (
+          {hasSampleInfoPanel && (
             <div
-              className="mt-4 p-3 rounded-sm text-[12px]"
-              style={{ background: "var(--bg-soft)", border: "1px solid var(--border)" }}
+              className="p-3 rounded-sm text-[12px]"
+              style={{ background: "var(--bg-soft)", border: "1px solid var(--border)", marginTop: "auto" }}
             >
               <button
                 type="button"
@@ -15429,7 +15827,7 @@ const ValidateTab = ({
             </div>
           )}
 
-          {sel.introduced.length > 0 && (
+          {!hasSampleInfoPanel && sel.introduced.length > 0 && (
             <div
               className="mt-4 p-3 rounded-sm text-[12px]"
               style={{ background: "var(--bg-soft)", border: "1px solid var(--border)" }}
@@ -20528,6 +20926,7 @@ export default function App() {
     rateLog: -2,
     probability: 0.9,
     verdict: "true_positive",
+    targetVerdict: "contaminated",
     action: "suppress",
     notes: "Manually added by user",
   };
@@ -21462,6 +21861,18 @@ export default function App() {
       (data.action === "keep" || data.action === "suppress")
     ) {
       setSampleAction(data.target, data.action);
+    }
+    // Target-sample verdict (contaminated / correct / uncertain) — also
+    // applied so a manual TP immediately tags the target as contaminated
+    // in the Samples cockpit, matching what the inline event-table
+    // pickers do for auto-flagged events.
+    if (
+      data.target &&
+      data.targetVerdict &&
+      data.targetVerdict !== "pending" &&
+      SAMPLE_VERDICT_IDS.includes(data.targetVerdict)
+    ) {
+      setSampleVerdict(data.target, data.targetVerdict);
     }
   };
 
