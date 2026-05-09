@@ -4321,20 +4321,29 @@ const VerdictBadge = ({ v }) => {
 };
 
 const QuickBtn = ({ children, onClick, active, tone, title }) => {
-  const bg = active
-    ? tone === "good"
+  const accent =
+    tone === "good"
       ? "#00a3a6"
       : tone === "bad"
         ? "#ed6e6c"
-        : "var(--border-strong)"
-    : "var(--bg-card)";
-  const color = active ? "var(--bg-card)" : "#275662";
+        : "var(--border-strong)";
   return (
     <button
       onClick={onClick}
       title={title}
-      className="p-1 rounded-sm"
-      style={{ background: bg, color, border: "1px solid var(--border)" }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 24,
+        height: 24,
+        padding: 0,
+        borderRadius: 12,
+        background: active ? accent : "var(--bg-card)",
+        color: active ? "#fff" : accent,
+        border: `1px solid ${active ? accent : "var(--border)"}`,
+        cursor: "pointer",
+      }}
     >
       {children}
     </button>
@@ -6485,9 +6494,13 @@ const EventsTable = ({
               return (
                 <tr
                   key={e.id}
-                  style={{ borderBottom: "1px solid var(--border-soft)" }}
+                  style={{
+                    borderBottom: "1px solid var(--border-soft)",
+                    cursor: "pointer",
+                  }}
                   onMouseOver={(ev) => (ev.currentTarget.style.background = "var(--bg-soft)")}
                   onMouseOut={(ev) => (ev.currentTarget.style.background = "")}
+                  onClick={() => onPick && onPick(e.id)}
                 >
                   <td
                     className="px-3 py-2.5 cursor-pointer"
@@ -6574,16 +6587,17 @@ const EventsTable = ({
                       </div>
                     </td>
                   )}
-                  <td className="px-3 py-2.5">
+                  <td className="px-3 py-2.5" onClick={(ev) => ev.stopPropagation()}>
                     <div className="flex gap-1">
                       <QuickBtn
                         active={e.verdict === "true_positive"}
-                        onClick={() =>
+                        onClick={(ev) => {
+                          ev.stopPropagation();
                           setVerdict(
                             e.id,
                             e.verdict === "true_positive" ? "pending" : "true_positive",
-                          )
-                        }
+                          );
+                        }}
                         tone="good"
                         title="mark as true positive"
                       >
@@ -6591,12 +6605,13 @@ const EventsTable = ({
                       </QuickBtn>
                       <QuickBtn
                         active={e.verdict === "false_positive"}
-                        onClick={() =>
+                        onClick={(ev) => {
+                          ev.stopPropagation();
                           setVerdict(
                             e.id,
                             e.verdict === "false_positive" ? "pending" : "false_positive",
-                          )
-                        }
+                          );
+                        }}
                         tone="bad"
                         title="mark as false positive"
                       >
@@ -6604,12 +6619,13 @@ const EventsTable = ({
                       </QuickBtn>
                       <QuickBtn
                         active={e.verdict === "uncertain"}
-                        onClick={() =>
+                        onClick={(ev) => {
+                          ev.stopPropagation();
                           setVerdict(
                             e.id,
                             e.verdict === "uncertain" ? "pending" : "uncertain",
-                          )
-                        }
+                          );
+                        }}
                         tone="warn"
                         title="mark as uncertain"
                       >
@@ -6660,11 +6676,12 @@ const EventsTable = ({
                                 setSampleVerdict(e.target, opt.id);
                             }}
                             title={`Set ${e.target}'s sample-level verdict to ${opt.tone.label}`}
-                            className="rounded-sm flex items-center justify-center"
+                            className="flex items-center justify-center"
                             style={{
                               width: 24,
                               height: 24,
                               padding: 0,
+                              borderRadius: 12,
                               background: active
                                 ? opt.tone.bg
                                 : "var(--bg-card)",
@@ -6716,10 +6733,12 @@ const EventsTable = ({
                                   ? `Clear ${opt.label.toLowerCase()} on ${e.target}`
                                   : `Mark ${e.target} as ${opt.label.toLowerCase()}`
                               }
-                              className="rounded-sm flex items-center justify-center"
+                              className="flex items-center justify-center"
                               style={{
                                 width: 24,
                                 height: 24,
+                                padding: 0,
+                                borderRadius: 12,
                                 background: active
                                   ? opt.color
                                   : "var(--bg-card)",
@@ -9421,7 +9440,7 @@ const SampleContextCell = ({
       title={isOpen ? "Hide context" : "Show context"}
     >
       {isOpen ? (
-        <ChevronDown className="w-3 h-3" />
+        <ChevronUp className="w-3 h-3" />
       ) : (
         <ChevronRight className="w-3 h-3" />
       )}
@@ -9443,7 +9462,9 @@ const SampleContextCell = ({
   );
 };
 
-/** Sample id + notes-toggle button rendered in the first column. */
+/** Sample id + optional sample_name + notes-toggle button rendered in
+    the first column. The name is shown right below the id (matching
+    the Events table) so it doesn't need a dedicated column. */
 const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
   <>
     <div
@@ -9457,6 +9478,20 @@ const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
     >
       {row.id}
     </div>
+    {row.name && (
+      <div
+        className="text-[11px] truncate"
+        style={{
+          color: "var(--ink-muted)",
+          fontWeight: 400,
+          maxWidth: 220,
+          marginTop: 2,
+        }}
+        title={row.name}
+      >
+        {row.name}
+      </div>
+    )}
     <button
       type="button"
       onClick={onToggleNotes}
@@ -9817,11 +9852,18 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
   );
 });
 
-/** Verdict picker — 4 chip buttons (pending / contaminated / correct /
-    uncertain) wired to setSampleVerdict. Memoised. */
+/** Verdict picker — 4 icon-only chip buttons (pending / contaminated
+    / correct / uncertain) wired to setSampleVerdict. Tooltip carries
+    the textual label so the row width stays compact. Memoised. */
+const SAMPLE_VERDICT_ICON = {
+  pending: Circle,
+  contaminated: AlertOctagon,
+  correct: BadgeCheck,
+  uncertain: HelpCircle,
+};
 const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSampleVerdict }) {
   return (
-  <div className="flex flex-wrap gap-1">
+  <div className="flex gap-1">
     {[
       { id: "pending", k: SAMPLE_VERDICT_TONE.pending },
       { id: "contaminated", k: SAMPLE_VERDICT_TONE.contaminated },
@@ -9829,6 +9871,7 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
       { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
     ].map((opt) => {
       const active = row.verdict === opt.id;
+      const Icon = SAMPLE_VERDICT_ICON[opt.id];
       return (
         <button
           key={opt.id}
@@ -9837,31 +9880,20 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: 5,
-            height: 22,
-            padding: "0 9px",
-            borderRadius: 11,
+            justifyContent: "center",
+            width: 24,
+            height: 24,
+            padding: 0,
+            borderRadius: 12,
             background: active ? opt.k.bg : "var(--bg-card)",
-            color: active ? "#fff" : "var(--ink)",
+            color: active ? "#fff" : opt.k.bg,
             border: `1px solid ${active ? opt.k.bg : "var(--border)"}`,
             cursor: "pointer",
-            fontWeight: 700,
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-            fontFamily: '"Raleway", sans-serif',
-            fontSize: 10,
           }}
-          title={`Set verdict to "${opt.k.label}"`}
+          title={`Verdict: ${opt.k.label}`}
+          aria-label={`Set verdict to ${opt.k.label}`}
         >
-          <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: "50%",
-              background: active ? "#fff" : opt.k.bg,
-            }}
-          />
-          {opt.k.label}
+          <Icon className="w-3.5 h-3.5" />
         </button>
       );
     })}
@@ -9869,7 +9901,7 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
   );
 });
 
-/** Action picker — keep / suppress chips. Memoised. */
+/** Action picker — keep / suppress icon-only chips. Memoised. */
 const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAction }) {
   return (
   <div className="flex gap-1">
@@ -9889,28 +9921,28 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: 4,
-            height: 22,
-            padding: "0 9px",
-            borderRadius: 11,
+            justifyContent: "center",
+            width: 24,
+            height: 24,
+            padding: 0,
+            borderRadius: 12,
             background: active ? opt.color : "var(--bg-card)",
-            color: active ? "#fff" : "var(--ink)",
+            color: active ? "#fff" : opt.color,
             border: `1px solid ${active ? opt.color : "var(--border)"}`,
             cursor: "pointer",
-            fontWeight: 700,
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-            fontFamily: '"Raleway", sans-serif',
-            fontSize: 10,
           }}
           title={
             active
               ? `Clear ${opt.label.toLowerCase()} on ${row.id}`
-              : `Mark ${row.id} as ${opt.label.toLowerCase()}`
+              : `${opt.label} ${row.id}`
+          }
+          aria-label={
+            active
+              ? `Clear ${opt.label.toLowerCase()} on ${row.id}`
+              : `${opt.label} ${row.id}`
           }
         >
-          <Icon className="w-3 h-3" />
-          {opt.label}
+          <Icon className="w-3.5 h-3.5" />
         </button>
       );
     })}
@@ -10248,7 +10280,7 @@ const SampleContextSearchBar = ({
         {[
           {
             sideKey: "source",
-            label: "≥ source",
+            label: "count event source",
             value: minSourceEvents,
             setter: setMinSourceEvents,
             tooltip:
@@ -10259,7 +10291,7 @@ const SampleContextSearchBar = ({
           },
           {
             sideKey: "target",
-            label: "≥ target",
+            label: "count event target",
             value: minTargetEvents,
             setter: setMinTargetEvents,
             tooltip:
@@ -10287,10 +10319,6 @@ const SampleContextSearchBar = ({
               }}
               title={c.tooltip}
             >
-              <ListChecks
-                className="w-3 h-3"
-                style={{ color: "var(--ink-muted)", flexShrink: 0 }}
-              />
               <span
                 style={{
                   color: "var(--ink-muted)",
@@ -10869,14 +10897,10 @@ const SamplesTab = ({
     !!plateMap;
   const columns = [
     { id: "sample", label: "Sample", sortKey: "id" },
-    metadata?.hasSampleNameCol && {
-      id: "name",
-      label: "Sample name",
-      sortKey: "name",
-    },
     hasContext && {
       id: "context",
       label: "Context",
+      minWidth: 320,
       bulkToggle: {
         allTitle: "Expand all sample contexts",
         noneTitle: "Collapse all sample contexts",
@@ -11042,6 +11066,17 @@ const SamplesTab = ({
     if (!uiRef?.current) return;
     uiRef.current.focusedId = focusedId;
   }, [uiRef, focusedId]);
+  // Drill-back from another tab arrives with highlightSampleId set on
+  // the App-level state. Promote that into focusedId so the returning
+  // sample shows the same focus styling as keyboard navigation, and
+  // the focusByIndex helper handles auto-pagination + scrollIntoView
+  // for free.
+  useEffect(() => {
+    if (!highlightSampleId) return;
+    const i = sorted.findIndex((r) => r.id === highlightSampleId);
+    if (i >= 0 && sorted[i].id !== focusedId) focusByIndex(i);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightSampleId, sorted]);
   useEffect(() => {
     const handler = (e) => {
       if (bulkOpen) return;
@@ -11241,7 +11276,14 @@ const SamplesTab = ({
                   <th
                     key={col.id}
                     className={`px-3 py-2.5 ${sortable ? "cursor-pointer select-none" : ""}`}
-                    style={{ borderBottom: "1px solid var(--border)" }}
+                    style={{
+                      borderBottom: "1px solid var(--border)",
+                      position: "sticky",
+                      top: 0,
+                      zIndex: 2,
+                      background: "var(--bg-soft)",
+                      minWidth: col.minWidth || undefined,
+                    }}
                     onClick={
                       sortable
                         ? () => {
@@ -11298,24 +11340,19 @@ const SamplesTab = ({
           <tbody>
             {visible.map((r, idx) => {
               const notesOpen = openNotes.has(r.id);
-              const isHighlighted = highlightSampleId === r.id;
               const isFocused = focusedId === r.id;
               const rowBg = isFocused
                 ? "rgba(39,86,98,0.08)"
-                : isHighlighted
-                  ? "rgba(0,163,166,0.10)"
-                  : idx % 2 === 0
-                    ? "transparent"
-                    : "var(--bg-soft)";
+                : idx % 2 === 0
+                  ? "transparent"
+                  : "var(--bg-soft)";
               const cellStyle = {
                 borderBottom: "1px solid var(--border)",
                 background: rowBg,
                 verticalAlign: "top",
                 boxShadow: isFocused
                   ? "inset 0 2px 0 #275662, inset 0 -2px 0 #275662"
-                  : isHighlighted
-                    ? "inset 0 1px 0 #00a3a6, inset 0 -1px 0 #00a3a6"
-                    : undefined,
+                  : undefined,
               };
               const f = r.flags || {};
               const placement = r.placement;
@@ -11336,9 +11373,6 @@ const SamplesTab = ({
                             notesOpen={notesOpen}
                             onToggleNotes={() => toggleNotes(r.id)}
                           />
-                        )}
-                        {col.id === "name" && (
-                          <SampleStringValue value={r.name} />
                         )}
                         {col.id === "context" && (
                           <SampleContextCell
@@ -16329,7 +16363,10 @@ const ValidateTab = ({
             };
             return (
             <div className="flex flex-wrap gap-x-6 gap-y-4 items-start mb-4">
-              <div className="flex-1 min-w-[520px]">
+              <div
+                className="flex-1"
+                style={{ minWidth: "max-content" }}
+              >
                 <div
                   className="text-[10px] tracking-[0.15em] uppercase mb-2"
                   style={sectionLabelStyle}
@@ -16382,7 +16419,7 @@ const ValidateTab = ({
                   </VerdictBtn>
                 </div>
               </div>
-              <div className="flex flex-col gap-3 shrink-0">
+              <div className="flex flex-row flex-wrap gap-x-6 gap-y-3 items-start shrink-0">
                 {/* Verdict on target sample — sample-level layer that
                     cohabits with the event evaluation. Auto-defaults
                     (TP -> contaminated, FP -> correct, Uncertain ->
@@ -18749,7 +18786,7 @@ const HelpTab = ({ onStartTour }) => {
                 the Samples tab) and <strong>Target action</strong>{" "}
                 (Keep / Suppress badge, also read-only). Species count
                 is sortable too. Pagination size is configurable
-                (default 500) under the gear icon → Items per page.
+                (default 100) under the gear icon → Items per page.
                 Click a row to jump into Guided validation.
               </p>
             </div>
@@ -18758,14 +18795,14 @@ const HelpTab = ({ onStartTour }) => {
                 Scatterplots
               </h4>
               <p>
-                Gallery of source-vs-target thumbnails (default 100 per
+                Gallery of source-vs-target thumbnails (default 50 per
                 page; configurable). Each species is a point. The log10
                 axes are computed once per dataset from the abundance
                 matrix so all thumbnails are on identical bounds and
                 visually comparable. Sort by probability, rate,
                 introduced %, evaluation, <strong>target verdict</strong>,{" "}
-                <strong>target action</strong> (when the action layer is
-                enabled), or source / target sample name; click an
+                <strong>target action</strong>, or source / target
+                sample name; click an
                 active sort button again to flip ascending/descending.
                 A <em>Color contamination-line points</em> checkbox in
                 the sort row toggles the salmon highlight on points
@@ -18835,7 +18872,7 @@ const HelpTab = ({ onStartTour }) => {
                 sample (i.e. the contaminations flowing into it). It
                 exposes: an event Evaluation picker, a Verdict on
                 target sample picker, an Action on target sample
-                picker (when the action layer is enabled), and three
+                picker, and three
                 drill-ins → Scatter / → Events / → Samples that scope
                 to that sample and switch tabs.
               </p>
@@ -18881,8 +18918,8 @@ const HelpTab = ({ onStartTour }) => {
                 layer that cohabits with the event evaluation; defaults
                 follow the event verdict but the curator can override),
                 and <strong>Action on target sample</strong>{" "}
-                (Keep / Suppress, when the action layer is enabled).
-                Each picker writes directly to its target.
+                (Keep / Suppress). Each picker writes directly to its
+                target.
               </p>
               <p style={{ marginTop: 6 }}>
                 The event queue in the sidebar is sortable by{" "}
@@ -18923,7 +18960,7 @@ const HelpTab = ({ onStartTour }) => {
                 where this sample is the source, and likewise for the
                 target column. A Verdict picker (Pending / Contaminated
                 / Correct / Uncertain) and a keep / suppress Action
-                picker (when the action layer is enabled) round out
+                picker round out
                 the row.
               </p>
               <p style={{ marginTop: 6 }}>
@@ -18951,8 +18988,9 @@ const HelpTab = ({ onStartTour }) => {
                 evaluations / sample verdicts / scope), and a
                 sample-context search bar with autocomplete suggestions
                 across every metadata facet plus two numeric
-                <em> ≥ source</em> / <em>≥ target</em> counters that
-                hide samples with fewer than N events on that side.
+                <em> count event source</em> /{" "}
+                <em>count event target</em> counters that hide samples
+                with fewer than N events on that side.
               </p>
               <p style={{ marginTop: 6 }}>
                 <strong>Keyboard navigation.</strong> Click any row to
@@ -18962,9 +19000,9 @@ const HelpTab = ({ onStartTour }) => {
                 still unset. <kbd style={{ display: "inline-block", padding: "0px 5px", border: "1px solid var(--border-strong)", borderRadius: 3, background: "var(--bg-card)", fontFamily: "ui-monospace, monospace", fontSize: 10, fontWeight: 700 }}>K</kbd>{" "}
                 /{" "}
                 <kbd style={{ display: "inline-block", padding: "0px 5px", border: "1px solid var(--border-strong)", borderRadius: 3, background: "var(--bg-card)", fontFamily: "ui-monospace, monospace", fontSize: 10, fontWeight: 700 }}>S</kbd>{" "}
-                set Keep / Suppress on the focused row when the action
-                feature is enabled. Shortcuts back off when the focus
-                is in a text field or the bulk-apply dialog is open.
+                set Keep / Suppress on the focused row. Shortcuts back
+                off when the focus is in a text field or the bulk-apply
+                dialog is open.
               </p>
               <p style={{ marginTop: 6 }}>
                 <strong>Drill-in workflow.</strong> Clicking → Scatter
@@ -19080,7 +19118,7 @@ const HelpTab = ({ onStartTour }) => {
             Sample-level action
           </h4>
           <p>
-            Optional downstream operation, opt-in via Configuration:{" "}
+            Downstream operation:{" "}
             <strong>keep</strong> (acknowledge the contamination but
             preserve the sample) or <strong>suppress</strong> (drop the
             sample from analyses). Lives on the sample, not on the
@@ -19472,8 +19510,8 @@ const HelpTab = ({ onStartTour }) => {
                 ["↓", "Next sample in the sorted list"],
                 ["←", "Previous sample whose action is still unset"],
                 ["→", "Next sample whose action is still unset"],
-                ["K", "Set the focused sample's action to Keep (when the action layer is enabled)"],
-                ["S", "Set the focused sample's action to Suppress (when the action layer is enabled)"],
+                ["K", "Set the focused sample's action to Keep"],
+                ["S", "Set the focused sample's action to Suppress"],
               ].map(([k, d]) => (
                 <tr key={k} style={{ borderBottom: "1px solid var(--border-soft)" }}>
                   <td className="py-2.5 pr-4 align-middle">
@@ -19580,9 +19618,8 @@ const HelpTab = ({ onStartTour }) => {
                 </li>
                 <li>
                   An optional <em>Action on samples targeted by the
-                  matched events</em> (when the action layer is
-                  enabled) with its own "don't overwrite previous
-                  action" safety toggle (default ON).
+                  matched events</em> with its own "don't overwrite
+                  previous action" safety toggle (default ON).
                 </li>
                 <li>
                   An optional <em>Comment on target sample</em>{" "}
@@ -19647,7 +19684,7 @@ const HelpTab = ({ onStartTour }) => {
         >
           <p>
             The gear icon in the sub-banner (top-right, just above the
-            green privacy chip) opens a Configuration dialog with three
+            green privacy chip) opens a Configuration dialog with two
             settings, each persisted to localStorage so the choice
             survives session resets.
           </p>
@@ -19662,26 +19699,9 @@ const HelpTab = ({ onStartTour }) => {
               19:00 → 07:00 local time, wraps past midnight).
             </li>
             <li>
-              <strong>Suppress / keep action</strong> — opt-in. Adds a
-              "suppress" / "keep" action choice to true-positive events
-              so you can decide which samples stay in your downstream
-              analyses. Action only applies to TP — FP / Uncertain /
-              Pending events carry no action. Defaults to{" "}
-              <em>suppress</em> when no explicit choice is made; the
-              value lands in the exported TSV. When enabled you also get
-              an <em>Action</em> column in the events table, an action
-              filter on the filter bar, an action override in the Bulk
-              apply dialog, an inline Keep / Suppress chip pair on the
-              evaluation row in Guided validation (TP only), and a
-              colored halo on TP evaluation buttons in the Scatterplot
-              gallery
-              showing the committed action at a glance (yellow = keep,
-              salmon = suppress).
-            </li>
-            <li>
               <strong>Items per page</strong> — four numeric inputs to
-              tune pagination on the Events table (default 500), the
-              Scatterplot gallery (100), the Samples table (200) and
+              tune pagination on the Events table (default 100), the
+              Scatterplot gallery (50), the Samples table (100) and
               the Datasets list (50). Clamped to [1, 5000].
             </li>
           </ul>
@@ -19724,8 +19744,8 @@ const HelpTab = ({ onStartTour }) => {
           </h4>
           <p>
             To survive accidental refreshes, the app auto-saves your full
-            session to your browser's <code style={{ fontFamily: "ui-monospace, monospace" }}>localStorage</code>{" "}
-            after every change (debounced 200 ms). A discrete{" "}
+            session to your browser's <code style={{ fontFamily: "ui-monospace, monospace" }}>IndexedDB</code>{" "}
+            after every change (debounced 1 s). A discrete{" "}
             <em>Saved</em> pill appears in the bottom-right corner each time
             the save succeeds. What is persisted:
           </p>
@@ -19736,26 +19756,24 @@ const HelpTab = ({ onStartTour }) => {
             <li>UI state: active tab, selected event, filters, sort order</li>
           </ul>
           <p>
-            The data is stored under a key named{" "}
+            The data is stored in an IndexedDB database named{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}>
-              crocodeel-interpreter-v1
+              crocodeel-interpreter
             </code>{" "}
-            in your browser, scoped to the application's origin (GitHub
-            Pages domain). It is never transmitted anywhere — not even to
-            our own infrastructure. Only the browser session running on
-            this device, in this browser profile, can read it. Closing the
-            tab keeps the data; clearing your browser's site data removes
-            it.
+            (object store <code style={{ fontFamily: "ui-monospace, monospace" }}>kv</code>),
+            scoped to the application's origin (GitHub Pages domain). It is
+            never transmitted anywhere — not even to our own infrastructure.
+            Only the browser session running on this device, in this browser
+            profile, can read it. Closing the tab keeps the data; clearing
+            your browser's site data removes it. Sessions stored under the
+            old localStorage keys are migrated transparently on first load.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Storage limits.</strong>{" "}
-            Browser localStorage is typically capped at 5–10 MB per origin.
-            On large datasets the species abundance table can approach
-            this. If a save would exceed the quota, the app gracefully
-            falls back to saving without the abundance table (so your
-            curation work is preserved); on the next visit you re-load only
-            the abundance file. In the worst case the app keeps just the
-            events with evaluations and notes.
+            IndexedDB quotas are typically a few hundred MB to a few GB per
+            origin (depending on the browser and free disk space) — orders
+            of magnitude larger than the 5–10 MB localStorage budget the
+            app used to rely on. The whole abundance table comfortably fits.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Clearing storage.</strong>{" "}
@@ -19767,10 +19785,10 @@ const HelpTab = ({ onStartTour }) => {
           <p>
             <strong style={{ color: "var(--ink)" }}>Private / incognito
             windows.</strong>{" "}
-            Browsers may restrict or fully disable localStorage in private
-            mode. In that case the app still works in-memory, but your
-            work is lost when the tab closes — export with the Export tab
-            before leaving.
+            Browsers may restrict or fully disable IndexedDB in private mode.
+            The app refuses to boot when IndexedDB is unavailable and shows a
+            "browser not supported" screen — open the page in a normal window
+            (or another browser) and your session will load.
           </p>
           <p>
             The tutorial-seen flag (
@@ -19878,15 +19896,15 @@ const HelpTab = ({ onStartTour }) => {
               <p>
                 No — the app auto-saves your full session (events,
                 evaluations, actions, notes, all loaded files, plus your
-                active tab and filters) to your browser's localStorage
+                active tab and filters) to your browser's IndexedDB
                 every time something changes. After a refresh you land
                 exactly where you left off. See the Privacy & how it
-                works section for details, including limits and how to
-                clear it. For belt-and-braces backups before a long
-                break or to move sessions between machines, hit{" "}
-                <strong>Download session</strong> on the files bar to
-                grab a JSON, then <strong>Import session</strong> to
-                restore it later.
+                works section for details, including the IndexedDB
+                quotas and how to clear it. For belt-and-braces backups
+                before a long break or to move sessions between
+                machines, hit <strong>Download session</strong> on the
+                files bar to grab a JSON, then{" "}
+                <strong>Import session</strong> to restore it later.
               </p>
             </div>
           </div>
@@ -20630,29 +20648,103 @@ const ExportTab = ({
    ============================================================================ */
 
 /* Persistence: we keep the entire session alive across page refreshes
-   by stashing it in localStorage. We save:
+   by stashing it in IndexedDB. We save:
    - events (with verdicts and notes) — the curation work
    - runMetadata (CroCoDeEL run params)
    - metadata (sample annotations)
    - plateMap (sample-to-well placement)
    - ab (species abundance table)
-   The abundance table can be the largest piece. If it pushes us past
-   the localStorage quota (~5-10 MB depending on the browser), we fall
-   back gracefully to saving everything except the abundance — the user
-   keeps their curation work and re-loads only the abundance file. */
-const STORAGE_KEY = "crocodeel-interpreter-v1";
-// Abundance matrix lives in its own key so verdict / action / filter
-// changes don't have to re-serialize and re-compress the (huge) matrix
-// on every click. The `_ab` key is rewritten only when the abundance
-// reference itself changes (file load, dataset switch, decontamination).
-const STORAGE_KEY_AB = "crocodeel-interpreter-v1-ab";
+   IndexedDB gives us hundreds of MB to GBs (vs localStorage's ~5–10 MB),
+   structured-cloned writes that don't block the main thread, and no
+   need for JSON.stringify / LZ compression. The legacy localStorage
+   payload is migrated transparently on first boot. */
+const DB_NAME = "crocodeel-interpreter";
+const DB_VERSION = 1;
+const STORE = "kv";
+// Two records per session: the main payload (events / metadata / UI
+// state, small, rewritten on every change) and the abundance matrix
+// (large, rewritten only when its reference changes — file load,
+// dataset switch, decontamination). Splitting them keeps verdict /
+// filter clicks cheap on big datasets.
+const KEY_MAIN = "main";
+const KEY_AB = "ab";
+// Legacy localStorage keys — read once during the IndexedDB migration
+// and removed afterwards. The COMPRESSED_PREFIX flagged LZ-compressed
+// payloads under those keys; we still need to recognise it to migrate.
+const LEGACY_KEY = "crocodeel-interpreter-v1";
+const LEGACY_KEY_AB = "crocodeel-interpreter-v1-ab";
+const LEGACY_COMPRESSED_PREFIX = "lz:";
+
+/** True when the current browser exposes IndexedDB. The app refuses
+    to boot without it (no fallback) and shows an unsupported-browser
+    message instead. */
+function indexedDBSupported() {
+  return typeof window !== "undefined" && !!window.indexedDB;
+}
+
+/** Open (or create) the session database. The schema is one
+    keyed-object store; we don't bother with auto-incrementing keys.
+    Re-opens on every call but the underlying connection is cheap and
+    Chromium / Firefox cache the open handle internally. */
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+    req.onblocked = () =>
+      reject(new Error("IndexedDB open blocked — close other tabs running this app"));
+  });
+}
+
+function idbGet(key) {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readonly");
+        const req = tx.objectStore(STORE).get(key);
+        req.onsuccess = () => resolve(req.result ?? null);
+        req.onerror = () => reject(req.error);
+      }),
+  );
+}
+
+function idbSet(key, value) {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      }),
+  );
+}
+
+function idbDel(key) {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      }),
+  );
+}
 
 /** Drop zero / falsy entries from the abundance matrix before saving.
     Most metagenomic profiles are very sparse (a typical sample has a
     few hundred non-zero species out of thousands), so omitting the
-    zeros usually shrinks the JSON 5–10×. The dense form is never
-    needed downstream: every consumer reads `matrix[sp]?.[s] || 0` so a
-    missing key is treated as zero exactly like an explicit zero. */
+    zeros usually shrinks the structured-clone payload 5–10×. The
+    dense form is never needed downstream: every consumer reads
+    `matrix[sp]?.[s] || 0` so a missing key is treated as zero exactly
+    like an explicit zero. */
 function sparsifyAbundance(ab) {
   if (!ab || !ab.matrix) return ab;
   const sparse = {};
@@ -20668,21 +20760,17 @@ function sparsifyAbundance(ab) {
   return { ...ab, matrix: sparse };
 }
 
-// Magic prefix that flags an LZ-compressed payload. Legacy plain-JSON
-// strings starting with `{` still parse via the fallback branch below,
-// so existing sessions migrate transparently to the new format on the
-// next save.
-const COMPRESSED_PREFIX = "lz:";
-
-/** Compress + decompress helpers. The COMPRESSED_PREFIX gates the
-    LZ-decoded path so legacy plain-JSON payloads still load. */
-function readCompressedKey(key) {
+/** Read a single legacy localStorage key, transparently decompressing
+    the LZ-UTF16 payload if the COMPRESSED_PREFIX is present. Returns
+    null if the key is missing or the parse / decompress fails. Used
+    only by the one-shot migration below. */
+function readLegacyKey(key) {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return null;
-    if (raw.startsWith(COMPRESSED_PREFIX)) {
+    if (raw.startsWith(LEGACY_COMPRESSED_PREFIX)) {
       const decompressed = LZString.decompressFromUTF16(
-        raw.slice(COMPRESSED_PREFIX.length),
+        raw.slice(LEGACY_COMPRESSED_PREFIX.length),
       );
       if (!decompressed) return null;
       return JSON.parse(decompressed);
@@ -20693,107 +20781,100 @@ function readCompressedKey(key) {
   }
 }
 
-function writeCompressedKey(key, value) {
-  const compressed = LZString.compressToUTF16(JSON.stringify(value));
-  localStorage.setItem(key, COMPRESSED_PREFIX + compressed);
+/** Migrate sessions stored under the old localStorage keys into
+    IndexedDB. Runs once: if IDB already has a payload we skip; if
+    localStorage has one we move it across and remove the legacy
+    entries so we don't drift between two sources of truth. */
+async function migrateLocalStorageToIDB() {
+  if (typeof window === "undefined") return;
+  let migrated = false;
+  try {
+    const main = readLegacyKey(LEGACY_KEY);
+    if (main) {
+      await idbSet(KEY_MAIN, main);
+      migrated = true;
+    }
+    const ab = readLegacyKey(LEGACY_KEY_AB);
+    if (ab) {
+      await idbSet(KEY_AB, ab);
+      migrated = true;
+    }
+  } catch (e) {
+    console.warn("[crocodeel] localStorage → IndexedDB migration failed:", e?.message);
+    return;
+  }
+  // Only remove the legacy entries once they're safely in IDB.
+  if (migrated) {
+    try {
+      window.localStorage.removeItem(LEGACY_KEY);
+      window.localStorage.removeItem(LEGACY_KEY_AB);
+    } catch {
+      // ignore
+    }
+  }
 }
 
-function loadFromStorage() {
-  // Read the main payload (events / metadata / UI state) and the
-  // abundance side payload separately. They were written under two
-  // different keys to avoid re-serializing the huge matrix on every
-  // verdict click. Legacy single-key payloads carry `ab` inline; if
-  // present we honour it, otherwise we splice the side payload back in.
-  const main = readCompressedKey(STORAGE_KEY);
-  if (!main) return null;
+/** Read the main payload + the abundance side payload from IndexedDB,
+    splice them together and return a session object — or null if
+    nothing is stored. Triggers the legacy migration on first run. */
+async function loadFromStorage() {
+  const main = await idbGet(KEY_MAIN);
+  if (!main) {
+    // Nothing in IDB — try to import a legacy localStorage session.
+    await migrateLocalStorageToIDB();
+    const migrated = await idbGet(KEY_MAIN);
+    if (!migrated) return null;
+    if (!Array.isArray(migrated.rawEvents) || migrated.rawEvents.length === 0) {
+      return null;
+    }
+    if (!migrated.ab) {
+      const ab = await idbGet(KEY_AB);
+      if (ab) migrated.ab = ab;
+    }
+    return migrated;
+  }
   if (!Array.isArray(main.rawEvents) || main.rawEvents.length === 0) {
     return null;
   }
   if (!main.ab) {
-    const ab = readCompressedKey(STORAGE_KEY_AB);
+    const ab = await idbGet(KEY_AB);
     if (ab) main.ab = ab;
   }
   return main;
 }
 
-function saveToStorage(payload, options) {
-  // Two-key save: the abundance matrix is rewritten only when its
-  // reference changes (controlled by the caller via options.saveAb);
-  // everything else is rewritten on every change but is small enough
-  // that the JSON.stringify + LZ-compress cost is negligible.
+/** Persist the session to IndexedDB. The main payload is rewritten on
+    every call; the abundance matrix is rewritten only when
+    options.saveAb is true (i.e. when its reference actually changed).
+    All writes are async — this returns a promise resolving to true on
+    success. Errors are caught and logged but do not propagate so the
+    caller's render loop is unaffected. */
+async function saveToStorage(payload, options) {
   const { saveAb } = options || {};
   const { ab, ...rest } = payload;
-
-  const uiState = {
-    tab: payload.tab,
-    selId: payload.selId,
-    filter: payload.filter,
-    sort: payload.sort,
-  };
-  // 1) Save the (small) main payload — tries the full thing, then a
-  //    minimal events+UI fallback if the quota is hit.
-  const mainAttempts = [
-    { payload: rest, dropped: null },
-    {
-      payload: {
-        version: rest.version,
-        savedAt: rest.savedAt,
-        rawEvents: rest.rawEvents,
-        ...uiState,
-      },
-      dropped: "metadata+plateMap+runMetadata",
-    },
-  ];
-  let mainOk = false;
-  for (const { payload: p, dropped } of mainAttempts) {
-    try {
-      writeCompressedKey(STORAGE_KEY, p);
-      if (dropped) {
-        console.warn(
-          `[crocodeel] localStorage quota tight — saved without: ${dropped}`,
-        );
-      }
-      mainOk = true;
-      break;
-    } catch (e) {
-      if (e?.name !== "QuotaExceededError" && e?.code !== 22) {
-        console.warn("[crocodeel] localStorage save failed:", e?.message);
-        return false;
-      }
-    }
-  }
-  if (!mainOk) {
-    console.warn("[crocodeel] localStorage save failed even with minimal main payload");
+  try {
+    await idbSet(KEY_MAIN, rest);
+  } catch (e) {
+    console.warn("[crocodeel] IndexedDB save (main) failed:", e?.message);
     return false;
   }
-  // 2) Save the abundance side payload only when explicitly requested.
-  //    Sparsified to drop the zeros (5–10× shrink) then LZ-compressed.
   if (saveAb) {
     if (ab) {
       try {
-        writeCompressedKey(STORAGE_KEY_AB, sparsifyAbundance(ab));
+        await idbSet(KEY_AB, sparsifyAbundance(ab));
       } catch (e) {
-        if (e?.name === "QuotaExceededError" || e?.code === 22) {
-          console.warn(
-            "[crocodeel] localStorage quota tight — abundance not saved",
-          );
-          // Drop the stale ab if any; otherwise the loader would
-          // splice an out-of-date matrix into the next session.
-          try {
-            localStorage.removeItem(STORAGE_KEY_AB);
-          } catch {
-            // ignore
-          }
-        } else {
-          console.warn(
-            "[crocodeel] localStorage abundance save failed:",
-            e?.message,
-          );
+        console.warn("[crocodeel] IndexedDB save (ab) failed:", e?.message);
+        // Drop the stale ab if any; otherwise the loader would splice
+        // an out-of-date matrix into the next session.
+        try {
+          await idbDel(KEY_AB);
+        } catch {
+          // ignore
         }
       }
     } else {
       try {
-        localStorage.removeItem(STORAGE_KEY_AB);
+        await idbDel(KEY_AB);
       } catch {
         // ignore
       }
@@ -20802,13 +20883,58 @@ function saveToStorage(payload, options) {
   return true;
 }
 
-function clearStorage() {
+async function clearStorage() {
   try {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(STORAGE_KEY_AB);
+    await idbDel(KEY_MAIN);
+    await idbDel(KEY_AB);
   } catch {
     // ignore
   }
+}
+
+/* ----------------------------------------------------------------------------
+   FILE READING WITH PROGRESS
+   ----------------------------------------------------------------------------
+   `Blob.text()` is convenient but doesn't expose a progress event, so on
+   big abundance / session files (50+ MB) the user sees nothing until the
+   read completes. This helper switches to FileReader so we can pipe a
+   progress fraction (0..1) into the loading overlay. */
+function readFileText(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error || new Error("File read failed"));
+    reader.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(e.loaded / e.total);
+      }
+    };
+    reader.readAsText(file);
+  });
+}
+
+/** Yield to the browser's render queue so a state update queued just
+    before this call gets rendered before we run the next blocking
+    chunk. Used between "Reading…" and the synchronous parse step so
+    the overlay actually flips to "Parsing…" instead of staying stuck
+    on 100 % during a multi-second parse. */
+function yieldToBrowser() {
+  return new Promise((r) => setTimeout(r, 0));
+}
+
+/** Format a byte count with a short SI-style suffix. Used in the
+    loading overlay to show a friendly "12.4 MB" instead of the raw
+    byte count. */
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 /** Inline analysis-title chip in the sidebar, between "Interpretation
@@ -21444,12 +21570,12 @@ const TutorialWelcome = ({ onStart, onSkip }) => (
   </div>
 );
 
-export default function App() {
-  // Try to recover a previous session before initial render so the UI
-  // shows the data immediately (no flicker). All persisted UI state
-  // (filters, sort, active tab, selected event) is restored alongside
-  // the data so the user lands exactly where they left off.
-  const initial = typeof window !== "undefined" ? loadFromStorage() : null;
+function AppMain({ initial }) {
+  // The session is loaded asynchronously by the outer App wrapper
+  // before this component mounts, so `initial` is already populated
+  // (or null when no prior session exists). All persisted UI state
+  // (filters, sort, active tab, selected event) is restored from it
+  // so the user lands exactly where they left off.
   // Sample-level curation lives in its own map keyed by sample id. Each
   // entry holds an optional verdict ("contaminated" / "correct" /
   // "uncertain") and an optional downstream action ("keep" / "suppress")
@@ -21609,22 +21735,10 @@ export default function App() {
     window.localStorage.setItem("crocodeel-theme-dark-start", darkStart);
     window.localStorage.setItem("crocodeel-theme-dark-end", darkEnd);
   }, [darkStart, darkEnd]);
-  // Suppress / keep action — opt-in feature. When enabled, every TP
-  // verdict defaults to `action: "suppress"` and the user can flip
-  // individual events to "keep" to preserve borderline-contaminated
-  // samples. Disabled by default to avoid extra cognitive load for the
-  // typical curator. Persisted separately from the session.
-  const [actionEnabled, setActionEnabled] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem("crocodeel-action-enabled") === "1";
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(
-      "crocodeel-action-enabled",
-      actionEnabled ? "1" : "0",
-    );
-  }, [actionEnabled]);
+  // Suppress / keep action — always available. Every TP-targeted
+  // sample defaults to `action: "suppress"` and the curator can flip
+  // it to "keep" to preserve borderline-contaminated samples.
+  const actionEnabled = true;
   // Per-table pagination preferences. Persisted so the user's choice
   // sticks across sessions. Defaults match the historical PAGE_SIZE
   // constants for each table.
@@ -21637,16 +21751,16 @@ export default function App() {
     return Number.isFinite(v) && v > 0 ? v : fallback;
   };
   const [eventsPageSize, setEventsPageSize] = useState(() =>
-    readPageSize("events", 500),
+    readPageSize("events", 100),
   );
   const [galleryPageSize, setGalleryPageSize] = useState(() =>
-    readPageSize("gallery", 100),
+    readPageSize("gallery", 50),
   );
   const [datasetsPageSize, setDatasetsPageSize] = useState(() =>
     readPageSize("datasets", 50),
   );
   const [samplesPageSize, setSamplesPageSize] = useState(() =>
-    readPageSize("samples", 200),
+    readPageSize("samples", 100),
   );
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -21764,6 +21878,11 @@ export default function App() {
   });
   const [sort, setSort] = useState(initial?.sort || { by: "score", dir: "desc" });
   const [err, setErr] = useState(null);
+  // Long-running file load / parse indicator. `null` when idle; an
+  // object `{ label, sub?, progress }` while a load is in flight.
+  // `progress` is a 0..1 fraction for the read step (FileReader) and
+  // null for the synchronous parse step (indeterminate stripe).
+  const [loading, setLoading] = useState(null);
   const eventFileRef = useRef(null);
   const abFileRef = useRef(null);
   const sessionFileRef = useRef(null);
@@ -21825,7 +21944,8 @@ export default function App() {
         title: "Network — see the contamination web",
         body:
           "The Network tab plots all events as a directed graph: nodes are samples, edges are contamination events.\n\n" +
-          "Edge thickness scales with rate. Cascade samples (both source and target in different events) appear in salmon. Useful to spot systemic patterns or single sample acting as a hub.",
+          "Two colour schemes you can flip between in the legend: Exploration (edges by rate, nodes by topological role — source-only / target-only / cascade) and Curation (edges by event evaluation, node fill by sample-level verdict, node border by sample-level action).\n\n" +
+          "Click an edge to open the event in Validate. Click a node to bulk-apply an event evaluation, sample verdict and sample action to the events targeting that sample, with three drill-ins → Scatter / → Events / → Samples scoped to the connected component.",
         action: "tabNetwork",
         highlight: '[data-tutorial="tab-network"]',
       },
@@ -21870,17 +21990,16 @@ export default function App() {
       {
         title: "Keyboard shortcuts speed up curation",
         body:
-          "Press T (True positive), F (False positive) or U (Uncertain) to validate the current event.\n\n" +
-          "Then ← / → jump to the previous/next pending event automatically; ↑ / ↓ step through the queue regardless of evaluation.\n\n" +
-          "Press ? in the app to see all shortcuts.",
+          "On Validate: T (True positive), F (False positive), U (Uncertain), P (reset to Pending). ← / → jump to the previous/next pending event; ↑ / ↓ step through the queue regardless of evaluation. Press ? in the app to see the full cheatsheet.\n\n" +
+          "On Samples: click a row to focus it, then ↑ / ↓ step the sorted list, ← / → jump to the previous/next sample whose action is still unset. K = Keep, S = Suppress on the focused row.",
         highlight: '[data-tutorial="verdict-buttons"]',
       },
       {
         title: "Samples — the per-sample cockpit",
         body:
-          "Each event has an evaluation; each sample has its own verdict (Contaminated / Correct / Uncertain / Pending) and an optional action (Keep / Suppress).\n\n" +
-          "The Samples tab lists every sample with its metadata pills, the events targeting it (count, evaluation breakdown, max-rate badge) and one-click drill-ins → Scatter / → Events / → Network. A floating \"Back to Samples\" chip lets you jump straight back to the row you were studying.\n\n" +
-          "Filter by metadata (autocomplete on subject / timepoint / group / biome / control / quality flags) or by \"≥ N events\". The Bulk-apply dialog combines all those filters with pre-conditions on the samples' current verdict / action so you can stamp a verdict / action on a precise subset.",
+          "Each event has an evaluation; each sample has its own verdict (Contaminated / Correct / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are auto-tagged Correct + Keep.\n\n" +
+          "The table splits events into two side-aware columns — Events as source / Events as target — each with its own count, TP/FP/Uncertain/Pending breakdown and → Scatter / → Events / → Network drill-ins that scope the destination tab to that side. A floating \"Back to Samples\" chip on the destination tab brings you back to the same row.\n\n" +
+          "Filter by metadata (autocomplete on subject / timepoint / group / biome / control / quality flags) or by \"count event source\" / \"count event target\" counters. The Bulk-apply dialog combines all those filters with per-side event-count chips and pre-conditions on the samples' current verdict / action so you can stamp a verdict / action on a precise subset.",
         action: "tabSamples",
         highlight: '[data-tutorial="tab-samples"]',
       },
@@ -22011,7 +22130,11 @@ export default function App() {
     }
     const abChanged = lastSavedAbRef.current !== ab;
     const handle = setTimeout(() => {
-      const ok = saveToStorage(
+      // saveToStorage is async (IndexedDB) — fire-and-forget; the save
+      // indicator updates from inside the promise. Errors are already
+      // caught + logged inside saveToStorage so the resolved value is
+      // boolean ok.
+      saveToStorage(
         {
           version: 1,
           savedAt: new Date().toISOString(),
@@ -22029,11 +22152,12 @@ export default function App() {
           sort,
         },
         { saveAb: abChanged },
-      );
-      if (ok) {
-        if (abChanged) lastSavedAbRef.current = ab;
-        setSavedAt(Date.now());
-      }
+      ).then((ok) => {
+        if (ok) {
+          if (abChanged) lastSavedAbRef.current = ab;
+          setSavedAt(Date.now());
+        }
+      });
     }, 1000);
     return () => clearTimeout(handle);
   }, [rawEvents, sampleCuration, runMetadata, metadata, plateMap, ab, analysisTitle, tab, selId, filter, sort]);
@@ -22342,10 +22466,36 @@ export default function App() {
   // skipping unchanged cards on a verdict click — the dominant cost on
   // large datasets.
   const setVerdict = React.useCallback(
-    (id, verdict) =>
+    (id, verdict) => {
+      let target = null;
       setRawEvents((prev) =>
-        prev.map((e) => (e.id === id ? { ...e, verdict } : e)),
-      ),
+        prev.map((e) => {
+          if (e.id === id) {
+            target = e.target;
+            return { ...e, verdict };
+          }
+          return e;
+        }),
+      );
+      // Auto-sync the target sample's verdict from the new event
+      // verdict — but only if the sample's current verdict is still
+      // pending. Curator decisions are never overwritten.
+      // Mapping: TP -> contaminated, FP -> correct, Uncertain ->
+      // uncertain, pending -> no change.
+      const map = {
+        true_positive: "contaminated",
+        false_positive: "correct",
+        uncertain: "uncertain",
+      };
+      const sampleVerdict = map[verdict];
+      if (target && sampleVerdict) {
+        setSampleCuration((prev) => {
+          const cur = prev[target] || {};
+          if (cur.verdict) return prev;
+          return { ...prev, [target]: { ...cur, verdict: sampleVerdict } };
+        });
+      }
+    },
     [],
   );
   const setNote = React.useCallback(
@@ -22765,8 +22915,22 @@ export default function App() {
 
   /* ---- file loaders ---- */
   const loadEvents = async (file) => {
+    const sizeStr = formatBytes(file?.size || 0);
     try {
-      const text = await file.text();
+      setLoading({
+        label: `Reading ${file.name}…`,
+        sub: sizeStr,
+        progress: 0,
+      });
+      const text = await readFileText(file, (p) =>
+        setLoading({
+          label: `Reading ${file.name}…`,
+          sub: sizeStr,
+          progress: p,
+        }),
+      );
+      setLoading({ label: `Parsing ${file.name}…`, sub: sizeStr, progress: null });
+      await yieldToBrowser();
       const parsed = parseEvents(text);
       setRawEvents(parsed.events);
       setSampleCuration({});
@@ -22786,18 +22950,40 @@ export default function App() {
       setTab("overview");
     } catch (e) {
       setErr(`Events file: ${e.message}`);
+    } finally {
+      setLoading(null);
     }
   };
 
   const loadAbundance = async (file) => {
+    const sizeStr = formatBytes(file?.size || 0);
     try {
-      const text = await file.text();
+      setLoading({
+        label: `Reading ${file.name}…`,
+        sub: sizeStr,
+        progress: 0,
+      });
+      const text = await readFileText(file, (p) =>
+        setLoading({
+          label: `Reading ${file.name}…`,
+          sub: sizeStr,
+          progress: p,
+        }),
+      );
+      setLoading({
+        label: `Parsing ${file.name}…`,
+        sub: `${sizeStr} — building the species × sample matrix`,
+        progress: null,
+      });
+      await yieldToBrowser();
       const parsed = parseAbundance(text);
       if (!parsed) throw new Error("Could not parse abundance table");
       setAb(parsed);
       setErr(null);
     } catch (e) {
       setErr(`Abundance file: ${e.message}`);
+    } finally {
+      setLoading(null);
     }
   };
 
@@ -22805,6 +22991,7 @@ export default function App() {
   const loadDemo = async () => {
     setDemoLoading(true);
     setErr(null);
+    setLoading({ label: "Fetching demo dataset…", progress: null });
     try {
       // Derive the base URL from the current location instead of
       // import.meta.env.BASE_URL — that keeps this file parseable in
@@ -22824,6 +23011,12 @@ export default function App() {
       if (!evRes.ok) throw new Error(`events (${evRes.status})`);
       if (!abRes.ok) throw new Error(`abundance (${abRes.status})`);
       const [evText, abText] = await Promise.all([evRes.text(), abRes.text()]);
+      setLoading({
+        label: "Parsing demo dataset…",
+        sub: "events + abundance matrix",
+        progress: null,
+      });
+      await yieldToBrowser();
       const parsedAb = parseAbundance(abText);
       if (!parsedAb) throw new Error("Could not parse demo abundance table");
       const parsedEvents = parseEvents(evText);
@@ -22867,6 +23060,7 @@ export default function App() {
       );
     } finally {
       setDemoLoading(false);
+      setLoading(null);
     }
   };
 
@@ -22879,6 +23073,8 @@ export default function App() {
   const loadDataset = async (dataset) => {
     const performLoad = async () => {
       setErr(null);
+      const studyLabel = dataset.title || dataset.short_title || "dataset";
+      setLoading({ label: `Fetching ${studyLabel}…`, progress: null });
       try {
         const path = window.location.pathname;
         const base = path.endsWith("/")
@@ -22899,6 +23095,12 @@ export default function App() {
         if (!evRes.ok) throw new Error(`events (${evRes.status})`);
         if (!abRes.ok) throw new Error(`abundance (${abRes.status})`);
         const [evText, abText] = await Promise.all([evRes.text(), abRes.text()]);
+        setLoading({
+          label: `Parsing ${studyLabel}…`,
+          sub: "events + abundance matrix",
+          progress: null,
+        });
+        await yieldToBrowser();
         const parsedAb = parseAbundance(abText);
         if (!parsedAb) throw new Error("Could not parse abundance table");
         const parsedEvents = parseEvents(evText);
@@ -22950,6 +23152,8 @@ export default function App() {
         setErr(
           `Dataset "${dataset.title}": ${e.message}. Make sure the files referenced in datasets/manifest.json exist in the deployed site.`,
         );
+      } finally {
+        setLoading(null);
       }
     };
 
@@ -24351,25 +24555,41 @@ export default function App() {
                 type="file"
                 accept=".json,application/json"
                 className="hidden"
-                onChange={(e) => {
+                onChange={async (e) => {
                   const file = e.target.files?.[0];
                   if (!file) return;
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    try {
-                      const parsed = JSON.parse(String(reader.result));
-                      importSessionFromJSON(parsed);
-                    } catch (err) {
-                      setErr({
-                        title: "Failed to import session",
-                        body: String(err?.message || err),
-                      });
-                    } finally {
-                      // reset so picking the same file again re-fires
-                      e.target.value = "";
-                    }
-                  };
-                  reader.readAsText(file);
+                  const sizeStr = formatBytes(file.size || 0);
+                  try {
+                    setLoading({
+                      label: `Reading ${file.name}…`,
+                      sub: sizeStr,
+                      progress: 0,
+                    });
+                    const text = await readFileText(file, (p) =>
+                      setLoading({
+                        label: `Reading ${file.name}…`,
+                        sub: sizeStr,
+                        progress: p,
+                      }),
+                    );
+                    setLoading({
+                      label: `Parsing session JSON…`,
+                      sub: sizeStr,
+                      progress: null,
+                    });
+                    await yieldToBrowser();
+                    const parsed = JSON.parse(text);
+                    importSessionFromJSON(parsed);
+                  } catch (err) {
+                    setErr({
+                      title: "Failed to import session",
+                      body: String(err?.message || err),
+                    });
+                  } finally {
+                    setLoading(null);
+                    // reset so picking the same file again re-fires
+                    e.target.value = "";
+                  }
                 }}
               />
               <button
@@ -25313,52 +25533,6 @@ export default function App() {
                   fontFamily: '"Raleway", sans-serif',
                 }}
               >
-                Suppress / keep action
-              </div>
-              <label
-                className="flex items-start gap-2 px-3 py-2 rounded-sm cursor-pointer"
-                style={{
-                  background: actionEnabled ? "var(--bg-info)" : "var(--bg-softer)",
-                  border: actionEnabled
-                    ? "1px solid #00a3a6"
-                    : "1px solid var(--border)",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={actionEnabled}
-                  onChange={(e) => setActionEnabled(e.target.checked)}
-                  style={{ accentColor: "#00a3a6", marginTop: 3 }}
-                />
-                <div className="min-w-0">
-                  <div
-                    style={{
-                      color: "var(--ink)",
-                      fontWeight: 700,
-                      fontFamily: '"Raleway", sans-serif',
-                      fontSize: 13,
-                    }}
-                  >
-                    Enable suppress/keep action
-                  </div>
-                  <div
-                    className="text-[11px] mt-0.5"
-                    style={{ color: "var(--ink-muted)" }}
-                  >
-                    Adds a "suppress" / "keep" action choice to each event,
-                    to decide which samples stay in your downstream analyses.
-                  </div>
-                </div>
-              </label>
-
-              <div
-                className="text-[10px] tracking-[0.15em] uppercase mt-5 mb-2"
-                style={{
-                  color: "#ed6e6c",
-                  fontWeight: 700,
-                  fontFamily: '"Raleway", sans-serif',
-                }}
-              >
                 Items per page
               </div>
               <div className="flex flex-col gap-2">
@@ -25459,6 +25633,10 @@ export default function App() {
           to return; the matching row gets a subtle teal ring on
           arrival so it's easy to spot. The ✕ dismisses the chip
           (and clears the highlight). */}
+      {/* Long-running file load / parse overlay — fed by setLoading
+          from loadEvents / loadAbundance / importSession / loadDemo /
+          loadDataset. Idle when `loading` is null. */}
+      <LoadingProgress active={!!loading} {...(loading || {})} />
       {lastSamplesDrill && tab !== "samples" && (
         <div
           style={{
@@ -25544,4 +25722,375 @@ export default function App() {
       )}
     </div>
   );
+}
+
+/* ----------------------------------------------------------------------------
+   8b. APP SHELL — async session bootstrap
+   ----------------------------------------------------------------------------
+   The session lives in IndexedDB so the load is asynchronous: this
+   shell renders a small loading splash while the read is in flight,
+   short-circuits to an unsupported-browser screen if IndexedDB isn't
+   available (no fallback), and then mounts AppMain with the resolved
+   `initial` payload so AppMain itself can keep treating it as a sync
+   prop.
+   ---------------------------------------------------------------------------- */
+
+/** Overlay shown while a long-running file load (events / abundance /
+    session import / dataset fetch) is in progress. Renders as a
+    centered card with the chomping CroCoDeEL logo, a label, an
+    optional sub-label (e.g. byte counts), and either a determinate
+    progress bar (0..1) or an indeterminate spinner when `progress`
+    is null. A 600 ms minimum display time guarantees the overlay
+    shows up even when the underlying load completes almost instantly
+    (small session JSON, cached dataset). */
+const MIN_LOADING_DISPLAY_MS = 600;
+function LoadingProgress({ active, label, sub, progress }) {
+  const [visible, setVisible] = useState(false);
+  const startedAtRef = useRef(0);
+  const lastPropsRef = useRef({ label: "", sub: "", progress: null });
+  // Cache the most recent props while the load is active so the
+  // overlay can keep displaying them after the underlying state has
+  // already cleared (during the min-display tail).
+  if (active) {
+    lastPropsRef.current = { label, sub, progress };
+  }
+  useEffect(() => {
+    if (active) {
+      // Reset the start timestamp on every active=true transition,
+      // even if `visible` happens to still be true from a previous
+      // load whose tail timer hasn't fired yet — otherwise the second
+      // load would inherit the first load's start time and the
+      // min-display window would already be exhausted.
+      startedAtRef.current = Date.now();
+      setVisible(true);
+      return undefined;
+    }
+    if (!visible) return undefined;
+    const elapsed = Date.now() - startedAtRef.current;
+    const remaining = Math.max(0, MIN_LOADING_DISPLAY_MS - elapsed);
+    const id = window.setTimeout(() => setVisible(false), remaining);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+  if (!visible) return null;
+  const display = active
+    ? { label, sub, progress }
+    : lastPropsRef.current;
+  const pct =
+    display.progress != null
+      ? Math.max(0, Math.min(1, display.progress))
+      : null;
+  const showMascot = true;
+  // Vite serves bundled assets under the configured base path; the
+  // logo lives in `public/logo.webp` and is resolved via the same
+  // BASE_URL the rest of the app uses.
+  const logoSrc = `${import.meta.env.BASE_URL || "/"}logo.webp`.replace(
+    /\/{2,}/g,
+    "/",
+  );
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15, 30, 36, 0.45)",
+        zIndex: 9000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        backdropFilter: "blur(2px)",
+        WebkitBackdropFilter: "blur(2px)",
+      }}
+    >
+      <div
+        style={{
+          minWidth: 320,
+          maxWidth: 420,
+          padding: 20,
+          borderRadius: 8,
+          background: "var(--bg-card, #fff)",
+          border: "1px solid var(--border, #e6e8e8)",
+          boxShadow: "0 18px 48px rgba(15,30,36,0.32)",
+          fontFamily: '"Raleway", sans-serif',
+        }}
+      >
+        {showMascot && (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 6,
+              marginBottom: 14,
+            }}
+          >
+            <div
+              style={{
+                width: 96,
+                height: 96,
+                position: "relative",
+                overflow: "hidden",
+                borderRadius: "50%",
+              }}
+            >
+              <img
+                src={logoSrc}
+                alt="CroCoDeEL"
+                draggable={false}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  display: "block",
+                  // Hinge the rotation around the back-right of the head
+                  // so the snap reads as a jaw opening / closing rather
+                  // than a whole-body wobble.
+                  transformOrigin: "78% 42%",
+                  animation:
+                    "crocodeel-chomp 0.9s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+                  userSelect: "none",
+                }}
+              />
+            </div>
+            <div
+              style={{
+                color: "var(--ink-muted, #6b7a82)",
+                fontSize: 11,
+                fontStyle: "italic",
+                fontFamily: '"Raleway", sans-serif',
+                letterSpacing: "0.02em",
+              }}
+            >
+              Chomping through your data…
+            </div>
+          </div>
+        )}
+        <div
+          style={{
+            color: "var(--ink, #1d3a44)",
+            fontWeight: 700,
+            fontSize: 13,
+            marginBottom: 4,
+          }}
+        >
+          {display.label || "Loading…"}
+        </div>
+        {display.sub && (
+          <div
+            style={{
+              color: "var(--ink-muted, #6b7a82)",
+              fontSize: 11,
+              marginBottom: 10,
+              fontFamily: "ui-monospace, monospace",
+            }}
+          >
+            {display.sub}
+          </div>
+        )}
+        {pct != null ? (
+          <div
+            style={{
+              height: 8,
+              borderRadius: 4,
+              background: "var(--bg-soft, #f1eee5)",
+              overflow: "hidden",
+              marginTop: display.sub ? 0 : 10,
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                width: `${pct * 100}%`,
+                background: "#00a3a6",
+                transition: "width 120ms linear",
+              }}
+            />
+          </div>
+        ) : (
+          <div
+            style={{
+              height: 8,
+              borderRadius: 4,
+              marginTop: display.sub ? 0 : 10,
+              background:
+                "linear-gradient(90deg, #d8e3e6 0%, #00a3a6 50%, #d8e3e6 100%)",
+              backgroundSize: "200% 100%",
+              animation: "crocodeel-progress-stripe 1.2s linear infinite",
+            }}
+          />
+        )}
+        {pct != null && (
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--ink-muted, #6b7a82)",
+              marginTop: 6,
+              textAlign: "right",
+              fontFamily: "ui-monospace, monospace",
+            }}
+          >
+            {Math.round(pct * 100)} %
+          </div>
+        )}
+        <style>{`@keyframes crocodeel-progress-stripe {
+          from { background-position: 100% 0; }
+          to { background-position: -100% 0; }
+        }
+        @keyframes crocodeel-chomp {
+          0%, 100% { transform: rotate(-4deg); }
+          50% { transform: rotate(3deg) scaleY(0.94); }
+        }`}</style>
+      </div>
+    </div>
+  );
+}
+
+function BootSplash({ message }) {
+  const logoSrc = `${import.meta.env.BASE_URL || "/"}logo.webp`.replace(
+    /\/{2,}/g,
+    "/",
+  );
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 14,
+        background: "var(--bg, #faf7f0)",
+        color: "var(--ink, #1d3a44)",
+        fontFamily: '"Raleway", sans-serif',
+      }}
+    >
+      <div
+        style={{
+          width: 120,
+          height: 120,
+          position: "relative",
+          overflow: "hidden",
+          borderRadius: "50%",
+        }}
+      >
+        <img
+          src={logoSrc}
+          alt="CroCoDeEL"
+          draggable={false}
+          style={{
+            width: "100%",
+            height: "100%",
+            display: "block",
+            transformOrigin: "78% 42%",
+            animation:
+              "crocodeel-chomp 0.9s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+            userSelect: "none",
+          }}
+        />
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" }}>
+        {message || "Loading session…"}
+      </div>
+      <style>{`
+        @keyframes crocodeel-chomp {
+          0%, 100% { transform: rotate(-4deg); }
+          50% { transform: rotate(3deg) scaleY(0.94); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function UnsupportedBrowser({ reason }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "var(--bg, #faf7f0)",
+        color: "var(--ink, #1d3a44)",
+        fontFamily: '"Raleway", sans-serif',
+        padding: 24,
+      }}
+    >
+      <div
+        style={{
+          maxWidth: 520,
+          padding: 24,
+          borderRadius: 6,
+          background: "var(--bg-card, #fff)",
+          border: "1px solid #ed6e6c",
+          boxShadow: "0 12px 32px rgba(39,86,98,0.12)",
+        }}
+      >
+        <div
+          style={{
+            color: "#ed6e6c",
+            fontWeight: 700,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            fontSize: 11,
+            marginBottom: 8,
+          }}
+        >
+          Browser not supported
+        </div>
+        <h1
+          style={{
+            fontSize: 22,
+            fontWeight: 700,
+            marginBottom: 12,
+            lineHeight: 1.25,
+          }}
+        >
+          IndexedDB is required
+        </h1>
+        <p style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 10 }}>
+          {reason ||
+            "This interface stores your curation session in IndexedDB so it survives refreshes and can hold large abundance tables. Your browser doesn't expose IndexedDB — usually because it's running in private / incognito mode with strict site-data restrictions, or because it's an older release."}
+        </p>
+        <p style={{ fontSize: 13, lineHeight: 1.6, color: "var(--ink-muted, #6b7a82)" }}>
+          Please open this page in a recent build of Firefox, Chrome, Edge,
+          Safari or any Chromium-based browser, outside private mode.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  // Async boot: load the session from IndexedDB before mounting the
+  // main app. Keeping AppMain sync (initial as a prop) avoids reshaping
+  // every state-from-props initializer.
+  const [boot, setBoot] = useState({ status: "loading" });
+  useEffect(() => {
+    if (!indexedDBSupported()) {
+      setBoot({ status: "unsupported" });
+      return;
+    }
+    let cancelled = false;
+    loadFromStorage()
+      .then((initial) => {
+        if (!cancelled) setBoot({ status: "ready", initial });
+      })
+      .catch((err) => {
+        console.error("[crocodeel] IndexedDB load failed:", err);
+        if (!cancelled)
+          setBoot({
+            status: "unsupported",
+            reason:
+              "Your browser exposes IndexedDB but the session database could not be opened (often because of strict private-browsing storage policies or a corrupted profile). Try a fresh window or another browser.",
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (boot.status === "loading") return <BootSplash />;
+  if (boot.status === "unsupported")
+    return <UnsupportedBrowser reason={boot.reason} />;
+  return <AppMain initial={boot.initial} />;
 }
