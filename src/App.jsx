@@ -21748,6 +21748,9 @@ function AppMain({ initial }) {
   // every page. Body is currently a placeholder; populate as we
   // surface user-tunable settings.
   const [configOpen, setConfigOpen] = useState(false);
+  // Konami easter egg — ↑ ↑ ↓ ↓ ← → ← → B A unlocks the Croc Arcade.
+  const [arcadeOpen, setArcadeOpen] = useState(false);
+  useKonamiCode(() => setArcadeOpen(true));
   // Theme picker — light / dark / auto-os / auto-time. Persisted in
   // localStorage so the choice survives session resets. For schedule
   // mode the dark window is also user-configurable (default 19:00 -
@@ -25717,6 +25720,7 @@ function AppMain({ initial }) {
           from loadEvents / loadAbundance / importSession / loadDemo /
           loadDataset. Idle when `loading` is null. */}
       <LoadingProgress active={!!loading} {...(loading || {})} />
+      {arcadeOpen && <CrocArcade onClose={() => setArcadeOpen(false)} />}
       {lastSamplesDrill && tab !== "samples" && (
         <div
           style={{
@@ -26027,6 +26031,454 @@ function LoadingProgress({ active, label, sub, progress }) {
           50% { transform: rotate(3deg) scaleY(0.94); }
         }`}</style>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+   KONAMI EASTER EGG — CROC ARCADE
+   ============================================================================
+   Press ↑ ↑ ↓ ↓ ← → ← → B A anywhere in the app to unlock a tiny
+   Pacman-flavoured arcade where the CroCoDeEL logo eats contamination
+   dots. Three "FP" ghosts wander the maze; touching one costs a life
+   (three lives total). Eat every dot to win. Esc closes the modal. */
+function useKonamiCode(onCode) {
+  useEffect(() => {
+    const sequence = [
+      "ArrowUp",
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "ArrowLeft",
+      "ArrowRight",
+      "b",
+      "a",
+    ];
+    let idx = 0;
+    const onKey = (e) => {
+      const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      if (k === sequence[idx]) {
+        idx++;
+        if (idx === sequence.length) {
+          idx = 0;
+          onCode();
+        }
+      } else {
+        // Allow restart-from-the-first-key: if the keystroke matches
+        // sequence[0], reset idx to 1 (we just consumed the first
+        // arrow); otherwise reset to 0.
+        idx = k === sequence[0] ? 1 : 0;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCode]);
+}
+
+const ARCADE_MAZE = [
+  "######################",
+  "#..........##........#",
+  "#.####.###.##.###.####",
+  "#.#..#.#.#....#.#..#.#",
+  "#.#..#.#.#.##.#.#..#.#",
+  "#.####.#.#.##.#.#.####",
+  "#......#.#.##.#.#....#",
+  "#.######.....##....###",
+  "#........###....##...#",
+  "#.######.###.##.##.#.#",
+  "#.#....#.....##.##.#.#",
+  "#.#.##.######.#.##.#.#",
+  "#...##........#......#",
+  "######################",
+];
+const ARCADE_W = ARCADE_MAZE[0].length;
+const ARCADE_H = ARCADE_MAZE.length;
+const ARCADE_CELL = 26;
+
+const arcadeIsWall = (x, y) => {
+  if (x < 0 || x >= ARCADE_W || y < 0 || y >= ARCADE_H) return true;
+  return ARCADE_MAZE[y][x] === "#";
+};
+
+const arcadeOpenDirs = (x, y) => {
+  const dirs = [];
+  if (!arcadeIsWall(x, y - 1)) dirs.push([0, -1]);
+  if (!arcadeIsWall(x, y + 1)) dirs.push([0, 1]);
+  if (!arcadeIsWall(x - 1, y)) dirs.push([-1, 0]);
+  if (!arcadeIsWall(x + 1, y)) dirs.push([1, 0]);
+  return dirs;
+};
+
+function CrocArcade({ onClose }) {
+  const logoSrc = `${import.meta.env.BASE_URL || "/"}logo.webp`.replace(
+    /\/{2,}/g,
+    "/",
+  );
+  // Initial dot grid: every non-wall cell starts with a dot.
+  const buildDots = () => {
+    const dots = [];
+    for (let y = 0; y < ARCADE_H; y++) {
+      const row = [];
+      for (let x = 0; x < ARCADE_W; x++) {
+        row.push(!arcadeIsWall(x, y));
+      }
+      dots.push(row);
+    }
+    return dots;
+  };
+
+  // Player + enemies start at fixed positions inside the maze.
+  const PLAYER_START = { x: 1, y: 1 };
+  const ENEMY_STARTS = [
+    { x: 20, y: 1, color: "#423089" },
+    { x: 1, y: 12, color: "#d97a3c" },
+    { x: 20, y: 12, color: "#9aaab0" },
+  ];
+  const TICK_MS = 160;
+
+  const [dots, setDots] = useState(buildDots);
+  const [player, setPlayer] = useState({ ...PLAYER_START });
+  const [enemies, setEnemies] = useState(() =>
+    ENEMY_STARTS.map((e) => ({ ...e, dx: 0, dy: 0 })),
+  );
+  const [score, setScore] = useState(0);
+  const [lives, setLives] = useState(3);
+  const [status, setStatus] = useState("playing"); // playing | won | lost
+  // Direction inputs: `intent` is what the player pressed last (might
+  // be blocked by a wall); `dir` is the actual moving direction. Each
+  // tick we try `intent` first and fall back to `dir`.
+  const intentRef = useRef([1, 0]);
+  const dirRef = useRef([0, 0]);
+
+  const reset = () => {
+    setDots(buildDots());
+    setPlayer({ ...PLAYER_START });
+    setEnemies(ENEMY_STARTS.map((e) => ({ ...e, dx: 0, dy: 0 })));
+    setScore(0);
+    setLives(3);
+    setStatus("playing");
+    intentRef.current = [1, 0];
+    dirRef.current = [0, 0];
+  };
+
+  const respawn = () => {
+    setPlayer({ ...PLAYER_START });
+    setEnemies(ENEMY_STARTS.map((e) => ({ ...e, dx: 0, dy: 0 })));
+    intentRef.current = [1, 0];
+    dirRef.current = [0, 0];
+  };
+
+  // Keyboard input
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (status !== "playing") {
+        if (e.key.toLowerCase() === "r") {
+          reset();
+          e.preventDefault();
+        }
+        return;
+      }
+      switch (e.key) {
+        case "ArrowUp":
+          intentRef.current = [0, -1];
+          e.preventDefault();
+          break;
+        case "ArrowDown":
+          intentRef.current = [0, 1];
+          e.preventDefault();
+          break;
+        case "ArrowLeft":
+          intentRef.current = [-1, 0];
+          e.preventDefault();
+          break;
+        case "ArrowRight":
+          intentRef.current = [1, 0];
+          e.preventDefault();
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  // Game loop
+  useEffect(() => {
+    if (status !== "playing") return undefined;
+    const id = window.setInterval(() => {
+      setPlayer((p) => {
+        // Try the latest intent first; if blocked, keep moving in the
+        // current direction (or stop if that's blocked too).
+        let [ix, iy] = intentRef.current;
+        let nx = p.x + ix;
+        let ny = p.y + iy;
+        if (arcadeIsWall(nx, ny)) {
+          [ix, iy] = dirRef.current;
+          nx = p.x + ix;
+          ny = p.y + iy;
+          if (arcadeIsWall(nx, ny)) {
+            return p;
+          }
+        } else {
+          dirRef.current = [ix, iy];
+        }
+        // Eat the dot at the new cell.
+        setDots((d) => {
+          if (!d[ny][nx]) return d;
+          const next = d.map((row) => row.slice());
+          next[ny][nx] = false;
+          return next;
+        });
+        return { ...p, x: nx, y: ny };
+      });
+      // Move enemies — at every tick, each enemy picks a random open
+      // direction at intersections; otherwise it keeps its current
+      // direction. They never reverse unless boxed in.
+      setEnemies((es) =>
+        es.map((en) => {
+          const opens = arcadeOpenDirs(en.x, en.y);
+          const reverse = opens.find(
+            ([dx, dy]) => dx === -en.dx && dy === -en.dy,
+          );
+          const nonReverse = opens.filter(
+            ([dx, dy]) => !(dx === -en.dx && dy === -en.dy),
+          );
+          let pool = nonReverse.length > 0 ? nonReverse : opens;
+          if (reverse && nonReverse.length === 0) pool = [reverse];
+          // 70% straight if possible, else pick randomly.
+          const straight = pool.find(
+            ([dx, dy]) => dx === en.dx && dy === en.dy,
+          );
+          let pick;
+          if (straight && Math.random() < 0.7) pick = straight;
+          else pick = pool[Math.floor(Math.random() * pool.length)];
+          if (!pick) return en;
+          return { ...en, x: en.x + pick[0], y: en.y + pick[1], dx: pick[0], dy: pick[1] };
+        }),
+      );
+    }, TICK_MS);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  // Collisions, score updates, win / lose checks
+  useEffect(() => {
+    if (status !== "playing") return;
+    // Score: count remaining dots
+    let remaining = 0;
+    for (let y = 0; y < ARCADE_H; y++) {
+      for (let x = 0; x < ARCADE_W; x++) {
+        if (dots[y][x]) remaining++;
+      }
+    }
+    const total = ARCADE_MAZE.reduce(
+      (n, r) => n + Array.from(r).filter((c) => c === ".").length,
+      0,
+    );
+    setScore(total - remaining);
+    if (remaining === 0) {
+      setStatus("won");
+      return;
+    }
+    // Collision with any enemy?
+    if (enemies.some((en) => en.x === player.x && en.y === player.y)) {
+      if (lives <= 1) {
+        setLives(0);
+        setStatus("lost");
+      } else {
+        setLives((l) => l - 1);
+        respawn();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player, enemies, dots]);
+
+  const W = ARCADE_W * ARCADE_CELL;
+  const H = ARCADE_H * ARCADE_CELL;
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Croc Arcade — Konami easter egg"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15, 30, 36, 0.85)",
+        zIndex: 10000,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 12,
+        backdropFilter: "blur(3px)",
+        WebkitBackdropFilter: "blur(3px)",
+      }}
+    >
+      <div
+        style={{
+          color: "#d6dde0",
+          fontFamily: '"Raleway", sans-serif',
+          fontSize: 12,
+          letterSpacing: "0.18em",
+          textTransform: "uppercase",
+          fontWeight: 700,
+        }}
+      >
+        Croc Arcade · use arrows · esc to close · R to restart
+      </div>
+      <div
+        style={{
+          display: "flex",
+          gap: 24,
+          color: "#d6dde0",
+          fontFamily: '"Raleway", sans-serif',
+          fontSize: 14,
+          fontWeight: 700,
+        }}
+      >
+        <span>
+          Score{" "}
+          <span style={{ color: "#00a3a6", fontFamily: "ui-monospace, monospace" }}>
+            {score * 10}
+          </span>
+        </span>
+        <span>
+          Lives{" "}
+          <span style={{ color: "#ed6e6c", fontFamily: "ui-monospace, monospace" }}>
+            {"♥".repeat(lives) || "—"}
+          </span>
+        </span>
+      </div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        width={W}
+        height={H}
+        style={{
+          background: "#0f1518",
+          border: "2px solid #00a3a6",
+          borderRadius: 8,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
+        }}
+      >
+        {/* Walls */}
+        {ARCADE_MAZE.map((row, y) =>
+          Array.from(row).map((c, x) =>
+            c === "#" ? (
+              <rect
+                key={`w-${x}-${y}`}
+                x={x * ARCADE_CELL}
+                y={y * ARCADE_CELL}
+                width={ARCADE_CELL}
+                height={ARCADE_CELL}
+                fill="#1a2226"
+                stroke="#275662"
+                strokeWidth="1"
+              />
+            ) : null,
+          ),
+        )}
+        {/* Dots */}
+        {dots.map((row, y) =>
+          row.map((on, x) =>
+            on ? (
+              <circle
+                key={`d-${x}-${y}`}
+                cx={x * ARCADE_CELL + ARCADE_CELL / 2}
+                cy={y * ARCADE_CELL + ARCADE_CELL / 2}
+                r={3}
+                fill="#ed6e6c"
+              />
+            ) : null,
+          ),
+        )}
+        {/* Enemies */}
+        {enemies.map((en, i) => (
+          <g key={`e-${i}`}>
+            <circle
+              cx={en.x * ARCADE_CELL + ARCADE_CELL / 2}
+              cy={en.y * ARCADE_CELL + ARCADE_CELL / 2}
+              r={ARCADE_CELL / 2 - 3}
+              fill={en.color}
+              stroke="#fff"
+              strokeWidth="1"
+            />
+            <text
+              x={en.x * ARCADE_CELL + ARCADE_CELL / 2}
+              y={en.y * ARCADE_CELL + ARCADE_CELL / 2 + 3}
+              textAnchor="middle"
+              fill="#fff"
+              fontSize="9"
+              fontWeight="700"
+              fontFamily='"Raleway", sans-serif'
+            >
+              FP
+            </text>
+          </g>
+        ))}
+        {/* Player — the CroCoDeEL logo, scaled into the cell */}
+        <image
+          href={logoSrc}
+          x={player.x * ARCADE_CELL}
+          y={player.y * ARCADE_CELL}
+          width={ARCADE_CELL}
+          height={ARCADE_CELL}
+          style={{ pointerEvents: "none" }}
+        />
+      </svg>
+      {status !== "playing" && (
+        <div
+          style={{
+            color: status === "won" ? "#00a3a6" : "#ed6e6c",
+            fontFamily: '"Raleway", sans-serif',
+            fontSize: 22,
+            fontWeight: 800,
+            letterSpacing: "0.05em",
+            textTransform: "uppercase",
+          }}
+        >
+          {status === "won" ? "All chomped!" : "Crocodile down"}
+          <span
+            style={{
+              marginLeft: 16,
+              fontSize: 12,
+              color: "#d6dde0",
+              fontWeight: 600,
+              letterSpacing: "0.1em",
+            }}
+          >
+            press R to restart · Esc to leave
+          </span>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={onClose}
+        style={{
+          marginTop: 4,
+          padding: "6px 14px",
+          background: "transparent",
+          border: "1px solid #00a3a6",
+          color: "#d6dde0",
+          borderRadius: 4,
+          fontFamily: '"Raleway", sans-serif',
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: "0.1em",
+          textTransform: "uppercase",
+          cursor: "pointer",
+        }}
+      >
+        Close
+      </button>
     </div>
   );
 }
