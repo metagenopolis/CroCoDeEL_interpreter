@@ -24855,10 +24855,10 @@ function AppMain({ initial }) {
         >
             {[
               { id: "overview", label: "Overview", icon: BookOpen, requiresData: false },
+              { id: "samples", label: "Samples", icon: Beaker, requiresData: true },
               { id: "table", label: "Events", icon: Droplets, requiresData: true },
               { id: "scatter", label: "Scatter", icon: ScatterIcon, requiresData: true },
               { id: "validate", label: "Validate", icon: ClipboardCheck, requiresData: true },
-              { id: "samples", label: "Samples", icon: Beaker, requiresData: true },
               { id: "network", label: "Network", icon: GitBranch, requiresData: true },
               { id: "plate", label: "Plate", icon: Grid3x3, requiresData: true },
               { id: "export", label: "Export", icon: Download, requiresData: true },

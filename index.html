@@ -5,6 +5,49 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>crocodeel-interpreter</title>
+    <script>
+      // Apply the persisted theme synchronously, before React mounts,
+      // so the boot splash uses the right palette and the user
+      // doesn't get a flash of light theme on F5 in dark mode. Mirror
+      // of the React useEffect that runs once AppMain is up — same
+      // resolution rules (light / dark / auto-os / auto-time).
+      (function () {
+        try {
+          var ls = window.localStorage;
+          var theme = ls.getItem("crocodeel-theme") || "light";
+          var resolved = theme;
+          if (theme === "auto-os") {
+            resolved = window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+          } else if (theme === "auto-time") {
+            var toMin = function (s) {
+              var p = (s || "0:0").split(":");
+              var h = parseInt(p[0], 10);
+              var m = parseInt(p[1], 10);
+              return (isFinite(h) ? h : 0) * 60 + (isFinite(m) ? m : 0);
+            };
+            var start = toMin(ls.getItem("crocodeel-theme-dark-start") || "19:00");
+            var end = toMin(ls.getItem("crocodeel-theme-dark-end") || "07:00");
+            var d = new Date();
+            var cur = d.getHours() * 60 + d.getMinutes();
+            var inDark =
+              start === end
+                ? false
+                : start < end
+                  ? cur >= start && cur < end
+                  : cur >= start || cur < end;
+            resolved = inDark ? "dark" : "light";
+          }
+          if (resolved !== "light" && resolved !== "dark") resolved = "light";
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (e) {
+          // localStorage may throw in private mode — fall back to light
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

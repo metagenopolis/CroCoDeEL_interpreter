@@ -11,6 +11,7 @@
    hardcoded — they should look identical in both modes. */
 :root,
 html[data-theme="light"] {
+  --bg: #faf7f0;
   --bg-card: #fff;
   --bg-soft: #f6f7f7;
   --bg-softer: #fafbfb;
@@ -26,6 +27,7 @@ html[data-theme="light"] {
 }
 
 html[data-theme="dark"] {
+  --bg: #0f1518;
   --bg-card: #1a2226;
   --bg-soft: #141a1d;
   --bg-softer: #10161a;
