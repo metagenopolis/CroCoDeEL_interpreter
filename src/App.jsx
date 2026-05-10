@@ -5,8 +5,6 @@ import LZString from "lz-string";
 import {
   FolderOpen,
   AlertCircle,
-  AlertOctagon,
-  BadgeCheck,
   CheckCircle2,
   Circle,
   XCircle,
@@ -3389,7 +3387,7 @@ const NodeBulkPopover = ({
             lbl: "Contaminated",
             bg: SAMPLE_VERDICT_TONE.contaminated.bg,
           },
-          { id: "correct", lbl: "Correct", bg: SAMPLE_VERDICT_TONE.correct.bg },
+          { id: "correct", lbl: "Not contaminated", bg: SAMPLE_VERDICT_TONE.correct.bg },
           {
             id: "uncertain",
             lbl: "Uncertain",
@@ -3433,7 +3431,7 @@ const NodeBulkPopover = ({
         })}
       </div>
 
-      {actionEnabled && (
+      {targetVerdict === "contaminated" && (
         <>
           <div
             className="text-[10px] uppercase tracking-[0.1em] mb-1"
@@ -4351,7 +4349,7 @@ const QuickBtn = ({ children, onClick, active, tone, title }) => {
   );
 };
 
-const Th = ({ children, right, onClick, title }) => (
+const Th = ({ children, right, onClick, title, divider }) => (
   <th
     onClick={onClick}
     title={title}
@@ -4367,6 +4365,7 @@ const Th = ({ children, right, onClick, title }) => (
       zIndex: 10,
       background: "var(--bg-soft)",
       borderBottom: "2px solid #00a3a6",
+      borderLeft: divider ? "1px solid var(--border)" : undefined,
     }}
   >
     {children}
@@ -5288,7 +5287,7 @@ const VERDICT_IDS = VERDICT_OPTIONS.map((v) => v.id);
 const SAMPLE_VERDICT_OPTIONS = [
   { id: "pending", label: "pending" },
   { id: "contaminated", label: "contaminated" },
-  { id: "correct", label: "correct" },
+  { id: "correct", label: "not contaminated" },
   { id: "uncertain", label: "uncertain" },
 ];
 const SAMPLE_VERDICT_IDS = SAMPLE_VERDICT_OPTIONS.map((v) => v.id);
@@ -6468,19 +6467,22 @@ const EventsTable = ({
                 </Th>
               )}
               <Th
+                divider
                 onClick={() => toggleSort("verdict")}
                 title="Your evaluation — TP (true positive), FP (false positive), Uncertain or Pending. Click to sort by evaluation."
               >
                 Evaluation <SortIcon col="verdict" />
               </Th>
               <Th
+                divider
                 onClick={() => toggleSort("targetVerdict")}
-                title="Sample-level verdict recorded on the TARGET sample (contaminated / correct / uncertain / pending). Set from the Samples tab. Click to sort."
+                title="Sample-level verdict recorded on the TARGET sample (contaminated / not contaminated / uncertain / pending). Set from the Samples tab. Click to sort."
               >
                 Target verdict <SortIcon col="targetVerdict" />
               </Th>
               {actionEnabled && (
                 <Th
+                  divider
                   onClick={() => toggleSort("action")}
                   title="Suppress / keep — action recorded on the TARGET sample. Set from the Samples tab. Click to sort."
                 >
@@ -6589,7 +6591,11 @@ const EventsTable = ({
                       </div>
                     </td>
                   )}
-                  <td className="px-3 py-2.5" onClick={(ev) => ev.stopPropagation()}>
+                  <td
+                    className="px-3 py-2.5"
+                    onClick={(ev) => ev.stopPropagation()}
+                    style={{ borderLeft: "1px solid var(--border)" }}
+                  >
                     <div className="flex gap-1">
                       <QuickBtn
                         active={e.verdict === "true_positive"}
@@ -6640,7 +6646,10 @@ const EventsTable = ({
                       via setSampleVerdict), so curating from the
                       events table no longer requires a hop to the
                       Samples tab. */}
-                  <td className="px-3 py-2.5">
+                  <td
+                    className="px-3 py-2.5"
+                    style={{ borderLeft: "1px solid var(--border)" }}
+                  >
                     <div className="flex gap-0.5">
                       {[
                         {
@@ -6699,61 +6708,79 @@ const EventsTable = ({
                     </div>
                   </td>
                   {actionEnabled && (
-                    <td className="px-3 py-2.5">
-                      <div className="flex gap-0.5">
-                        {[
-                          {
-                            id: "keep",
-                            Icon: Save,
-                            color: "#e0b13a",
-                            label: "Keep",
-                          },
-                          {
-                            id: "suppress",
-                            Icon: Trash2,
-                            color: "#ed6e6c",
-                            label: "Suppress",
-                          },
-                        ].map((opt) => {
-                          const cur = sampleCuration?.[e.target]?.action;
-                          const active = cur === opt.id;
-                          const Icon = opt.Icon;
-                          return (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                if (setAction)
-                                  setAction(
-                                    e.id,
-                                    active ? null : opt.id,
-                                  );
-                              }}
-                              title={
-                                active
-                                  ? `Clear ${opt.label.toLowerCase()} on ${e.target}`
-                                  : `Mark ${e.target} as ${opt.label.toLowerCase()}`
-                              }
-                              className="flex items-center justify-center"
-                              style={{
-                                width: 24,
-                                height: 24,
-                                padding: 0,
-                                borderRadius: 12,
-                                background: active
-                                  ? opt.color
-                                  : "var(--bg-card)",
-                                color: active ? "#fff" : opt.color,
-                                border: `1px solid ${active ? opt.color : "var(--border)"}`,
-                                cursor: "pointer",
-                              }}
-                            >
-                              <Icon className="w-3.5 h-3.5" />
-                            </button>
-                          );
-                        })}
-                      </div>
+                    <td
+                      className="px-3 py-2.5"
+                      style={{
+                        borderLeft: "1px solid var(--border)",
+                        textAlign: "center",
+                      }}
+                    >
+                      {sampleCuration?.[e.target]?.verdict === "contaminated" ? (
+                        <div className="flex gap-0.5 justify-center">
+                          {[
+                            {
+                              id: "keep",
+                              Icon: Save,
+                              color: "#e0b13a",
+                              label: "Keep",
+                            },
+                            {
+                              id: "suppress",
+                              Icon: Trash2,
+                              color: "#ed6e6c",
+                              label: "Suppress",
+                            },
+                          ].map((opt) => {
+                            const cur = sampleCuration?.[e.target]?.action;
+                            const active = cur === opt.id;
+                            const Icon = opt.Icon;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  if (setAction)
+                                    setAction(
+                                      e.id,
+                                      active ? null : opt.id,
+                                    );
+                                }}
+                                title={
+                                  active
+                                    ? `Clear ${opt.label.toLowerCase()} on ${e.target}`
+                                    : `Mark ${e.target} as ${opt.label.toLowerCase()}`
+                                }
+                                className="flex items-center justify-center"
+                                style={{
+                                  width: 24,
+                                  height: 24,
+                                  padding: 0,
+                                  borderRadius: 12,
+                                  background: active
+                                    ? opt.color
+                                    : "var(--bg-card)",
+                                  color: active ? "#fff" : opt.color,
+                                  border: `1px solid ${active ? opt.color : "var(--border)"}`,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                <Icon className="w-3.5 h-3.5" />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <span
+                          style={{
+                            color: "var(--border-strong)",
+                            fontSize: 11,
+                            fontStyle: "italic",
+                          }}
+                        >
+                          —
+                        </span>
+                      )}
                     </td>
                   )}
                 </tr>
@@ -7389,8 +7416,8 @@ const GalleryCard = React.memo(function GalleryCard({
             )}
 
             {/* Section 3 — sample-level action on the target. Only
-                shown when the suppress/keep feature is enabled. */}
-            {actionEnabled && (
+                shown when the target sample is marked Contaminated. */}
+            {sampleVerdict === "contaminated" && (
               <>
                 <div
                   className="text-[9px] tracking-[0.1em] uppercase mt-1 mb-0.5"
@@ -8235,9 +8262,9 @@ const ExplorePairs = ({
           </div>
         </div>
 
-        {/* Action on target sample — only when the event verdict is TP.
-            FPs carry no action. */}
-        {verdict === "true_positive" && (
+        {/* Action on target sample — only when the curator has tagged
+            the target as Contaminated. */}
+        {targetVerdict === "contaminated" && (
             <div className="mb-3">
               <label
                 className="text-[10px] tracking-[0.1em] uppercase block mb-2"
@@ -8636,9 +8663,10 @@ const ScatterTab = ({
   pageSize,
   explorePairsForm,
   setExplorePairsForm,
+  colorOnLine,
+  setColorOnLine,
 }) => {
   const [mode, setMode] = useState("flagged"); // "flagged" or "explore"
-  const [colorOnLine, setColorOnLine] = useState(true);
   const [sortBy, setSortBy] = useState("score");
   // Direction per sort key — defaults match what most users expect
   // (descending for numeric severity, ascending for alphabetical).
@@ -9119,7 +9147,7 @@ const suggestSampleVerdict = (sampleId, events) => {
 
 const SAMPLE_VERDICT_TONE = {
   contaminated: { bg: "#ed6e6c", label: "Contaminated" },
-  correct: { bg: "#00a3a6", label: "Correct" },
+  correct: { bg: "#00a3a6", label: "Not contaminated" },
   uncertain: { bg: "#d97a3c", label: "Uncertain" },
   pending: { bg: "#6b7a82", label: "Pending" },
 };
@@ -9857,8 +9885,8 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
     the textual label so the row width stays compact. Memoised. */
 const SAMPLE_VERDICT_ICON = {
   pending: Circle,
-  contaminated: AlertOctagon,
-  correct: BadgeCheck,
+  contaminated: ThumbsDown,
+  correct: ThumbsUp,
   uncertain: HelpCircle,
 };
 const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSampleVerdict }) {
@@ -9901,8 +9929,24 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
   );
 });
 
-/** Action picker — keep / suppress icon-only chips. Memoised. */
+/** Action picker — keep / suppress icon-only chips. Only shown when
+    the sample's verdict is "contaminated"; otherwise we render a faint
+    dash so the column keeps its width without offering a decision the
+    curator hasn't motivated yet. Memoised. */
 const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAction }) {
+  if (row.verdict !== "contaminated") {
+    return (
+      <span
+        style={{
+          color: "var(--border-strong)",
+          fontSize: 11,
+          fontStyle: "italic",
+        }}
+      >
+        —
+      </span>
+    );
+  }
   return (
   <div className="flex gap-1">
     {[
@@ -10941,8 +10985,8 @@ const SamplesTab = ({
           setCollapsedTargetEvents(new Set(sorted.map((r) => r.id))),
       },
     },
-    { id: "verdict", label: "Verdict", sortKey: "verdict" },
-    { id: "action", label: "Action", sortKey: "action" },
+    { id: "verdict", label: "Verdict", sortKey: "verdict", divider: true },
+    { id: "action", label: "Action", sortKey: "action", divider: true },
   ].filter(Boolean);
 
   const PAGE_SIZE = pageSize || 200;
@@ -11151,7 +11195,7 @@ const SamplesTab = ({
           tone={totals.contaminated > 0 ? "contaminated" : "neutral"}
         />
         <Stat
-          label="Correct"
+          label="Not contaminated"
           value={totals.correct}
           tone={totals.correct > 0 ? "correct" : "neutral"}
         />
@@ -11291,6 +11335,9 @@ const SamplesTab = ({
                       zIndex: 10,
                       background: "var(--bg-soft)",
                       minWidth: col.minWidth || undefined,
+                      borderLeft: col.divider
+                        ? "1px solid var(--border)"
+                        : undefined,
                     }}
                     onClick={
                       sortable
@@ -11373,7 +11420,12 @@ const SamplesTab = ({
                       <td
                         key={col.id}
                         className="px-3 py-3"
-                        style={cellStyle}
+                        style={{
+                          ...cellStyle,
+                          borderLeft: col.divider
+                            ? "1px solid var(--border)"
+                            : undefined,
+                        }}
                       >
                         {col.id === "sample" && (
                           <SampleIdCell
@@ -12060,7 +12112,7 @@ const BulkSampleApplyDialog = ({
   const verdictOptions = [
     { id: "pending", label: "Pending" },
     { id: "contaminated", label: "Contaminated" },
-    { id: "correct", label: "Correct" },
+    { id: "correct", label: "Not contaminated" },
     { id: "uncertain", label: "Uncertain" },
   ];
   const actionOptions = [
@@ -12349,7 +12401,7 @@ const BulkSampleApplyDialog = ({
             { id: "", label: "(no change)" },
             { id: "pending", label: "Pending" },
             { id: "contaminated", label: "Contaminated" },
-            { id: "correct", label: "Correct" },
+            { id: "correct", label: "Not contaminated" },
             { id: "uncertain", label: "Uncertain" },
           ].map((opt) => {
             const active = verdict === opt.id;
@@ -14317,13 +14369,13 @@ const BulkApplyByCriteriaDialog = ({
                     e.currentTarget.style.borderColor = "var(--border-strong)";
                     e.currentTarget.style.color = "#275662";
                   }}
-                  title="Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note. Their target samples are also flagged as Correct (skipping any target that already carries a sample-level verdict)."
+                  title='Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note. Their target samples are also flagged as "Not contaminated" (skipping any target that already carries a sample-level verdict).'
                 >
                   <XCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>
                     Mark all same-subject contaminations as FP and their
-                    target samples as Correct ({pendingSameSubjectCount}{" "}
-                    pending)
+                    target samples as Not contaminated (
+                    {pendingSameSubjectCount} pending)
                   </span>
                 </button>
               )}
@@ -14773,7 +14825,7 @@ const BulkApplyByCriteriaDialog = ({
             { id: "", label: "(no change)" },
             { id: "pending", label: "Pending" },
             { id: "contaminated", label: "Contaminated" },
-            { id: "correct", label: "Correct" },
+            { id: "correct", label: "Not contaminated" },
             { id: "uncertain", label: "Uncertain" },
           ].map((opt) => {
             const active = targetVerdict === opt.id;
@@ -15053,6 +15105,8 @@ const ValidateTab = ({
   onOpenPlate,
   bulkApplyOpen,
   onOpenBulkApply,
+  colorOnLine,
+  setColorOnLine,
 }) => {
   // Queue we step through with prev/next is the filtered subset; if the
   // user navigated here from another tab and that event was excluded by
@@ -15173,11 +15227,7 @@ const ValidateTab = ({
       prev.includes(sp) ? prev.filter((s) => s !== sp) : [...prev, sp],
     );
   };
-  // Whether to color the on-line points salmon. Off renders every point
-  // in the same neutral grey so the curator can judge the line shape
-  // without the model's "introduced" highlight biasing the eye. Persists
-  // across events; reset is on the user.
-  const [colorOnLine, setColorOnLine] = useState(true);
+  // colorOnLine is lifted to App so the toggle survives tab switches.
 
   // Count events that have either a verdict or a note — used to decide
   // whether to show the "Reset all" button.
@@ -16475,7 +16525,7 @@ const ValidateTab = ({
                     })}
                   </div>
                 </div>
-                {actionEnabled && (
+                {sampleCuration?.[sel.target]?.verdict === "contaminated" && (
                   <div>
                     <div
                       className="text-[10px] tracking-[0.15em] uppercase mb-2"
@@ -18922,7 +18972,7 @@ const HelpTab = ({ onStartTour }) => {
                 three sections: <strong>Evaluation (event)</strong>{" "}
                 (TP / FP / Uncertain / Reset),{" "}
                 <strong>Verdict on target sample</strong> (Pending /
-                Contaminated / Correct / Uncertain — a sample-level
+                Contaminated / Not contaminated / Uncertain — a sample-level
                 layer that cohabits with the event evaluation; defaults
                 follow the event verdict but the curator can override),
                 and <strong>Action on target sample</strong>{" "}
@@ -18967,7 +19017,7 @@ const HelpTab = ({ onStartTour }) => {
                 the source column scopes the destination tab to events
                 where this sample is the source, and likewise for the
                 target column. A Verdict picker (Pending / Contaminated
-                / Correct / Uncertain) and a keep / suppress Action
+                / Not contaminated / Uncertain) and a keep / suppress Action
                 picker round out
                 the row.
               </p>
@@ -18985,9 +19035,10 @@ const HelpTab = ({ onStartTour }) => {
                 <strong>Auto-curation of never-targeted samples.</strong>{" "}
                 Samples that are never the target of any event in the
                 full events list are automatically tagged{" "}
-                <em>Correct</em> + <em>Keep</em> — by definition there
-                is no contamination call against them. Existing
-                curator decisions are never overwritten; the rule only
+                <em>Not contaminated</em> + <em>Keep</em> — by
+                definition there is no contamination call against
+                them. Existing curator decisions are never
+                overwritten; the rule only
                 stamps slots that are still empty.
               </p>
               <p style={{ marginTop: 6 }}>
@@ -19105,13 +19156,13 @@ const HelpTab = ({ onStartTour }) => {
           </h4>
           <p>
             Per-sample call: <strong>contaminated</strong>,{" "}
-            <strong>correct</strong>, <strong>uncertain</strong> or{" "}
-            <strong>pending</strong>. Answers <em>"is this sample as
-            a whole compromised?"</em> A sample can be marked
+            <strong>not contaminated</strong>, <strong>uncertain</strong>{" "}
+            or <strong>pending</strong>. Answers <em>"is this sample
+            as a whole compromised?"</em> A sample can be marked
             contaminated even when each individual event targeting it
-            is uncertain, and conversely a sample can be marked correct
-            despite a TP event flowing into it (e.g. when the rate is
-            negligible). Edited from the Samples tab, from the
+            is uncertain, and conversely a sample can be marked
+            not contaminated despite a TP event flowing into it
+            (e.g. when the rate is negligible). Edited from the Samples tab, from the
             Scatterplot card popover ("Verdict on target") or from the
             Network node popover.
           </p>
@@ -19576,7 +19627,7 @@ const HelpTab = ({ onStartTour }) => {
             <li>
               <strong>
                 Mark all same-subject contaminations as FP and their
-                target samples as Correct
+                target samples as Not contaminated
               </strong>{" "}
               — when metadata.tsv carries a{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>
@@ -19584,7 +19635,7 @@ const HelpTab = ({ onStartTour }) => {
               </code>
               , every PENDING event whose source and target share
               that id (longitudinal pair) is flipped to false positive
-              and the target sample is flagged as <em>Correct</em>{" "}
+              and the target sample is flagged as <em>Not contaminated</em>{" "}
               (skipping any target that already has a sample-level
               verdict).
             </li>
@@ -19821,7 +19872,7 @@ const HelpTab = ({ onStartTour }) => {
                 Evaluation lives on the event (TP / FP / Uncertain /
                 Pending) and answers <em>"is this CroCoDeEL flag
                 real?"</em>. Verdict lives on the sample
-                (Contaminated / Correct / Uncertain / Pending) and
+                (Contaminated / Not contaminated / Uncertain / Pending) and
                 answers <em>"is this sample as a whole compromised?"</em>.
                 A sample can be marked Contaminated even when its
                 events are still pending, and a TP event doesn't
@@ -19831,12 +19882,13 @@ const HelpTab = ({ onStartTour }) => {
             </div>
             <div>
               <p style={{ color: "var(--ink)", fontWeight: 700 }}>
-                Why are some samples already marked Correct + Keep
-                without me having clicked anything?
+                Why are some samples already marked Not contaminated +
+                Keep without me having clicked anything?
               </p>
               <p>
-                The Samples tab auto-applies <em>Correct</em> +{" "}
-                <em>Keep</em> to any sample that is never the target
+                The Samples tab auto-applies{" "}
+                <em>Not contaminated</em> + <em>Keep</em> to any
+                sample that is never the target
                 of an event in the full events list — by definition
                 there is no contamination call against them. The
                 rule respects existing curator decisions: it only
@@ -21831,6 +21883,11 @@ function AppMain({ initial }) {
   const [explorePairsForm, setExplorePairsForm] = useState(
     EXPLORE_PAIRS_DEFAULTS,
   );
+  // "Color contamination-line points" toggle — lifted to App so the
+  // curator's choice survives Scatter ↔ Validate ↔ other-tab
+  // round-trips (otherwise the state would reset to true every time
+  // the tab unmounts).
+  const [colorOnLine, setColorOnLine] = useState(true);
   // Samples-tab UI state — lifted to App so sort order, page,
   // context filters, expanded notes and scroll position survive a
   // round-trip to the Scatter / Events tabs (otherwise drilling on a
@@ -22152,7 +22209,7 @@ function AppMain({ initial }) {
       {
         title: "Samples — the per-sample cockpit",
         body:
-          "Each event has an evaluation; each sample has its own verdict (Contaminated / Correct / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are auto-tagged Correct + Keep.\n\n" +
+          "Each event has an evaluation; each sample has its own verdict (Contaminated / Not contaminated / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are auto-tagged Not contaminated + Keep.\n\n" +
           "The table splits events into two side-aware columns — Events as source / Events as target — each with its own count, TP/FP/Uncertain/Pending breakdown and → Scatter / → Events / → Network drill-ins that scope the destination tab to that side. A floating \"Back to Samples\" chip on the destination tab brings you back to the same row.\n\n" +
           "Filter by metadata (autocomplete on subject / timepoint / group / biome / control / quality flags) or by \"count event source\" / \"count event target\" counters. The Bulk-apply dialog combines all those filters with per-side event-count chips and pre-conditions on the samples' current verdict / action so you can stamp a verdict / action on a precise subset.",
         action: "tabSamples",
@@ -22870,7 +22927,7 @@ function AppMain({ initial }) {
       title: `Mark ${matches.length} same-subject event${matches.length > 1 ? "s" : ""} as false positive?`,
       body:
         "These are longitudinal pairs (source and target share a subject_id) — biologically expected to share microbes, so CroCoDeEL flags are typically false positives.\n\n" +
-        "Each event is marked FP and its TARGET sample is flagged as Correct (skipping any target sample that already carries a verdict). Already-validated events are not affected.",
+        'Each event is marked FP and its TARGET sample is flagged as "Not contaminated" (skipping any target sample that already carries a verdict). Already-validated events are not affected.',
       confirmLabel: `Mark ${matches.length} as FP`,
       onConfirm: () => {
         const matchIds = new Set(matches.map((e) => e.id));
@@ -23679,7 +23736,7 @@ function AppMain({ initial }) {
         v === "contaminated"
           ? { bg: "#ed6e6c", label: "Contaminated" }
           : v === "correct"
-            ? { bg: "#00a3a6", label: "Correct" }
+            ? { bg: "#00a3a6", label: "Not contaminated" }
             : v === "uncertain"
               ? { bg: "#d97a3c", label: "Uncertain" }
               : { bg: "#e6e8e8", label: "Pending", textColor: "#5a5550" };
@@ -25195,6 +25252,8 @@ function AppMain({ initial }) {
               pageSize={galleryPageSize}
               explorePairsForm={explorePairsForm}
               setExplorePairsForm={setExplorePairsForm}
+              colorOnLine={colorOnLine}
+              setColorOnLine={setColorOnLine}
             />
           )}
           {tab === "network" && (
@@ -25264,6 +25323,8 @@ function AppMain({ initial }) {
               }}
               bulkApplyOpen={bulkApplyOpen}
               onOpenBulkApply={() => setBulkApplyOpen(true)}
+              colorOnLine={colorOnLine}
+              setColorOnLine={setColorOnLine}
             />
           )}
           {tab === "samples" && (
@@ -26953,20 +27014,35 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
                 color: "var(--ink-muted)",
                 fontWeight: 700,
               };
-              const valueStyle = {
-                minWidth: 56,
-                textAlign: "right",
-                fontFamily: "ui-monospace, monospace",
-                fontSize: 12,
-                fontWeight: 700,
-                color: "var(--ink)",
-              };
               const sliderStyle = {
                 flex: 1,
                 accentColor: "#00a3a6",
                 opacity: running ? 0.5 : 1,
                 cursor: running ? "not-allowed" : "pointer",
               };
+              const numberInputStyle = {
+                width: 78,
+                padding: "4px 6px",
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                borderRadius: 3,
+                color: "var(--ink)",
+                fontFamily: "ui-monospace, monospace",
+                fontSize: 12,
+                fontWeight: 700,
+                textAlign: "right",
+                opacity: running ? 0.5 : 1,
+                cursor: running ? "not-allowed" : "auto",
+              };
+              const ratePercent = rateCutoff * 100;
+              const rateDecimals =
+                rateCutoff === 0
+                  ? 0
+                  : rateCutoff < 0.01
+                    ? 3
+                    : rateCutoff < 0.1
+                      ? 2
+                      : 1;
               return (
                 <div className="flex flex-col gap-3 mb-3">
                   <label className="flex flex-col gap-1.5">
@@ -26996,7 +27072,36 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
                         disabled={running}
                         style={sliderStyle}
                       />
-                      <span style={valueStyle}>{probCutoff.toFixed(2)}</span>
+                      <div
+                        className="flex items-center gap-1"
+                        style={{ flexShrink: 0, width: 104, justifyContent: "flex-end" }}
+                      >
+                        <input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={Number(probCutoff.toFixed(2))}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!Number.isFinite(v)) return;
+                            setProbCutoff(Math.max(0, Math.min(1, v)));
+                          }}
+                          disabled={running}
+                          aria-label="Probability cutoff (manual entry, 0 to 1)"
+                          style={numberInputStyle}
+                        />
+                        <span
+                          aria-hidden="true"
+                          style={{
+                            color: "transparent",
+                            fontFamily: "ui-monospace, monospace",
+                            fontSize: 12,
+                          }}
+                        >
+                          %
+                        </span>
+                      </div>
                     </div>
                   </label>
                   <label className="flex flex-col gap-1.5">
@@ -27010,7 +27115,7 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
                         <code style={{ fontFamily: "ui-monospace, monospace" }}>
                           rate &lt;
                         </code>{" "}
-                        this value · off / 0.001 % … 99 %
+                        this value · off / 0.001 % … 99 % · 0 ⇒ off
                       </span>
                     </span>
                     <div className="flex items-center gap-3">
@@ -27028,13 +27133,36 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
                         disabled={running}
                         style={sliderStyle}
                       />
-                      <span style={valueStyle}>
-                        {rateCutoff === 0
-                          ? "off"
-                          : `${(rateCutoff * 100).toFixed(
-                              rateCutoff < 0.01 ? 3 : rateCutoff < 0.1 ? 2 : 1,
-                            )} %`}
-                      </span>
+                      <div
+                        className="flex items-center gap-1"
+                        style={{ flexShrink: 0, width: 104, justifyContent: "flex-end" }}
+                      >
+                        <input
+                          type="number"
+                          min={0}
+                          max={99}
+                          step={0.001}
+                          value={Number(ratePercent.toFixed(rateDecimals))}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!Number.isFinite(v)) return;
+                            const clamped = Math.max(0, Math.min(99, v));
+                            setRateCutoff(clamped / 100);
+                          }}
+                          disabled={running}
+                          aria-label="Rate cutoff (manual entry, percent, 0 to 99)"
+                          style={numberInputStyle}
+                        />
+                        <span
+                          style={{
+                            color: "var(--ink-muted)",
+                            fontFamily: "ui-monospace, monospace",
+                            fontSize: 12,
+                          }}
+                        >
+                          %
+                        </span>
+                      </div>
                     </div>
                   </label>
                 </div>
