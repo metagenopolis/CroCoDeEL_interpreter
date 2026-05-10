@@ -276,6 +276,44 @@ finally:
     except Exception:
         pass
 
+# Force any still-open tqdm bar to print its terminal 100% state.
+# tqdm's default mininterval=0.1 frequently swallows the final
+# refresh if the last batch of iterations finishes faster than that;
+# the bar then ends at 96% / 99% in our log even though the search
+# itself completed. Iterating over a copy of _instances guards
+# against close() mutating the set during the loop.
+try:
+    from tqdm import tqdm as _tqdm_cls
+    for _bar in list(getattr(_tqdm_cls, '_instances', []) or []):
+        try:
+            _bar.refresh()
+        except Exception:
+            pass
+        try:
+            _bar.close()
+        except Exception:
+            pass
+except Exception:
+    pass
+
+# Drain anything tqdm just wrote so the final 100% line reaches the
+# JS side before we post the TSV result. Without this, Pyodide's
+# stream callback can race against runPythonAsync's resolution.
+import sys as _sys
+try:
+    _sys.stdout.flush()
+except Exception:
+    pass
+try:
+    _sys.stderr.flush()
+except Exception:
+    pass
+
+print(
+    f"✓ Search complete: {len(raw_events)} contamination event(s) detected.",
+    flush=True,
+)
+
 try:
     import importlib.metadata as _md
     _croc_version = _md.version('crocodeel')

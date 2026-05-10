@@ -21921,8 +21921,38 @@ function AppMain({ initial }) {
   const [arcadeOpen, setArcadeOpen] = useState(false);
   useKonamiCode(() => setArcadeOpen(true));
   // In-browser CroCoDeEL run page — opened from the events upload
-  // card's empty state when the user has only an abundance table.
-  const [runCrocodeelOpen, setRunCrocodeelOpen] = useState(false);
+  // card's empty state when the user has only an abundance table, or
+  // via the `#runCroCoDeEL` URL fragment so curators can bookmark /
+  // share a direct link straight to the run page.
+  const RUN_HASH = "#runCroCoDeEL";
+  const isRunHash = (h) =>
+    (h || "").toLowerCase().startsWith(RUN_HASH.toLowerCase());
+  const [runCrocodeelOpen, setRunCrocodeelOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return isRunHash(window.location.hash);
+  });
+  // Mirror the open state into the URL hash so refresh / share /
+  // history-back behave naturally. We also react to hashchange so the
+  // browser back button closes the page instead of bouncing the user
+  // out of the app.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const desired = runCrocodeelOpen ? RUN_HASH : "";
+    if ((window.location.hash || "") !== desired) {
+      const url = window.location.pathname + window.location.search + desired;
+      // replaceState avoids stacking history entries when the page is
+      // toggled programmatically (e.g. via the close button).
+      window.history.replaceState(null, "", url);
+    }
+  }, [runCrocodeelOpen]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onHash = () => {
+      setRunCrocodeelOpen(isRunHash(window.location.hash));
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   // Theme picker — light / dark / auto-os / auto-time. Persisted in
   // localStorage so the choice survives session resets. For schedule
   // mode the dark window is also user-configurable (default 19:00 -
@@ -26744,21 +26774,45 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
   const [showOutput, setShowOutput] = useState(false);
   const [pkgInfo, setPkgInfo] = useState(null); // { version, defaults }
   const [logLines, setLogLines] = useState([]);
-  // Latest parsed tqdm-style progress: { percent, current, total, suffix }.
+  // Latest parsed tqdm-style progress: { percent, current, total, ... }.
   // Updated as new log lines arrive; surfaced as a real <progress> bar
   // above the spinner.
   const [tqdmProgress, setTqdmProgress] = useState(null);
   const logBoxRef = useRef(null);
+  // Rolling sample of (timestamp, current) pairs used to compute the
+  // ETA. CroCoDeEL configures tqdm with a custom bar_format that hides
+  // the native `[elapsed<remaining, rate]` block, so we estimate the
+  // remaining time on the JS side from the throughput observed over
+  // the last few seconds.
+  const tqdmHistoryRef = useRef([]); // [{ t, current }]
 
   const TQDM_RE = /(\d+(?:\.\d+)?)%\|[^|]*\|\s*(\d+)\/(\d+)([^\n\r]*)/;
+  // Pull elapsed / remaining / rate out of the tqdm timing block,
+  // shapes like [00:42<03:01, 12.3it/s] or [01:02<?, ?it/s]. The
+  // remaining piece feeds the ETA badge above the progress bar.
+  const TQDM_TIMING_RE = /\[([^<\]]+)<([^,\]]+)(?:,\s*([^\]]+))?\]/;
   const parseTqdm = (line) => {
     const m = line.match(TQDM_RE);
     if (!m) return null;
+    const suffix = (m[4] || "").trim();
+    let elapsed = null;
+    let remaining = null;
+    let rate = null;
+    const t = suffix.match(TQDM_TIMING_RE);
+    if (t) {
+      elapsed = t[1].trim();
+      remaining = t[2].trim();
+      rate = (t[3] || "").trim() || null;
+      if (remaining === "?" || remaining === "00:00") remaining = null;
+    }
     return {
       percent: parseFloat(m[1]),
       current: parseInt(m[2], 10),
       total: parseInt(m[3], 10),
-      suffix: (m[4] || "").trim(),
+      suffix,
+      elapsed,
+      remaining,
+      rate,
     };
   };
 
@@ -26771,10 +26825,29 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
     logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
   }, [logLines]);
 
+  // Lock the body scroll while this dialog is open. Without this, the
+  // underlying app keeps its own scrollbar live behind the fixed
+  // overlay, so curators see two vertical bars stacked at the right
+  // edge and the wheel sometimes scrolls the page underneath instead
+  // of the dialog content.
+  useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const prevBody = body.style.overflow;
+    const prevHtml = html.style.overflow;
+    body.style.overflow = "hidden";
+    html.style.overflow = "hidden";
+    return () => {
+      body.style.overflow = prevBody;
+      html.style.overflow = prevHtml;
+    };
+  }, []);
+
   const handleRun = async () => {
     setError(null);
     setLogLines([]);
     setTqdmProgress(null);
+    tqdmHistoryRef.current = [];
     setPhase("running");
     setProgress({ label: "Preparing abundance table…" });
     try {
@@ -26787,7 +26860,50 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
         onLog: (m) => {
           const line = m.line || "";
           const tq = parseTqdm(line);
-          if (tq) setTqdmProgress(tq);
+          if (tq) {
+            // If the tqdm timing block is missing (CroCoDeEL uses a
+            // custom bar_format), project ETA from the rolling rate
+            // we observe between successive lines. Use a window of
+            // the last ~10 s so the estimate stabilises but still
+            // reacts to genuine slowdowns.
+            if (!tq.remaining) {
+              const now = Date.now();
+              const hist = tqdmHistoryRef.current;
+              hist.push({ t: now, current: tq.current });
+              while (hist.length > 1 && now - hist[0].t > 10_000) hist.shift();
+              if (hist.length >= 2) {
+                const a = hist[0];
+                const b = hist[hist.length - 1];
+                const dt = (b.t - a.t) / 1000;
+                const dn = b.current - a.current;
+                if (dt > 0.1 && dn > 0) {
+                  const ratePerSec = dn / dt;
+                  const remainingItems = Math.max(0, tq.total - tq.current);
+                  const secs = Math.round(remainingItems / ratePerSec);
+                  const fmt = (s) => {
+                    if (!Number.isFinite(s) || s < 0) return null;
+                    if (s < 60) return `${s} s`;
+                    const mm = Math.floor(s / 60);
+                    const ss = s % 60;
+                    if (mm < 60) {
+                      return `${mm}:${String(ss).padStart(2, "0")}`;
+                    }
+                    const hh = Math.floor(mm / 60);
+                    const m2 = mm % 60;
+                    return `${hh}:${String(m2).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+                  };
+                  tq.remaining = fmt(secs);
+                  if (!tq.rate) {
+                    tq.rate =
+                      ratePerSec >= 1
+                        ? `${ratePerSec.toFixed(1)} pairs/s`
+                        : `${(ratePerSec * 60).toFixed(1)} pairs/min`;
+                  }
+                }
+              }
+            }
+            setTqdmProgress(tq);
+          }
           setLogLines((prev) => [...prev, { stream: m.stream, line }]);
         },
         onVersion: (m) =>
@@ -26840,7 +26956,12 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
         inset: 0,
         background: "var(--bg, #faf7f0)",
         zIndex: 8000,
-        overflow: "auto",
+        overflowY: "auto",
+        overflowX: "hidden",
+        // Reserve gutter for the scrollbar so the layout doesn't jump
+        // when the page grows past the viewport (e.g. the running
+        // panel + log + ETA bar all appearing at once).
+        scrollbarGutter: "stable",
       }}
     >
       <div
@@ -26921,9 +27042,57 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
           >
             Abundance table
           </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".tsv,.txt,.csv,.tab"
+            className="hidden"
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              // Swapping the abundance also wipes any previous in-browser
+              // result so the success block doesn't show stale events for
+              // the old table.
+              setResultTSV(null);
+              setResultEvents(null);
+              setPhase("idle");
+              try {
+                if (onLoadAbundance) await onLoadAbundance(f);
+              } catch {
+                // err is surfaced by the caller via setErr; we stay on
+                // this page so the user can retry.
+              } finally {
+                e.target.value = "";
+              }
+            }}
+          />
           {ab ? (
-            <div style={{ color: "var(--ink)", fontWeight: 600 }}>
-              ✓ {samplesCount} samples × {speciesCount} species
+            <div className="flex items-center gap-3 flex-wrap">
+              <div style={{ color: "var(--ink)", fontWeight: 600 }}>
+                ✓ {samplesCount} samples × {speciesCount} species
+              </div>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={running}
+                className="text-[12px] inline-flex items-center gap-1"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  padding: 0,
+                  color: "#00a3a6",
+                  fontWeight: 600,
+                  fontFamily: '"Raleway", sans-serif',
+                  textDecoration: "underline",
+                  textUnderlineOffset: 2,
+                  cursor: running ? "not-allowed" : "pointer",
+                  opacity: running ? 0.5 : 1,
+                }}
+                title="Replace the loaded abundance with a different file"
+              >
+                <FolderOpen className="w-3 h-3" />
+                Use a different abundance file…
+              </button>
             </div>
           ) : (
             <div className="flex items-center gap-3 flex-wrap">
@@ -26931,24 +27100,6 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
                 No abundance table loaded yet — pick one to feed
                 CroCoDeEL.
               </span>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".tsv,.txt,.csv,.tab"
-                className="hidden"
-                onChange={async (e) => {
-                  const f = e.target.files?.[0];
-                  if (!f) return;
-                  try {
-                    if (onLoadAbundance) await onLoadAbundance(f);
-                  } catch {
-                    // err is surfaced by the caller via setErr; we
-                    // stay on this page so the user can retry.
-                  } finally {
-                    e.target.value = "";
-                  }
-                }}
-              />
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -27247,40 +27398,6 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
           </div>
         )}
 
-        {phase === "idle" && ab && samplesCount > 200 && (
-          <div
-            role="alert"
-            className="p-4 rounded-sm mb-4 flex items-start gap-3"
-            style={{
-              background: "#fff3cd",
-              border: "1px solid #e3a100",
-              borderLeft: "3px solid #d97a3c",
-              color: "#6b4500",
-              fontSize: 13,
-              lineHeight: 1.55,
-            }}
-          >
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <div>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                Large dataset — browser run not recommended.
-              </div>
-              Your abundance table has{" "}
-              <strong>{samplesCount} samples</strong> ({speciesCount}{" "}
-              species). CroCoDeEL's pairwise search is O(n²) on the
-              sample count and Pyodide is 2–5× slower than native
-              Python; runs of this size can take several minutes and
-              push the browser tab close to its memory limit. For
-              anything &gt; 200 samples, prefer the native CLI on a
-              laptop / cluster and load the resulting{" "}
-              <code style={{ fontFamily: "ui-monospace, monospace" }}>
-                contamination_events.tsv
-              </code>{" "}
-              here instead. You can still run if you want — just
-              expect a long wait.
-            </div>
-          </div>
-        )}
         {phase === "idle" && ab && (
           <div className="flex items-center gap-3">
             <button
@@ -27296,7 +27413,21 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
                 cursor: "pointer",
               }}
             >
-              <Beaker className="w-4 h-4" />
+              <img
+                src={`${import.meta.env.BASE_URL || "/"}logo.webp`.replace(
+                  /\/{2,}/g,
+                  "/",
+                )}
+                alt=""
+                draggable={false}
+                style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: "50%",
+                  background: "#0f1518",
+                  display: "block",
+                }}
+              />
               Run CroCoDeEL
             </button>
             <span
@@ -27362,7 +27493,7 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
             {tqdmProgress && (
               <div className="mt-3">
                 <div
-                  className="flex items-baseline justify-between text-[11px] mb-1"
+                  className="flex items-baseline justify-between text-[11px] mb-1 flex-wrap gap-2"
                   style={{ color: "var(--ink-soft)" }}
                 >
                   <span style={{ fontWeight: 700, color: "var(--ink)" }}>
@@ -27373,9 +27504,25 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
                     style={{
                       fontFamily: "ui-monospace, monospace",
                       color: "var(--ink-muted)",
+                      display: "inline-flex",
+                      gap: 12,
+                      alignItems: "baseline",
                     }}
                   >
-                    {tqdmProgress.suffix}
+                    {tqdmProgress.remaining && (
+                      <span style={{ color: "var(--ink)", fontWeight: 700 }}>
+                        Time left{" "}
+                        <span style={{ color: "#00a3a6" }}>
+                          {tqdmProgress.remaining}
+                        </span>
+                      </span>
+                    )}
+                    {tqdmProgress.elapsed && (
+                      <span title="Time since the search started">
+                        Elapsed {tqdmProgress.elapsed}
+                      </span>
+                    )}
+                    {tqdmProgress.rate && <span>· {tqdmProgress.rate}</span>}
                   </span>
                 </div>
                 <div
@@ -27407,6 +27554,139 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
               </div>
             )}
             <style>{`@keyframes crocodeel-spin { to { transform: rotate(360deg); } }`}</style>
+          </div>
+        )}
+        {phase === "done" && resultEvents && (
+          <div
+            className="rounded-sm overflow-hidden mb-4"
+            style={{
+              background: "rgba(0,163,166,0.08)",
+              border: "1px solid #00a3a6",
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            <div className="p-5">
+              <div
+                className="flex items-center gap-2 text-[10px] tracking-[0.15em] uppercase mb-2"
+                style={{ color: "#00a3a6", fontWeight: 700 }}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                CroCoDeEL is done
+              </div>
+              <div
+                style={{
+                  color: "var(--ink)",
+                  fontSize: 18,
+                  fontWeight: 700,
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                {resultEvents.events.length} contamination event
+                {resultEvents.events.length === 1 ? "" : "s"} detected
+              </div>
+              <div
+                className="text-[12px] mt-1.5"
+                style={{ color: "var(--ink-soft)" }}
+              >
+                Abundance table ({samplesCount} samples × {speciesCount}{" "}
+                species) is already loaded — it will travel with the events
+                you adopt.
+              </div>
+              <button
+                type="button"
+                onClick={adopt}
+                className="mt-4 w-full px-4 py-2.5 text-[13px] rounded-sm flex items-center justify-center gap-2"
+                style={{
+                  background: "#00a3a6",
+                  color: "#fff",
+                  border: "none",
+                  fontWeight: 700,
+                  letterSpacing: "0.02em",
+                  cursor: "pointer",
+                  boxShadow: "0 1px 0 rgba(0,0,0,0.04)",
+                }}
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                Use these events + abundance in this session
+              </button>
+            </div>
+            <div
+              className="flex items-center justify-between flex-wrap gap-2 px-5 py-2.5"
+              style={{
+                background: "var(--bg-card)",
+                borderTop: "1px solid rgba(0,163,166,0.25)",
+                fontSize: 12,
+              }}
+            >
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span
+                  style={{
+                    color: "var(--ink-muted)",
+                    fontWeight: 600,
+                    letterSpacing: "0.02em",
+                    marginRight: 4,
+                  }}
+                >
+                  Or download
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    downloadText(resultTSV, "contamination_events.tsv")
+                  }
+                  className="px-2.5 py-1 text-[12px] rounded-sm flex items-center gap-1.5"
+                  style={{
+                    background: "transparent",
+                    color: "var(--ink)",
+                    border: "1px solid var(--border-strong)",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  <Download className="w-3 h-3" />
+                  Events TSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    downloadText(
+                      abundanceToTSV(ab),
+                      "species_abundance.tsv",
+                    )
+                  }
+                  className="px-2.5 py-1 text-[12px] rounded-sm flex items-center gap-1.5"
+                  style={{
+                    background: "transparent",
+                    color: "var(--ink)",
+                    border: "1px solid var(--border-strong)",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                  title="Download a clean copy of the abundance table you fed CroCoDeEL"
+                >
+                  <Download className="w-3 h-3" />
+                  Abundance TSV
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPhase("idle")}
+                className="text-[12px]"
+                style={{
+                  background: "transparent",
+                  color: "var(--ink-muted)",
+                  border: "none",
+                  padding: "4px 4px",
+                  fontWeight: 600,
+                  textDecoration: "underline",
+                  textUnderlineOffset: 2,
+                  cursor: "pointer",
+                }}
+              >
+                Re-run
+              </button>
+            </div>
           </div>
         )}
         {showOutput && (phase === "running" || phase === "done" || phase === "error") && (
@@ -27535,103 +27815,6 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
           </div>
         )}
 
-        {phase === "done" && resultEvents && (
-          <div>
-            <div
-              className="p-4 rounded-sm mb-4"
-              style={{
-                background: "rgba(0,163,166,0.08)",
-                border: "1px solid #00a3a6",
-                fontSize: 13,
-                lineHeight: 1.6,
-              }}
-            >
-              <div
-                className="text-[10px] tracking-[0.15em] uppercase mb-2"
-                style={sectionLabelStyle}
-              >
-                CroCoDeEL is done
-              </div>
-              <div style={{ color: "var(--ink)" }}>
-                <strong>{resultEvents.events.length}</strong> contamination
-                event{resultEvents.events.length === 1 ? "" : "s"} detected.
-              </div>
-              <div
-                className="text-[12px] mt-2"
-                style={{ color: "var(--ink-soft)" }}
-              >
-                ✓ Abundance table ({samplesCount} samples × {speciesCount}{" "}
-                species) is already loaded in your session and will travel with
-                the events you adopt below.
-              </div>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={adopt}
-                className="px-4 py-2 text-[13px] rounded-sm flex items-center gap-2"
-                style={{
-                  background: "#00a3a6",
-                  color: "#fff",
-                  border: "none",
-                  fontWeight: 700,
-                  letterSpacing: "0.02em",
-                  cursor: "pointer",
-                }}
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                Use these events + abundance in this session
-              </button>
-              <button
-                type="button"
-                onClick={() => downloadText(resultTSV, "contamination_events.tsv")}
-                className="px-3 py-1.5 text-[12px] rounded-sm flex items-center gap-1.5"
-                style={{
-                  background: "var(--bg-card)",
-                  color: "var(--ink)",
-                  border: "1px solid var(--border-strong)",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                <Download className="w-3 h-3" />
-                Download events TSV
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  downloadText(abundanceToTSV(ab), "species_abundance.tsv")
-                }
-                className="px-3 py-1.5 text-[12px] rounded-sm flex items-center gap-1.5"
-                style={{
-                  background: "var(--bg-card)",
-                  color: "var(--ink)",
-                  border: "1px solid var(--border-strong)",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-                title="Download a clean copy of the abundance table you fed CroCoDeEL"
-              >
-                <Download className="w-3 h-3" />
-                Download abundance TSV
-              </button>
-              <button
-                type="button"
-                onClick={() => setPhase("idle")}
-                className="px-3 py-1.5 text-[12px] rounded-sm"
-                style={{
-                  background: "transparent",
-                  color: "var(--ink-muted)",
-                  border: "1px solid var(--border)",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                Re-run
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
