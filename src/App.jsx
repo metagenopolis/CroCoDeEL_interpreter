@@ -10872,8 +10872,10 @@ const SamplesTab = ({
     else if (sortBy === "rate") {
       // Per-sample rate = the highest contamination rate observed on
       // any event where this sample is the target. Samples that never
-      // appear as a target (rate == null) sink to the bottom of the
-      // descending sort, regardless of asc/desc direction.
+      // appear as a target (rate == null) sink to the bottom
+      // regardless of direction. Convention matches the other
+      // numeric branches: (a - b) * flip — so desc (flip=-1) puts the
+      // highest rate first.
       copy.sort((a, b) => {
         const ar = a.maxTargetRate;
         const br = b.maxTargetRate;
@@ -10882,7 +10884,7 @@ const SamplesTab = ({
         if (aMissing && bMissing) return a.id.localeCompare(b.id);
         if (aMissing) return 1;
         if (bMissing) return -1;
-        return (br - ar) * flip || a.id.localeCompare(b.id);
+        return (ar - br) * flip || a.id.localeCompare(b.id);
       });
     }
     else if (sortBy === "name")
