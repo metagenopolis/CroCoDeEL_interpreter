@@ -225,7 +225,7 @@ function normalizeEvent(raw, cols, idx) {
   };
 }
 
-function parseEvents(text) {
+export function parseEvents(text) {
   const { header, rows, headerComments } = parseTSV(text);
   if (rows.length === 0) throw new Error("Empty file or no rows");
   const cols = {
@@ -247,7 +247,7 @@ function parseEvents(text) {
 }
 
 /* ---------- species_abundance.tsv ---------- */
-function parseAbundance(text) {
+export function parseAbundance(text) {
   const { header, rows } = parseTSV(text);
   if (header.length < 2) return null;
   const speciesCol = header[0];
@@ -430,7 +430,7 @@ function parseMetadata(text) {
 /** Collect every sample-level flag we can derive from explicit metadata
     columns. Returns { isControl, isLowBiomass, isLowSequencingDepth, biome,
     subject, timepoint, groupId, other }. */
-function flagSample(sampleId, metadata) {
+export function flagSample(sampleId, metadata) {
   const flags = {
     isControl: false,
     isLowBiomass: false,
@@ -482,7 +482,7 @@ function flagSample(sampleId, metadata) {
     distinct from the canonical `sample_id`, or null otherwise. The
     null case lets every call site cheaply skip rendering when nothing
     is to add. */
-function sampleName(metadata, sampleId) {
+export function sampleName(metadata, sampleId) {
   if (!sampleId || !metadata?.bySample) return null;
   const meta = metadata.bySample[sampleId];
   if (!meta) return null;
@@ -591,7 +591,7 @@ function eventsToTSV(rawEvents, runMetadata) {
 /** Serialize the in-memory abundance matrix back to TSV. NOTE: the parser
     normalizes columns to relative abundances per sample, so the output here
     is RE-NORMALIZED relative abundances — not the exact original counts. */
-function abundanceToTSV(ab) {
+export function abundanceToTSV(ab) {
   if (!ab) return "";
   const header = ["species", ...ab.samples].join("\t");
   const lines = [header];
@@ -661,7 +661,7 @@ function resolveSample(ab, name) {
   return hit || null;
 }
 
-function buildScatter(ab, event) {
+export function buildScatter(ab, event) {
   if (!ab) return null;
   const { source, target, introduced, rate } = event;
   const srcKey = resolveSample(ab, source);
@@ -772,7 +772,7 @@ function spearmanRho(scatter) {
   return sxx * syy > 0 ? sxy / Math.sqrt(sxx * syy) : 0;
 }
 
-function lineDiagnostics(scatter) {
+export function lineDiagnostics(scatter) {
   if (!scatter) return null;
   const spearman = spearmanRho(scatter);
   const pts = scatter.points.filter((p) => p.onLine && p.x > 0 && p.y > 0);
@@ -805,7 +805,7 @@ function lineDiagnostics(scatter) {
   return { n, r2, slope, decadeRange, spearman };
 }
 
-function pointsAboveLine(scatter) {
+export function pointsAboveLine(scatter) {
   if (!scatter || scatter.logC == null) return null;
   let above = 0;
   let maxDist = 0;
@@ -834,7 +834,7 @@ function pointsAboveLine(scatter) {
     observed missing counts, so they don't bias the Z-score. Including
     the full source profile increases statistical power vs. the older
     "top 80%" heuristic. */
-function missingAbundantFromSource(ab, source, target, rate) {
+export function missingAbundantFromSource(ab, source, target, rate) {
   if (!ab) return null;
   const srcKey = resolveSample(ab, source);
   const tgtKey = resolveSample(ab, target);
@@ -1121,7 +1121,7 @@ function detectCascades(events, abundance) {
 /** Are source and target from the same subject? */
 /** Returns null if not enough metadata, otherwise an object describing
     why two samples are related (or {related: false} if unrelated). */
-function areRelated(metadata, source, target) {
+export function areRelated(metadata, source, target) {
   if (!metadata) return null;
   const a = metadata.bySample[source];
   const b = metadata.bySample[target];
@@ -1137,7 +1137,7 @@ function areRelated(metadata, source, target) {
 }
 
 /** Chebyshev distance on the plate */
-function plateDistance(plateMap, source, target) {
+export function plateDistance(plateMap, source, target) {
   if (!plateMap) return null;
   const a = plateMap.bySample[source];
   const b = plateMap.bySample[target];

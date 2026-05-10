@@ -29,4 +29,13 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(APP_VERSION),
   },
+  // Vitest reads its config from this file. We park tests under tests/
+  // and use jsdom because importing src/App.jsx pulls in d3 and a few
+  // React modules that touch document at module-load time.
+  test: {
+    environment: "jsdom",
+    include: ["tests/**/*.test.{js,jsx}"],
+    globals: false,
+    css: false,
+  },
 });

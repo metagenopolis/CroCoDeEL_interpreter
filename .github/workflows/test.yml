@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Lint is intentionally NOT in this gate yet — the codebase has
+      # ~140 pre-existing lint errors that need a dedicated cleanup pass
+      # before the rule can fail the build. Run `npm run lint` locally.
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
