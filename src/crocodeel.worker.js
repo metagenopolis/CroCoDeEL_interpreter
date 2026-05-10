@@ -136,7 +136,22 @@ import io, os
 import pandas as pd
 from importlib.resources import files
 
-ab_df = pd.read_csv(io.StringIO(abundance_tsv_input), sep='\\t', index_col=0)
+# Mirror the CLI's load path: ab_table_utils.read_filter_normalize
+# accepts a text file handle and the --filter-low-ab factor, returns
+# the *normalized* DataFrame the CLI feeds into run_search_conta. Any
+# other loader produces subtly different rates / probabilities.
+os.makedirs('/tmp/croc', exist_ok=True)
+abundance_path = '/tmp/croc/species_abundance.tsv'
+with open(abundance_path, 'w', encoding='utf8') as _f:
+    _f.write(abundance_tsv_input)
+
+from crocodeel import ab_table_utils
+filter_factor_for_load = (
+    float(run_filter_low_ab) if run_filter_low_ab and float(run_filter_low_ab) > 0 else None
+)
+with open(abundance_path, 'r', encoding='utf8') as _fh:
+    ab_df = ab_table_utils.read_filter_normalize(_fh, filter_factor_for_load)
+print(f"[load] used crocodeel.ab_table_utils.read_filter_normalize (filter_factor={filter_factor_for_load})")
 
 # Silence tqdm's watchdog-thread warning: Pyodide can't start threads,
 # so tqdm fires a TqdmMonitorWarning the first time it instantiates a
@@ -154,67 +169,8 @@ try:
 except Exception:
     pass
 
-# --filter-low-ab equivalent: drop species whose abundance is below
-# filter_low_ab x LOD. Recommended for MetaPhlAn 4 output where many
-# species sit just above the limit of detection and add noise to the
-# contamination line. We probe crocodeel.ab_table_utils for any
-# callable whose name contains "filter" / "low" / "ab" and try a few
-# common signatures; if none works, we fall back to a manual filter
-# that drops species whose median non-zero abundance is below
-# factor x min(non-zero abundance) per sample column.
-filter_low_ab_factor = float(run_filter_low_ab) if run_filter_low_ab else 0.0
-n_species_before = len(ab_df.index)
-filtered = False
-if filter_low_ab_factor > 0:
-    try:
-        from crocodeel import ab_table_utils as _au
-        for fname in dir(_au):
-            if fname.startswith('_'):
-                continue
-            f = getattr(_au, fname)
-            if not callable(f):
-                continue
-            lname = fname.lower()
-            if 'filter' not in lname and 'low' not in lname:
-                continue
-            for args in (
-                (ab_df, filter_low_ab_factor),
-                (filter_low_ab_factor, ab_df),
-                (ab_df,),
-            ):
-                try:
-                    out = f(*args)
-                    if isinstance(out, pd.DataFrame):
-                        ab_df = out
-                        filtered = True
-                        print(f"[filter-low-ab] applied crocodeel.ab_table_utils.{fname}({len(args)} args)")
-                        break
-                except Exception:
-                    continue
-            if filtered:
-                break
-    except Exception:
-        pass
-    if not filtered:
-        # Manual fallback. LOD per sample = smallest non-zero value in
-        # that column (matches the heuristic the interpreter already
-        # uses elsewhere for criterion 04). A species is kept if its
-        # median abundance across samples is >= factor × min LOD across
-        # samples — i.e. clearly above the noise floor.
-        sample_lods = []
-        for col in ab_df.columns:
-            nz = ab_df[col][ab_df[col] > 0]
-            if len(nz) > 0:
-                sample_lods.append(float(nz.min()))
-        if sample_lods:
-            lod = min(sample_lods)
-            threshold = filter_low_ab_factor * lod
-            medians = ab_df.median(axis=1)
-            mask = medians >= threshold
-            ab_df = ab_df.loc[mask]
-            print(f"[filter-low-ab] manual filter: kept {len(ab_df)} of {n_species_before} species (threshold = {filter_low_ab_factor}× LOD = {threshold:.2e})")
-        else:
-            print("[filter-low-ab] abundance has no non-zero values — leaving unchanged")
+# Filter-low-ab is already applied by read_filter_normalize above.
+filter_low_ab_factor = filter_factor_for_load if filter_factor_for_load else 0.0
 
 # Pyodide ships without _multiprocessing — replace multiprocessing.Pool
 # inside crocodeel.search_conta with a synchronous shim.
@@ -320,24 +276,6 @@ finally:
     except Exception:
         pass
 
-rows = []
-for ev in raw_events:
-    if hasattr(ev, '__dict__'):
-        d = {k: v for k, v in vars(ev).items() if not k.startswith('_')}
-    elif isinstance(ev, dict):
-        d = ev
-    else:
-        d = {'value': str(ev)}
-    rows.append(d)
-
-events_df = pd.DataFrame(rows)
-for col in events_df.columns:
-    sample = events_df[col].iloc[0] if len(events_df) > 0 else None
-    if isinstance(sample, (list, tuple, set)):
-        events_df[col] = events_df[col].apply(
-            lambda x: ','.join(str(s) for s in x) if x else ''
-        )
-
 try:
     import importlib.metadata as _md
     _croc_version = _md.version('crocodeel')
@@ -347,19 +285,18 @@ except Exception:
 import datetime as _dt
 _now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec='seconds')
 
-# Render the model resource as a human-readable label — strict
-# string conversion via str() works for both plain paths and
-# importlib.resources Traversable objects.
 try:
     _rf_model_label = str(model_resource)
-    # Most useful tail: the package-relative path. Strip everything
-    # before the last "crocodeel/" segment so it reads like
-    # "crocodeel/models/foo.joblib" rather than the full sandbox path.
     _i = _rf_model_label.find('crocodeel/')
     if _i >= 0:
         _rf_model_label = _rf_model_label[_i:]
 except Exception:
     _rf_model_label = 'bundled'
+
+# Use the CLI's writer so the column names + serialization (notably
+# the canonical "contamination_specific_species" column) match
+# exactly. Anything else risks divergence.
+from crocodeel.conta_event import ContaminationEventIO
 
 header = (
     f"# crocodeel version: {_croc_version} | "
@@ -371,9 +308,13 @@ header = (
     f"username: in-browser | "
     f"datetime: {_now_iso}\\n"
 )
-buf = io.StringIO()
-events_df.to_csv(buf, sep='\\t', index=False)
-header + buf.getvalue()
+
+events_path = '/tmp/croc/contamination_events.tsv'
+with open(events_path, 'w', encoding='utf8') as _ev_fh:
+    ContaminationEventIO.write_tsv(raw_events, _ev_fh)
+with open(events_path, 'r', encoding='utf8') as _ev_fh:
+    _events_body = _ev_fh.read()
+header + _events_body
 `;
 
 self.onmessage = async (e) => {
