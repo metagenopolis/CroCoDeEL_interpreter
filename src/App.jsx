@@ -40,6 +40,7 @@ import {
   Save,
   Scale,
   Layers,
+  Eye,
 } from "lucide-react";
 
 /* ============================================================================
@@ -5595,9 +5596,9 @@ const EventFilterBar = ({
                 title="Clear the sample scope and go back to all events"
                 className="flex items-center gap-1 rounded-sm"
                 style={{
-                  background: "rgba(0,163,166,0.16)",
+                  background: "#00a3a6",
                   border: "1px solid #00a3a6",
-                  color: "#1d3a44",
+                  color: "#fff",
                   fontWeight: 700,
                   fontFamily: '"Raleway", sans-serif',
                   fontSize: 10,
@@ -6417,7 +6418,7 @@ const EventsTable = ({
         className="rounded-sm"
         style={{ border: "1px solid var(--border)" }}
       >
-        <table className="w-full text-[13px]">
+        <table className="w-full text-[13px] with-col-dividers">
           <thead>
             <tr>
               <Th
@@ -6826,6 +6827,7 @@ const MiniScatter = React.memo(function MiniScatter({
   width = 220,
   height = 180,
   colorOnLine = true,
+  showContaminationLine = true,
 }) {
   if (!scatter) return null;
   // Wider left + bottom padding to fit corner tick labels.
@@ -6975,7 +6977,7 @@ const MiniScatter = React.memo(function MiniScatter({
         return ticks;
       })()}
       {/* contamination line */}
-      {scatter.logC != null && (
+      {scatter.logC != null && showContaminationLine && (
         <line
           x1={sx(lo)}
           y1={sy(lo - scatter.logC)}
@@ -8667,11 +8669,11 @@ const ScatterTab = ({
   setColorOnLine,
 }) => {
   const [mode, setMode] = useState("flagged"); // "flagged" or "explore"
-  const [sortBy, setSortBy] = useState("score");
+  const [sortBy, setSortBy] = useState("rate");
   // Direction per sort key — defaults match what most users expect
   // (descending for numeric severity, ascending for alphabetical).
   const SORT_DEFAULT_DIR = { score: "desc", rate: "desc", introducedPct: "desc", source: "asc", target: "asc", pending: "asc", action: "asc", targetVerdict: "asc" };
-  const [sortDir, setSortDir] = useState(SORT_DEFAULT_DIR.score);
+  const [sortDir, setSortDir] = useState(SORT_DEFAULT_DIR.rate);
   // Sort freeze: when a card opens its action popover, we hold the
   // gallery's order so the just-clicked card doesn't jump out from
   // under the popover. The hold releases as soon as the popover closes.
@@ -10642,7 +10644,7 @@ const SamplesTab = ({
       hasGroupIdCol: !!metadata?.hasGroupIdCol,
     };
   }, [metadata]);
-  const [sortBy, setSortBy] = useState(persisted.sortBy ?? "attention"); // attention | id | events | verdict
+  const [sortBy, setSortBy] = useState(persisted.sortBy ?? "rate"); // rate | attention | id | events | verdict
   const [sortDir, setSortDir] = useState(persisted.sortDir ?? "desc");
   const [bulkOpen, setBulkOpen] = useState(false);
   const [openNotes, setOpenNotes] = useState(
@@ -10867,6 +10869,22 @@ const SamplesTab = ({
     const flip = sortDir === "asc" ? 1 : -1;
     if (sortBy === "id")
       copy.sort((a, b) => a.id.localeCompare(b.id) * flip);
+    else if (sortBy === "rate") {
+      // Per-sample rate = the highest contamination rate observed on
+      // any event where this sample is the target. Samples that never
+      // appear as a target (rate == null) sink to the bottom of the
+      // descending sort, regardless of asc/desc direction.
+      copy.sort((a, b) => {
+        const ar = a.maxTargetRate;
+        const br = b.maxTargetRate;
+        const aMissing = ar == null;
+        const bMissing = br == null;
+        if (aMissing && bMissing) return a.id.localeCompare(b.id);
+        if (aMissing) return 1;
+        if (bMissing) return -1;
+        return (br - ar) * flip || a.id.localeCompare(b.id);
+      });
+    }
     else if (sortBy === "name")
       copy.sort(
         (a, b) =>
@@ -11055,9 +11073,40 @@ const SamplesTab = ({
     minSourceEvents,
     minTargetEvents,
   ]);
-  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  // Freeze the sort order while the curator is interacting with a row
+  // (mouse hovering on it or keyboard focus inside it). Without this,
+  // clicking "Contaminated" in the verdict column re-sorts immediately
+  // and the row jumps off-screen — the curator then has to scroll to
+  // find it before they can pick Keep / Suppress. We snapshot the
+  // visible order on enter, replay it while pinned, and snap back to
+  // the live sort the moment the row becomes idle again.
+  const [interactingRowId, setInteractingRowId] = useState(null);
+  const prevSortedIdsRef = useRef([]);
+  const displaySorted = useMemo(() => {
+    if (!interactingRowId) {
+      prevSortedIdsRef.current = sorted.map((r) => r.id);
+      return sorted;
+    }
+    const byId = new Map(sorted.map((r) => [r.id, r]));
+    const seen = new Set();
+    const out = [];
+    for (const id of prevSortedIdsRef.current) {
+      const r = byId.get(id);
+      if (r) {
+        out.push(r);
+        seen.add(id);
+      }
+    }
+    // Rows added since the snapshot — drop them in at the end so they
+    // never disappear while a different row is being curated.
+    for (const r of sorted) {
+      if (!seen.has(r.id)) out.push(r);
+    }
+    return out;
+  }, [sorted, interactingRowId]);
+  const totalPages = Math.max(1, Math.ceil(displaySorted.length / PAGE_SIZE));
   const safePage = Math.min(Math.max(1, page), totalPages);
-  const visible = sorted.slice(
+  const visible = displaySorted.slice(
     (safePage - 1) * PAGE_SIZE,
     safePage * PAGE_SIZE,
   );
@@ -11070,12 +11119,12 @@ const SamplesTab = ({
   // sets it. The focused row gets a deeper-blue inset border.
   const [focusedId, setFocusedId] = useState(persisted.focusedId || null);
   const focusedIdx = useMemo(
-    () => (focusedId ? sorted.findIndex((r) => r.id === focusedId) : -1),
-    [sorted, focusedId],
+    () => (focusedId ? displaySorted.findIndex((r) => r.id === focusedId) : -1),
+    [displaySorted, focusedId],
   );
   const focusByIndex = (i) => {
-    if (i < 0 || i >= sorted.length) return;
-    const r = sorted[i];
+    if (i < 0 || i >= displaySorted.length) return;
+    const r = displaySorted[i];
     setFocusedId(r.id);
     const newPage = Math.floor(i / PAGE_SIZE) + 1;
     if (newPage !== safePage) setPage(newPage);
@@ -11085,28 +11134,30 @@ const SamplesTab = ({
     }, 0);
   };
   const goPrevSample = () => {
-    if (sorted.length === 0) return;
+    if (displaySorted.length === 0) return;
     const next =
-      focusedIdx <= 0 ? sorted.length - 1 : focusedIdx - 1;
+      focusedIdx <= 0 ? displaySorted.length - 1 : focusedIdx - 1;
     focusByIndex(next);
   };
   const goNextSample = () => {
-    if (sorted.length === 0) return;
+    if (displaySorted.length === 0) return;
     const next =
-      focusedIdx < 0 || focusedIdx >= sorted.length - 1 ? 0 : focusedIdx + 1;
+      focusedIdx < 0 || focusedIdx >= displaySorted.length - 1
+        ? 0
+        : focusedIdx + 1;
     focusByIndex(next);
   };
   const findActionPending = (start, step) => {
-    if (sorted.length === 0) return -1;
-    const n = sorted.length;
+    if (displaySorted.length === 0) return -1;
+    const n = displaySorted.length;
     for (let k = 0; k < n; k++) {
       const i = ((start + step * k) % n + n) % n;
-      if (!sorted[i].action) return i;
+      if (!displaySorted[i].action) return i;
     }
     return -1;
   };
   const goPrevActionPending = () => {
-    const start = focusedIdx >= 0 ? focusedIdx - 1 : sorted.length - 1;
+    const start = focusedIdx >= 0 ? focusedIdx - 1 : displaySorted.length - 1;
     const i = findActionPending(start, -1);
     if (i >= 0) focusByIndex(i);
   };
@@ -11126,10 +11177,10 @@ const SamplesTab = ({
   // for free.
   useEffect(() => {
     if (!highlightSampleId) return;
-    const i = sorted.findIndex((r) => r.id === highlightSampleId);
-    if (i >= 0 && sorted[i].id !== focusedId) focusByIndex(i);
+    const i = displaySorted.findIndex((r) => r.id === highlightSampleId);
+    if (i >= 0 && displaySorted[i].id !== focusedId) focusByIndex(i);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highlightSampleId, sorted]);
+  }, [highlightSampleId, displaySorted]);
   useEffect(() => {
     const handler = (e) => {
       if (bulkOpen) return;
@@ -11290,7 +11341,10 @@ const SamplesTab = ({
           boxShadow: "0 1px 2px rgba(39,86,98,0.04)",
         }}
       >
-        <table className="w-full text-[12px]" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+        <table
+          className="w-full text-[12px] with-col-dividers"
+          style={{ borderCollapse: "separate", borderSpacing: 0 }}
+        >
           <thead>
             <tr
               style={{
@@ -11415,7 +11469,24 @@ const SamplesTab = ({
                 <React.Fragment key={r.id}>
                   <tr
                     id={`samplerow-${r.id}`}
-                    onMouseDown={() => setFocusedId(r.id)}>
+                    onMouseDown={() => setFocusedId(r.id)}
+                    onMouseEnter={() => setInteractingRowId(r.id)}
+                    onMouseLeave={() =>
+                      setInteractingRowId((cur) =>
+                        cur === r.id ? null : cur,
+                      )
+                    }
+                    onFocus={() => setInteractingRowId(r.id)}
+                    onBlur={(e) => {
+                      // Only release the freeze when focus actually
+                      // leaves this <tr>; jumping between cells inside
+                      // the same row must stay pinned.
+                      const next = e.relatedTarget;
+                      if (next && e.currentTarget.contains(next)) return;
+                      setInteractingRowId((cur) =>
+                        cur === r.id ? null : cur,
+                      );
+                    }}>
                     {columns.map((col) => (
                       <td
                         key={col.id}
@@ -11610,7 +11681,7 @@ const BulkContextSelect = ({ label, value, setValue, options, IconComp }) => {
         onChange={(e) => setValue(e.target.value || "")}
         className="text-[12px] outline-none"
         style={{
-          background: "transparent",
+          background: "var(--bg-card)",
           border: "none",
           color: "var(--ink)",
           fontFamily: '"Raleway", sans-serif',
@@ -11620,9 +11691,15 @@ const BulkContextSelect = ({ label, value, setValue, options, IconComp }) => {
           minWidth: 60,
         }}
       >
-        <option value="">any</option>
+        <option value="" style={{ background: "var(--bg-card)", color: "var(--ink)" }}>
+          any
+        </option>
         {options.map((opt) => (
-          <option key={opt} value={opt}>
+          <option
+            key={opt}
+            value={opt}
+            style={{ background: "var(--bg-card)", color: "var(--ink)" }}
+          >
             {opt}
           </option>
         ))}
@@ -14039,6 +14116,302 @@ const DualRange = ({ values, min, max, step, onChange }) => (
   />
 );
 
+/* ---------- BULK PREVIEW OVERLAY ----------
+   Full-screen preview launched from BulkApplyByCriteriaDialog. Shows
+   the matched events as a table, a grid of mini scatters, or a
+   source-grouped network list, with a per-event include / exclude
+   checkbox. Closing the overlay returns to the criteria dialog with
+   the curator's exclusions applied. */
+const BulkPreviewOverlay = ({
+  matched,
+  excludedIds,
+  toggleExcluded,
+  setExcludedIds,
+  ab,
+  onClose,
+}) => {
+  const includedCount = matched.length - excludedIds.size;
+  // Toggle the highlighted on-line points across every thumbnail.
+  // Mirrors the Scatter / Validate "color contamination points"
+  // affordance and shares its default — off, so the curator judges
+  // the raw scatter shape without the model's red points biasing the
+  // eye. The dashed contamination line itself stays drawn either way.
+  const [colorOnLine, setColorOnLine] = useState(false);
+  // Build a scatter for each matched event lazily.
+  const scatters = useMemo(() => {
+    if (!ab) return null;
+    return matched.map((e) => {
+      try {
+        return { e, sc: buildScatter(ab, e) };
+      } catch {
+        return { e, sc: null };
+      }
+    });
+  }, [matched, ab]);
+  // Esc closes the overlay; trap focus inside the overlay so background
+  // shortcuts don't fire while the curator is reviewing.
+  useEffect(() => {
+    const onKey = (ev) => {
+      if (ev.key === "Escape") {
+        ev.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose]);
+  const allExcluded = excludedIds.size === matched.length && matched.length > 0;
+  const RowMeta = ({ e }) => (
+    <span
+      style={{
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 11,
+        color: "var(--ink-muted)",
+      }}
+    >
+      rate {((e.rate || 0) * 100).toFixed(2)}% · prob{" "}
+      {(e.score || 0).toFixed(2)}
+      {e.introducedPct != null
+        ? ` · introduced ${e.introducedPct.toFixed(1)}%`
+        : ""}
+      {Array.isArray(e.introduced) ? ` · ${e.introduced.length} sp.` : ""}
+    </span>
+  );
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "var(--bg, #faf7f0)",
+        zIndex: 1100,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      {/* Toolbar */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "12px 20px",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--bg-card)",
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span
+            style={{
+              fontFamily: '"Raleway", sans-serif',
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "var(--ink-muted)",
+            }}
+          >
+            Bulk preview
+          </span>
+          <span style={{ color: "var(--ink)", fontWeight: 700, fontSize: 14 }}>
+            {includedCount} / {matched.length} kept
+          </span>
+          {excludedIds.size > 0 && (
+            <span style={{ color: "#ed6e6c", fontSize: 12, fontWeight: 700 }}>
+              · {excludedIds.size} excluded
+            </span>
+          )}
+        </div>
+        {/* Toggle the highlighted on-line points across every
+            thumbnail. Mirrors the Scatter / Validate "color
+            contamination points" affordance for consistency. */}
+        <label
+          className="flex items-center gap-2 select-none cursor-pointer"
+          style={{
+            color: "var(--ink)",
+            fontSize: 12,
+            fontFamily: '"Raleway", sans-serif',
+          }}
+          title="Highlight the points sitting on the contamination line in red across every preview thumbnail."
+        >
+          <input
+            type="checkbox"
+            checked={colorOnLine}
+            onChange={(e) => setColorOnLine(e.target.checked)}
+            style={{ accentColor: "#00a3a6" }}
+          />
+          Color contamination points
+        </label>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => {
+              if (allExcluded) setExcludedIds(new Set());
+              else setExcludedIds(new Set(matched.map((e) => e.id)));
+            }}
+            style={{
+              padding: "5px 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+              background: "transparent",
+              color: "var(--ink-muted)",
+              border: "1px solid var(--border-strong)",
+              borderRadius: 3,
+              cursor: "pointer",
+            }}
+            title="Toggle every event in / out of the bulk apply at once"
+          >
+            {allExcluded ? "Include all" : "Exclude all"}
+          </button>
+          {excludedIds.size > 0 && !allExcluded && (
+            <button
+              type="button"
+              onClick={() => setExcludedIds(new Set())}
+              style={{
+                padding: "5px 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+                background: "transparent",
+                color: "#00a3a6",
+                border: "1px solid #00a3a6",
+                borderRadius: 3,
+                cursor: "pointer",
+              }}
+            >
+              Clear exclusions ({excludedIds.size})
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              padding: "6px 14px",
+              fontSize: 12,
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+              background: "#275662",
+              color: "#fff",
+              border: "none",
+              borderRadius: 3,
+              cursor: "pointer",
+              letterSpacing: "0.02em",
+            }}
+          >
+            Back to Bulk Apply
+          </button>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+        {matched.length === 0 ? (
+          <div
+            style={{
+              padding: 40,
+              textAlign: "center",
+              color: "var(--ink-muted)",
+              fontFamily: '"Raleway", sans-serif',
+              fontSize: 13,
+            }}
+          >
+            No events match the current filters. Adjust the sliders and try
+            again.
+          </div>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+              gap: 12,
+            }}
+          >
+            {(scatters || []).map(({ e, sc }) => {
+              const excluded = excludedIds.has(e.id);
+              return (
+                <div
+                  key={e.id}
+                  onClick={() => toggleExcluded(e.id)}
+                  style={{
+                    background: "var(--bg-card)",
+                    border: `1px solid ${excluded ? "#ed6e6c" : "var(--border)"}`,
+                    borderRadius: 4,
+                    padding: 10,
+                    cursor: "pointer",
+                    opacity: excluded ? 0.55 : 1,
+                    boxShadow: excluded ? "none" : "0 1px 2px rgba(0,0,0,0.04)",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "flex-start",
+                      gap: 6,
+                      marginBottom: 6,
+                    }}
+                  >
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--ink)",
+                          fontWeight: 700,
+                          fontFamily: '"Raleway", sans-serif',
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                        title={`${e.source} → ${e.target}`}
+                      >
+                        {e.source} → {e.target}
+                      </div>
+                      <div style={{ marginTop: 2 }}>
+                        <RowMeta e={e} />
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={!excluded}
+                      onChange={() => toggleExcluded(e.id)}
+                      onClick={(ev) => ev.stopPropagation()}
+                      style={{ accentColor: "#00a3a6", marginTop: 2 }}
+                    />
+                  </div>
+                  {sc && !sc.error ? (
+                    <MiniScatter
+                      scatter={sc}
+                      width={240}
+                      height={180}
+                      colorOnLine={colorOnLine}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        height: 180,
+                        background: "var(--bg-softer)",
+                        border: "1px dashed var(--border-strong)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "var(--ink-muted)",
+                        fontSize: 11,
+                      }}
+                    >
+                      sample not in abundance table
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const BulkApplyByCriteriaDialog = ({
   events,
   ab,
@@ -14250,6 +14623,36 @@ const BulkApplyByCriteriaDialog = ({
     skipDecided,
   ]);
 
+  // Per-event exclusions chosen during a preview pass. The curator can
+  // open the matched set in Events / Scatter / Network mode, untick the
+  // ones they don't actually want stamped, and the bulk apply will only
+  // hit the survivors.
+  const [excludedIds, setExcludedIds] = useState(() => new Set());
+  // Drop exclusions for events that no longer match — moving the
+  // sliders later shouldn't carry over a stale "exclude" decision on
+  // an event that isn't in the candidate set anymore.
+  useEffect(() => {
+    setExcludedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(matched.map((e) => e.id));
+      const next = new Set();
+      for (const id of prev) if (live.has(id)) next.add(id);
+      return next.size === prev.size ? prev : next;
+    });
+  }, [matched]);
+  const effectiveMatched = useMemo(
+    () => matched.filter((e) => !excludedIds.has(e.id)),
+    [matched, excludedIds],
+  );
+  const [previewMode, setPreviewMode] = useState(null); // null | 'events' | 'scatter' | 'network'
+  const toggleExcluded = (id) =>
+    setExcludedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
   const apply = () => {
     const tvOpt = targetVerdict || null;
     const taOpt =
@@ -14259,7 +14662,7 @@ const BulkApplyByCriteriaDialog = ({
           ? null
           : targetAction;
     onApply(
-      matched.map((e) => e.id),
+      effectiveMatched.map((e) => e.id),
       verdict,
       comment.trim(),
       {
@@ -14274,13 +14677,24 @@ const BulkApplyByCriteriaDialog = ({
   };
 
   return (
+    <>
+    {previewMode && (
+      <BulkPreviewOverlay
+        matched={matched}
+        excludedIds={excludedIds}
+        toggleExcluded={toggleExcluded}
+        setExcludedIds={setExcludedIds}
+        ab={ab}
+        onClose={() => setPreviewMode(null)}
+      />
+    )}
     <div
       onClick={onClose}
       style={{
         position: "fixed",
         inset: 0,
         background: "rgba(39,86,98,0.5)",
-        display: "flex",
+        display: previewMode ? "none" : "flex",
         alignItems: "center",
         justifyContent: "center",
         zIndex: 1000,
@@ -14751,6 +15165,101 @@ const BulkApplyByCriteriaDialog = ({
         >
           Apply evaluation
         </div>
+
+        {/* Preview launcher — eyeball the matched set in Events,
+            Scatter or Network before stamping a verdict. The curator
+            can untick individual events in the overlay; the bulk
+            apply then stops short of those. */}
+        {matched.length > 0 && (
+          <div
+            style={{
+              padding: 12,
+              marginBottom: 16,
+              borderRadius: 4,
+              background: "var(--bg-soft)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--ink-muted)",
+                fontWeight: 700,
+                fontFamily: '"Raleway", sans-serif',
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+                marginBottom: 8,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                justifyContent: "space-between",
+              }}
+            >
+              <span>Preview the {matched.length} matched event{matched.length === 1 ? "" : "s"} before applying</span>
+              {excludedIds.size > 0 && (
+                <span
+                  style={{
+                    color: "#ed6e6c",
+                    fontWeight: 700,
+                    textTransform: "none",
+                    letterSpacing: 0,
+                  }}
+                  title="You excluded events while reviewing the preview. They'll be skipped by the bulk apply."
+                >
+                  {excludedIds.size} excluded ·{" "}
+                  <button
+                    type="button"
+                    onClick={() => setExcludedIds(new Set())}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: "#00a3a6",
+                      textDecoration: "underline",
+                      textUnderlineOffset: 2,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      padding: 0,
+                      fontSize: 11,
+                    }}
+                  >
+                    clear
+                  </button>
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={!ab}
+                onClick={() => setPreviewMode("scatter")}
+                title={
+                  ab
+                    ? "Open every matched event as a mini scatter plot — visually verify the contamination line before applying."
+                    : "Load an abundance table to enable scatter previews."
+                }
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  fontFamily: '"Raleway", sans-serif',
+                  background: ab ? "var(--bg-card)" : "var(--bg-softer)",
+                  color: ab ? "var(--ink)" : "var(--ink-muted)",
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: 3,
+                  cursor: ab ? "pointer" : "not-allowed",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <Eye className="w-3.5 h-3.5" />
+                Preview as scatter plots
+              </button>
+            </div>
+          </div>
+        )}
+
         <label
           className="flex items-center gap-2 mb-3 select-none cursor-pointer"
           style={{
@@ -15028,12 +15537,24 @@ const BulkApplyByCriteriaDialog = ({
           <div
             style={{
               fontSize: 13,
-              color: matched.length > 0 ? "#275662" : "#797870",
+              color: effectiveMatched.length > 0 ? "#275662" : "#797870",
               fontWeight: 700,
               fontFamily: '"Raleway", sans-serif',
             }}
           >
-            {matched.length} event{matched.length !== 1 ? "s" : ""} match
+            {effectiveMatched.length} event
+            {effectiveMatched.length !== 1 ? "s" : ""} match
+            {excludedIds.size > 0 && (
+              <span
+                style={{
+                  color: "var(--ink-muted)",
+                  fontWeight: 500,
+                  marginLeft: 6,
+                }}
+              >
+                ({excludedIds.size} excluded from {matched.length})
+              </span>
+            )}
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <button
@@ -15054,26 +15575,30 @@ const BulkApplyByCriteriaDialog = ({
             </button>
             <button
               onClick={apply}
-              disabled={matched.length === 0}
+              disabled={effectiveMatched.length === 0}
               style={{
                 padding: "8px 16px",
                 fontSize: 12,
                 fontWeight: 700,
-                background: matched.length === 0 ? "var(--border)" : "#00a3a6",
-                color: matched.length === 0 ? "#797870" : "#fff",
+                background:
+                  effectiveMatched.length === 0 ? "var(--border)" : "#00a3a6",
+                color: effectiveMatched.length === 0 ? "#797870" : "#fff",
                 border: "none",
                 borderRadius: 3,
-                cursor: matched.length === 0 ? "not-allowed" : "pointer",
+                cursor:
+                  effectiveMatched.length === 0 ? "not-allowed" : "pointer",
                 fontFamily: '"Raleway", sans-serif',
                 letterSpacing: "0.02em",
               }}
             >
-              Apply to {matched.length} event{matched.length !== 1 ? "s" : ""}
+              Apply to {effectiveMatched.length} event
+              {effectiveMatched.length !== 1 ? "s" : ""}
             </button>
           </div>
         </div>
       </div>
     </div>
+    </>
   );
 };
 
@@ -15115,7 +15640,7 @@ const ValidateTab = ({
   // Queue + sort. Mirrors the gallery's sort affordance so the user
   // can step through events in the most useful order with the same
   // ↑/↓/←/→ shortcuts.
-  const [queueSortBy, setQueueSortBy] = useState("score");
+  const [queueSortBy, setQueueSortBy] = useState("rate");
   const QUEUE_SORT_DIR_DEFAULTS = {
     score: "desc",
     rate: "desc",
@@ -15125,7 +15650,7 @@ const ValidateTab = ({
     source: "asc",
   };
   const [queueSortDir, setQueueSortDir] = useState(
-    QUEUE_SORT_DIR_DEFAULTS.score,
+    QUEUE_SORT_DIR_DEFAULTS.rate,
   );
   const handleQueueSortClick = (id) => {
     if (queueSortBy === id) {
@@ -21885,9 +22410,11 @@ function AppMain({ initial }) {
   );
   // "Color contamination-line points" toggle — lifted to App so the
   // curator's choice survives Scatter ↔ Validate ↔ other-tab
-  // round-trips (otherwise the state would reset to true every time
-  // the tab unmounts).
-  const [colorOnLine, setColorOnLine] = useState(true);
+  // round-trips (otherwise the state would reset every time the tab
+  // unmounts). Defaults to OFF so the curator first sees the raw
+  // scatter shape; they can opt in to the model's red points anywhere
+  // the toggle exists.
+  const [colorOnLine, setColorOnLine] = useState(false);
   // Samples-tab UI state — lifted to App so sort order, page,
   // context filters, expanded notes and scroll position survive a
   // round-trip to the Scatter / Events tabs (otherwise drilling on a
@@ -21896,7 +22423,7 @@ function AppMain({ initial }) {
   // internally; values are synced into / out of the ref on mount
   // and on every change.
   const samplesUIRef = useRef({
-    sortBy: "attention",
+    sortBy: "rate",
     sortDir: "desc",
     page: 1,
     openNotes: [],
@@ -22118,7 +22645,9 @@ function AppMain({ initial }) {
           : "either",
     };
   });
-  const [sort, setSort] = useState(initial?.sort || { by: "score", dir: "desc" });
+  const [sort, setSort] = useState(
+    initial?.sort || { by: "rate", dir: "desc" },
+  );
   const [err, setErr] = useState(null);
   // Long-running file load / parse indicator. `null` when idle; an
   // object `{ label, sub?, progress }` while a load is in flight.

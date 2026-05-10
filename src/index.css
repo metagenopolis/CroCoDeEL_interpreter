@@ -11,6 +11,11 @@
    hardcoded — they should look identical in both modes. */
 :root,
 html[data-theme="light"] {
+  /* Hint to the browser so native widgets (select dropdowns,
+     scrollbars, date / time pickers, autofill) render with the
+     matching palette. Without this, dark-mode users see white
+     dropdown popouts and pale scrollbars on a dark surface. */
+  color-scheme: light;
   --bg: #faf7f0;
   --bg-card: #fff;
   --bg-soft: #f6f7f7;
@@ -27,6 +32,7 @@ html[data-theme="light"] {
 }
 
 html[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0f1518;
   --bg-card: #1a2226;
   --bg-soft: #141a1d;
@@ -61,3 +67,12 @@ html[data-theme="dark"] .text-stone-600 { color: var(--ink-soft) !important; }
 html[data-theme="dark"] .text-stone-700 { color: var(--ink) !important; }
 html[data-theme="dark"] .border-stone-200,
 html[data-theme="dark"] .border-stone-300 { border-color: var(--border) !important; }
+
+/* Column dividers — opt-in via .with-col-dividers on a <table>. The
+   sibling selector adds a hairline left border on every cell except
+   the first one in each row, so every column gets a separator
+   without per-cell inline styles. */
+.with-col-dividers th + th,
+.with-col-dividers td + td {
+  border-left: 1px solid var(--border);
+}
