@@ -1023,53 +1023,78 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
       });
     }
   }
-  // Spearman rank correlation between source and target across all
-  // species — high ρ means the overall profiles are similar (typical of
-  // longitudinal / same-subject pairs where the apparent contamination
-  // line is actually biological persistence). Threshold ρ ≥ 0.7 flags
-  // the warning, < 0.7 considered distinct enough.
+  // Joint "biological similarity" criterion — combines the Spearman
+  // correlation (ρ) with the metadata-driven relatedness check. ρ
+  // alone is ambiguous: high ρ can mean either longitudinal /
+  // same-subject persistence (FP) OR very strong contamination (TP).
+  // Reading the two signals together resolves the ambiguity:
+  //   • high ρ + samples NOT related   → strong contamination plausible → PASS (TP-leaning)
+  //   • high ρ + samples ARE related   → biological persistence  → FAIL (FP-leaning)
+  //   • low ρ                          → profiles distinct  → PASS
+  //   • high ρ + no metadata           → ambiguous, mark inconclusive (no good++)
+  // Replaces the older separate Spearman + relatedness criteria.
+  let total = 6;
   if (diag && diag.spearman != null) {
     const rho = diag.spearman;
-    if (rho < 0.7) {
+    const rhoText = `ρ = ${rho.toFixed(2)}`;
+    const high = rho >= 0.7;
+    const related =
+      relatedness && relatedness.related != null
+        ? relatedness.related
+        : null;
+    if (related === null) {
+      if (!high) {
+        good++;
+        reasons.push({
+          key: "biosim",
+          ok: true,
+          label: `Source / target profiles distinct (${rhoText})`,
+        });
+      } else {
+        // High ρ without metadata: can't tell longitudinal vs strong
+        // contamination. Surface as inconclusive (ok = null) so the
+        // curator sees it but it doesn't tilt the score.
+        reasons.push({
+          key: "biosim",
+          ok: null,
+          label: `Source / target profiles highly correlated (${rhoText}) — load metadata to know if same subject (FP) or strong contamination (TP)`,
+        });
+      }
+    } else if (related === false) {
       good++;
-      reasons.push({
-        key: "spearman",
-        ok: true,
-        label: `Source / target profiles distinct (Spearman ρ = ${rho.toFixed(2)})`,
-      });
+      if (high) {
+        reasons.push({
+          key: "biosim",
+          ok: true,
+          label: `Profiles highly correlated (${rhoText}) despite different subjects — consistent with strong contamination`,
+        });
+      } else {
+        reasons.push({
+          key: "biosim",
+          ok: true,
+          label: `Profiles distinct (${rhoText}) and from different subjects`,
+        });
+      }
     } else {
-      reasons.push({
-        key: "spearman",
-        ok: false,
-        label: `Source / target profiles too correlated (Spearman ρ = ${rho.toFixed(2)} ≥ 0.7) — possible longitudinal / same-subject persistence`,
-      });
-    }
-  }
-  // Same-individual check — only counts when metadata with subject_id
-  // (or group_id) is loaded AND both samples can be looked up. A
-  // longitudinal pair from the same subject is the most common
-  // false-positive trigger, so making this a scored criterion keeps it
-  // visible alongside the data-driven checks.
-  let total = 6;
-  if (relatedness && relatedness.related != null) {
-    total = 7;
-    if (relatedness.related === false) {
-      good++;
-      reasons.push({
-        key: "relatedness",
-        ok: true,
-        label: `Source and target are different subjects`,
-      });
-    } else {
-      const baseText =
+      // related === true
+      const kindText =
         relatedness.kind === "group"
           ? `same group (${relatedness.value})`
           : `same subject (${relatedness.value})`;
-      reasons.push({
-        key: "relatedness",
-        ok: false,
-        label: `Source and target share the ${baseText} — biological similarity is likely`,
-      });
+      if (high) {
+        reasons.push({
+          key: "biosim",
+          ok: false,
+          label: `Profiles highly correlated (${rhoText}) AND ${kindText} — biological persistence, likely FP`,
+        });
+      } else {
+        good++;
+        reasons.push({
+          key: "biosim",
+          ok: true,
+          label: `Profiles distinct (${rhoText}) despite ${kindText}`,
+        });
+      }
     }
   }
   return { good, total, reasons };
@@ -1078,7 +1103,7 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
 /** A cascade is suspected when event A→B has many points above the line AND
     A is itself flagged as contaminated (C→A).  The points above A→B's line
     can then be explained as species introduced into B via A through C. */
-function detectCascades(events, abundance) {
+function detectCascades(events, abundance, metadata) {
   const incoming = {};
   events.forEach((e) => {
     if (!incoming[e.target]) incoming[e.target] = [];
@@ -1087,6 +1112,15 @@ function detectCascades(events, abundance) {
 
   return events.map((e) => {
     if (!abundance) return { ...e, cascade: null };
+    // Skip pairs whose source and target are related (same subject or
+    // related group): an apparent multi-source signal there is more
+    // parsimoniously explained by biological similarity than by a
+    // cascade. Cascade detection is only meaningful between unrelated
+    // samples.
+    if (metadata) {
+      const r = areRelated(metadata, e.source, e.target);
+      if (r && r.related === true) return { ...e, cascade: null };
+    }
     const scatter = buildScatter(abundance, e);
     const aboveInfo = pointsAboveLine(scatter);
     if (aboveInfo == null || aboveInfo.count <= 3) return { ...e, cascade: null };
@@ -1565,6 +1599,7 @@ const Scatterplot = ({
   height = 500,
   pickedSpecies = [],
   colorOnLine = true,
+  showSpearman = true,
 }) => {
   const [hover, setHover] = useState(null);
   if (!scatter) return null;
@@ -1805,6 +1840,47 @@ const Scatterplot = ({
             );
           })}
         {diagLine}
+        {/* Spearman ρ badge — neutral colour so it doesn't compete
+            with the TP / FP palette. The joint biological-similarity
+            criterion in Validate reads ρ alongside the relatedness
+            metadata; here we just surface the number. Curator can
+            toggle it via the "Show Spearman ρ" checkbox in Validate. */}
+        {showSpearman && (() => {
+          const rho = spearmanRho(scatter);
+          if (rho == null) return null;
+          const text = `Spearman ρ = ${rho.toFixed(2)}`;
+          const fs = 12;
+          const padX = 8;
+          const tw = text.length * fs * 0.58 + padX * 2;
+          const bx = width - tw - 12;
+          const by = 12;
+          return (
+            <g pointerEvents="none">
+              <rect
+                x={bx}
+                y={by}
+                width={tw}
+                height={fs + 8}
+                rx={3}
+                ry={3}
+                fill="rgba(255,255,255,0.95)"
+                stroke="#c4c0b3"
+                strokeWidth="0.6"
+              />
+              <text
+                x={bx + tw / 2}
+                y={by + fs + 3}
+                textAnchor="middle"
+                fontSize={fs}
+                fontWeight="700"
+                fontFamily="ui-monospace, monospace"
+                fill="#275662"
+              >
+                {text}
+              </text>
+            </g>
+          );
+        })()}
       </svg>
       {hover && (
         <div
@@ -15935,6 +16011,8 @@ const ValidateTab = ({
   actionEnabled,
   setAction,
   setSampleVerdict,
+  showSpearman,
+  setShowSpearman,
   sampleCuration,
   metadata,
   plateMap,
@@ -16516,6 +16594,7 @@ const ValidateTab = ({
                 height={450}
                 pickedSpecies={pickedSpecies}
                 colorOnLine={colorOnLine}
+                showSpearman={showSpearman}
               />
             ) : (
               <div
@@ -16543,19 +16622,35 @@ const ValidateTab = ({
                 tone={metricTone(sel.introducedPct, "introduced")}
               />
             </div>
-            <label
-              className="mt-3 flex items-center gap-2 text-[12px] select-none cursor-pointer"
+            <div
+              className="mt-3 flex items-center gap-4 text-[12px] flex-wrap"
               style={{ color: "var(--ink-muted)", fontFamily: '"Raleway", sans-serif' }}
-              title="Toggle off to render every point in the same neutral grey — useful to judge the line shape without the model's introduced-species highlight."
             >
-              <input
-                type="checkbox"
-                checked={colorOnLine}
-                onChange={(e) => setColorOnLine(e.target.checked)}
-                style={{ accentColor: "#ed6e6c" }}
-              />
-              Color contamination-line points
-            </label>
+              <label
+                className="flex items-center gap-2 select-none cursor-pointer"
+                title="Toggle off to render every point in the same neutral grey — useful to judge the line shape without the model's introduced-species highlight."
+              >
+                <input
+                  type="checkbox"
+                  checked={colorOnLine}
+                  onChange={(e) => setColorOnLine(e.target.checked)}
+                  style={{ accentColor: "#ed6e6c" }}
+                />
+                Color contamination-line points
+              </label>
+              <label
+                className="flex items-center gap-2 select-none cursor-pointer"
+                title="Toggle the Spearman ρ badge in the top-right corner of the plot. The joint biological-similarity criterion uses ρ alongside the metadata-driven relatedness signal."
+              >
+                <input
+                  type="checkbox"
+                  checked={showSpearman}
+                  onChange={(e) => setShowSpearman(e.target.checked)}
+                  style={{ accentColor: "#275662" }}
+                />
+                Show Spearman ρ
+              </label>
+            </div>
 
             {hasSampleInfoPanel && sel.introduced.length > 0 && (
               <div
@@ -16940,41 +17035,51 @@ const ValidateTab = ({
                 />
                 <Criterion
                   n="06"
-                  title="Overall profile dissimilarity (Spearman ρ)"
-                  wiki="Spearman rank correlation between the source and target abundances across every species present in either sample. A high ρ (≥ 0.7) means the two profiles are similar overall — typical of longitudinal / same-subject pairs where the apparent contamination line is biological persistence rather than a mechanical transfer event. Pass when the two profiles are distinct enough (ρ < 0.7)."
-                  pass={diag?.spearman != null ? diag.spearman < 0.7 : null}
-                  value={
-                    diag?.spearman != null
-                      ? `ρ = ${diag.spearman.toFixed(2)}`
-                      : "abundance table required"
-                  }
-                  summary={summaryFor("spearman")}
-                />
-
-                {metadata && (
-                  <ContextualCriterion
-                    n="07"
-                    title="Related samples"
-                    hint="Longitudinal, same subject or same related group → false positive risk"
-                    verdict={
-                      related?.related === true
-                        ? {
-                            tone: "bad",
-                            text:
-                              related.kind === "group"
-                                ? `same group (${related.value})`
-                                : `same subject (${related.value})`,
-                          }
-                        : related?.related === false
-                          ? { tone: "good", text: "different subjects" }
-                          : { tone: "neutral", text: "sample not referenced" }
+                  title="Biological similarity (ρ × relatedness)"
+                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
+                  pass={(() => {
+                    if (diag?.spearman == null) return null;
+                    const high = diag.spearman >= 0.7;
+                    const isRelated =
+                      related && related.related != null
+                        ? related.related
+                        : null;
+                    if (isRelated === null) return !high ? true : null;
+                    if (isRelated === true) return !high;
+                    return true; // different subjects → pass either way
+                  })()}
+                  value={(() => {
+                    if (diag?.spearman == null) return "abundance table required";
+                    const rhoText = `ρ = ${diag.spearman.toFixed(2)}`;
+                    const high = diag.spearman >= 0.7;
+                    const isRelated =
+                      related && related.related != null
+                        ? related.related
+                        : null;
+                    if (isRelated === null) {
+                      return high
+                        ? `${rhoText} · metadata required to disambiguate`
+                        : `${rhoText} · profiles distinct`;
                     }
-                  />
-                )}
+                    if (isRelated === true) {
+                      const kind =
+                        related.kind === "group"
+                          ? `same group (${related.value})`
+                          : `same subject (${related.value})`;
+                      return high
+                        ? `${rhoText} · ${kind} — biological persistence`
+                        : `${rhoText} · ${kind} — distinct anyway`;
+                    }
+                    return high
+                      ? `${rhoText} · different subjects — strong contamination?`
+                      : `${rhoText} · different subjects, profiles distinct`;
+                  })()}
+                  summary={summaryFor("biosim")}
+                />
 
                 {plateMap && (
                   <ContextualCriterion
-                    n="08"
+                    n="07"
                     title="Proximity on plate"
                     hint="Well-to-well leakage → immediate neighbors support a contamination call (TP)"
                     verdict={
@@ -19022,7 +19127,7 @@ const LearnTab = () => {
             signals={[
               "Source / target share the same subject_id (longitudinal sampling)",
               "Apparent diagonal trend, but visibly noisy / wide",
-              "High Spearman ρ between the two profiles (≥ 0.7) — flagged by criterion 06",
+              "High Spearman ρ between the two profiles (≥ 0.7) AND same subject_id — joint criterion 06 (biological similarity) fails",
               "Elevated introduced %",
             ]}
             watchOut="High introduced % + high probability is not enough on its own. When the metadata shows same-subject longitudinal sampling, mark as FP — the correlated cloud is biological persistence."
@@ -19069,6 +19174,7 @@ const LearnTab = () => {
               "A line is visible but noticeably wider than a textbook TP",
               "Investigation may reveal a third sample contaminating both",
               "Cascade flag in the events table can hint at this when the third source IS detected",
+              "Cascade detection runs only between UNRELATED samples (different subjects / groups) — related pairs are skipped because biological similarity already explains the same pattern more parsimoniously",
             ]}
             watchOut="If you suspect cascade contamination, run the Network tab — the directed graph reveals shared upstream sources that are easy to miss in the table."
           />
@@ -19990,18 +20096,32 @@ const HelpTab = ({ onStartTour }) => {
               </h4>
               <p>
                 One event at a time, with the scatterplot, six
-                data-driven criteria plus same-individual (scored when
-                metadata is loaded) and an informational plate-proximity
-                check, the plate position and a sample-context panel
-                showing every metadata flag for both source and target.
-                A <em>Color contamination-line points</em> checkbox
-                under the metric tiles toggles the salmon highlight on
-                the line points so the line shape can be read on its
-                own (default <strong>OFF</strong>, shared with the
-                Scatter gallery). The "Plate position & sample context" and
-                "Introduced species" boxes both collapse by default;
-                when both are open, their bottoms align across the
-                two columns.
+                scored criteria (the sixth combines Spearman ρ with
+                metadata-driven relatedness — see <em>Validation
+                criteria</em>) and an informational plate-proximity
+                check, plus the plate position and a sample-context
+                panel showing every metadata flag for both source
+                and target. Two checkboxes sit side-by-side under the
+                metric tiles:
+              </p>
+              <ul className="list-disc pl-5 mt-2 space-y-1">
+                <li>
+                  <em>Color contamination-line points</em> — toggles
+                  the salmon highlight on the line points so the line
+                  shape can be read on its own. Default{" "}
+                  <strong>OFF</strong>, shared with the Scatter gallery.
+                </li>
+                <li>
+                  <em>Show Spearman ρ</em> — toggles the neutral ρ
+                  badge in the top-right corner of the plot. Default{" "}
+                  <strong>ON</strong>; turn it off if the badge gets in
+                  the way of the points cloud. Survives tab round-trips.
+                </li>
+              </ul>
+              <p style={{ marginTop: 6 }}>
+                The "Plate position & sample context" and "Introduced
+                species" boxes both collapse by default; when both are
+                open, their bottoms align across the two columns.
               </p>
               <p style={{ marginTop: 6 }}>
                 The evaluation panel below the plot is one row with
@@ -20364,17 +20484,16 @@ const HelpTab = ({ onStartTour }) => {
           title="Validation criteria"
         >
           <p>
-            Each event is scored against eight criteria. Six are
-            data-driven (computed from the abundance table) and always
-            count toward the headline score. The seventh — same
-            individual — joins the score when{" "}
-            <code style={{ fontFamily: "ui-monospace, monospace" }}>metadata.tsv</code>{" "}
-            is loaded, so the headline reads <strong>6 / 6</strong>{" "}
-            without metadata and <strong>7 / 7</strong> with it. The
-            eighth — plate proximity — is purely informational and never
-            counted. Each criterion passes (cyan), fails (salmon) or is
-            inconclusive (neutral). The Guided validation panel
-            summarizes the score and lists the individual reasons.
+            Each event is scored against six criteria computed from
+            the abundance table. The sixth — <em>biological similarity</em>{" "}
+            — is a joint check that combines the Spearman ρ between
+            source / target profiles with the metadata-driven
+            relatedness signal (see row 06 below). A seventh,
+            informational entry — plate proximity — is shown but never
+            counted toward the headline score. Each criterion passes
+            (cyan), fails (salmon) or is inconclusive (neutral). The
+            Guided validation panel summarises the score and lists
+            the individual reasons.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -20470,31 +20589,44 @@ const HelpTab = ({ onStartTour }) => {
               </tr>
               <tr style={{ borderBottom: "1px solid var(--border-soft)" }}>
                 <td className="py-2.5 pr-3 align-top text-[12px]" style={{ color: "var(--ink-muted)", fontWeight: 700 }}>06</td>
-                <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Profile dissimilarity (Spearman ρ)</td>
+                <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Biological similarity (ρ × relatedness)</td>
                 <td className="py-2.5 align-top text-[13px]">
-                  Spearman rank correlation between source and target
-                  abundances across every species present in either
-                  sample. A high ρ (≥ 0.7) means the two profiles are
-                  similar overall — typical of longitudinal /
-                  same-subject pairs where the apparent line is
-                  biological persistence rather than mechanical
-                  transfer. Passes when ρ &lt; 0.7.
-                </td>
-              </tr>
-              <tr style={{ borderBottom: "1px solid var(--border-soft)" }}>
-                <td className="py-2.5 pr-3 align-top text-[12px]" style={{ color: "var(--ink-muted)", fontWeight: 700 }}>07</td>
-                <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Same individual</td>
-                <td className="py-2.5 align-top text-[13px]">
-                  Source and target sharing a <code style={{ fontFamily: "ui-monospace, monospace" }}>subject_id</code> (longitudinal pair)
-                  or <code style={{ fontFamily: "ui-monospace, monospace" }}>group_id</code> (siblings, cage, household) is a classic
-                  false-positive trigger because the samples legitimately
-                  share microbes. Passes when source and target are
-                  different individuals. Joins the headline score
-                  (6/6 → 7/7) when <code style={{ fontFamily: "ui-monospace, monospace" }}>metadata.tsv</code> is loaded.
+                  Spearman rank correlation ρ between source and target
+                  profiles, read jointly with the metadata-driven
+                  relatedness signal — because ρ alone is ambiguous:
+                  high ρ can mean either same-subject biological
+                  persistence (FP) <em>or</em> very strong contamination
+                  (TP). Cross-referencing with{" "}
+                  <code style={{ fontFamily: "ui-monospace, monospace" }}>subject_id</code>{" "}
+                  / <code style={{ fontFamily: "ui-monospace, monospace" }}>group_id</code>{" "}
+                  resolves the ambiguity. Outcomes:
+                  <ul className="list-disc pl-5 mt-2 space-y-1">
+                    <li>
+                      <strong>ρ &lt; 0.7</strong> → passes (profiles distinct).
+                    </li>
+                    <li>
+                      <strong>ρ ≥ 0.7 and samples from different subjects</strong>{" "}
+                      → passes too (consistent with strong contamination — a
+                      TP-supportive reading).
+                    </li>
+                    <li>
+                      <strong>ρ ≥ 0.7 and samples share subject / group</strong>{" "}
+                      → fails (biological persistence, classic FP trigger).
+                    </li>
+                    <li>
+                      <strong>ρ ≥ 0.7 and no metadata loaded</strong> →
+                      inconclusive (neutral; the curator should add{" "}
+                      <code style={{ fontFamily: "ui-monospace, monospace" }}>metadata.tsv</code>{" "}
+                      to disambiguate).
+                    </li>
+                  </ul>
+                  ρ itself is shown as a neutral badge in the top-right
+                  corner of the main scatter in Guided validation;
+                  thumbnails in the Scatter gallery stay uncluttered.
                 </td>
               </tr>
               <tr>
-                <td className="py-2.5 pr-3 align-top text-[12px]" style={{ color: "var(--ink-muted)", fontWeight: 700 }}>08</td>
+                <td className="py-2.5 pr-3 align-top text-[12px]" style={{ color: "var(--ink-muted)", fontWeight: 700 }}>07</td>
                 <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Proximity on plate (contextual)</td>
                 <td className="py-2.5 align-top text-[13px]">
                   Chebyshev distance between the two wells. Adjacent
@@ -23185,6 +23317,10 @@ function AppMain({ initial }) {
   // scatter shape; they can opt in to the model's red points anywhere
   // the toggle exists.
   const [colorOnLine, setColorOnLine] = useState(false);
+  // "Show Spearman ρ" toggle — same lift-to-App pattern. Defaults to
+  // ON so the correlation badge shows on the Validate main scatter
+  // right away; turning it off declutters the corner.
+  const [showSpearman, setShowSpearman] = useState(true);
   // Samples-tab UI state — lifted to App so sort order, page,
   // context filters, expanded notes and scroll position survive a
   // round-trip to the Scatter / Events tabs (otherwise drilling on a
@@ -23746,7 +23882,12 @@ function AppMain({ initial }) {
   // signature; verdict updates hit the cache and the heavy work is
   // skipped. Updates that change topology (file load, decontamination,
   // manual event add, dataset switch) miss the cache and recompute.
-  const cascadeCacheRef = useRef({ ab: null, sig: "", byId: new Map() });
+  const cascadeCacheRef = useRef({
+    ab: null,
+    metadata: null,
+    sig: "",
+    byId: new Map(),
+  });
   // Per-event augmented-object cache: lets us reuse the SAME object
   // reference for events whose underlying raw entry (and cascade /
   // introducedPct) didn't change. Without this, mapping over rawEvents
@@ -23766,13 +23907,14 @@ function AppMain({ initial }) {
     let cascadeMap;
     if (
       cascadeCacheRef.current.ab === ab &&
+      cascadeCacheRef.current.metadata === metadata &&
       cascadeCacheRef.current.sig === sig
     ) {
       cascadeMap = cascadeCacheRef.current.byId;
     } else {
-      const cascaded = detectCascades(rawEvents, ab);
+      const cascaded = detectCascades(rawEvents, ab, metadata);
       cascadeMap = new Map(cascaded.map((e) => [e.id, e.cascade || null]));
-      cascadeCacheRef.current = { ab, sig, byId: cascadeMap };
+      cascadeCacheRef.current = { ab, metadata, sig, byId: cascadeMap };
     }
     const prev = eventsAugmentedCacheRef.current;
     const next = new Map();
@@ -23805,7 +23947,7 @@ function AppMain({ initial }) {
     });
     eventsAugmentedCacheRef.current = next;
     return out;
-  }, [rawEvents, ab, targetSpeciesCounts]);
+  }, [rawEvents, ab, metadata, targetSpeciesCounts]);
 
   const allSamples = useMemo(() => {
     if (ab) return ab.samples;
@@ -27088,6 +27230,8 @@ function AppMain({ initial }) {
               onOpenBulkApply={() => setBulkApplyOpen(true)}
               colorOnLine={colorOnLine}
               setColorOnLine={setColorOnLine}
+              showSpearman={showSpearman}
+              setShowSpearman={setShowSpearman}
             />
           )}
           {tab === "samples" && (
