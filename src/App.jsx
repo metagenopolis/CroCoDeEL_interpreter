@@ -20159,10 +20159,11 @@ const HelpTab = ({ onStartTour }) => {
             <div>
               <h4 style={{ color: "var(--ink)", fontWeight: 700 }}>Export</h4>
               <p>
-                Three downloads, all respecting the Events filter bar
-                at the top of the tab (which scopes the event-level
-                exports — the samples export always covers the full
-                table):
+                Four downloads. The two event-level exports respect
+                the Events filter bar at the top of the tab; the two
+                sample-level exports always cover the full sample
+                table (every sample that appears in the events list or
+                the abundance matrix):
               </p>
               <ul className="list-disc pl-5 mt-2 space-y-1">
                 <li>
@@ -20173,21 +20174,29 @@ const HelpTab = ({ onStartTour }) => {
                 </li>
                 <li>
                   <strong>Samples TSV — full table</strong> — one row
-                  per sample (union of events + abundance table), with
-                  every column the Samples tab surfaces: metadata
-                  facets (subject, timepoint, group, biome, control /
-                  low-biomass / low-seq-depth), plate position,
-                  per-side event counts, per-side TP / FP / Uncertain
-                  / Pending breakdown, max contamination rate, max
-                  introduced %, plus the sample-level verdict, action
-                  and notes. Same data the Samples-tab toolbar export
-                  produces.
+                  per sample, with every column the Samples tab
+                  surfaces: metadata facets (subject, timepoint,
+                  group, biome, control / low-biomass / low-seq-depth),
+                  plate position, per-side event counts, per-side TP /
+                  FP / Uncertain / Pending breakdown, max
+                  contamination rate, max introduced %, plus the
+                  sample-level verdict, action and notes. Same data
+                  the Samples-tab toolbar export produces.
                 </li>
                 <li>
-                  <strong>HTML report</strong> — self-contained HTML
-                  with summary, run parameters and curation table.
-                  Open it and use Ctrl+P (Cmd+P) to save as PDF — no
-                  extra software needed.
+                  <strong>Events HTML report</strong> — self-contained
+                  HTML with summary, run parameters and a per-event
+                  curation table. Open it and use Ctrl+P (Cmd+P) to
+                  save as PDF.
+                </li>
+                <li>
+                  <strong>Samples HTML report</strong> — printable
+                  sample-level summary: counts of contaminated / not
+                  contaminated / uncertain / pending samples, plus
+                  keep / suppress totals, followed by a coloured
+                  per-sample table (verdict and action chips,
+                  metadata flags, event-aggregate columns). Use the
+                  browser's print dialog to save as PDF.
                 </li>
               </ul>
               <p style={{ marginTop: 6 }}>
@@ -21718,6 +21727,7 @@ const ExportTab = ({
   onExportTSV,
   onExportHTML,
   onExportSamplesTSV,
+  onExportSamplesHTML,
 }) => {
   // Compute counts from the filtered subset so the stat row reflects what
   // will actually go into the export. Action lives on samples now —
@@ -21813,17 +21823,32 @@ const ExportTab = ({
           />
         )}
         <ExportCard
-          title={`HTML report — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
+          title={`Events HTML report — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
           desc={
             isFiltered
               ? `Self-contained HTML covering the ${counts.total} filtered event${counts.total === 1 ? "" : "s"}. Open it and use Ctrl+P (Cmd+P) to save as PDF.`
               : "Self-contained HTML with summary, run parameters and curation table. Open it and use Ctrl+P (Cmd+P) to save as PDF — no extra software needed."
           }
-          action="Download HTML"
+          action="Download events HTML"
           onClick={() =>
             onExportHTML(filteredEvents, { filter, actionEnabled })
           }
         />
+        {onExportSamplesHTML && (
+          <ExportCard
+            title="Samples HTML report"
+            desc={
+              "Self-contained HTML with the sample-level summary " +
+              "(contaminated / not contaminated / uncertain / pending " +
+              "counts, plus keep / suppress) and a coloured table of " +
+              "every sample with its metadata facets, plate position, " +
+              "event aggregates, verdict and action. Use Ctrl+P " +
+              "(Cmd+P) to save as PDF."
+            }
+            action="Download samples HTML"
+            onClick={onExportSamplesHTML}
+          />
+        )}
       </div>
 
       <div
@@ -23525,7 +23550,7 @@ function AppMain({ initial }) {
       {
         title: "Export your curated report",
         body:
-          "When done, the Export tab produces a curated events TSV (evaluation, action, notes), a full samples TSV (one row per sample with metadata facets, plate position, per-side event counts and breakdown, max rate / introduced %, plus verdict / action / notes), and a printable HTML report. Filter downstream using the evaluation / action columns if needed.",
+          "When done, the Export tab produces four downloads: a curated events TSV (evaluation, action, notes), a full samples TSV (one row per sample with metadata facets, plate position, per-side event counts and breakdown, max rate / introduced %, plus verdict / action / notes), a printable events HTML report and a printable samples HTML report. Filter downstream using the evaluation / action columns if needed.",
         action: "tabExport",
         highlight: '[data-tutorial="tab-export"]',
       },
@@ -24996,6 +25021,259 @@ function AppMain({ initial }) {
       "samples_curated.tsv",
       "text/tab-separated-values",
     );
+  };
+
+  /** Self-contained HTML report for the sample-level curation. Same
+      column scope as exportSamplesReport, rendered as a printable
+      page with summary stats + a coloured table. Mirrors the visual
+      conventions of the events HTML report (palette, page header,
+      "save as PDF" footer). */
+  const exportSamplesHTMLReport = () => {
+    const sampleIds = new Set();
+    (events || []).forEach((e) => {
+      if (e.source) sampleIds.add(e.source);
+      if (e.target) sampleIds.add(e.target);
+    });
+    if (ab?.samples) for (const s of ab.samples) sampleIds.add(s);
+
+    const agg = new Map();
+    for (const id of sampleIds) {
+      agg.set(id, {
+        asSource: 0,
+        asTarget: 0,
+        tpAsTarget: 0,
+        fpAsTarget: 0,
+        uncAsTarget: 0,
+        pendingAsTarget: 0,
+        maxTargetRate: null,
+        maxTargetIntroducedPct: null,
+      });
+    }
+    (events || []).forEach((e) => {
+      if (e.source) {
+        const a = agg.get(e.source);
+        if (a) a.asSource++;
+      }
+      if (e.target) {
+        const a = agg.get(e.target);
+        if (a) {
+          a.asTarget++;
+          if (e.verdict === "true_positive") a.tpAsTarget++;
+          else if (e.verdict === "false_positive") a.fpAsTarget++;
+          else if (e.verdict === "uncertain") a.uncAsTarget++;
+          else a.pendingAsTarget++;
+          if (typeof e.rate === "number") {
+            if (a.maxTargetRate == null || e.rate > a.maxTargetRate)
+              a.maxTargetRate = e.rate;
+          }
+          if (typeof e.introducedPct === "number") {
+            if (
+              a.maxTargetIntroducedPct == null ||
+              e.introducedPct > a.maxTargetIntroducedPct
+            )
+              a.maxTargetIntroducedPct = e.introducedPct;
+          }
+        }
+      }
+    });
+
+    const rows = Array.from(sampleIds).sort((a, b) => a.localeCompare(b));
+
+    // Summary counts — verdict distribution + action distribution.
+    const summary = rows.reduce(
+      (acc, id) => {
+        acc.total++;
+        const c = sampleCuration?.[id] || {};
+        const v = c.verdict || "pending";
+        if (v === "contaminated") acc.contaminated++;
+        else if (v === "correct") acc.correct++;
+        else if (v === "uncertain") acc.uncertain++;
+        else acc.pending++;
+        if (c.action === "keep") acc.keep++;
+        else if (c.action === "suppress") acc.suppress++;
+        return acc;
+      },
+      {
+        total: 0,
+        contaminated: 0,
+        correct: 0,
+        uncertain: 0,
+        pending: 0,
+        keep: 0,
+        suppress: 0,
+      },
+    );
+
+    const escapeHTML = (s) =>
+      String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+
+    const verdictPill = (v) => {
+      const norm = String(v || "pending");
+      const tone =
+        norm === "contaminated"
+          ? { bg: "#ed6e6c", label: "Contaminated" }
+          : norm === "correct"
+            ? { bg: "#00a3a6", label: "Not contaminated" }
+            : norm === "uncertain"
+              ? { bg: "#d97a3c", label: "Uncertain" }
+              : { bg: "#e6e8e8", label: "Pending", text: "#5a5550" };
+      return `<span style="background:${tone.bg};color:${tone.text || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
+    };
+    const actionPill = (a) => {
+      if (!a) return "";
+      const tone =
+        a === "suppress"
+          ? { bg: "#ed6e6c", label: "Suppress" }
+          : { bg: "#e0b13a", label: "Keep" };
+      return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
+    };
+    const flagChip = (label, on, color) => {
+      if (!on) return "";
+      return `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:2px;font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;margin-right:2px;">${label}</span>`;
+    };
+
+    const ratePct = (r) =>
+      r == null
+        ? "—"
+        : r >= 0.001
+          ? `${(r * 100).toFixed(2)}%`
+          : `${(r * 100).toExponential(1)}%`;
+    const introPct = (v) => (v == null ? "—" : `${v.toFixed(1)}%`);
+
+    const tableRows = rows
+      .map((id) => {
+        const flags = flagSample(id, metadata);
+        const placement = plateMap?.bySample?.[id] || null;
+        const a = agg.get(id) || {};
+        const c = sampleCuration?.[id] || {};
+        const name = sampleName(metadata, id) || "";
+        const facets = [
+          flags.subject ? `subj: ${escapeHTML(flags.subject)}` : null,
+          flags.timepoint ? `tp: ${escapeHTML(flags.timepoint)}` : null,
+          flags.groupId ? `grp: ${escapeHTML(flags.groupId)}` : null,
+          flags.biome ? escapeHTML(flags.biome) : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const flagPills = [
+          flagChip("control", flags.isControl, "#423089"),
+          flagChip("low biomass", flags.isLowBiomass, "#d97a3c"),
+          flagChip("low depth", flags.isLowSequencingDepth, "#d97a3c"),
+        ].join("");
+        const well = placement
+          ? `${String.fromCharCode(65 + placement.row)}${String(placement.col + 1).padStart(2, "0")}`
+          : "";
+        const placementLabel = placement
+          ? `${escapeHTML(placement.plate)} · ${well}`
+          : "—";
+        return `
+          <tr>
+            <td>
+              <div style="font-weight:700;color:#275662;">${escapeHTML(id)}</div>
+              ${name ? `<div style="font-size:10px;color:#797870;">${escapeHTML(name)}</div>` : ""}
+              ${flagPills ? `<div style="margin-top:3px;">${flagPills}</div>` : ""}
+            </td>
+            <td style="font-size:10px;color:#5a5550;">${facets || "—"}</td>
+            <td style="font-size:10px;font-family:ui-monospace,monospace;color:#5a5550;">${placementLabel}</td>
+            <td style="text-align:right;font-family:ui-monospace,monospace;">${a.asSource || 0}</td>
+            <td style="text-align:right;font-family:ui-monospace,monospace;">${a.asTarget || 0}</td>
+            <td style="font-size:10px;font-family:ui-monospace,monospace;">
+              <span style="color:#9b2e4d;">TP ${a.tpAsTarget || 0}</span> ·
+              <span style="color:#2566b0;">FP ${a.fpAsTarget || 0}</span> ·
+              <span style="color:#d97a3c;">Unc ${a.uncAsTarget || 0}</span> ·
+              <span style="color:#797870;">Pend ${a.pendingAsTarget || 0}</span>
+            </td>
+            <td style="text-align:right;font-family:ui-monospace,monospace;">${ratePct(a.maxTargetRate)}</td>
+            <td style="text-align:right;font-family:ui-monospace,monospace;">${introPct(a.maxTargetIntroducedPct)}</td>
+            <td>${verdictPill(c.verdict)}</td>
+            <td>${actionPill(c.action)}</td>
+            <td style="font-size:10px;color:#5a5550;white-space:pre-wrap;">${escapeHTML(c.notes || "")}</td>
+          </tr>
+        `;
+      })
+      .join("\n");
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CroCoDeEL — samples report${analysisTitle ? " · " + escapeHTML(analysisTitle) : ""}</title>
+<style>
+  body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 1280px; margin: 0 auto; padding: 32px; color: #275662; }
+  h1 { font-family: 'Raleway', sans-serif; font-weight: 800; font-size: 24px; margin-bottom: 4px; color: #275662; }
+  h2 { font-family: 'Raleway', sans-serif; font-weight: 700; font-size: 16px; margin: 28px 0 12px; color: #275662; }
+  .meta { color: #797870; font-size: 11px; margin-bottom: 16px; }
+  .summary { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin: 12px 0 24px; }
+  .stat { padding: 10px 12px; border-radius: 2px; border: 1px solid #e6e8e8; }
+  .stat .label { font-size: 9px; color: #797870; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; }
+  .stat .value { font-size: 22px; font-weight: 800; margin-top: 2px; color: #275662; }
+  .stat.contaminated { background: #fde8e7; border-color: #ed6e6c; }
+  .stat.contaminated .value { color: #b84442; }
+  .stat.correct { background: #d8f0f1; border-color: #00a3a6; }
+  .stat.correct .value { color: #00a3a6; }
+  .stat.unc { background: #fde6d8; border-color: #d97a3c; }
+  .stat.unc .value { color: #b46028; }
+  .stat.keep { background: #fdeed2; border-color: #e0b13a; }
+  .stat.keep .value { color: #8a6b1f; }
+  .stat.suppress { background: #fde8e7; border-color: #ed6e6c; }
+  .stat.suppress .value { color: #b84442; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  thead th { font-family: 'Raleway', sans-serif; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: #797870; background: #f6f7f7; padding: 8px 6px; text-align: left; border-bottom: 2px solid #275662; }
+  tbody td { padding: 8px 6px; border-bottom: 1px solid #e6e8e8; vertical-align: top; }
+  .footnote { margin-top: 32px; padding-top: 12px; border-top: 1px solid #e6e8e8; color: #797870; font-size: 10px; }
+  @media print { body { padding: 0; } tr { page-break-inside: avoid; } }
+</style>
+</head>
+<body>
+  <h1>CroCoDeEL — sample-level curation</h1>
+  ${analysisTitle ? `<div class="meta" style="font-size:13px;color:#275662;font-weight:700;"><span style="text-transform:uppercase;letter-spacing:0.1em;font-size:10px;color:#797870;font-weight:700;margin-right:8px;">Study</span>${escapeHTML(analysisTitle)}</div>` : ""}
+  <div class="meta">Generated ${new Date().toLocaleString()} · ${summary.total} sample${summary.total !== 1 ? "s" : ""} · Interface build ${__APP_VERSION__.hash === "dev" ? "<code>dev</code>" : `<code>${__APP_VERSION__.hash}</code>`} · ${__APP_VERSION__.date}</div>
+
+  <h2>Summary</h2>
+  <div class="summary">
+    <div class="stat"><div class="label">Total</div><div class="value">${summary.total}</div></div>
+    <div class="stat contaminated"><div class="label">Contaminated</div><div class="value">${summary.contaminated}</div></div>
+    <div class="stat correct"><div class="label">Not contaminated</div><div class="value">${summary.correct}</div></div>
+    <div class="stat unc"><div class="label">Uncertain</div><div class="value">${summary.uncertain}</div></div>
+    <div class="stat"><div class="label">Pending</div><div class="value">${summary.pending}</div></div>
+    <div class="stat keep"><div class="label">Keep</div><div class="value">${summary.keep}</div></div>
+    <div class="stat suppress"><div class="label">Suppress</div><div class="value">${summary.suppress}</div></div>
+  </div>
+
+  <h2>Samples</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Sample</th>
+        <th>Context</th>
+        <th>Plate · well</th>
+        <th style="text-align:right;">Events as source</th>
+        <th style="text-align:right;">Events as target</th>
+        <th>Breakdown (as target)</th>
+        <th style="text-align:right;">Max rate</th>
+        <th style="text-align:right;">Max introduced %</th>
+        <th>Verdict</th>
+        <th>Action</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${tableRows}
+    </tbody>
+  </table>
+
+  <div class="footnote">
+    Generated by the CroCoDeEL Interpretation Interface — metagenopolis.github.io/CroCoDeEL_interpreter.
+    Reference: Goulet et al. 2026, Nature Communications 10.1038/s41467-026-72637-9.
+    To save as PDF: use your browser's print dialog (Ctrl+P / Cmd+P) and choose "Save as PDF".
+  </div>
+</body>
+</html>`;
+    downloadFile(html, "crocodeel_samples_report.html", "text/html");
   };
 
   /** Restore the entire session from a JSON file produced by exportJSON.
@@ -26858,6 +27136,7 @@ function AppMain({ initial }) {
               onExportTSV={exportReport}
               onExportHTML={exportHTMLReport}
               onExportSamplesTSV={exportSamplesReport}
+              onExportSamplesHTML={exportSamplesHTMLReport}
             />
           )}
           {tab === "datasets" && (
