@@ -2504,8 +2504,9 @@ const NetworkGraph = ({
         <defs>
           {/* Arrowhead markers, one per stroke colour family. We swap
               the marker per edge in the curation scheme so the head
-              matches the verdict colour (otherwise a pending grey edge
-              kept a teal head, which read as "TP" at a glance). */}
+              matches the verdict colour (otherwise a pending grey
+              edge inherited the default teal head, which competed
+              visually with the bordeaux TP edges). */}
           {[
             ["arrow-inrae", "#00a3a6"],
             ["arrow-tp", EVAL_TP_COLOR],
@@ -7346,8 +7347,9 @@ const GalleryCard = React.memo(function GalleryCard({
               // ring around the verdict button so the action is visible
               // at a glance from the gallery without expanding the card.
               // Slightly brighter yellow for the ring than the chip body
-              // color so the halo reads against the teal-active TP button
-              // (the muted #e0b13a was disappearing into the background).
+              // color so the halo reads against the bordeaux-active TP
+              // button (the muted #e0b13a was disappearing into the
+              // background).
               // Action is only available for TP — FP keeps no halo even
               // if a legacy action is recorded in the data.
               const actionRingColor =
