@@ -1414,8 +1414,8 @@ const Stat = ({ label, value, tone = "neutral" }) => {
     // chips on the Samples tab, the Validate toolbar, the scatter
     // card halos and the Network curation scheme so a colour means
     // the same thing wherever you look:
-    //   indigo  → TP (event-evaluation)
-    //   bordeaux → FP (event-evaluation)
+    //   bordeaux → TP (event-evaluation)
+    //   indigo   → FP (event-evaluation)
     //   teal   → "Not contaminated" sample verdict
     //   salmon → "Contaminated" sample verdict / Suppress / contamination line
     //   amber  → uncertain
@@ -5390,12 +5390,12 @@ const FilterDivider = () => (
 // Event-evaluation accents — deliberately distinct from the brand
 // teal (#00a3a6 → sample verdict "Contaminated") and salmon
 // (#ed6e6c → contamination line / Suppress action / FP-rate
-// warning). Indigo for TP, bordeaux for FP. Single source of truth
+// warning). Bordeaux for TP, indigo for FP. Single source of truth
 // so every TP/FP surface (table buttons, gallery card halo, network
 // curation stroke, bulk apply chips, verdict thermometer…) shares
 // the same hex.
-const EVAL_TP_COLOR = "#2566b0";
-const EVAL_FP_COLOR = "#9b2e4d";
+const EVAL_TP_COLOR = "#9b2e4d";
+const EVAL_FP_COLOR = "#2566b0";
 
 const VERDICT_SEGMENTS = [
   { id: "true_positive", color: EVAL_TP_COLOR, label: "true positive" },
@@ -15932,6 +15932,7 @@ const ValidateTab = ({
   setNote,
   actionEnabled,
   setAction,
+  setSampleVerdict,
   sampleCuration,
   metadata,
   plateMap,
@@ -16336,7 +16337,7 @@ const ValidateTab = ({
           <button
             onClick={goPrevPending}
             disabled={!hasPrevPending}
-            title="Previous pending event (←)"
+            title="Previous pending evaluation (←)"
             className="px-3 py-1.5 text-[11px] rounded-sm flex items-center gap-1.5"
             style={{
               background: "var(--bg-card)",
@@ -16348,7 +16349,7 @@ const ValidateTab = ({
             }}
           >
             <ChevronLeft className="w-3 h-3" />
-            <span>previous pending</span>
+            <span>previous pending evaluation</span>
             <kbd
               style={{
                 fontSize: 9,
@@ -16365,7 +16366,7 @@ const ValidateTab = ({
           <button
             onClick={goNextPending}
             disabled={!hasNextPending}
-            title="Next pending event (→)"
+            title="Next pending evaluation (→)"
             className="px-3 py-1.5 text-[11px] rounded-sm flex items-center gap-1.5"
             style={{
               background: hasNextPending ? "#00a3a6" : "var(--bg-card)",
@@ -16376,7 +16377,7 @@ const ValidateTab = ({
               cursor: hasNextPending ? "pointer" : "not-allowed",
             }}
           >
-            <span>next pending</span>
+            <span>next pending evaluation</span>
             <kbd
               style={{
                 fontSize: 9,
@@ -16433,8 +16434,8 @@ const ValidateTab = ({
                 ["F", "Mark current event as False positive"],
                 ["U", "Mark current event as Uncertain"],
                 ["P", "Reset current event to Pending"],
-                ["←", "Previous pending event (skip validated)"],
-                ["→", "Next pending event (skip validated)"],
+                ["←", "Previous pending evaluation (skip validated)"],
+                ["→", "Next pending evaluation (skip validated)"],
                 ["↑", "Previous event (any evaluation)"],
                 ["↓", "Next event (any evaluation)"],
                 ["?", "Toggle this help"],
@@ -19931,7 +19932,7 @@ const HelpTab = ({ onStartTour }) => {
                 </li>
                 <li>
                   <strong>Curation</strong> — edges by event evaluation
-                  (TP indigo / FP bordeaux / Uncertain amber / Pending
+                  (TP bordeaux / FP indigo / Uncertain amber / Pending
                   grey); node fill = sample-level verdict
                   (contaminated salmon / not contaminated teal /
                   uncertain amber / pending grey); node border =
@@ -20188,9 +20189,9 @@ const HelpTab = ({ onStartTour }) => {
             <strong>Two distinct colour palettes</strong> reflect that
             split so the eye can tell the layers apart at a glance:
             event evaluation uses{" "}
-            <strong style={{ color: EVAL_TP_COLOR }}>indigo</strong>{" "}
+            <strong style={{ color: EVAL_TP_COLOR }}>bordeaux</strong>{" "}
             for TP and{" "}
-            <strong style={{ color: EVAL_FP_COLOR }}>bordeaux</strong>{" "}
+            <strong style={{ color: EVAL_FP_COLOR }}>indigo</strong>{" "}
             for FP, while sample-level verdicts keep the brand{" "}
             <strong style={{ color: "#00a3a6" }}>teal</strong>{" "}
             (Not contaminated) /{" "}
@@ -26641,6 +26642,7 @@ function AppMain({ initial }) {
               setNote={setNote}
               actionEnabled={actionEnabled}
               setAction={setAction}
+              setSampleVerdict={setSampleVerdict}
               sampleCuration={sampleCuration}
               metadata={metadata}
               plateMap={plateMap}
