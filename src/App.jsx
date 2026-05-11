@@ -41,6 +41,7 @@ import {
   Scale,
   Layers,
   Eye,
+  Target,
 } from "lucide-react";
 
 /* ============================================================================
@@ -5375,17 +5376,25 @@ const VerdictDistribution = ({ events }) => {
     .join(" · ");
   return (
     <div
-      className="flex h-2 rounded-full overflow-hidden"
-      style={{ width: 64, background: "var(--border)" }}
+      // Vertical thermometer: fills from the bottom (TP, then FP, then
+      // Uncertain) up to Pending at the top. Stays compact enough not
+      // to stretch the toolbar row that hosts it.
+      className="flex flex-col-reverse rounded-full overflow-hidden"
+      style={{
+        width: 6,
+        height: 22,
+        background: "var(--border)",
+        flexShrink: 0,
+      }}
       title={tip}
     >
       {VERDICT_SEGMENTS.map((s) => {
-        const w = (counts[s.id] / total) * 100;
-        if (w === 0) return null;
+        const h = (counts[s.id] / total) * 100;
+        if (h === 0) return null;
         return (
           <div
             key={s.id}
-            style={{ width: `${w}%`, background: s.color }}
+            style={{ height: `${h}%`, width: "100%", background: s.color }}
           />
         );
       })}
@@ -5584,18 +5593,39 @@ const EventFilterBar = ({
     >
       {/* Search field — also hosts the sample-scope chip when the user
           has drilled in from the Network / Samples tab. The chip lives
-          inside the input wrapper so the bar stays compact. */}
+          inside the input wrapper so the bar stays compact. When a
+          scope IS active the whole field is wrapped in a teal outline
+          + soft glow so the curator can't miss that the events table
+          is filtered to a subset. */}
       {(() => {
         const scopeActive =
           Array.isArray(filter.scopeSamples) &&
           filter.scopeSamples.length > 0;
+        const sideLabel =
+          filter.scopeSide === "source"
+            ? "as source"
+            : filter.scopeSide === "target"
+              ? "as target"
+              : "scoped";
+        const n = scopeActive ? filter.scopeSamples.length : 0;
         return (
           <div
             className="flex items-center gap-1.5 rounded-md"
             style={{
               ...selectStyle,
-              padding: "2px 8px",
-              minWidth: scopeActive ? 220 : 180,
+              padding: "1px 8px",
+              minWidth: scopeActive ? 210 : 180,
+              border: scopeActive
+                ? "2px solid #00a3a6"
+                : selectStyle.border,
+              background: scopeActive
+                ? "rgba(0,163,166,0.08)"
+                : selectStyle.background,
+              boxShadow: scopeActive
+                ? "0 0 0 3px rgba(0,163,166,0.18)"
+                : undefined,
+              transition:
+                "border-color 0.15s, box-shadow 0.15s, background 0.15s",
             }}
           >
             {scopeActive && (
@@ -5608,29 +5638,33 @@ const EventFilterBar = ({
                     scopeSide: "either",
                   })
                 }
-                title="Clear the sample scope and go back to all events"
+                title={`Events are filtered to ${n} sample${n === 1 ? "" : "s"}${
+                  filter.scopeSide === "source"
+                    ? " (source side only)"
+                    : filter.scopeSide === "target"
+                      ? " (target side only)"
+                      : ""
+                }. Click to clear the scope and go back to all events.`}
                 className="flex items-center gap-1 rounded-sm"
                 style={{
                   background: "#00a3a6",
                   border: "1px solid #00a3a6",
                   color: "#fff",
-                  fontWeight: 700,
+                  fontWeight: 800,
                   fontFamily: '"Raleway", sans-serif',
                   fontSize: 10,
-                  letterSpacing: "0.04em",
+                  letterSpacing: "0.05em",
                   textTransform: "uppercase",
-                  padding: "2px 6px",
+                  padding: "1px 6px",
                   height: 18,
                   cursor: "pointer",
                   flexShrink: 0,
+                  animation: "crocodeel-scope-pulse 1.2s ease-out 1",
                 }}
               >
-                {filter.scopeSide === "source"
-                  ? `as source · ${filter.scopeSamples.length}`
-                  : filter.scopeSide === "target"
-                    ? `as target · ${filter.scopeSamples.length}`
-                    : `scope · ${filter.scopeSamples.length}`}
-                <X className="w-3 h-3" />
+                <Target className="w-3 h-3" />
+                {sideLabel} · {n}
+                <X className="w-3 h-3" style={{ marginLeft: 2 }} />
               </button>
             )}
             <Search
@@ -22639,11 +22673,19 @@ function AppMain({ initial }) {
   // gets a state entry without polluting browser history.
   const skipPushRef = useRef(false);
   const didInitialReplaceRef = useRef(false);
+  // The URL hash mirrors the active tab so the address bar always
+  // shows a shareable link (e.g. `#learn`). Default tab (`overview`)
+  // keeps the URL clean — no hash. The Run-page overlay owns its own
+  // `#runCroCoDeEL` hash and is layered on top.
+  const tabToHash = (t) => (t && t !== "overview" ? `#${t}` : "");
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const base = window.location.pathname + window.location.search;
     if (!didInitialReplaceRef.current) {
       didInitialReplaceRef.current = true;
       const cur = window.history.state || {};
+      // Seed the initial state without changing the URL — the hash
+      // the curator may have pasted to land here stays put.
       window.history.replaceState({ ...cur, crocodeelTab: tab }, "");
       return;
     }
@@ -22651,8 +22693,15 @@ function AppMain({ initial }) {
       skipPushRef.current = false;
       return;
     }
+    // Tab changes never happen while the Run overlay is open (it
+    // covers the whole UI), so always push the tab hash. The Run
+    // effect (below) owns the hash slot when it's active.
     const cur = window.history.state || {};
-    window.history.pushState({ ...cur, crocodeelTab: tab }, "");
+    window.history.pushState(
+      { ...cur, crocodeelTab: tab },
+      "",
+      base + tabToHash(tab),
+    );
   }, [tab]);
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -22782,19 +22831,22 @@ function AppMain({ initial }) {
     return isRunHash(window.location.hash);
   });
   // Mirror the open state into the URL hash so refresh / share /
-  // history-back behave naturally. We also react to hashchange so the
-  // browser back button closes the page instead of bouncing the user
-  // out of the app.
+  // history-back behave naturally. When the Run overlay closes, hand
+  // the hash slot back to whichever tab is currently active — that
+  // way the address bar stays a meaningful deep link instead of
+  // collapsing to an empty hash.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const desired = runCrocodeelOpen ? RUN_HASH : "";
+    const desired = runCrocodeelOpen ? RUN_HASH : tabToHash(tab);
     if ((window.location.hash || "") !== desired) {
       const url = window.location.pathname + window.location.search + desired;
       // replaceState avoids stacking history entries when the page is
-      // toggled programmatically (e.g. via the close button).
-      window.history.replaceState(null, "", url);
+      // toggled programmatically (e.g. via the close button) and
+      // preserves the existing tab state in the entry.
+      const cur = window.history.state || {};
+      window.history.replaceState(cur, "", url);
     }
-  }, [runCrocodeelOpen]);
+  }, [runCrocodeelOpen, tab]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onHash = () => {
@@ -26217,7 +26269,19 @@ function AppMain({ initial }) {
               setColorScheme={setNetworkColorScheme}
               onScopeToSamples={scopeToSamples}
               sampleCuration={sampleCuration}
-              focusSampleId={lastSamplesDrill}
+              focusSampleId={
+                // Priority 1: a Samples drill-in always wins (the
+                // curator explicitly asked to look at THAT sample's
+                // component).
+                // Priority 2: the currently selected event's target
+                // sample — covers the "Back to Network from Validate"
+                // path, so the connected component holding the event
+                // we just curated is what the curator lands on.
+                lastSamplesDrill ||
+                (selId != null
+                  ? events.find((e) => e.id === selId)?.target || null
+                  : null)
+              }
             />
           )}
           {tab === "plate" && (

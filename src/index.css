@@ -76,3 +76,12 @@ html[data-theme="dark"] .border-stone-300 { border-color: var(--border) !importa
 .with-col-dividers td + td {
   border-left: 1px solid var(--border);
 }
+
+/* One-shot attention pulse for the events-filter scope chip. Runs
+   when the chip mounts (i.e. just after the curator drills into a
+   sample subset) so they notice the events table is now narrowed. */
+@keyframes crocodeel-scope-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(0, 163, 166, 0.55); }
+  60%  { box-shadow: 0 0 0 10px rgba(0, 163, 166, 0);   }
+  100% { box-shadow: 0 0 0 0   rgba(0, 163, 166, 0);   }
+}
