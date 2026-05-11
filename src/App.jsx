@@ -20159,15 +20159,43 @@ const HelpTab = ({ onStartTour }) => {
             <div>
               <h4 style={{ color: "var(--ink)", fontWeight: 700 }}>Export</h4>
               <p>
-                A single TSV with every event (evaluation, action and
-                notes included) plus a printable HTML report you can
-                save as PDF from the browser. Filter downstream using
-                the evaluation / action columns if you only want TPs or
-                want to drop FPs. For a full reproducibility-grade
-                backup of the entire session (events + every loaded
-                file + UI state), use <strong>Download session</strong>{" "}
-                on the files bar — and re-import it later with
-                <strong> Import session</strong>.
+                Three downloads, all respecting the Events filter bar
+                at the top of the tab (which scopes the event-level
+                exports — the samples export always covers the full
+                table):
+              </p>
+              <ul className="list-disc pl-5 mt-2 space-y-1">
+                <li>
+                  <strong>Events TSV</strong> — every matched event
+                  with its evaluation, action and notes. Filter
+                  downstream using the evaluation / action columns if
+                  you only want TPs or want to drop FPs.
+                </li>
+                <li>
+                  <strong>Samples TSV — full table</strong> — one row
+                  per sample (union of events + abundance table), with
+                  every column the Samples tab surfaces: metadata
+                  facets (subject, timepoint, group, biome, control /
+                  low-biomass / low-seq-depth), plate position,
+                  per-side event counts, per-side TP / FP / Uncertain
+                  / Pending breakdown, max contamination rate, max
+                  introduced %, plus the sample-level verdict, action
+                  and notes. Same data the Samples-tab toolbar export
+                  produces.
+                </li>
+                <li>
+                  <strong>HTML report</strong> — self-contained HTML
+                  with summary, run parameters and curation table.
+                  Open it and use Ctrl+P (Cmd+P) to save as PDF — no
+                  extra software needed.
+                </li>
+              </ul>
+              <p style={{ marginTop: 6 }}>
+                For a full reproducibility-grade backup of the entire
+                session (events + every loaded file + UI state), use{" "}
+                <strong>Download session</strong> on the files bar —
+                and re-import it later with{" "}
+                <strong>Import session</strong>.
               </p>
             </div>
           </div>
@@ -21689,6 +21717,7 @@ const ExportTab = ({
   onBulkApply,
   onExportTSV,
   onExportHTML,
+  onExportSamplesTSV,
 }) => {
   // Compute counts from the filtered subset so the stat row reflects what
   // will actually go into the export. Action lives on samples now —
@@ -21756,17 +21785,33 @@ const ExportTab = ({
         </div>
       )}
 
-      <div className="grid md:grid-cols-2 gap-4 mt-6">
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
         <ExportCard
-          title={`TSV — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
+          title={`Events TSV — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
           desc={
             isFiltered
               ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). Verdict, action and notes columns are included.`
               : "Every event with its evaluation, action and notes. Filter downstream using the evaluation / action columns if you want to drop FPs or keep TPs only."
           }
-          action="Download TSV"
+          action="Download events TSV"
           onClick={() => onExportTSV(filteredEvents)}
         />
+        {onExportSamplesTSV && (
+          <ExportCard
+            title="Samples TSV — full table"
+            desc={
+              "One row per sample (union of events and the abundance " +
+              "table). Columns: metadata facets (subject, timepoint, " +
+              "group, biome, control / low-biomass / low-seq-depth), " +
+              "plate position, per-side event counts, per-side TP / " +
+              "FP / Uncertain / Pending breakdown, max contamination " +
+              "rate and max introduced %, plus the sample-level " +
+              "verdict, action and notes."
+            }
+            action="Download samples TSV"
+            onClick={onExportSamplesTSV}
+          />
+        )}
         <ExportCard
           title={`HTML report — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
           desc={
@@ -23480,7 +23525,7 @@ function AppMain({ initial }) {
       {
         title: "Export your curated report",
         body:
-          "When done, the Export tab produces a curated TSV with every event (evaluation, action, notes) plus a JSON audit trail with metadata context and cascade flags. Filter downstream using the evaluation / action columns if needed.",
+          "When done, the Export tab produces a curated events TSV (evaluation, action, notes), a full samples TSV (one row per sample with metadata facets, plate position, per-side event counts and breakdown, max rate / introduced %, plus verdict / action / notes), and a printable HTML report. Filter downstream using the evaluation / action columns if needed.",
         action: "tabExport",
         highlight: '[data-tutorial="tab-export"]',
       },
@@ -24814,31 +24859,138 @@ function AppMain({ initial }) {
     );
   };
 
-  /** Sample-level curation export. One row per sample that carries an
-      explicit verdict / action / notes — empty samples are not emitted
-      so the file stays compact on large datasets where most samples
-      are not yet decided. */
+  /** Sample-level curation export. One row per sample in the union of
+      events (source or target) and the abundance table, with every
+      column the Samples tab surfaces: metadata facets, plate position,
+      per-side event counts and evaluation breakdown, max rate, max
+      introduced %, plus the curation triplet (verdict, action, notes).
+      Empty / missing values become empty cells; the rows aren't
+      filtered so downstream tooling can pivot on whatever it needs. */
   const exportSamplesReport = () => {
-    const ids = Object.keys(sampleCuration || {}).sort();
-    const header = ["sample_id", "sample_name", "verdict", "action", "notes"];
+    const sampleIds = new Set();
+    (events || []).forEach((e) => {
+      if (e.source) sampleIds.add(e.source);
+      if (e.target) sampleIds.add(e.target);
+    });
+    if (ab?.samples) for (const s of ab.samples) sampleIds.add(s);
+
+    // Pre-compute per-sample aggregates in a single pass over events.
+    const agg = new Map();
+    for (const id of sampleIds) {
+      agg.set(id, {
+        asSource: 0,
+        asTarget: 0,
+        tpAsTarget: 0,
+        fpAsTarget: 0,
+        uncAsTarget: 0,
+        pendingAsTarget: 0,
+        maxTargetRate: null,
+        maxTargetIntroducedPct: null,
+      });
+    }
+    (events || []).forEach((e) => {
+      if (e.source) {
+        const a = agg.get(e.source);
+        if (a) a.asSource++;
+      }
+      if (e.target) {
+        const a = agg.get(e.target);
+        if (a) {
+          a.asTarget++;
+          if (e.verdict === "true_positive") a.tpAsTarget++;
+          else if (e.verdict === "false_positive") a.fpAsTarget++;
+          else if (e.verdict === "uncertain") a.uncAsTarget++;
+          else a.pendingAsTarget++;
+          if (typeof e.rate === "number") {
+            if (a.maxTargetRate == null || e.rate > a.maxTargetRate)
+              a.maxTargetRate = e.rate;
+          }
+          if (typeof e.introducedPct === "number") {
+            if (
+              a.maxTargetIntroducedPct == null ||
+              e.introducedPct > a.maxTargetIntroducedPct
+            )
+              a.maxTargetIntroducedPct = e.introducedPct;
+          }
+        }
+      }
+    });
+
+    const header = [
+      "sample_id",
+      "sample_name",
+      "subject_id",
+      "timepoint",
+      "group_id",
+      "biome",
+      "is_control",
+      "is_low_biomass",
+      "is_low_sequencing_depth",
+      "plate_id",
+      "well",
+      "events_as_source",
+      "events_as_target",
+      "target_tp_count",
+      "target_fp_count",
+      "target_uncertain_count",
+      "target_pending_count",
+      "max_target_rate",
+      "max_target_introduced_pct",
+      "verdict",
+      "action",
+      "notes",
+    ];
     const lines = [];
     if (analysisTitle) {
       lines.push(`# study: ${analysisTitle.replace(/[\t\n\r]/g, " ")}`);
     }
     lines.push(header.join("\t"));
-    ids.forEach((id) => {
-      const c = sampleCuration[id] || {};
-      if (!c.verdict && !c.action && !c.notes) return;
-      lines.push(
-        [
-          id,
-          sampleName(metadata, id) || "",
-          c.verdict || "",
-          c.action || "",
-          (c.notes || "").replace(/\t/g, " "),
-        ].join("\t"),
-      );
-    });
+
+    // Letter columns are 1-based when re-emitted to plate map style,
+    // matching plateMapToTSV (e.g. row 0 col 0 → "A01").
+    const well = (placement) => {
+      if (!placement) return "";
+      const rowChar = String.fromCharCode(65 + placement.row);
+      return `${rowChar}${String(placement.col + 1).padStart(2, "0")}`;
+    };
+    const boolCell = (v) => (v == null ? "" : v ? "true" : "false");
+    const num = (v, digits) =>
+      v == null || !Number.isFinite(v) ? "" : v.toFixed(digits);
+
+    Array.from(sampleIds)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((id) => {
+        const flags = flagSample(id, metadata);
+        const placement = plateMap?.bySample?.[id] || null;
+        const a = agg.get(id) || {};
+        const c = sampleCuration?.[id] || {};
+        lines.push(
+          [
+            id,
+            sampleName(metadata, id) || "",
+            flags.subject || "",
+            flags.timepoint || "",
+            flags.groupId || "",
+            flags.biome || "",
+            boolCell(flags.isControl),
+            boolCell(flags.isLowBiomass),
+            boolCell(flags.isLowSequencingDepth),
+            placement?.plate || "",
+            well(placement),
+            a.asSource || 0,
+            a.asTarget || 0,
+            a.tpAsTarget || 0,
+            a.fpAsTarget || 0,
+            a.uncAsTarget || 0,
+            a.pendingAsTarget || 0,
+            num(a.maxTargetRate, 6),
+            num(a.maxTargetIntroducedPct, 2),
+            c.verdict || "",
+            c.action || "",
+            (c.notes || "").replace(/\t/g, " "),
+          ].join("\t"),
+        );
+      });
     downloadFile(
       lines.join("\n"),
       "samples_curated.tsv",
@@ -26705,6 +26857,7 @@ function AppMain({ initial }) {
               }
               onExportTSV={exportReport}
               onExportHTML={exportHTMLReport}
+              onExportSamplesTSV={exportSamplesReport}
             />
           )}
           {tab === "datasets" && (
