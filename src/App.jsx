@@ -1414,14 +1414,16 @@ const Stat = ({ label, value, tone = "neutral" }) => {
     // chips on the Samples tab, the Validate toolbar, the scatter
     // card halos and the Network curation scheme so a colour means
     // the same thing wherever you look:
-    //   teal  → TP / correct
-    //   salmon → FP / contaminated / suppress
-    //   amber → uncertain
-    //   grey  → pending
-    //   gold  → keep
+    //   indigo  → TP (event-evaluation)
+    //   bordeaux → FP (event-evaluation)
+    //   teal   → "Not contaminated" sample verdict
+    //   salmon → "Contaminated" sample verdict / Suppress / contamination line
+    //   amber  → uncertain
+    //   grey   → pending
+    //   gold   → keep
     //   violet → cascade
-    tp: { background: "#00a3a6", color: "white" },
-    fp: { background: "#ed6e6c", color: "white" },
+    tp: { background: EVAL_TP_COLOR, color: "white" },
+    fp: { background: EVAL_FP_COLOR, color: "white" },
     contaminated: { background: "#ed6e6c", color: "white" },
     correct: { background: "#00a3a6", color: "white" },
     uncertain: { background: "#d97a3c", color: "white" },
@@ -2404,11 +2406,11 @@ const NetworkGraph = ({
           <div className="flex items-center gap-3 flex-wrap pointer-events-none">
             {/* Edge palette: event evaluation */}
             <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
-              <span className="inline-block" style={{ width: 14, height: 2, background: "#00a3a6" }} />
+              <span className="inline-block" style={{ width: 14, height: 2, background: EVAL_TP_COLOR }} />
               TP
             </span>
             <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
-              <span className="inline-block" style={{ width: 14, height: 2, background: "#ed6e6c" }} />
+              <span className="inline-block" style={{ width: 14, height: 2, background: EVAL_FP_COLOR }} />
               FP
             </span>
             <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--ink)" }}>
@@ -2506,7 +2508,8 @@ const NetworkGraph = ({
               kept a teal head, which read as "TP" at a glance). */}
           {[
             ["arrow-inrae", "#00a3a6"],
-            ["arrow-fp", "#ed6e6c"],
+            ["arrow-tp", EVAL_TP_COLOR],
+            ["arrow-fp", EVAL_FP_COLOR],
             ["arrow-uncertain", "#d97a3c"],
             ["arrow-pending", "#9aaab0"],
           ].map(([id, color]) => (
@@ -2644,9 +2647,9 @@ const NetworkGraph = ({
                     // pending vs decided is the dominant visual signal.
                     strokeColor =
                       e.verdict === "true_positive"
-                        ? "#00a3a6"
+                        ? EVAL_TP_COLOR
                         : e.verdict === "false_positive"
-                          ? "#ed6e6c"
+                          ? EVAL_FP_COLOR
                           : e.verdict === "uncertain"
                             ? "#d97a3c"
                             : "#9aaab0"; // pending
@@ -2665,13 +2668,12 @@ const NetworkGraph = ({
                   // pending edge looked like a TP at a glance.
                   let markerId = "arrow-inrae";
                   if (colorScheme === "curation") {
-                    if (e.verdict === "false_positive") markerId = "arrow-fp";
+                    if (e.verdict === "true_positive") markerId = "arrow-tp";
+                    else if (e.verdict === "false_positive")
+                      markerId = "arrow-fp";
                     else if (e.verdict === "uncertain")
                       markerId = "arrow-uncertain";
-                    else if (
-                      e.verdict !== "true_positive"
-                    )
-                      markerId = "arrow-pending";
+                    else markerId = "arrow-pending";
                   }
                   return (
                     <line
@@ -2873,19 +2875,37 @@ const NetworkGraph = ({
       </svg>
 
       {hover?.kind === "node" && (
-        <div className="px-3 py-2 text-[12px] border-t border-stone-300 bg-[#f6f7f7]">
-          <span className="text-stone-500">sample:</span>{" "}
+        <div
+          className="px-3 py-2 text-[12px]"
+          style={{
+            borderTop: "1px solid var(--border)",
+            background: "var(--bg-soft)",
+            color: "var(--ink)",
+          }}
+        >
+          <span style={{ color: "var(--ink-muted)" }}>sample:</span>{" "}
           <span className="font-semibold" style={{ color: "var(--ink)" }}>
             {hover.n.id}
           </span>
-          <span className="text-stone-500 ml-3">contaminates:</span>{" "}
+          <span className="ml-3" style={{ color: "var(--ink-muted)" }}>
+            contaminates:
+          </span>{" "}
           {outDeg[hover.n.id] || 0}
-          <span className="text-stone-500 ml-3">contaminated by:</span>{" "}
+          <span className="ml-3" style={{ color: "var(--ink-muted)" }}>
+            contaminated by:
+          </span>{" "}
           {inDeg[hover.n.id] || 0}
         </div>
       )}
       {hover?.kind === "edge" && (
-        <div className="px-3 py-2 text-[12px] border-t border-stone-300 bg-[#f6f7f7] flex items-center gap-2 flex-wrap">
+        <div
+          className="px-3 py-2 text-[12px] flex items-center gap-2 flex-wrap"
+          style={{
+            borderTop: "1px solid var(--border)",
+            background: "var(--bg-soft)",
+            color: "var(--ink)",
+          }}
+        >
           <span className="font-semibold" style={{ color: "var(--ink)" }}>
             {hover.e.source}
           </span>
@@ -2893,17 +2913,25 @@ const NetworkGraph = ({
           <span className="font-semibold" style={{ color: "var(--ink)" }}>
             {hover.e.target}
           </span>
-          <span className="text-stone-500 ml-2">rate:</span>{" "}
+          <span className="ml-2" style={{ color: "var(--ink-muted)" }}>
+            rate:
+          </span>{" "}
           {(hover.e.rate * 100).toFixed(2)}%
-          <span className="text-stone-500 ml-2">probability:</span>{" "}
+          <span className="ml-2" style={{ color: "var(--ink-muted)" }}>
+            probability:
+          </span>{" "}
           {hover.e.score.toFixed(3)}
           {hover.e.introducedPct != null && (
             <>
-              <span className="text-stone-500 ml-2">introduced:</span>{" "}
+              <span className="ml-2" style={{ color: "var(--ink-muted)" }}>
+                introduced:
+              </span>{" "}
               {formatIntroducedPct(hover.e.introducedPct)}
             </>
           )}
-          <span className="text-stone-500 ml-2">evaluation:</span>
+          <span className="ml-2" style={{ color: "var(--ink-muted)" }}>
+            evaluation:
+          </span>
           <VerdictBadge v={hover.e.verdict} />
           <span
             className="ml-auto text-[11px]"
@@ -3348,8 +3376,8 @@ const NodeBulkPopover = ({
       </div>
       <div className="flex gap-1.5 mb-3 flex-wrap">
         {[
-          { v: "true_positive", lbl: "TP", bg: "#00a3a6" },
-          { v: "false_positive", lbl: "FP", bg: "#ed6e6c" },
+          { v: "true_positive", lbl: "TP", bg: EVAL_TP_COLOR },
+          { v: "false_positive", lbl: "FP", bg: EVAL_FP_COLOR },
           { v: "uncertain", lbl: "Uncertain", bg: "var(--border-strong)" },
           { v: "pending", lbl: "Pending", bg: "#5a5550" },
         ].map((v) => {
@@ -4100,8 +4128,8 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
       {events.map((e) => {
         const active = e.id === currentId;
         const dotColor =
-          e.verdict === "true_positive" ? "#00a3a6" :
-          e.verdict === "false_positive" ? "#ed6e6c" :
+          e.verdict === "true_positive" ? EVAL_TP_COLOR :
+          e.verdict === "false_positive" ? EVAL_FP_COLOR :
           e.verdict === "uncertain" ? "var(--border-strong)" : "var(--border)";
         return (
           <button
@@ -4297,20 +4325,27 @@ const RateBar = ({ v }) => {
 };
 
 const VerdictBadge = ({ v }) => {
+  // TP / FP pills are styled inline so the event-evaluation accents
+  // stay distinct from the brand-tone Pill ("good" / "bad" are
+  // reused for non-verdict pills like "adjacent" / "control").
+  const evalPill = (accent, Icon, label) => (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold border rounded-sm"
+      style={{
+        fontFamily: '"Raleway", sans-serif',
+        background: `${accent}26`,
+        color: accent,
+        borderColor: accent,
+      }}
+    >
+      <Icon className="w-3 h-3" />
+      {label}
+    </span>
+  );
   if (v === "true_positive")
-    return (
-      <Pill tone="good">
-        <CheckCircle2 className="w-3 h-3" />
-        true positive
-      </Pill>
-    );
+    return evalPill(EVAL_TP_COLOR, CheckCircle2, "true positive");
   if (v === "false_positive")
-    return (
-      <Pill tone="bad">
-        <XCircle className="w-3 h-3" />
-        false positive
-      </Pill>
-    );
+    return evalPill(EVAL_FP_COLOR, XCircle, "false positive");
   if (v === "uncertain")
     return (
       <Pill tone="warn">
@@ -4324,9 +4359,9 @@ const VerdictBadge = ({ v }) => {
 const QuickBtn = ({ children, onClick, active, tone, title }) => {
   const accent =
     tone === "good"
-      ? "#00a3a6"
+      ? EVAL_TP_COLOR
       : tone === "bad"
-        ? "#ed6e6c"
+        ? EVAL_FP_COLOR
         : "var(--border-strong)";
   return (
     <button
@@ -4589,8 +4624,8 @@ const ContextualCriterion = ({ n, title, hint, verdict }) => {
 /* ---------- verdict button ---------- */
 const VerdictBtn = ({ children, onClick, active, tone, icon: Icon, shortcut, hint }) => {
   const palette = {
-    good: { bg: "#00a3a6", border: "#00a3a6" },
-    bad: { bg: "#ed6e6c", border: "#ed6e6c" },
+    good: { bg: EVAL_TP_COLOR, border: EVAL_TP_COLOR },
+    bad: { bg: EVAL_FP_COLOR, border: EVAL_FP_COLOR },
     warn: { bg: "var(--border-strong)", border: "var(--border-strong)" },
     neutral: { bg: "#275662", border: "#275662" },
   };
@@ -5352,9 +5387,19 @@ const FilterDivider = () => (
   />
 );
 
+// Event-evaluation accents — deliberately distinct from the brand
+// teal (#00a3a6 → sample verdict "Contaminated") and salmon
+// (#ed6e6c → contamination line / Suppress action / FP-rate
+// warning). Indigo for TP, bordeaux for FP. Single source of truth
+// so every TP/FP surface (table buttons, gallery card halo, network
+// curation stroke, bulk apply chips, verdict thermometer…) shares
+// the same hex.
+const EVAL_TP_COLOR = "#2566b0";
+const EVAL_FP_COLOR = "#9b2e4d";
+
 const VERDICT_SEGMENTS = [
-  { id: "true_positive", color: "#00a3a6", label: "true positive" },
-  { id: "false_positive", color: "#ed6e6c", label: "false positive" },
+  { id: "true_positive", color: EVAL_TP_COLOR, label: "true positive" },
+  { id: "false_positive", color: EVAL_FP_COLOR, label: "false positive" },
   { id: "uncertain", color: "var(--border-strong)", label: "uncertain" },
   { id: "pending", color: "var(--border)", label: "pending" },
 ];
@@ -7132,8 +7177,8 @@ const GalleryCard = React.memo(function GalleryCard({
   const related = areRelated(metadata, event.source, event.target);
   const pd = plateDistance(plateMap, event.source, event.target);
   const verdictDot =
-    event.verdict === "true_positive" ? "#00a3a6" :
-    event.verdict === "false_positive" ? "#ed6e6c" :
+    event.verdict === "true_positive" ? EVAL_TP_COLOR :
+    event.verdict === "false_positive" ? EVAL_FP_COLOR :
     event.verdict === "uncertain" ? "var(--border-strong)" : null;
   // Action popover — opens only when the user clicks TP/FP. Lets the
   // curator override the default action (TP→suppress, FP→keep) without
@@ -7290,9 +7335,9 @@ const GalleryCard = React.memo(function GalleryCard({
               const active = event.verdict === id;
               const bg = active
                 ? tone === "good"
-                  ? "#00a3a6"
+                  ? EVAL_TP_COLOR
                   : tone === "bad"
-                    ? "#ed6e6c"
+                    ? EVAL_FP_COLOR
                     : "var(--border-strong)"
                 : "rgba(255,255,255,0.85)";
               const color = active ? "var(--bg-card)" : "#275662";
@@ -7397,8 +7442,8 @@ const GalleryCard = React.memo(function GalleryCard({
             </div>
             <div className="flex flex-wrap gap-1">
               {[
-                { id: "true_positive", color: "#00a3a6", label: "TP" },
-                { id: "false_positive", color: "#ed6e6c", label: "FP" },
+                { id: "true_positive", color: EVAL_TP_COLOR, label: "TP" },
+                { id: "false_positive", color: EVAL_FP_COLOR, label: "FP" },
                 { id: "uncertain", color: "#d97a3c", label: "Uncertain" },
                 { id: "pending", color: "#6b7a82", label: "Pending" },
               ].map((opt) => {
@@ -8287,8 +8332,8 @@ const ExplorePairs = ({
           </label>
           <div className="flex gap-2 flex-wrap">
             {[
-              { id: "true_positive", label: "True positive", color: "#00a3a6" },
-              { id: "false_positive", label: "False positive", color: "#ed6e6c" },
+              { id: "true_positive", label: "True positive", color: EVAL_TP_COLOR },
+              { id: "false_positive", label: "False positive", color: EVAL_FP_COLOR },
               { id: "uncertain", label: "Uncertain", color: "var(--border-strong)" },
             ].map((v) => {
               const active = verdict === v.id;
@@ -9896,8 +9941,8 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
       })()}
     <div className="flex gap-1 flex-wrap" style={{ marginTop: 4 }}>
       {[
-        { k: "tp", color: "#00a3a6", title: "True positive" },
-        { k: "fp", color: "#ed6e6c", title: "False positive" },
+        { k: "tp", color: EVAL_TP_COLOR, title: "True positive" },
+        { k: "fp", color: EVAL_FP_COLOR, title: "False positive" },
         { k: "uncertain", color: "#d97a3c", title: "Uncertain" },
         { k: "pending", color: "#6b7a82", title: "Pending" },
       ].map((c) =>
@@ -15549,8 +15594,8 @@ const BulkApplyByCriteriaDialog = ({
         </label>
         <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
           {[
-            { v: "true_positive", lbl: "True positive", bg: "#00a3a6" },
-            { v: "false_positive", lbl: "False positive", bg: "#ed6e6c" },
+            { v: "true_positive", lbl: "True positive", bg: EVAL_TP_COLOR },
+            { v: "false_positive", lbl: "False positive", bg: EVAL_FP_COLOR },
             { v: "uncertain", lbl: "Uncertain", bg: "var(--border-strong)" },
             { v: "pending", lbl: "Reset to pending", bg: "#5a5550" },
           ].map((v) => {
@@ -17800,16 +17845,16 @@ const PatternCard = ({
   // grey to signal "could go either way".
   const tone =
     verdict === "TP"
-      ? { bg: "#00a3a6", text: "True positive" }
+      ? { bg: EVAL_TP_COLOR, text: "True positive" }
       : verdict === "FP"
-        ? { bg: "#ed6e6c", text: "False positive" }
+        ? { bg: EVAL_FP_COLOR, text: "False positive" }
         : verdict === "FP_OR_UNCERTAIN"
           ? {
-              bg: "linear-gradient(90deg, #ed6e6c 0%, #c4c0b3 100%)",
+              bg: `linear-gradient(90deg, ${EVAL_FP_COLOR} 0%, #c4c0b3 100%)`,
               text: "False positive / Uncertain",
             }
           : verdict === "FN"
-            ? { bg: "#9dc544", text: "False negative — missed" }
+            ? { bg: "#1a1a1a", text: "False negative — missed" }
             : { bg: "var(--border-strong)", text: "Uncertain" };
   return (
     <div
@@ -18715,7 +18760,7 @@ const LearnTab = () => {
             style={{
               width: 10,
               height: 10,
-              background: "#00a3a6",
+              background: EVAL_TP_COLOR,
               borderRadius: "50%",
               display: "inline-block",
             }}
@@ -18845,7 +18890,7 @@ const LearnTab = () => {
             style={{
               width: 10,
               height: 10,
-              background: "#ed6e6c",
+              background: EVAL_FP_COLOR,
               borderRadius: "50%",
               display: "inline-block",
             }}
@@ -18864,7 +18909,7 @@ const LearnTab = () => {
             style={{
               width: 10,
               height: 10,
-              background: "#9dc544",
+              background: "#1a1a1a",
               borderRadius: "50%",
               display: "inline-block",
               marginLeft: -6,
@@ -18883,7 +18928,7 @@ const LearnTab = () => {
           style={{ color: "var(--ink-soft)", lineHeight: 1.6 }}
         >
           <li>
-            <strong style={{ color: "#ed6e6c" }}>False positives</strong>{" "}
+            <strong style={{ color: EVAL_FP_COLOR }}>False positives</strong>{" "}
             — pairs CroCoDeEL flagged that a curator reads as biological
             pattern, not mechanical contamination. Typical give-aways:
             diffuse clouds, mid-range probabilities, and the sneaky
@@ -18891,7 +18936,7 @@ const LearnTab = () => {
             actually hug the line.
           </li>
           <li>
-            <strong style={{ color: "#9dc544" }}>False negatives</strong>{" "}
+            <strong style={{ color: "#1a1a1a" }}>False negatives</strong>{" "}
             — real contaminations CroCoDeEL missed. By definition they
             won't appear in your events table; knowing the patterns
             helps you decide whether to widen the search (lower the
@@ -19036,6 +19081,8 @@ const HelpTab = ({ onStartTour }) => {
   const toc = [
     { id: "h-intro", label: "What is this tool?" },
     { id: "h-workflow", label: "Workflow" },
+    { id: "h-navigation", label: "Navigation & deep links" },
+    { id: "h-run-in-browser", label: "Run CroCoDeEL in your browser" },
     { id: "h-files", label: "Input files" },
     { id: "h-events", label: "contamination_events.tsv" },
     { id: "h-abundance", label: "species_abundance.tsv" },
@@ -19214,9 +19261,12 @@ const HelpTab = ({ onStartTour }) => {
               Use the <strong>Samples</strong> tab as the per-sample
               cockpit: filter by metadata or by "≥ N events", apply
               bulk verdicts / actions to fine-grained subsets, drill
-              into Scatter / Events / Network for any sample (a
-              floating "Back to Samples" chip lands you back on the
-              same row).
+              into Scatter / Events / Network for any sample.
+              Navigation is reversible — a floating{" "}
+              <em>Back to {"{previous tab}"}</em> chip lifts you back
+              one step, the browser's Back button does the same, and
+              the row / card / event you came from is highlighted on
+              arrival (see <em>Navigation &amp; deep links</em>).
             </li>
             <li>
               Export your curated TSV (or printable HTML report) from
@@ -19226,6 +19276,191 @@ const HelpTab = ({ onStartTour }) => {
               bar.
             </li>
           </ol>
+        </HelpSection>
+
+        {/* ---------- Navigation & deep links ---------- */}
+        <HelpSection
+          id="h-navigation"
+          eyebrow="Getting around"
+          title="Navigation & deep links"
+        >
+          <p>
+            Every tab is reachable through a stable URL fragment, so
+            you can bookmark a tab, paste it in a README, or share a
+            link with a colleague that opens the app right where you
+            want them to land:
+          </p>
+          <ul className="list-disc pl-5 space-y-1.5 mt-2">
+            <li>
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #overview
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #samples
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #events
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #scatter
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #validate
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #network
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #plate
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #export
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #datasets
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #learn
+              </code>{" "}
+              ·{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #help
+              </code>
+            </li>
+            <li>
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                #runCroCoDeEL
+              </code>{" "}
+              opens the in-browser run page (see <em>Run CroCoDeEL in
+              your browser</em> below).
+            </li>
+          </ul>
+          <p style={{ marginTop: 8 }}>
+            The address bar mirrors the active tab — clicking{" "}
+            <em>Learn</em> updates the URL to{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>
+              …/#learn
+            </code>{" "}
+            instantly, no need to know the convention upfront.
+          </p>
+          <h4
+            className="mt-4 text-[14px]"
+            style={{
+              color: "var(--ink)",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            Back / forward & focus restoration
+          </h4>
+          <p>
+            Every tab change pushes a real browser history entry, so:
+          </p>
+          <ul className="list-disc pl-5 space-y-1.5 mt-2">
+            <li>
+              The browser's <strong>Back</strong> and <strong>Forward</strong>{" "}
+              buttons walk through the tabs you visited.
+            </li>
+            <li>
+              A floating{" "}
+              <em>Back to {"{previous tab}"}</em> chip in the bottom-
+              right does the same thing (handy when the browser
+              chrome is hidden). When you drilled in from Samples it
+              also shows the originating sample id.
+            </li>
+            <li>
+              Returning to <strong>Scatter</strong> or{" "}
+              <strong>Events</strong> auto-paginates to the previously-
+              clicked card / row, scrolls it into view, and rings it
+              in teal so you can pick up where you left off.
+            </li>
+            <li>
+              Returning to <strong>Network</strong> auto-zooms to the
+              connected component holding the event you just curated
+              in Validate.
+            </li>
+            <li>
+              Returning to <strong>Samples</strong> restores the
+              scroll position and the sample row you were studying.
+            </li>
+          </ul>
+        </HelpSection>
+
+        {/* ---------- Run CroCoDeEL in your browser ---------- */}
+        <HelpSection
+          id="h-run-in-browser"
+          eyebrow="No CLI required"
+          title="Run CroCoDeEL in your browser"
+        >
+          <p>
+            If you only have an abundance table and no precomputed
+            CroCoDeEL output, you can run the pipeline entirely in the
+            browser. The empty state of the events file card carries a{" "}
+            <em>Run CroCoDeEL in your browser →</em> link; the page is
+            also reachable directly via{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>
+              …/#runCroCoDeEL
+            </code>
+            .
+          </p>
+          <ul className="list-disc pl-5 space-y-1.5 mt-2">
+            <li>
+              The runtime is <strong>Pyodide</strong>: CroCoDeEL
+              executes as actual Python (same package as the CLI), in
+              a Web Worker, so the UI stays responsive while the
+              search runs. Nothing is uploaded — the abundance table
+              never leaves your machine.
+            </li>
+            <li>
+              First click downloads ~30 MB of WASM + the CroCoDeEL
+              package (cached afterwards). Subsequent runs reuse the
+              warm runtime.
+            </li>
+            <li>
+              You can adjust the <em>probability cutoff</em>,{" "}
+              <em>rate cutoff</em> (log-scaled slider with an
+              explicit "off" notch) and the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                --filter-low-ab
+              </code>{" "}
+              factor (recommended ≈ 20 for MetaPhlAn 4 output) before
+              the run.
+            </li>
+            <li>
+              Progress is surfaced with a real percent bar plus a live
+              ETA computed from rolling throughput. <em>Show real-time
+              CroCoDeEL output</em> opens a dark log panel showing
+              stdout / stderr as the pipeline emits them.
+            </li>
+            <li>
+              When the run finishes you can <strong>adopt</strong> the
+              events into the current session, download the events
+              TSV (with a hash-prefixed header matching the CLI), or
+              download a normalized copy of the abundance table.
+              "Re-run" tweaks parameters without rebooting Pyodide.
+            </li>
+            <li>
+              An abundance is already loaded? The run page surfaces a{" "}
+              <em>Use a different abundance file…</em> link next to
+              the loaded-count summary so you can swap inputs without
+              clearing the session.
+            </li>
+          </ul>
+          <p style={{ marginTop: 8 }}>
+            Heads-up: in-browser execution is convenient but slower
+            than the native CLI. For more than a few hundred samples,
+            running CroCoDeEL on a workstation and importing the
+            resulting TSV is still the recommended path.
+          </p>
         </HelpSection>
 
         {/* ---------- Files ---------- */}
@@ -19633,9 +19868,12 @@ const HelpTab = ({ onStartTour }) => {
                 of the event's target — read-only badge sourced from
                 the Samples tab) and <strong>Target action</strong>{" "}
                 (Keep / Suppress badge, also read-only). Species count
-                is sortable too. Pagination size is configurable
-                (default 100) under the gear icon → Items per page.
-                Click a row to jump into Guided validation.
+                is sortable too. Default sort:{" "}
+                <strong>rate (descending)</strong>. Pagination size is
+                configurable (default 100) under the gear icon → Items
+                per page. Click a row to jump into Guided validation —
+                on return, the row you clicked is re-highlighted in
+                teal and scrolled into view.
               </p>
             </div>
             <div>
@@ -19652,11 +19890,15 @@ const HelpTab = ({ onStartTour }) => {
                 <strong>target action</strong>, or source / target
                 sample name; click an
                 active sort button again to flip ascending/descending.
-                A <em>Color contamination-line points</em> checkbox in
+                Default sort: <strong>rate (descending)</strong>. A{" "}
+                <em>Color contamination-line points</em> checkbox in
                 the sort row toggles the salmon highlight on points
                 CroCoDeEL identified as on the line — useful for
                 eyeballing each line shape without the model's
-                introduced-species highlight. The shared filter bar
+                introduced-species highlight. Default is{" "}
+                <strong>OFF</strong>: cards open with neutral points
+                so the raw cloud shape carries the eye before the
+                model's overlay does. The shared filter bar
                 above the grid hides events below your probability /
                 rate / introduced thresholds and also exposes a
                 Sample-verdicts popover (Beaker icon) that hides events
@@ -19689,12 +19931,12 @@ const HelpTab = ({ onStartTour }) => {
                 </li>
                 <li>
                   <strong>Curation</strong> — edges by event evaluation
-                  (TP teal / FP salmon / Uncertain amber / Pending
+                  (TP indigo / FP bordeaux / Uncertain amber / Pending
                   grey); node fill = sample-level verdict
-                  (contaminated salmon / correct teal / uncertain amber
-                  / pending grey); node border = sample-level action
-                  (gold for keep, dark salmon for suppress, default
-                  hairline when no action is set).
+                  (contaminated salmon / not contaminated teal /
+                  uncertain amber / pending grey); node border =
+                  sample-level action (gold for keep, dark salmon for
+                  suppress, default hairline when no action is set).
                 </li>
               </ul>
               <p style={{ marginTop: 6 }}>
@@ -19752,7 +19994,8 @@ const HelpTab = ({ onStartTour }) => {
                 A <em>Color contamination-line points</em> checkbox
                 under the metric tiles toggles the salmon highlight on
                 the line points so the line shape can be read on its
-                own. The "Plate position & sample context" and
+                own (default <strong>OFF</strong>, shared with the
+                Scatter gallery). The "Plate position & sample context" and
                 "Introduced species" boxes both collapse by default;
                 when both are open, their bottoms align across the
                 two columns.
@@ -19774,13 +20017,15 @@ const HelpTab = ({ onStartTour }) => {
                 <strong>rate, prob, intro, eval, verd</strong> (the
                 target sample's sample-level verdict) and{" "}
                 <strong>act</strong> (the target sample's sample-level
-                action, when enabled). It auto-scrolls to keep the
-                active row in view as you navigate. When you've drilled
-                into Validate from the Samples tab, a floating{" "}
-                <em>Back to Samples</em> chip appears at the
-                bottom-right so you can return in one click. See the
-                Keyboard shortcuts and Bulk actions sections for faster
-                workflows.
+                action, when enabled). Default sort:{" "}
+                <strong>rate (descending)</strong>. It auto-scrolls to
+                keep the active row in view as you navigate. When you
+                press the floating <em>Back to {"{previous tab}"}</em>{" "}
+                chip (or the browser's Back button), the originating
+                Scatter card / Events row / Samples row / Network
+                component is re-highlighted on arrival. See the
+                Keyboard shortcuts and Bulk actions sections for
+                faster workflows.
               </p>
             </div>
             <div>
@@ -19799,17 +20044,22 @@ const HelpTab = ({ onStartTour }) => {
                 columns (<strong>Events as source</strong> /
                 <strong>Events as target</strong>) showing the side
                 count and a TP / FP / Uncertain / Pending breakdown;
-                the target column also carries the colour-coded
-                "max rate" badge (worst contamination among events
-                targeting the sample). Inline → Scatter / → Events
-                / → Network drill-ins live in <em>both</em> events
-                columns and are <em>side-aware</em> — clicking from
-                the source column scopes the destination tab to events
-                where this sample is the source, and likewise for the
-                target column. A Verdict picker (Pending / Contaminated
-                / Not contaminated / Uncertain) and a keep / suppress Action
-                picker round out
-                the row.
+                the target column also carries two colour-coded
+                badges — <em>max rate</em> (highest rate among events
+                targeting this sample: ≤ 1 % teal, ≤ 10 % amber,
+                &gt; 10 % salmon) and <em>max introduced %</em>{" "}
+                (largest fraction of the target's species introduced
+                by a single event: &lt; 10 % teal, &lt; 30 % amber,
+                ≥ 30 % salmon). Inline → Scatter / → Events / → Network
+                drill-ins live in <em>both</em> events columns and
+                are <em>side-aware</em> — clicking from the source
+                column scopes the destination tab to events where
+                this sample is the source, and likewise for the target
+                column. A Verdict picker (Pending / Contaminated /
+                Not contaminated / Uncertain) is always visible; the
+                keep / suppress <em>Action</em> chips only appear once
+                the sample is marked <em>Contaminated</em> (Keep /
+                Suppress is meaningless before that call).
               </p>
               <p style={{ marginTop: 6 }}>
                 <strong>Collapsible cells.</strong> The Context cell
@@ -19840,6 +20090,21 @@ const HelpTab = ({ onStartTour }) => {
                 <em> count event source</em> /{" "}
                 <em>count event target</em> counters that hide samples
                 with fewer than N events on that side.
+              </p>
+              <p style={{ marginTop: 6 }}>
+                <strong>Default sort: rate (descending).</strong> The
+                most-contaminated samples land at the top of the list
+                without any setup. Click any column header to switch
+                sort key; the choice survives tab round-trips.
+              </p>
+              <p style={{ marginTop: 6 }}>
+                <strong>Row freeze on interaction.</strong> While a
+                row is hovered or focused, the table's sort order is
+                frozen for that row only — so clicking{" "}
+                <em>Contaminated</em> doesn't make the row jump away
+                under your cursor before you can pick Keep / Suppress.
+                The sort catches up the moment the row stops being
+                interacted with.
               </p>
               <p style={{ marginTop: 6 }}>
                 <strong>Keyboard navigation.</strong> Click any row to
@@ -19912,9 +20177,26 @@ const HelpTab = ({ onStartTour }) => {
           title="Event vs sample curation"
         >
           <p>
-            Curation runs on two levels that the interface keeps
-            independent so you can disagree with yourself between
-            them.
+            Curation runs on two levels — per event and per sample.
+            They're connected: the per-event call provides evidence
+            that the interface uses to suggest a sample-level verdict
+            (see <em>Auto-sync</em> below). The curator can override
+            either layer at any time and the manual decision is then
+            sticky.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            <strong>Two distinct colour palettes</strong> reflect that
+            split so the eye can tell the layers apart at a glance:
+            event evaluation uses{" "}
+            <strong style={{ color: EVAL_TP_COLOR }}>indigo</strong>{" "}
+            for TP and{" "}
+            <strong style={{ color: EVAL_FP_COLOR }}>bordeaux</strong>{" "}
+            for FP, while sample-level verdicts keep the brand{" "}
+            <strong style={{ color: "#00a3a6" }}>teal</strong>{" "}
+            (Not contaminated) /{" "}
+            <strong style={{ color: "#ed6e6c" }}>salmon</strong>{" "}
+            (Contaminated). Uncertain (amber) and Pending (grey) are
+            shared by both layers.
           </p>
           <h4
             className="mt-3 text-[14px]"
@@ -19948,13 +20230,61 @@ const HelpTab = ({ onStartTour }) => {
             Per-sample call: <strong>contaminated</strong>,{" "}
             <strong>not contaminated</strong>, <strong>uncertain</strong>{" "}
             or <strong>pending</strong>. Answers <em>"is this sample
-            as a whole compromised?"</em> A sample can be marked
-            contaminated even when each individual event targeting it
-            is uncertain, and conversely a sample can be marked
-            not contaminated despite a TP event flowing into it
-            (e.g. when the rate is negligible). Edited from the Samples tab, from the
-            Scatterplot card popover ("Verdict on target") or from the
-            Network node popover.
+            as a whole compromised?"</em> Edited from the Samples tab,
+            from the Scatterplot card popover (<em>Verdict on
+            target</em>), the Events-table target-verdict column or
+            from the Network node popover.
+          </p>
+          <h4
+            className="mt-3 text-[14px]"
+            style={{
+              color: "var(--ink)",
+              fontWeight: 700,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            Auto-sync: how the sample verdict tracks event verdicts
+          </h4>
+          <p>
+            When the curator changes an event's evaluation, the
+            target sample's verdict updates automatically — but only
+            when the sample verdict is unset or was itself auto-derived.
+            Any manual sample-level decision becomes sticky and is
+            never overwritten by the auto-sync. Rules, in order of
+            precedence:
+          </p>
+          <ul className="list-disc pl-5 space-y-1.5 mt-2">
+            <li>
+              <strong>Any event targeting the sample is TP</strong> →
+              sample auto-stamped <em>Contaminated</em>. Positive
+              evidence always wins, even if other events targeting the
+              same sample are FP / Uncertain.
+            </li>
+            <li>
+              <strong>Every event targeting the sample has a verdict
+              (none pending) and none are TP</strong> → sample auto-
+              stamped <em>Not contaminated</em>. By elimination,
+              nothing reaching the sample is real contamination.
+            </li>
+            <li>
+              <strong>Mixed state — some still pending, no TP yet</strong>{" "}
+              → the sample reflects the curator's most recent call on
+              this event: FP → <em>Not contaminated</em>, Uncertain →
+              <em> Uncertain</em>. Resetting an event to Pending leaves
+              the sample alone.
+            </li>
+            <li>
+              <strong>Unwind</strong> — if the curator flips the last
+              remaining TP backing an auto-Contaminated sample, the
+              sample reverts to <em>Pending</em> (provided the rules
+              above don't already pick another verdict for it).
+            </li>
+          </ul>
+          <p style={{ marginTop: 6 }}>
+            All four rules ignore the sample if its verdict was set
+            by hand — once the curator clicks a sample-level chip
+            directly, the auto-derivation flag is cleared and future
+            event flips don't second-guess the call.
           </p>
           <h4
             className="mt-3 text-[14px]"
@@ -20415,19 +20745,18 @@ const HelpTab = ({ onStartTour }) => {
           </h4>
           <ul className="list-disc pl-5 space-y-2">
             <li>
-              <strong>
-                Mark all same-subject contaminations as FP and their
-                target samples as Not contaminated
-              </strong>{" "}
+              <strong>Mark all same-subject contaminations as FP</strong>{" "}
               — when metadata.tsv carries a{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>
                 subject_id
               </code>
               , every PENDING event whose source and target share
               that id (longitudinal pair) is flipped to false positive
-              and the target sample is flagged as <em>Not contaminated</em>{" "}
-              (skipping any target that already has a sample-level
-              verdict).
+              with an explanatory auto-note. Target sample verdicts
+              are left untouched on purpose — a sample may still be
+              genuinely contaminated by another event, so its sample-
+              level verdict stays under your control (or the auto-sync
+              rules described in <em>Event vs sample curation</em>).
             </li>
             <li>
               <strong>
@@ -20481,6 +20810,14 @@ const HelpTab = ({ onStartTour }) => {
                   tag.
                 </li>
               </ul>
+              Before applying, the <em>Preview as scatter plots</em>{" "}
+              button opens a full-screen overlay with a mini-scatter
+              card per matched event. Each card has an include /
+              exclude checkbox so you can drop individual events that
+              shouldn't get stamped; the apply button reflects the
+              survivor count. A toolbar checkbox toggles the red
+              contamination-line points on / off, and the cards can be
+              sorted by rate, probability or introduced %.
             </li>
           </ul>
           <h4
@@ -23604,6 +23941,7 @@ function AppMain({ initial }) {
       let target = null;
       let oldVerdict = null;
       let stillHasTPOnTarget = false;
+      let allTargetEventsResolved = false;
       setRawEvents((prev) => {
         const next = prev.map((e) => {
           if (e.id === id) {
@@ -23614,12 +23952,15 @@ function AppMain({ initial }) {
           return e;
         });
         if (target) {
-          stillHasTPOnTarget = next.some(
-            (e) =>
-              e.id !== id &&
-              e.target === target &&
-              e.verdict === "true_positive",
+          const sampleEvents = next.filter((e) => e.target === target);
+          stillHasTPOnTarget = sampleEvents.some(
+            (e) => e.id !== id && e.verdict === "true_positive",
           );
+          allTargetEventsResolved =
+            sampleEvents.length > 0 &&
+            sampleEvents.every(
+              (e) => e.verdict && e.verdict !== "pending",
+            );
         }
         return next;
       });
@@ -23628,14 +23969,22 @@ function AppMain({ initial }) {
       // verdict — but only when the sample's current verdict was
       // either unset or previously auto-derived by this same path.
       // Manual sample-level decisions are never overwritten.
-      // Mapping: TP -> contaminated, FP -> correct, Uncertain ->
-      // uncertain, pending -> no change.
-      const map = {
-        true_positive: "contaminated",
-        false_positive: "correct",
-        uncertain: "uncertain",
-      };
-      const sampleVerdict = map[verdict];
+      //
+      // Rules (in order):
+      //   1. ANY event targeting S is TP → S = contaminated. Positive
+      //      evidence wins, regardless of what we just changed.
+      //   2. Every event targeting S has a verdict (none pending) AND
+      //      none are TP → S = correct. Definitive: nothing reaching
+      //      this sample is a real contamination.
+      //   3. Mixed state (some still pending, no TP) → reflect the
+      //      curator's most recent call on this event: FP → correct,
+      //      Uncertain → uncertain. Pending → no change.
+      const hasTP = verdict === "true_positive" || stillHasTPOnTarget;
+      let sampleVerdict = null;
+      if (hasTP) sampleVerdict = "contaminated";
+      else if (allTargetEventsResolved) sampleVerdict = "correct";
+      else if (verdict === "false_positive") sampleVerdict = "correct";
+      else if (verdict === "uncertain") sampleVerdict = "uncertain";
       if (sampleVerdict) {
         setSampleCuration((prev) => {
           const cur = prev[target] || {};
