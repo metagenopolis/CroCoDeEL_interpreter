@@ -9844,20 +9844,9 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
             title: `Maximum rate among events targeting ${row.id} — picked across all evaluations (TP / FP / Uncertain / Pending).`,
           });
         }
-        if (row.maxTargetScore != null) {
-          const p = row.maxTargetScore;
-          const color =
-            p >= 0.9 ? "#ed6e6c" : p >= 0.5 ? "#d97a3c" : "#00a3a6";
-          pills.push({
-            key: "prob",
-            color,
-            label: `max prob ${p.toFixed(2)}`,
-            title: `Highest CroCoDeEL probability among events targeting ${row.id} — closer to 1 = the model is more confident this contamination is real.`,
-          });
-        }
         if (row.maxTargetIntroducedPct != null) {
           const v = row.maxTargetIntroducedPct;
-          const color = v >= 30 ? "#ed6e6c" : v >= 5 ? "#d97a3c" : "#00a3a6";
+          const color = v >= 30 ? "#ed6e6c" : v >= 10 ? "#d97a3c" : "#00a3a6";
           pills.push({
             key: "intro",
             color,
@@ -15060,12 +15049,11 @@ const BulkApplyByCriteriaDialog = ({
                     e.currentTarget.style.borderColor = "var(--border-strong)";
                     e.currentTarget.style.color = "#275662";
                   }}
-                  title='Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note. Their target samples are also flagged as "Not contaminated" (skipping any target that already carries a sample-level verdict).'
+                  title="Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note. Target sample verdicts are left untouched — many subjects share some species naturally, so a target may still be genuinely contaminated by something else."
                 >
                   <XCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>
-                    Mark all same-subject contaminations as FP and their
-                    target samples as Not contaminated (
+                    Mark all same-subject contaminations as FP (
                     {pendingSameSubjectCount} pending)
                   </span>
                 </button>
@@ -23916,11 +23904,10 @@ function AppMain({ initial }) {
       title: `Mark ${matches.length} same-subject event${matches.length > 1 ? "s" : ""} as false positive?`,
       body:
         "These are longitudinal pairs (source and target share a subject_id) — biologically expected to share microbes, so CroCoDeEL flags are typically false positives.\n\n" +
-        'Each event is marked FP and its TARGET sample is flagged as "Not contaminated" (skipping any target sample that already carries a verdict). Already-validated events are not affected.',
+        "Each event is marked FP. Target sample verdicts are left untouched — a sample may still be genuinely contaminated by something else, so its sample-level verdict stays under your control.",
       confirmLabel: `Mark ${matches.length} as FP`,
       onConfirm: () => {
         const matchIds = new Set(matches.map((e) => e.id));
-        const matchedTargets = [];
         setRawEvents((prev) =>
           prev.map((e) => {
             if (!matchIds.has(e.id)) return e;
@@ -23928,19 +23915,9 @@ function AppMain({ initial }) {
             const subj = r?.value || "?";
             const autoNote = `Auto-classified as FP: longitudinal pair (same subject_id=${subj}).`;
             const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
-            if (e.target) matchedTargets.push(e.target);
             return { ...e, verdict: "false_positive", notes: newNote };
           }),
         );
-        // Side-effect: stamp the target samples as Correct, but never
-        // overwrite an existing sample-level verdict the curator may
-        // have already set by hand.
-        const uniqueTargets = Array.from(new Set(matchedTargets));
-        for (const t of uniqueTargets) {
-          const cur = sampleCuration[t] || {};
-          if (cur.verdict && cur.verdict !== "pending") continue;
-          setSampleVerdict(t, "correct");
-        }
       },
     });
   };
@@ -26971,7 +26948,7 @@ function AppMain({ initial }) {
             style={{
               position: "fixed",
               right: 24,
-              bottom: 24,
+              bottom: 68,
               zIndex: 1400,
               display: "flex",
               alignItems: "center",
