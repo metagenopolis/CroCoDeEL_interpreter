@@ -5049,8 +5049,19 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
   return (
     <div>
       <SectionTitle eyebrow="Overview" title="Your analysis at a glance">
-        These are the events CroCoDeEL flagged. Your role: distinguish real contamination
-        from coincidental abundance similarity. Start from the highest-probability events.
+        {noData ? (
+          <>
+            Load a CroCoDeEL output (and ideally the matching abundance
+            table) to start curating. The counts and top-N lists appear
+            once the events are in.
+          </>
+        ) : (
+          <>
+            These are the events CroCoDeEL flagged. Your role: distinguish
+            real contamination from coincidental abundance similarity.
+            Start from the highest-probability events.
+          </>
+        )}
       </SectionTitle>
 
       {/* No-data banner — shown until the user uploads contamination_events.tsv */}
@@ -5122,29 +5133,31 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
 
       {runMetadata && <RunMetadataBlock meta={runMetadata} />}
 
-      <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-3 mt-8 mb-4">
-        <Stat label="Events" value={counts.total} />
-        <Stat label="Samples involved" value={counts.samples} />
-        <Stat label="Mean rate" value={`${(counts.avgRate * 100).toFixed(2)}%`} />
-        <Stat
-          label="Mean introduced %"
-          value={
-            avgIntroducedPct == null
-              ? "—"
-              : `${avgIntroducedPct.toFixed(1)}%`
-          }
-        />
-        <Stat
-          label="Validated (TP)"
-          value={counts.tp}
-          tone={counts.tp > 0 ? "tp" : "neutral"}
-        />
-        <Stat
-          label="Rejected (FP)"
-          value={counts.fp}
-          tone={counts.fp > 0 ? "fp" : "neutral"}
-        />
-      </div>
+      {!noData && (
+        <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-3 mt-8 mb-4">
+          <Stat label="Events" value={counts.total} />
+          <Stat label="Samples involved" value={counts.samples} />
+          <Stat label="Mean rate" value={`${(counts.avgRate * 100).toFixed(2)}%`} />
+          <Stat
+            label="Mean introduced %"
+            value={
+              avgIntroducedPct == null
+                ? "—"
+                : `${avgIntroducedPct.toFixed(1)}%`
+            }
+          />
+          <Stat
+            label="Validated (TP)"
+            value={counts.tp}
+            tone={counts.tp > 0 ? "tp" : "neutral"}
+          />
+          <Stat
+            label="Rejected (FP)"
+            value={counts.fp}
+            tone={counts.fp > 0 ? "fp" : "neutral"}
+          />
+        </div>
+      )}
 
       {(events.length > 0 || metadata || plateMap || cascadeCount > 0) && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 xl:grid-cols-7 gap-3 mb-10">
@@ -5194,7 +5207,7 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
         </div>
       )}
 
-      {!hasAb && (
+      {!noData && !hasAb && (
         <div
           className="flex items-start gap-3 p-4 mb-8 rounded-sm"
           style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "#8a2422" }}
@@ -5210,58 +5223,60 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
 
       {/* One column per metric (rate / probability / introduced), with
           Top above Bottom — visually pairs each Top with its Bottom. */}
-      <div
-        className={`grid gap-x-8 gap-y-6 ${
-          eventsWithIntroduced.length > 0
-            ? "md:grid-cols-2 lg:grid-cols-3"
-            : "md:grid-cols-2"
-        }`}
-      >
-        <div className="space-y-6">
-          <TopList
-            title="Top 5 by contamination rate"
-            items={topByRate}
-            onOpen={onOpen}
-            fmt={(e) => `${(e.rate * 100).toFixed(2)}%`}
-          />
-          <TopList
-            title="Bottom 5 by contamination rate"
-            items={bottomByRate}
-            onOpen={onOpen}
-            fmt={(e) => `${(e.rate * 100).toFixed(2)}%`}
-          />
-        </div>
-        <div className="space-y-6">
-          <TopList
-            title="Top 5 by probability"
-            items={topByScore}
-            onOpen={onOpen}
-            fmt={(e) => e.score.toFixed(3)}
-          />
-          <TopList
-            title="Bottom 5 by probability"
-            items={bottomByScore}
-            onOpen={onOpen}
-            fmt={(e) => e.score.toFixed(3)}
-          />
-        </div>
-        {eventsWithIntroduced.length > 0 && (
+      {!noData && (
+        <div
+          className={`grid gap-x-8 gap-y-6 ${
+            eventsWithIntroduced.length > 0
+              ? "md:grid-cols-2 lg:grid-cols-3"
+              : "md:grid-cols-2"
+          }`}
+        >
           <div className="space-y-6">
             <TopList
-              title="Top 5 by introduced %"
-              items={topByIntroduced}
+              title="Top 5 by contamination rate"
+              items={topByRate}
               onOpen={onOpen}
-              fmt={(e) => formatIntroducedPct(e.introducedPct)}
+              fmt={(e) => `${(e.rate * 100).toFixed(2)}%`}
             />
             <TopList
-              title="Bottom 5 by introduced %"
-              items={bottomByIntroduced}
+              title="Bottom 5 by contamination rate"
+              items={bottomByRate}
               onOpen={onOpen}
-              fmt={(e) => formatIntroducedPct(e.introducedPct)}
+              fmt={(e) => `${(e.rate * 100).toFixed(2)}%`}
             />
           </div>
-        )}
-      </div>
+          <div className="space-y-6">
+            <TopList
+              title="Top 5 by probability"
+              items={topByScore}
+              onOpen={onOpen}
+              fmt={(e) => e.score.toFixed(3)}
+            />
+            <TopList
+              title="Bottom 5 by probability"
+              items={bottomByScore}
+              onOpen={onOpen}
+              fmt={(e) => e.score.toFixed(3)}
+            />
+          </div>
+          {eventsWithIntroduced.length > 0 && (
+            <div className="space-y-6">
+              <TopList
+                title="Top 5 by introduced %"
+                items={topByIntroduced}
+                onOpen={onOpen}
+                fmt={(e) => formatIntroducedPct(e.introducedPct)}
+              />
+              <TopList
+                title="Bottom 5 by introduced %"
+                items={bottomByIntroduced}
+                onOpen={onOpen}
+                fmt={(e) => formatIntroducedPct(e.introducedPct)}
+              />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -6358,6 +6373,7 @@ const EventsTable = ({
   setAction,
   sampleCuration,
   pageSize,
+  focusEventId,
 }) => {
   const PAGE_SIZE = pageSize || 500;
   const [page, setPage] = useState(1);
@@ -6371,6 +6387,26 @@ const EventsTable = ({
   const safePage = Math.min(Math.max(1, page), totalPages);
   const startIdx = (safePage - 1) * PAGE_SIZE;
   const visible = events.slice(startIdx, startIdx + PAGE_SIZE);
+
+  // On arrival back from another tab (typically Validate via the back
+  // chip or browser Back), paginate to the row that was clicked
+  // before and scroll it into view. The row gets a teal ring (see
+  // <tr> render below) so it's spottable at a glance.
+  useEffect(() => {
+    if (!focusEventId) return;
+    const idx = events.findIndex((e) => e.id === focusEventId);
+    if (idx < 0) return;
+    const targetPage = Math.floor(idx / PAGE_SIZE) + 1;
+    if (targetPage !== safePage) setPage(targetPage);
+    const handle = window.setTimeout(() => {
+      const el = document.querySelector(
+        `[data-event-row="${CSS.escape(String(focusEventId))}"]`,
+      );
+      if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 60);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusEventId, events.length]);
 
   const toggleSort = (by) =>
     setSort({
@@ -6496,15 +6532,29 @@ const EventsTable = ({
             {visible.map((e) => {
               const related = areRelated(metadata, e.source, e.target);
               const pd = plateDistance(plateMap, e.source, e.target);
+              const isFocused = focusEventId != null && e.id === focusEventId;
               return (
                 <tr
                   key={e.id}
+                  data-event-row={e.id}
                   style={{
                     borderBottom: "1px solid var(--border-soft)",
                     cursor: "pointer",
+                    background: isFocused ? "rgba(0,163,166,0.08)" : undefined,
+                    boxShadow: isFocused
+                      ? "inset 0 2px 0 #00a3a6, inset 0 -2px 0 #00a3a6"
+                      : undefined,
                   }}
-                  onMouseOver={(ev) => (ev.currentTarget.style.background = "var(--bg-soft)")}
-                  onMouseOut={(ev) => (ev.currentTarget.style.background = "")}
+                  onMouseOver={(ev) =>
+                    (ev.currentTarget.style.background = isFocused
+                      ? "rgba(0,163,166,0.12)"
+                      : "var(--bg-soft)")
+                  }
+                  onMouseOut={(ev) =>
+                    (ev.currentTarget.style.background = isFocused
+                      ? "rgba(0,163,166,0.08)"
+                      : "")
+                  }
                   onClick={() => onPick && onPick(e.id)}
                 >
                   <td
@@ -7033,6 +7083,7 @@ const GalleryCard = React.memo(function GalleryCard({
   onPopoverOpen,
   onPopoverClose,
   colorOnLine = true,
+  focused = false,
 }) {
   // `event` reference shifts whenever any field changes (verdict /
   // action / notes / cascade / introducedPct), but the scatter only
@@ -7125,6 +7176,7 @@ const GalleryCard = React.memo(function GalleryCard({
     <div
       role="button"
       tabIndex={0}
+      data-event-card={event.id}
       onClick={() => onPick(event.id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -7134,7 +7186,7 @@ const GalleryCard = React.memo(function GalleryCard({
       }}
       className="text-left rounded-sm cursor-pointer"
       style={{
-        border: "1px solid var(--border)",
+        border: focused ? "2px solid #00a3a6" : "1px solid var(--border)",
         background: "var(--bg-card)",
         transition: "transform 0.12s, box-shadow 0.12s, border-color 0.12s",
         padding: 0,
@@ -7147,16 +7199,25 @@ const GalleryCard = React.memo(function GalleryCard({
         width: "100%",
         position: "relative",
         zIndex: actionPopover ? 30 : "auto",
+        boxShadow: focused
+          ? "0 0 0 3px rgba(0,163,166,0.18), 0 6px 14px -6px rgba(39, 86, 98, 0.25)"
+          : undefined,
       }}
       onMouseEnter={(e) => {
         e.currentTarget.style.transform = "translateY(-2px)";
-        e.currentTarget.style.boxShadow = "0 6px 14px -6px rgba(39, 86, 98, 0.25)";
+        e.currentTarget.style.boxShadow = focused
+          ? "0 0 0 3px rgba(0,163,166,0.28), 0 8px 18px -6px rgba(39, 86, 98, 0.32)"
+          : "0 6px 14px -6px rgba(39, 86, 98, 0.25)";
         e.currentTarget.style.borderColor = "#00a3a6";
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.transform = "";
-        e.currentTarget.style.boxShadow = "";
-        e.currentTarget.style.borderColor = "var(--border)";
+        e.currentTarget.style.boxShadow = focused
+          ? "0 0 0 3px rgba(0,163,166,0.18), 0 6px 14px -6px rgba(39, 86, 98, 0.25)"
+          : "";
+        e.currentTarget.style.borderColor = focused
+          ? "#00a3a6"
+          : "var(--border)";
       }}
     >
       <div
@@ -8667,6 +8728,7 @@ const ScatterTab = ({
   setExplorePairsForm,
   colorOnLine,
   setColorOnLine,
+  focusEventId,
 }) => {
   const [mode, setMode] = useState("flagged"); // "flagged" or "explore"
   const [sortBy, setSortBy] = useState("rate");
@@ -8842,6 +8904,27 @@ const ScatterTab = ({
   const startIdx = (safePage - 1) * PAGE_SIZE;
   const visible = sorted.slice(startIdx, startIdx + PAGE_SIZE);
 
+  // When the curator arrives back on the Scatter tab (typically via
+  // the floating back chip or the browser's Back button), bring the
+  // last-clicked card into view: paginate to the right page if needed
+  // and scroll-into-view. The card itself shows a teal ring (see
+  // GalleryCard `focused` prop) so it's spottable at a glance.
+  useEffect(() => {
+    if (!focusEventId) return;
+    const idx = sorted.findIndex((e) => e.id === focusEventId);
+    if (idx < 0) return;
+    const targetPage = Math.floor(idx / PAGE_SIZE) + 1;
+    if (targetPage !== safePage) setPage(targetPage);
+    const handle = window.setTimeout(() => {
+      const el = document.querySelector(
+        `[data-event-card="${CSS.escape(String(focusEventId))}"]`,
+      );
+      if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 60);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusEventId, sorted.length]);
+
   return (
     <div>
       <SectionTitle eyebrow="Scatterplots" title="Scatterplot gallery">
@@ -9006,6 +9089,7 @@ const ScatterTab = ({
             onPopoverOpen={onPopoverOpen}
             onPopoverClose={onPopoverClose}
             colorOnLine={colorOnLine}
+            focused={e.id === focusEventId}
           />
         ))}
       </div>
@@ -9704,51 +9788,86 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
       </span>
       {collapseToggle}
     </div>
-    {isTarget && row.maxTargetRate != null &&
+    {isTarget &&
       (() => {
-        // Worst-rate contamination targeting this sample, regardless
-        // of evaluation. Tone matches the events-table rate scale:
-        //   ≤ 1% good (teal), ≤ 10% warn (amber), else bad (salmon).
-        const r = row.maxTargetRate;
-        const tone =
-          r <= 0.01
-            ? { bg: "#00a3a6" }
-            : r <= 0.1
-              ? { bg: "#d97a3c" }
-              : { bg: "#ed6e6c" };
-        const pct =
-          r >= 0.001
-            ? `${(r * 100).toFixed(2)}%`
-            : `${(r * 100).toExponential(1)}%`;
+        // Worst-of-the-worst stats targeting this sample, regardless of
+        // evaluation. One pill per metric, side by side. Tones match
+        // the events-table conventions: bigger / higher = more
+        // concerning.
+        const pills = [];
+        if (row.maxTargetRate != null) {
+          const r = row.maxTargetRate;
+          const color =
+            r <= 0.01 ? "#00a3a6" : r <= 0.1 ? "#d97a3c" : "#ed6e6c";
+          const pct =
+            r >= 0.001
+              ? `${(r * 100).toFixed(2)}%`
+              : `${(r * 100).toExponential(1)}%`;
+          pills.push({
+            key: "rate",
+            color,
+            label: `max rate ${pct}`,
+            title: `Maximum rate among events targeting ${row.id} — picked across all evaluations (TP / FP / Uncertain / Pending).`,
+          });
+        }
+        if (row.maxTargetScore != null) {
+          const p = row.maxTargetScore;
+          const color =
+            p >= 0.9 ? "#ed6e6c" : p >= 0.5 ? "#d97a3c" : "#00a3a6";
+          pills.push({
+            key: "prob",
+            color,
+            label: `max prob ${p.toFixed(2)}`,
+            title: `Highest CroCoDeEL probability among events targeting ${row.id} — closer to 1 = the model is more confident this contamination is real.`,
+          });
+        }
+        if (row.maxTargetIntroducedPct != null) {
+          const v = row.maxTargetIntroducedPct;
+          const color = v >= 30 ? "#ed6e6c" : v >= 5 ? "#d97a3c" : "#00a3a6";
+          pills.push({
+            key: "intro",
+            color,
+            label: `max introduced ${v.toFixed(1)}%`,
+            title: `Highest fraction of ${row.id}'s species likely introduced by a single contamination event.`,
+          });
+        }
+        if (pills.length === 0) return null;
         return (
           <div
-            style={{
-              marginTop: 4,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              height: 18,
-              padding: "0 6px",
-              borderRadius: 9,
-              background: `${tone.bg}1f`,
-              color: tone.bg,
-              fontSize: 10,
-              fontWeight: 700,
-              fontFamily: '"Raleway", sans-serif',
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-            }}
-            title={`Maximum rate among events targeting ${row.id} — picked across all evaluations (TP / FP / Uncertain / Pending).`}
+            className="flex flex-wrap gap-1"
+            style={{ marginTop: 4 }}
           >
-            <span
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                background: tone.bg,
-              }}
-            />
-            max rate {pct}
+            {pills.map((p) => (
+              <div
+                key={p.key}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  height: 18,
+                  padding: "0 6px",
+                  borderRadius: 9,
+                  background: `${p.color}1f`,
+                  color: p.color,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  fontFamily: '"Raleway", sans-serif',
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                }}
+                title={p.title}
+              >
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: p.color,
+                  }}
+                />
+                {p.label}
+              </div>
+            ))}
           </div>
         );
       })()}
@@ -10758,6 +10877,7 @@ const SamplesTab = ({
       let maxTargetRate = null;
       let maxTargetScore = null;
       let maxTargetIntroducedCount = null;
+      let maxTargetIntroducedPct = null;
       const evalCounts = { tp: 0, fp: 0, uncertain: 0, pending: 0 };
       const evalCountsAsSource = { tp: 0, fp: 0, uncertain: 0, pending: 0 };
       const evalCountsAsTarget = { tp: 0, fp: 0, uncertain: 0, pending: 0 };
@@ -10791,6 +10911,13 @@ const SamplesTab = ({
             introCount > maxTargetIntroducedCount
           )
             maxTargetIntroducedCount = introCount;
+          if (typeof e.introducedPct === "number") {
+            if (
+              maxTargetIntroducedPct == null ||
+              e.introducedPct > maxTargetIntroducedPct
+            )
+              maxTargetIntroducedPct = e.introducedPct;
+          }
         }
         bumpEval(evalCounts, e);
       }
@@ -10812,6 +10939,7 @@ const SamplesTab = ({
         maxTargetRate,
         maxTargetScore,
         maxTargetIntroducedCount,
+        maxTargetIntroducedPct,
       };
     });
   }, [eventsForSamples, ab, metadata, plateMap]);
@@ -11177,10 +11305,24 @@ const SamplesTab = ({
   // sample shows the same focus styling as keyboard navigation, and
   // the focusByIndex helper handles auto-pagination + scrollIntoView
   // for free.
+  //
+  // Apply this ONCE per fresh drill, tracked by a ref. Without the
+  // ref, hovering any row toggles `interactingRowId` → `displaySorted`
+  // re-memos → this effect re-fires → focus reverts to the drilled
+  // sample, even after the curator clicked or keyboard-nav'd to a
+  // different row. The ref lets a subsequent click / arrow keep its
+  // new focus until the curator actually drills again from another
+  // tab.
+  const appliedHighlightRef = useRef(null);
   useEffect(() => {
-    if (!highlightSampleId) return;
+    if (!highlightSampleId) {
+      appliedHighlightRef.current = null;
+      return;
+    }
+    if (appliedHighlightRef.current === highlightSampleId) return;
+    appliedHighlightRef.current = highlightSampleId;
     const i = displaySorted.findIndex((r) => r.id === highlightSampleId);
-    if (i >= 0 && displaySorted[i].id !== focusedId) focusByIndex(i);
+    if (i >= 0) focusByIndex(i);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightSampleId, displaySorted]);
   useEffect(() => {
@@ -13593,10 +13735,12 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
               );
             })}
 
-            {/* legend */}
+            {/* legend — sits next to the filter pills with the
+                toolbar's normal gap, rather than ml-auto'd to the far
+                right where it loses context with the buttons. */}
             <div
-              className="ml-auto flex items-center gap-3 text-[11px]"
-              style={{ color: "var(--ink-muted)" }}
+              className="flex items-center gap-3 text-[11px]"
+              style={{ color: "var(--ink-muted)", marginLeft: 12 }}
             >
               <span className="flex items-center gap-1">
                 <span
@@ -14139,17 +14283,51 @@ const BulkPreviewOverlay = ({
   // the raw scatter shape without the model's red points biasing the
   // eye. The dashed contamination line itself stays drawn either way.
   const [colorOnLine, setColorOnLine] = useState(false);
-  // Build a scatter for each matched event lazily.
+  // Sort the grid by one of the three event-level metrics. Default
+  // matches the rest of the app (rate, descending — highest first).
+  // Clicking the active key flips direction; clicking another key
+  // resets to that metric's natural direction (always "desc" for
+  // these — higher = more concerning).
+  const [sortBy, setSortBy] = useState("rate"); // rate | prob | introduced
+  const [sortDir, setSortDir] = useState("desc");
+  const toggleSort = (id) => {
+    if (sortBy === id) {
+      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSortBy(id);
+      setSortDir("desc");
+    }
+  };
+  // Build a scatter for each matched event lazily, then sort.
   const scatters = useMemo(() => {
     if (!ab) return null;
-    return matched.map((e) => {
+    const all = matched.map((e) => {
       try {
         return { e, sc: buildScatter(ab, e) };
       } catch {
         return { e, sc: null };
       }
     });
-  }, [matched, ab]);
+    const flip = sortDir === "asc" ? 1 : -1;
+    const key = (e) => {
+      if (sortBy === "prob") return e.score ?? 0;
+      if (sortBy === "introduced") {
+        // Events with no computable introduced % sink to the bottom in
+        // the descending sort regardless of direction.
+        return e.introducedPct == null ? -Infinity : e.introducedPct;
+      }
+      return e.rate ?? 0;
+    };
+    all.sort((a, b) => {
+      const ka = key(a.e);
+      const kb = key(b.e);
+      if (ka === -Infinity && kb === -Infinity) return 0;
+      if (ka === -Infinity) return 1;
+      if (kb === -Infinity) return -1;
+      return (ka - kb) * flip;
+    });
+    return all;
+  }, [matched, ab, sortBy, sortDir]);
   // Esc closes the overlay; trap focus inside the overlay so background
   // shortcuts don't fire while the curator is reviewing.
   useEffect(() => {
@@ -14244,6 +14422,69 @@ const BulkPreviewOverlay = ({
           />
           Color contamination points
         </label>
+        {/* Sort the preview grid by one of the three event metrics —
+            mirrors the Scatter / Validate gallery sort affordance. The
+            active key sits in a teal chip; click it to flip direction,
+            click another to switch. */}
+        <div
+          className="flex items-center gap-1"
+          style={{
+            fontSize: 11,
+            fontFamily: '"Raleway", sans-serif',
+            color: "var(--ink-muted)",
+          }}
+        >
+          <span
+            style={{
+              fontWeight: 700,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              marginRight: 4,
+            }}
+          >
+            Sort by
+          </span>
+          {[
+            { id: "rate", label: "Rate" },
+            { id: "prob", label: "Probability" },
+            { id: "introduced", label: "Introduced %" },
+          ].map((opt) => {
+            const active = sortBy === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => toggleSort(opt.id)}
+                style={{
+                  padding: "3px 8px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: '"Raleway", sans-serif',
+                  background: active ? "#00a3a6" : "var(--bg-card)",
+                  color: active ? "#fff" : "var(--ink)",
+                  border: `1px solid ${active ? "#00a3a6" : "var(--border-strong)"}`,
+                  borderRadius: 3,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+                title={
+                  active
+                    ? `Click to flip direction (currently ${sortDir})`
+                    : `Sort by ${opt.label}`
+                }
+              >
+                {opt.label}
+                {active && (sortDir === "desc" ? (
+                  <ChevronDown className="w-3 h-3" />
+                ) : (
+                  <ChevronUp className="w-3 h-3" />
+                ))}
+              </button>
+            );
+          })}
+        </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <button
             type="button"
@@ -22347,16 +22588,96 @@ function AppMain({ initial }) {
   const [ab, setAb] = useState(initial?.ab || null);
   const [metadata, setMetadata] = useState(initial?.metadata || null);
   const [plateMap, setPlateMap] = useState(initial?.plateMap || null);
-  const [tab, setTab] = useState(initial?.tab || "overview");
+  // Tab can be deep-linked via the URL fragment: `#learn`, `#help`,
+  // `#scatter`, etc. all land the curator on the matching tab. Lets
+  // README sections cite the in-app interpretation guide directly,
+  // and lets curators bookmark a tab. Recognised aliases are
+  // case-insensitive; `events` and `table` both point at the Events
+  // table. `#runCroCoDeEL` keeps its existing meaning (opens the
+  // Run page overlay) and is handled below — we skip the tab-from-
+  // hash promotion when it's active so the two routes don't clobber
+  // each other.
+  const TAB_HASH_ALIASES = {
+    overview: "overview",
+    samples: "samples",
+    sample: "samples",
+    events: "table",
+    table: "table",
+    scatter: "scatter",
+    scatterplots: "scatter",
+    scatterplot: "scatter",
+    validate: "validate",
+    validation: "validate",
+    network: "network",
+    plate: "plate",
+    "plate-map": "plate",
+    export: "export",
+    datasets: "datasets",
+    learn: "learn",
+    help: "help",
+  };
+  const tabFromHash = (() => {
+    if (typeof window === "undefined") return null;
+    const raw = (window.location.hash || "").replace(/^#/, "");
+    if (!raw) return null;
+    if (raw.toLowerCase().startsWith("runcrocodeel")) return null;
+    return TAB_HASH_ALIASES[raw.toLowerCase()] || null;
+  })();
+  const [tab, setTab] = useState(
+    tabFromHash || initial?.tab || "overview",
+  );
+  // The IMMEDIATELY previous tab — surfaces as the floating "Back to
+  // {tab}" chip on every other tab. Replaces the old samples-only
+  // shortcut so e.g. drilling Scatter → Validate offers "Back to
+  // Scatter" rather than the irrelevant "Back to Samples".
+  const [lastTab, setLastTab] = useState(null);
+  // Wire the browser's back/forward buttons to tab changes. Every
+  // setTab() pushes a history entry (with crocodeelTab in state);
+  // popstate reads the state back and restores the matching tab,
+  // without pushing again (skipPushRef guards the loop). The very
+  // first effect run on mount uses replaceState so the landing tab
+  // gets a state entry without polluting browser history.
+  const skipPushRef = useRef(false);
+  const didInitialReplaceRef = useRef(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!didInitialReplaceRef.current) {
+      didInitialReplaceRef.current = true;
+      const cur = window.history.state || {};
+      window.history.replaceState({ ...cur, crocodeelTab: tab }, "");
+      return;
+    }
+    if (skipPushRef.current) {
+      skipPushRef.current = false;
+      return;
+    }
+    const cur = window.history.state || {};
+    window.history.pushState({ ...cur, crocodeelTab: tab }, "");
+  }, [tab]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = (e) => {
+      const t = e.state?.crocodeelTab;
+      if (t && t !== tab) {
+        skipPushRef.current = true;
+        setTab(t);
+      }
+    };
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, [tab]);
   // Save the page scroll position when leaving the Samples tab and
   // restore it when coming back, so the curator lands back on the
   // sample row they were studying after a Scatter / Events drill-in.
   // Also clear any sample-list scope on entering the Samples tab —
   // the scope was almost certainly set by a drill-in from Samples
-  // itself and shouldn't persist when we come back.
+  // itself and shouldn't persist when we come back. Same effect
+  // records the previous tab into `lastTab` so the back chip knows
+  // where to send the curator.
   const prevTabRef = useRef(tab);
   useEffect(() => {
     const prev = prevTabRef.current;
+    if (prev !== tab) setLastTab(prev);
     if (prev === "samples" && tab !== "samples") {
       samplesUIRef.current.scrollY = window.scrollY;
     } else if (prev !== "samples" && tab === "samples") {
@@ -23241,18 +23562,32 @@ function AppMain({ initial }) {
   const setVerdict = React.useCallback(
     (id, verdict) => {
       let target = null;
-      setRawEvents((prev) =>
-        prev.map((e) => {
+      let oldVerdict = null;
+      let stillHasTPOnTarget = false;
+      setRawEvents((prev) => {
+        const next = prev.map((e) => {
           if (e.id === id) {
             target = e.target;
+            oldVerdict = e.verdict;
             return { ...e, verdict };
           }
           return e;
-        }),
-      );
+        });
+        if (target) {
+          stillHasTPOnTarget = next.some(
+            (e) =>
+              e.id !== id &&
+              e.target === target &&
+              e.verdict === "true_positive",
+          );
+        }
+        return next;
+      });
+      if (!target) return;
       // Auto-sync the target sample's verdict from the new event
-      // verdict — but only if the sample's current verdict is still
-      // pending. Curator decisions are never overwritten.
+      // verdict — but only when the sample's current verdict was
+      // either unset or previously auto-derived by this same path.
+      // Manual sample-level decisions are never overwritten.
       // Mapping: TP -> contaminated, FP -> correct, Uncertain ->
       // uncertain, pending -> no change.
       const map = {
@@ -23261,11 +23596,45 @@ function AppMain({ initial }) {
         uncertain: "uncertain",
       };
       const sampleVerdict = map[verdict];
-      if (target && sampleVerdict) {
+      if (sampleVerdict) {
         setSampleCuration((prev) => {
           const cur = prev[target] || {};
-          if (cur.verdict) return prev;
-          return { ...prev, [target]: { ...cur, verdict: sampleVerdict } };
+          if (cur.verdict && !cur.verdictAuto) return prev;
+          return {
+            ...prev,
+            [target]: { ...cur, verdict: sampleVerdict, verdictAuto: true },
+          };
+        });
+      }
+      // Symmetric unwind: if the event was TP and just stopped being
+      // TP, and the target sample's "contaminated" tag was auto-set
+      // by an earlier TP click, and no other event targeting this
+      // sample is still TP, drop the auto verdict back to pending.
+      // Without this, clicking FP on the last remaining TP would
+      // leave the sample stuck on "contaminated" with nothing
+      // backing it.
+      if (
+        oldVerdict === "true_positive" &&
+        verdict !== "true_positive" &&
+        !stillHasTPOnTarget
+      ) {
+        setSampleCuration((prev) => {
+          const cur = prev[target];
+          if (!cur || cur.verdict !== "contaminated" || !cur.verdictAuto)
+            return prev;
+          const nextEntry = { ...cur };
+          delete nextEntry.verdict;
+          delete nextEntry.verdictAuto;
+          const next = { ...prev };
+          if (
+            nextEntry.action == null &&
+            !nextEntry.notes
+          ) {
+            delete next[target];
+          } else {
+            next[target] = nextEntry;
+          }
+          return next;
         });
       }
     },
@@ -23286,8 +23655,15 @@ function AppMain({ initial }) {
     setSampleCuration((prev) => {
       const cur = prev[sampleId] || {};
       const nextEntry = { ...cur };
-      if (verdict == null || verdict === "pending") delete nextEntry.verdict;
-      else nextEntry.verdict = verdict;
+      if (verdict == null || verdict === "pending") {
+        delete nextEntry.verdict;
+      } else {
+        nextEntry.verdict = verdict;
+      }
+      // Any explicit user action clears the auto-derived flag. Future
+      // event-verdict flips will no longer try to unwind this sample's
+      // verdict — it was set by hand.
+      delete nextEntry.verdictAuto;
       const next = { ...prev };
       if (
         nextEntry.verdict == null &&
@@ -25788,6 +26164,7 @@ function AppMain({ initial }) {
               setSampleVerdict={setSampleVerdict}
               sampleCuration={sampleCuration}
               pageSize={eventsPageSize}
+              focusEventId={selId}
             />
           )}
           {tab === "scatter" && (
@@ -25815,6 +26192,7 @@ function AppMain({ initial }) {
               setExplorePairsForm={setExplorePairsForm}
               colorOnLine={colorOnLine}
               setColorOnLine={setColorOnLine}
+              focusEventId={selId}
             />
           )}
           {tab === "network" && (
@@ -26498,89 +26876,134 @@ function AppMain({ initial }) {
           }}
         />
       )}
-      {lastSamplesDrill && tab !== "samples" && (
-        <div
-          style={{
-            position: "fixed",
-            right: 24,
-            bottom: 24,
-            zIndex: 1400,
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            padding: "0 4px 0 12px",
-            height: 38,
-            borderRadius: 19,
-            background: "#00a3a6",
-            color: "#fff",
-            boxShadow: "0 8px 24px rgba(39,86,98,0.28)",
-            fontFamily: '"Raleway", sans-serif',
-            fontSize: 12,
-            fontWeight: 700,
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => setTab("samples")}
+      {/* Floating "Back to {previous tab}" chip — appears whenever the
+          curator can usefully retreat one step. Also doubles as a
+          drill-into-Samples shortcut: when the previous tab IS Samples
+          and we drilled in from there, we keep showing the drilled
+          sample id next to the label and re-highlight that row on
+          arrival. The browser's back button does the same thing (we
+          push a history entry on every setTab); the chip is the
+          discoverable equivalent. */}
+      {(() => {
+        const TAB_LABELS = {
+          overview: "Overview",
+          samples: "Samples",
+          table: "Events",
+          scatter: "Scatter",
+          validate: "Validate",
+          network: "Network",
+          plate: "Plate",
+          export: "Export",
+          datasets: "Datasets",
+          learn: "Learn",
+          help: "Help",
+        };
+        if (!lastTab || lastTab === tab) return null;
+        const label = TAB_LABELS[lastTab] || lastTab;
+        const sampleHint =
+          lastTab === "samples" && lastSamplesDrill ? lastSamplesDrill : null;
+        return (
+          <div
             style={{
-              display: "inline-flex",
+              position: "fixed",
+              right: 24,
+              bottom: 24,
+              zIndex: 1400,
+              display: "flex",
               alignItems: "center",
-              gap: 6,
-              padding: "0 10px",
-              height: 30,
-              borderRadius: 15,
-              background: "transparent",
+              gap: 4,
+              padding: "0 4px 0 12px",
+              height: 38,
+              borderRadius: 19,
+              background: "#00a3a6",
               color: "#fff",
-              border: "none",
-              cursor: "pointer",
+              boxShadow: "0 8px 24px rgba(39,86,98,0.28)",
               fontFamily: '"Raleway", sans-serif',
               fontSize: 12,
               fontWeight: 700,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
             }}
-            title={`Return to the Samples tab — ${lastSamplesDrill}`}
           >
-            <ArrowRight
-              className="w-3.5 h-3.5"
-              style={{ transform: "rotate(180deg)" }}
-            />
-            Back to Samples
-            <span
-              style={{
-                fontFamily: "ui-monospace, monospace",
-                fontWeight: 600,
-                opacity: 0.9,
-                marginLeft: 2,
-                textTransform: "none",
-                letterSpacing: 0,
+            <button
+              type="button"
+              onClick={() => {
+                // Prefer the browser's own back stack so forward also
+                // works; only fall back to an explicit setTab when
+                // the history is empty (first-load edge case).
+                if (window.history.length > 1) {
+                  window.history.back();
+                } else {
+                  setTab(lastTab);
+                }
               }}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "0 10px",
+                height: 30,
+                borderRadius: 15,
+                background: "transparent",
+                color: "#fff",
+                border: "none",
+                cursor: "pointer",
+                fontFamily: '"Raleway", sans-serif',
+                fontSize: 12,
+                fontWeight: 700,
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+              }}
+              title={
+                sampleHint
+                  ? `Return to ${label} — ${sampleHint}`
+                  : `Return to ${label}`
+              }
             >
-              {lastSamplesDrill}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setLastSamplesDrill(null)}
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: 13,
-              background: "rgba(255,255,255,0.16)",
-              color: "#fff",
-              border: "none",
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Dismiss this shortcut and clear the row highlight"
-            aria-label="Dismiss back-to-Samples chip"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
+              <ArrowRight
+                className="w-3.5 h-3.5"
+                style={{ transform: "rotate(180deg)" }}
+              />
+              Back to {label}
+              {sampleHint && (
+                <span
+                  style={{
+                    fontFamily: "ui-monospace, monospace",
+                    fontWeight: 600,
+                    opacity: 0.9,
+                    marginLeft: 2,
+                    textTransform: "none",
+                    letterSpacing: 0,
+                  }}
+                >
+                  {sampleHint}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLastTab(null);
+                setLastSamplesDrill(null);
+              }}
+              style={{
+                width: 26,
+                height: 26,
+                borderRadius: 13,
+                background: "rgba(255,255,255,0.16)",
+                color: "#fff",
+                border: "none",
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              title="Dismiss this shortcut"
+              aria-label="Dismiss back chip"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        );
+      })()}
     </div>
   );
 }
