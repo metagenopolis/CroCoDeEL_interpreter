@@ -3644,6 +3644,7 @@ const PlateGrid = ({
   plateMap,
   highlightSamples = {},
   onClickWell,
+  onHoverWell, // (r, c, sid|null) — fired on enter (sid maybe null for empty wells) and on leave (null, null, null)
   editable = false,
   labelMode = "sample",
   size = 26,
@@ -3710,24 +3711,35 @@ const PlateGrid = ({
             </div>
             {Array.from({ length: cols }, (_, c) => {
               const sid = grid[`${r}-${c}`];
-              const highlight = sid ? highlightSamples[sid] : null;
+              // highlightSamples value can be either a hex string (single
+              // role) or an object {bg, border} so a dual-role well can
+              // render a split background.
+              const hl = sid ? highlightSamples[sid] : null;
+              const hlBg = typeof hl === "string" ? hl : hl?.bg;
+              const hlBorder = typeof hl === "string" ? hl : hl?.border;
               const filled = !!sid;
               const isFocused = focus && focus.row === r && focus.col === c;
               return (
                 <button
                   key={`w-${r}-${c}`}
                   onClick={() => onClickWell && onClickWell(r, c, sid)}
+                  onMouseEnter={
+                    onHoverWell ? () => onHoverWell(r, c, sid) : undefined
+                  }
+                  onMouseLeave={
+                    onHoverWell ? () => onHoverWell(null, null, null) : undefined
+                  }
                   className="rounded-sm flex items-center justify-center"
                   style={{
                     width: size,
                     height: size,
-                    background: highlight || (filled ? "var(--bg-soft)" : "var(--bg-card)"),
-                    border: highlight
-                      ? `1.5px solid ${highlight}`
+                    background: hlBg || (filled ? "var(--bg-soft)" : "var(--bg-card)"),
+                    border: hlBorder
+                      ? `1.5px solid ${hlBorder}`
                       : filled
                         ? "1px solid #c4c0b3"
                         : "1px dashed #e6e8e8",
-                    color: highlight ? "#fff" : "var(--ink)",
+                    color: hl ? "#fff" : "var(--ink)",
                     cursor: editable || onClickWell ? "pointer" : "default",
                     fontSize: size >= 44 ? 9 : size >= 32 ? 8 : 7,
                     fontFamily: "system-ui, sans-serif",
@@ -3818,8 +3830,11 @@ const PlateArrowsOverlay = ({ arrows, rows, cols, size }) => {
     const cy = my + py * curvature;
     // Arrowhead size scales with stroke width so thin arrows get small
     // heads and thick arrows get larger ones — visually balanced.
+    // Tuned for the hollow / outlined head: a heavy fill needs less
+    // surface area than an outline to read, so the multiplier and cap
+    // are tighter than they used to be.
     const w = a.width || 1.5;
-    const headScale = Math.max(2.5, Math.min(6, w * 1.6));
+    const headScale = Math.max(2, Math.min(4, w * 1.1));
     return { a, sx, sy, ex, ey, cx, cy, w, headScale };
   });
 
@@ -3847,7 +3862,18 @@ const PlateArrowsOverlay = ({ arrows, rows, cols, size }) => {
             markerHeight={headScale}
             orient="auto-start-reverse"
           >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill={a.color} />
+            {/* Hollow arrowhead — closed triangle filled with the
+                page background so the surface underneath shows
+                through where the head doesn't physically sit on a
+                well. The coloured outline still tells the curator
+                the arrow's verdict / category. */}
+            <path
+              d="M 0 0 L 10 5 L 0 10 z"
+              fill="var(--bg-card)"
+              stroke={a.color}
+              strokeWidth="1.4"
+              strokeLinejoin="miter"
+            />
           </marker>
         ))}
       </defs>
@@ -13593,7 +13619,7 @@ const PlateThumbnail = ({
 };
 
 /* ---------- PLATE TAB ---------- */
-const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, focusPlate }) => {
+const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, focusPlate, focusEventId, onScopeToSamples }) => {
   const [mode, setMode] = useState(plateMap ? "overview" : "edit");
   const [currentPlate, setCurrentPlate] = useState(null);
   useEffect(() => {
@@ -13603,6 +13629,22 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
     }
   }, [focusPlate]);
   const [hoverEvent, setHoverEvent] = useState(null);
+  const [hoverWell, setHoverWell] = useState(null); // sample id under the cursor (active-plate well)
+
+  // When the curator jumps in from Validate (or anywhere passing an
+  // event id), pre-set hoverEvent so the partner wells light up on
+  // arrival without requiring an extra hover. The highlight is "soft":
+  // mousing over the event list still replaces it, and mouseleave
+  // clears it — same behaviour as a real hover.
+  useEffect(() => {
+    if (focusEventId == null || !plateMap) return;
+    const e = events.find((x) => x.id === focusEventId);
+    if (!e) return;
+    const a = plateMap.bySample[e.source];
+    const b = plateMap.bySample[e.target];
+    if (!a || !b) return;
+    setHoverEvent({ ...e, a, b });
+  }, [focusEventId, events, plateMap]);
   const [plateFilter, setPlateFilter] = useState("all"); // all | withEvents
   const [eventFilter, setEventFilter] = useState("all"); // all | thisPlate | interPlate | adjacent
   const [showArrows, setShowArrows] = useState(true);
@@ -13708,14 +13750,52 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
       });
   }, [events, plateMap, activePlate, eventFilter, hideSameSubject, metadata]);
 
+  // Events touching the hovered well — source or target side. Used to
+  // light up partner wells and dim non-matching arrows. Restricted to the
+  // currently filtered list so the colouring follows the user's filter.
+  const hoverWellEvents = useMemo(() => {
+    if (!hoverWell) return null;
+    return filteredEvents.filter(
+      (e) => e.source === hoverWell || e.target === hoverWell,
+    );
+  }, [hoverWell, filteredEvents]);
+
   const highlightSamples = useMemo(() => {
+    // Dynamic-only: source / target colours appear when the curator
+    // hovers an event in the right panel, OR hovers a well on the plate.
+    // Hovering nothing → no highlights, so the plate reads cleanly and
+    // the colours never compete with the curator's reading order.
     const h = {};
     if (hoverEvent) {
-      h[hoverEvent.source] = "#00a3a6";
-      h[hoverEvent.target] = "#ed6e6c";
+      if (hoverEvent.source) h[hoverEvent.source] = "#00a3a6";
+      if (hoverEvent.target) h[hoverEvent.target] = "#ed6e6c";
+    } else if (hoverWell && hoverWellEvents) {
+      // For every event touching the hovered well, paint the partner
+      // with its role colour (source = cyan, target = red).
+      let isSource = false;
+      let isTarget = false;
+      hoverWellEvents.forEach((e) => {
+        if (e.source === hoverWell) {
+          isSource = true;
+          if (e.target) h[e.target] = "#ed6e6c";
+        } else if (e.target === hoverWell) {
+          isTarget = true;
+          if (e.source) h[e.source] = "#00a3a6";
+        }
+      });
+      // Paint the hovered well by its own role. Dual role → split fill
+      // (top-left source / bottom-right target) so the well literally
+      // reads as half source, half target.
+      if (isSource && isTarget) {
+        h[hoverWell] = {
+          bg: "linear-gradient(135deg, #00a3a6 0 50%, #ed6e6c 50% 100%)",
+          border: "var(--ink)",
+        };
+      } else if (isSource) h[hoverWell] = "#00a3a6";
+      else if (isTarget) h[hoverWell] = "#ed6e6c";
     }
     return h;
-  }, [hoverEvent]);
+  }, [hoverEvent, hoverWell, hoverWellEvents]);
 
   // For thumbnails: which samples belong to the hovered event's plate
   const selectedEventWells = useMemo(() => {
@@ -13732,6 +13812,13 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
   const plateArrows = useMemo(() => {
     if (!plateMap || !showArrows) return null;
     const arrows = [];
+    // Well-hover selects every event touching that sample; event-hover
+    // selects the single event. Both modes dim everything else.
+    const focusedIds = hoverEvent
+      ? new Set([hoverEvent.id])
+      : hoverWellEvents
+        ? new Set(hoverWellEvents.map((e) => e.id))
+        : null;
     filteredEvents.forEach((e) => {
       // Only draw arrows for events fully within the active plate
       if (!e.a || !e.b) return;
@@ -13744,8 +13831,8 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
       if (e.cascade) color = "#423089"; // violet
       else if (d <= 1) color = "#ed6e6c"; // red adjacent
       else if (d === 2) color = "#e3a100"; // orange close
-      const isHovered = hoverEvent && hoverEvent.id === e.id;
-      const anyHover = !!hoverEvent;
+      const isHovered = focusedIds ? focusedIds.has(e.id) : false;
+      const anyHover = !!focusedIds;
 
       // Width scales with contamination rate (log-scaled, same mapping as
       // the Network tab for consistency). 0.001% → ~1.2px, 100% → ~4.5px.
@@ -13772,7 +13859,7 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
     // Render hovered arrow last so it draws on top
     arrows.sort((a, b) => (a.opacity < b.opacity ? -1 : 1));
     return arrows;
-  }, [filteredEvents, plateMap, showArrows, activePlate, hoverEvent]);
+  }, [filteredEvents, plateMap, showArrows, activePlate, hoverEvent, hoverWellEvents]);
 
   const visiblePlates = useMemo(() => {
     if (plateFilter === "withEvents") {
@@ -14089,6 +14176,15 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
                 labelMode="sample"
                 size={plateMap.format.rows > 8 ? 24 : 44}
                 arrows={plateArrows}
+                onClickWell={(r, c, sid) => {
+                  // Clicking a well that hosts a sample drills into
+                  // the Samples tab scoped to that sample. Empty wells
+                  // are no-op.
+                  if (sid && onScopeToSamples) {
+                    onScopeToSamples([sid], "samples");
+                  }
+                }}
+                onHoverWell={(r, c, sid) => setHoverWell(sid || null)}
               />
             )}
 
@@ -14109,6 +14205,12 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
                   style={{ background: "#ed6e6c" }}
                 />
                 target
+              </span>
+              <span
+                className="text-[10px] italic"
+                style={{ color: "var(--ink-muted)", marginLeft: -4 }}
+              >
+                (hover a well or an event)
               </span>
               {showArrows && (
                 <>
@@ -16159,21 +16261,16 @@ const ValidateTab = ({
     [events],
   );
 
-  /* ---- Navigation helpers (pending-only) ----
-       After picking a new event, scroll the main page back to the
-       top so the curator sees the newly-loaded scatter without
-       having to manually scroll up from wherever they were
-       (criteria card, sample-context panel, notes textarea…). */
-  const scrollToTop = () => {
-    if (typeof window !== "undefined") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
-  };
+  /* ---- Navigation helpers ----
+       The page itself doesn't scroll on navigation: only the event
+       queue's elevator follows the selection (see EventQueue's
+       scrollIntoView). Curators land on a new event with the same
+       scroll position they had, which is what they expect when
+       comparing details across events. */
   const goPrevPending = () => {
     for (let i = idx - 1; i >= 0; i--) {
       if (queue[i].verdict === "pending") {
         onSelect(queue[i].id);
-        scrollToTop();
         return;
       }
     }
@@ -16182,23 +16279,15 @@ const ValidateTab = ({
     for (let i = idx + 1; i < queue.length; i++) {
       if (queue[i].verdict === "pending") {
         onSelect(queue[i].id);
-        scrollToTop();
         return;
       }
     }
   };
-  /* ---- Navigation helpers (any verdict) ---- */
   const goPrev = () => {
-    if (idx > 0) {
-      onSelect(queue[idx - 1].id);
-      scrollToTop();
-    }
+    if (idx > 0) onSelect(queue[idx - 1].id);
   };
   const goNext = () => {
-    if (idx >= 0 && idx < queue.length - 1) {
-      onSelect(queue[idx + 1].id);
-      scrollToTop();
-    }
+    if (idx >= 0 && idx < queue.length - 1) onSelect(queue[idx + 1].id);
   };
   // Walk the queue, not the full events list — the prev/next-pending
   // buttons navigate the visible queue and their disabled state must
@@ -17169,7 +17258,10 @@ const ValidateTab = ({
                     <div
                       onClick={() =>
                         onOpenPlate &&
-                        onOpenPlate(plateMap.bySample[sel.source]?.plate)
+                        onOpenPlate(
+                          plateMap.bySample[sel.source]?.plate,
+                          sel.id,
+                        )
                       }
                       className="rounded-sm transition-colors flex flex-col items-center"
                       style={{
@@ -23528,6 +23620,10 @@ function AppMain({ initial }) {
     initial?.selId !== undefined ? initial.selId : null,
   );
   const [focusPlate, setFocusPlate] = useState(null);
+  // Event id to pre-highlight on the Plate tab after a "open in Plate"
+  // jump from Validate or Samples. Cleared whenever the user navigates
+  // away — see the Plate jump callbacks below.
+  const [focusEventId, setFocusEventId] = useState(null);
   const [bulkApplyOpen, setBulkApplyOpen] = useState(false);
   // Default filter shape — mirrored by the useState lazy init below.
   // Exposed so the dataset / demo / file-load paths can reset cleanly
@@ -27227,7 +27323,9 @@ function AppMain({ initial }) {
               samples={allSamples}
               metadata={metadata}
               focusPlate={focusPlate}
+              focusEventId={focusEventId}
               onPick={pickEventToValidate}
+              onScopeToSamples={scopeToSamples}
             />
           )}
           {tab === "validate" && (
@@ -27256,8 +27354,9 @@ function AppMain({ initial }) {
               plateMap={plateMap}
               bulkResetAllVerdicts={bulkResetAllVerdicts}
               bulkApplyToEvents={bulkApplyToEvents}
-              onOpenPlate={(plateId) => {
+              onOpenPlate={(plateId, eventId) => {
                 setFocusPlate(plateId || null);
+                setFocusEventId(eventId != null ? eventId : null);
                 setTab("plate");
               }}
               bulkApplyOpen={bulkApplyOpen}
