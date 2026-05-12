@@ -8907,6 +8907,7 @@ const ScatterTab = ({
   sampleCuration,
   setSampleVerdict,
   pageSize,
+  cardsPerRow,
   explorePairsForm,
   setExplorePairsForm,
   colorOnLine,
@@ -9252,7 +9253,7 @@ const ScatterTab = ({
       <div
         className="grid gap-3"
         style={{
-          gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+          gridTemplateColumns: `repeat(${Math.min(8, Math.max(2, cardsPerRow || 5))}, minmax(0, 1fr))`,
         }}
       >
         {visible.map((e) => (
@@ -17862,8 +17863,8 @@ const PatternMiniPlot = ({
   height = 170,
   width = 200,
 }) => {
-  // Asymmetric padding: more room on the left (rotated "target" label +
-  // tick labels) and bottom (tick labels + "source" label).
+  // Asymmetric padding: more room on the left (rotated "source" label +
+  // tick labels) and bottom (tick labels + "target" label).
   const padL = 30;
   const padR = 8;
   const padT = 8;
@@ -18027,7 +18028,7 @@ const PatternMiniPlot = ({
         fill="#5a5550"
         style={{ fontFamily: "ui-monospace, monospace" }}
       >
-        source
+        target
       </text>
       <text
         x={9}
@@ -18038,7 +18039,7 @@ const PatternMiniPlot = ({
         transform={`rotate(-90, 9, ${padT + h / 2})`}
         style={{ fontFamily: "ui-monospace, monospace" }}
       >
-        target
+        source
       </text>
     </svg>
   );
@@ -18952,13 +18953,18 @@ const LearnTab = () => {
         }}
       >
         <strong>How to read these plots.</strong> Each point is a microbial
-        species. The X axis is its abundance (log scale) in the alleged
-        source sample, the Y axis is its abundance in the contaminated
-        (target) sample. The diagonal is y = x — points sitting on it
-        have equal abundance in both samples, which is the signature of
-        a fraction of the source being mixed into the target. Points{" "}
-        <em>above</em> the diagonal have higher abundance in the target,
-        which a pure contamination cannot explain.
+        species. The Y axis is its abundance (log scale) in the alleged
+        source sample, the X axis is its abundance in the contaminated
+        (target) sample. The grey dashed diagonal <code>y = x</code> is just
+        a reference — points sitting on it simply happen to have equal
+        abundance in both samples, which on its own says nothing about
+        contamination. The real signature is the salmon dashed{" "}
+        <em>contamination line</em>, parallel to <code>y = x</code> but
+        offset by <code>log10(rate)</code>: when a fraction of the source
+        has leaked into the target, the carried-over species line up
+        there (target = rate × source). The more species land tightly on
+        that line over a wide abundance range, the more confident the
+        call.
       </div>
 
       {/* ============================== */}
@@ -23572,13 +23578,35 @@ function AppMain({ initial }) {
   const [samplesPageSize, setSamplesPageSize] = useState(() =>
     readPageSize("samples", 100),
   );
+  // Scatter gallery layout: number of cards per row, 2–8. Persisted
+  // alongside the page-size prefs so the curator's chosen density
+  // sticks across sessions.
+  const [galleryCardsPerRow, setGalleryCardsPerRow] = useState(() => {
+    if (typeof window === "undefined") return 5;
+    const v = parseInt(
+      window.localStorage.getItem("crocodeel-cards-per-row-gallery") || "",
+      10,
+    );
+    if (!Number.isFinite(v)) return 5;
+    return Math.min(8, Math.max(2, v));
+  });
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("crocodeel-page-size-events", String(eventsPageSize));
     window.localStorage.setItem("crocodeel-page-size-gallery", String(galleryPageSize));
     window.localStorage.setItem("crocodeel-page-size-datasets", String(datasetsPageSize));
     window.localStorage.setItem("crocodeel-page-size-samples", String(samplesPageSize));
-  }, [eventsPageSize, galleryPageSize, datasetsPageSize, samplesPageSize]);
+    window.localStorage.setItem(
+      "crocodeel-cards-per-row-gallery",
+      String(galleryCardsPerRow),
+    );
+  }, [
+    eventsPageSize,
+    galleryPageSize,
+    datasetsPageSize,
+    samplesPageSize,
+    galleryCardsPerRow,
+  ]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("crocodeel-theme", theme);
@@ -27315,6 +27343,7 @@ function AppMain({ initial }) {
               sampleCuration={sampleCuration}
               setSampleVerdict={setSampleVerdict}
               pageSize={galleryPageSize}
+              cardsPerRow={galleryCardsPerRow}
               explorePairsForm={explorePairsForm}
               setExplorePairsForm={setExplorePairsForm}
               colorOnLine={colorOnLine}
@@ -27968,6 +27997,61 @@ function AppMain({ initial }) {
                   </label>
                 ))}
               </div>
+
+              <div
+                className="text-[10px] tracking-[0.15em] uppercase mt-5 mb-2"
+                style={{
+                  color: "#ed6e6c",
+                  fontWeight: 700,
+                  fontFamily: '"Raleway", sans-serif',
+                }}
+              >
+                Layout
+              </div>
+              <label
+                className="flex items-center gap-3 px-3 py-2 rounded-sm"
+                style={{
+                  background: "var(--bg-softer)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <span
+                  className="text-[12px]"
+                  style={{
+                    color: "var(--ink)",
+                    fontWeight: 600,
+                    fontFamily: '"Raleway", sans-serif',
+                    flex: 1,
+                  }}
+                >
+                  Scatterplots per row
+                </span>
+                <input
+                  type="range"
+                  min={2}
+                  max={8}
+                  step={1}
+                  value={galleryCardsPerRow}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (Number.isFinite(v))
+                      setGalleryCardsPerRow(Math.min(8, Math.max(2, v)));
+                  }}
+                  style={{ width: 140, accentColor: "#00a3a6" }}
+                />
+                <span
+                  className="text-[12px] tabular"
+                  style={{
+                    width: 28,
+                    textAlign: "right",
+                    color: "var(--ink)",
+                    fontWeight: 700,
+                    fontFamily: '"Raleway", sans-serif',
+                  }}
+                >
+                  {galleryCardsPerRow}
+                </span>
+              </label>
             </div>
             <div
               className="flex justify-end px-5 py-3"
