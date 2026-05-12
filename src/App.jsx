@@ -1461,7 +1461,7 @@ const Stat = ({ label, value, tone = "neutral" }) => {
     contaminated: { background: "#ed6e6c", color: "white" },
     correct: { background: "#00a3a6", color: "white" },
     uncertain: { background: "#d97a3c", color: "white" },
-    pending: { background: "#6b7a82", color: "white" },
+    pending: { background: "#a0a7ad", color: "var(--ink)" },
     keep: { background: "#e0b13a", color: "white" },
     suppress: { background: "#ed6e6c", color: "white" },
     cascade: { background: "#423089", color: "white" },
@@ -7549,7 +7549,7 @@ const GalleryCard = React.memo(function GalleryCard({
                 { id: "true_positive", color: EVAL_TP_COLOR, label: "TP" },
                 { id: "false_positive", color: EVAL_FP_COLOR, label: "FP" },
                 { id: "uncertain", color: "#d97a3c", label: "Uncertain" },
-                { id: "pending", color: "#6b7a82", label: "Pending" },
+                { id: "pending", color: "#a0a7ad", label: "Pending" },
               ].map((opt) => {
                 const active = event.verdict === opt.id;
                 return (
@@ -9418,7 +9418,7 @@ const SAMPLE_VERDICT_TONE = {
   contaminated: { bg: "#ed6e6c", label: "Contaminated" },
   correct: { bg: "#00a3a6", label: "Not contaminated" },
   uncertain: { bg: "#d97a3c", label: "Uncertain" },
-  pending: { bg: "#6b7a82", label: "Pending" },
+  pending: { bg: "#a0a7ad", label: "Pending" },
 };
 
 /** Compact metadata pill block shown in the SamplesTab "Context"
@@ -10048,7 +10048,7 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
         { k: "tp", color: EVAL_TP_COLOR, title: "True positive" },
         { k: "fp", color: EVAL_FP_COLOR, title: "False positive" },
         { k: "uncertain", color: "#d97a3c", title: "Uncertain" },
-        { k: "pending", color: "#6b7a82", title: "Pending" },
+        { k: "pending", color: "#a0a7ad", title: "Pending" },
       ].map((c) =>
         breakdown[c.k] > 0 ? (
           <span
@@ -22017,6 +22017,58 @@ const ExportTab = ({
         files bar.
       </SectionTitle>
 
+      {/* Composition of the upcoming export — sits above the filter bar
+          so the curator sees the headline numbers first, then tweaks the
+          filter to shape what gets included. */}
+      <div
+        className={`mt-6 p-4 rounded-sm grid grid-cols-2 md:grid-cols-3 gap-4 ${
+          actionEnabled ? "lg:grid-cols-7" : "lg:grid-cols-5"
+        }`}
+        style={{
+          background: "var(--bg-soft)",
+          border: "1px solid var(--border)",
+        }}
+      >
+        <Stat
+          label={isFiltered ? `In export (of ${totalLoaded})` : "Total"}
+          value={counts.total}
+        />
+        <Stat
+          label="True positives"
+          value={counts.tp}
+          tone={counts.tp > 0 ? "tp" : "neutral"}
+        />
+        <Stat
+          label="False positives"
+          value={counts.fp}
+          tone={counts.fp > 0 ? "fp" : "neutral"}
+        />
+        <Stat
+          label="Uncertain"
+          value={counts.uncertain}
+          tone={counts.uncertain > 0 ? "uncertain" : "neutral"}
+        />
+        <Stat
+          label="Pending"
+          value={counts.pending}
+          tone={counts.pending > 0 ? "pending" : "neutral"}
+        />
+        {actionEnabled && (
+          <Stat
+            label="To suppress"
+            value={counts.suppress}
+            tone={counts.suppress > 0 ? "suppress" : "neutral"}
+          />
+        )}
+        {actionEnabled && (
+          <Stat
+            label="To keep"
+            value={counts.keep}
+            tone={counts.keep > 0 ? "keep" : "neutral"}
+          />
+        )}
+      </div>
+
       {filter && setFilter && (
         <div className="mt-6">
           <EventFilterBar
@@ -22028,7 +22080,6 @@ const ExportTab = ({
             events={events}
             actionEnabled={actionEnabled}
             hasAb={hasAb}
-            onBulkApply={onBulkApply}
           >
             <div className="ml-auto flex items-center gap-2.5">
               <VerdictDistribution events={filteredEvents} />
@@ -22096,52 +22147,7 @@ const ExportTab = ({
         )}
       </div>
 
-      <div
-        className={`mt-10 pt-6 grid grid-cols-2 md:grid-cols-3 gap-4 ${
-          actionEnabled ? "lg:grid-cols-7" : "lg:grid-cols-5"
-        }`}
-        style={{ borderTop: "1px solid var(--border)" }}
-      >
-        <Stat
-          label={isFiltered ? `In export (of ${totalLoaded})` : "Total"}
-          value={counts.total}
-        />
-        <Stat
-          label="True positives"
-          value={counts.tp}
-          tone={counts.tp > 0 ? "tp" : "neutral"}
-        />
-        <Stat
-          label="False positives"
-          value={counts.fp}
-          tone={counts.fp > 0 ? "fp" : "neutral"}
-        />
-        <Stat
-          label="Uncertain"
-          value={counts.uncertain}
-          tone={counts.uncertain > 0 ? "uncertain" : "neutral"}
-        />
-        <Stat
-          label="Pending"
-          value={counts.pending}
-          tone={counts.pending > 0 ? "pending" : "neutral"}
-        />
-        {actionEnabled && (
-          <Stat
-            label="To suppress"
-            value={counts.suppress}
-            tone={counts.suppress > 0 ? "suppress" : "neutral"}
-          />
-        )}
-        {actionEnabled && (
-          <Stat
-            label="To keep"
-            value={counts.keep}
-            tone={counts.keep > 0 ? "keep" : "neutral"}
-          />
-        )}
-      </div>
-      <p className="text-[12px] mt-6" style={{ color: "var(--ink-muted)" }}>
+      <p className="text-[12px] mt-10" style={{ color: "var(--ink-muted)" }}>
         Need to retrieve the files you opened? Each file card at the top of
         the page has a small Download button when the file is loaded.
       </p>
