@@ -18984,7 +18984,7 @@ const LearnTab = () => {
         >
           <PatternCard
             caseLabel="B"
-            title="Faint diagonal, low rate"
+            title="Faint contamination line, low rate"
             verdict="TP"
             rate="1.18%"
             probability="1.00"
@@ -19012,7 +19012,7 @@ const LearnTab = () => {
 
           <PatternCard
             caseLabel="C"
-            title="Textbook diagonal"
+            title="Textbook contamination line"
             verdict="TP"
             rate="7.14%"
             probability="0.95"
@@ -19020,13 +19020,13 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_TP_CLEAR} rate={0.0714} lineSide="above" />}
             description={
               <>
-                The case you can't miss. A dense, narrow cluster aligned on
-                the diagonal across most of the abundance range. This is
-                the prototype the random forest was trained on.
+                The case you can't miss: a dense, narrow cluster aligned
+                on the contamination line across most of the abundance
+                range.
               </>
             }
             signals={[
-              "Tight, dense diagonal across many species",
+              "Tight, dense cluster sitting on a clean contamination line",
               "Cluster spans 2-3 orders of magnitude on each axis",
               "Probability close to 1",
             ]}
@@ -19042,18 +19042,17 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_TP_HEAVY} rate={0.3207} lineSide="above" />}
             description={
               <>
-                A third of the target sample is the source. The
-                contamination line runs the full length of the abundance
-                range, sitting just half a decade above <code>y = x</code>.
-                The target's own biology — which would normally appear as
-                points below the line (high target, low source) — is
-                barely visible: most target reads come from carried-over
-                species, drowning out the native population.
+                In the example shown, about a third of the target reads
+                come from the source. For such heavy contamination, the
+                contamination line sits close to <code>y = x</code> and
+                covers the full abundance range. The target's own
+                biology is drowned out: very few species remain visible
+                outside the carried-over set.
               </>
             }
             signals={[
-              "Contamination line extends from low to high abundance",
-              "Few or no points below the line (target-native species drowned out)",
+              "Contamination line spans the full abundance range and sits close to y = x",
+              "Very few species visible outside the carried-over set (native biology drowned out)",
               "Very high rate — strong evidence the target sample is heavily compromised",
             ]}
             watchOut="With such a high rate, downstream analyses on the target sample are likely unreliable. Consider excluding it entirely rather than just flagging."
@@ -19197,14 +19196,14 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_FP_DIFFUSE_BIO} rate={0.0113} lineSide="above" />}
             description={
               <>
-                Points spread across the plot area without forming a clear
-                diagonal. The probability reflects the model's hesitation —
-                anything around 0.5 should be treated as a coin flip and
-                inspected manually.
+                Points spread across the plot area without forming a
+                clear contamination line. The probability reflects the
+                model's hesitation — anything around 0.5 should be
+                treated as a coin flip and inspected manually.
               </>
             }
             signals={[
-              "No clear diagonal cluster",
+              "No clear contamination line",
               "Probability between 0.5 and 0.7",
               "Source and target often share a biome or subject_id",
             ]}
@@ -19233,14 +19232,14 @@ const LearnTab = () => {
                 (8 weeks). CroCoDeEL fits a contamination at 69 % rate
                 with probability 0.97, but these are two timepoints from
                 the same person — Spearman <em>ρ</em> = 0.90 between the
-                two profiles confirms that the dense diagonal is the
-                subject's own microbiota persisting between visits, not
-                a transfer event. Mark as FP.
+                two profiles confirms that the dense linear cloud is
+                the subject's own microbiota persisting between visits,
+                not a transfer event. Mark as FP.
               </>
             }
             signals={[
               "Source / target share the same subject_id (longitudinal sampling)",
-              "Apparent diagonal trend, but visibly noisy / wide",
+              "Apparent linear trend, but visibly noisy / wide",
               "High Spearman ρ between the two profiles (≥ 0.7) AND same subject_id — joint criterion 06 (biological similarity) fails",
               "Elevated introduced %",
             ]}
@@ -19256,7 +19255,8 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_FP_DIFFUSE_BIO_3} rate={0.0064} lineSide="above" />}
             description={
               <>
-                Few points overall and no convincing diagonal. The model
+                Few points overall and no convincing contamination
+                line. The model
                 is moderately confident but the scatter doesn't back it
                 up. Often happens with low-biomass samples on both sides.
                 Borderline — depending on stringency, a curator may tag
