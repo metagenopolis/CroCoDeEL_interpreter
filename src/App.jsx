@@ -24340,10 +24340,28 @@ function AppMain({ initial }) {
         setSampleCuration((prev) => {
           const cur = prev[target] || {};
           if (cur.verdict && !cur.verdictAuto) return prev;
-          return {
-            ...prev,
-            [target]: { ...cur, verdict: sampleVerdict, verdictAuto: true },
+          const nextEntry = {
+            ...cur,
+            verdict: sampleVerdict,
+            verdictAuto: true,
           };
+          // Auto-pair Contaminated → Suppress when no explicit action
+          // exists. Mirror the manual setSampleVerdict path so the
+          // pairing fires whether the curator marks the sample by
+          // hand or arrives at it via an event TP. Conversely, when
+          // the auto-sync moves the sample away from contaminated,
+          // drop the auto-suppress so a stale action doesn't linger.
+          if (sampleVerdict === "contaminated" && nextEntry.action == null) {
+            nextEntry.action = "suppress";
+            nextEntry.actionAuto = true;
+          } else if (
+            sampleVerdict !== "contaminated" &&
+            nextEntry.actionAuto
+          ) {
+            delete nextEntry.action;
+            delete nextEntry.actionAuto;
+          }
+          return { ...prev, [target]: nextEntry };
         });
       }
       // Symmetric unwind: if the event was TP and just stopped being
@@ -24365,6 +24383,13 @@ function AppMain({ initial }) {
           const nextEntry = { ...cur };
           delete nextEntry.verdict;
           delete nextEntry.verdictAuto;
+          // Drop the auto-suppress that the contaminated tag pulled in
+          // — leaving the explicit action alone if the user picked it
+          // themselves.
+          if (nextEntry.actionAuto) {
+            delete nextEntry.action;
+            delete nextEntry.actionAuto;
+          }
           const next = { ...prev };
           if (
             nextEntry.action == null &&
@@ -24404,6 +24429,17 @@ function AppMain({ initial }) {
       // event-verdict flips will no longer try to unwind this sample's
       // verdict — it was set by hand.
       delete nextEntry.verdictAuto;
+      // Auto-pair Contaminated → Suppress when the user hasn't picked
+      // an action yet. Tag with actionAuto so we can roll it back if
+      // the verdict later moves away from contaminated. Mirrors the
+      // verdictAuto convention used elsewhere.
+      if (verdict === "contaminated" && nextEntry.action == null) {
+        nextEntry.action = "suppress";
+        nextEntry.actionAuto = true;
+      } else if (verdict !== "contaminated" && nextEntry.actionAuto) {
+        delete nextEntry.action;
+        delete nextEntry.actionAuto;
+      }
       const next = { ...prev };
       if (
         nextEntry.verdict == null &&
@@ -24424,6 +24460,8 @@ function AppMain({ initial }) {
       const nextEntry = { ...cur };
       if (action == null) delete nextEntry.action;
       else nextEntry.action = action;
+      // Explicit user action — never auto-unwind it later.
+      delete nextEntry.actionAuto;
       const next = { ...prev };
       if (
         nextEntry.verdict == null &&
