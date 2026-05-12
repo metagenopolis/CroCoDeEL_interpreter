@@ -19160,7 +19160,10 @@ const LearnTab = () => {
             won't appear in your events table; knowing the patterns
             helps you decide whether to widen the search (lower the
             CroCoDeEL probability cutoff) or accept the residual blind
-            spots (should be very rare).
+            spots (should be very rare). You can also probe specific
+            suspect pairs in the Scatter tab's <strong>Explore</strong>{" "}
+            mode — feed any source / target combination and inspect
+            the scatter yourself, even if CroCoDeEL never flagged it.
           </li>
         </ul>
         <div
