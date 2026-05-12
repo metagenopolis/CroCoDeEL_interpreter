@@ -18983,34 +18983,6 @@ const LearnTab = () => {
           style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}
         >
           <PatternCard
-            caseLabel="A"
-            title="Bidirectional contamination — one direction reported"
-            verdict="TP"
-            rate="0.49%"
-            probability="1.00"
-            introduced="14.8%"
-            plot={<PatternMiniPlot points={SHAPE_TP_LOW_RATE} rate={0.0049} lineSide="above" />}
-            description={
-              <>
-                The two samples contaminated each other. CroCoDeEL
-                reports this as two separate events, one per direction,
-                each with its own scatter and its own contamination
-                line. The mini-plot here reproduces the paper's combined
-                view (both directions on a single chart, hence the two
-                clusters); in the app you'd see one cluster and one
-                line per event.
-              </>
-            }
-            signals={[
-              "A clear, narrow linear cluster parallel to y = x",
-              "A reciprocal event exists in the events table for the opposite direction",
-              "RF probability ≈ 1 even at low rates",
-              "Both events should generally receive the same evaluation",
-            ]}
-            watchOut="When you validate one direction, search the events table for the reciprocal pair (source and target swapped). Don't classify them inconsistently."
-          />
-
-          <PatternCard
             caseLabel="B"
             title="Faint diagonal, low rate"
             verdict="TP"
@@ -19085,6 +19057,34 @@ const LearnTab = () => {
               "Very high rate — strong evidence the target sample is heavily compromised",
             ]}
             watchOut="With such a high rate, downstream analyses on the target sample are likely unreliable. Consider excluding it entirely rather than just flagging."
+          />
+
+          <PatternCard
+            caseLabel="A"
+            title="Bidirectional contamination — one direction reported"
+            verdict="TP"
+            rate="0.49%"
+            probability="1.00"
+            introduced="14.8%"
+            plot={<PatternMiniPlot points={SHAPE_TP_LOW_RATE} rate={0.0049} lineSide="above" />}
+            description={
+              <>
+                The two samples contaminated each other. CroCoDeEL
+                reports this as two separate events, one per direction,
+                each with its own scatter and its own contamination
+                line. The mini-plot here reproduces the paper's combined
+                view (both directions on a single chart, hence the two
+                clusters); in the app you'd see one cluster and one
+                line per event.
+              </>
+            }
+            signals={[
+              "A clear, narrow linear cluster parallel to y = x",
+              "A reciprocal event exists in the events table for the opposite direction",
+              "RF probability ≈ 1 even at low rates",
+              "Both events should generally receive the same evaluation",
+            ]}
+            watchOut="When you validate one direction, search the events table for the reciprocal pair (source and target swapped). Don't classify them inconsistently."
           />
         </div>
       </div>
