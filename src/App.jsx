@@ -18993,10 +18993,14 @@ const LearnTab = () => {
             description={
               <>
                 The two samples contaminated each other. CroCoDeEL reports
-                this as two separate events, one per direction. Each
-                event's scatterplot shows a single line — here the line
-                above y = x corresponds to the source-on-Y direction.
-                The reciprocal event would show the symmetric line below.
+                this as two separate events, one per direction. This
+                mini-plot reproduces the paper's combined view of both
+                directions on the same chart, which is why you can see two
+                diagonal clusters. In CroCoDeEL's per-event scatter (source
+                always on Y), each event shows a single contamination line
+                above <code>y = x</code>; the reciprocal event is its own
+                scatter, also with a line above <code>y = x</code>, just
+                with the source / target roles swapped.
               </>
             }
             signals={[
@@ -19019,10 +19023,12 @@ const LearnTab = () => {
             description={
               <>
                 A small fraction of source DNA reached the target. Most
-                species are off-line (real biological signal of the target),
-                but a thin diagonal cluster sits parallel to y = x with very
-                high probability. Rate is low but the pattern is clean —
-                a single direction of contamination.
+                species sit off the contamination line — source-specific
+                species above it (high source, low target), target-native
+                species below it (high target, low source). A thin
+                diagonal cluster ON the line carries the transferred
+                species with very high probability, even though the rate
+                is small. A single direction of contamination.
               </>
             }
             signals={[
@@ -19066,14 +19072,18 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_TP_HEAVY} rate={0.3207} lineSide="above" />}
             description={
               <>
-                A third of the target sample is the source. The diagonal
-                runs the full length of the abundance range and the
-                target's own biology is barely visible above the line.
+                A third of the target sample is the source. The
+                contamination line runs the full length of the abundance
+                range, sitting just half a decade above <code>y = x</code>.
+                The target's own biology — which would normally appear as
+                points below the line (high target, low source) — is
+                barely visible: most target reads come from carried-over
+                species, drowning out the native population.
               </>
             }
             signals={[
-              "Diagonal extends from low to high abundance",
-              "Few or no points above the line",
+              "Contamination line extends from low to high abundance",
+              "Few or no points below the line (target-native species drowned out)",
               "Very high rate — strong evidence the target sample is heavily compromised",
             ]}
             watchOut="With such a high rate, downstream analyses on the target sample are likely unreliable. Consider excluding it entirely rather than just flagging."
@@ -19257,7 +19267,7 @@ const LearnTab = () => {
               "Probability moderate (0.65-0.75)",
               "Sample biomass may be low on both sides",
             ]}
-            watchOut="Don't confuse this with case I (false negative): the difference is whether ANY narrow line is visible. Here, no — but the limit-of-detection issue alone justifies Uncertain in some workflows."
+            watchOut="A high probability with sparse scatter doesn't automatically promote to TP: the key question is whether ANY narrow line is visible. Here, no — and the limit-of-detection issue alone justifies Uncertain in some workflows."
           />
 
           <PatternCard
