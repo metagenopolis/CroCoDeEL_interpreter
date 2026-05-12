@@ -18923,23 +18923,7 @@ const LearnTab = () => {
     <div>
       <SectionTitle eyebrow="Learn" title="Reading a CroCoDeEL scatterplot">
         Each contamination event is a story told by a scatterplot and
-        contextual data. This page is a reference to the patterns you'll
-        encounter, organised the way{" "}
-        <a
-          href="https://www.nature.com/articles/s41467-026-72637-9"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            color: "#00a3a6",
-            textDecoration: "underline",
-            textUnderlineOffset: 2,
-          }}
-        >
-          Goulet et al. 2026
-        </a>{" "}
-        organise them in their figure 3: cases CroCoDeEL gets right,
-        cases it over-calls (false positives), and cases it misses
-        (false negatives).
+        contextual data.
       </SectionTitle>
 
       <div
