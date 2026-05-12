@@ -18984,7 +18984,7 @@ const LearnTab = () => {
         >
           <PatternCard
             caseLabel="A"
-            title="Bidirectional contamination — one direction shown"
+            title="Bidirectional contamination — one direction reported"
             verdict="TP"
             rate="0.49%"
             probability="1.00"
@@ -18992,15 +18992,13 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_TP_LOW_RATE} rate={0.0049} lineSide="above" />}
             description={
               <>
-                The two samples contaminated each other. CroCoDeEL reports
-                this as two separate events, one per direction. This
-                mini-plot reproduces the paper's combined view of both
-                directions on the same chart, which is why you can see two
-                diagonal clusters. In CroCoDeEL's per-event scatter (source
-                always on Y), each event shows a single contamination line
-                above <code>y = x</code>; the reciprocal event is its own
-                scatter, also with a line above <code>y = x</code>, just
-                with the source / target roles swapped.
+                The two samples contaminated each other. CroCoDeEL
+                reports this as two separate events, one per direction,
+                each with its own scatter and its own contamination
+                line. The mini-plot here reproduces the paper's combined
+                view (both directions on a single chart, hence the two
+                clusters); in the app you'd see one cluster and one
+                line per event.
               </>
             }
             signals={[
