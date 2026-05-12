@@ -11406,7 +11406,11 @@ const SamplesTab = ({
     if (newPage !== safePage) setPage(newPage);
     window.setTimeout(() => {
       const el = document.getElementById(`samplerow-${r.id}`);
-      if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      // `block: "center"` so the focused row always shifts to the
+      // middle of the viewport on prev/next nav. "nearest" was too
+      // conservative — once the previous row was even partly visible
+      // the page didn't move and the curator's eye lost the focus.
+      if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
     }, 0);
   };
   const goPrevSample = () => {
@@ -16155,11 +16159,21 @@ const ValidateTab = ({
     [events],
   );
 
-  /* ---- Navigation helpers (pending-only) ---- */
+  /* ---- Navigation helpers (pending-only) ----
+       After picking a new event, scroll the main page back to the
+       top so the curator sees the newly-loaded scatter without
+       having to manually scroll up from wherever they were
+       (criteria card, sample-context panel, notes textarea…). */
+  const scrollToTop = () => {
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
   const goPrevPending = () => {
     for (let i = idx - 1; i >= 0; i--) {
       if (queue[i].verdict === "pending") {
         onSelect(queue[i].id);
+        scrollToTop();
         return;
       }
     }
@@ -16168,16 +16182,23 @@ const ValidateTab = ({
     for (let i = idx + 1; i < queue.length; i++) {
       if (queue[i].verdict === "pending") {
         onSelect(queue[i].id);
+        scrollToTop();
         return;
       }
     }
   };
   /* ---- Navigation helpers (any verdict) ---- */
   const goPrev = () => {
-    if (idx > 0) onSelect(queue[idx - 1].id);
+    if (idx > 0) {
+      onSelect(queue[idx - 1].id);
+      scrollToTop();
+    }
   };
   const goNext = () => {
-    if (idx >= 0 && idx < queue.length - 1) onSelect(queue[idx + 1].id);
+    if (idx >= 0 && idx < queue.length - 1) {
+      onSelect(queue[idx + 1].id);
+      scrollToTop();
+    }
   };
   // Walk the queue, not the full events list — the prev/next-pending
   // buttons navigate the visible queue and their disabled state must
@@ -23264,22 +23285,35 @@ function AppMain({ initial }) {
       // certainly a drill-in from Network or elsewhere), promote
       // that id to lastSamplesDrill so the row is highlighted on
       // arrival, then clear the scope so the table shows everything.
+      let drillTargetId = null;
       setFilter((f) => {
         if (Array.isArray(f.scopeSamples) && f.scopeSamples.length === 1) {
-          setLastSamplesDrill(f.scopeSamples[0]);
+          drillTargetId = f.scopeSamples[0];
+          setLastSamplesDrill(drillTargetId);
         }
         return Array.isArray(f.scopeSamples) && f.scopeSamples.length > 0
           ? { ...f, scopeSamples: null, scopeSide: "either" }
           : f;
       });
-      const y = samplesUIRef.current.scrollY || 0;
-      // Defer until the SamplesTab has rendered so the page is tall
-      // enough for the scroll to actually take effect.
-      const handle = window.setTimeout(() => {
-        window.scrollTo({ top: y, behavior: "auto" });
-      }, 0);
+      // When returning from a drill (lastSamplesDrill is set), let
+      // the SamplesTab's focus-on-arrival logic scroll to the
+      // matching row — it uses scrollIntoView({ block: "center" }),
+      // which is more useful than restoring the previous Y. Without
+      // this guard, our setTimeout(scrollTo(savedY)) below races
+      // with the SamplesTab scroll and lands the curator back at the
+      // top of the page when savedY was 0 (typical when the drill
+      // started from a row that was already in view).
+      const isDrillReturn = !!lastSamplesDrill || !!drillTargetId;
+      if (!isDrillReturn) {
+        const y = samplesUIRef.current.scrollY || 0;
+        const handle = window.setTimeout(() => {
+          window.scrollTo({ top: y, behavior: "auto" });
+        }, 0);
+        prevTabRef.current = tab;
+        return () => window.clearTimeout(handle);
+      }
       prevTabRef.current = tab;
-      return () => window.clearTimeout(handle);
+      return undefined;
     }
     prevTabRef.current = tab;
     return undefined;
