@@ -21948,7 +21948,7 @@ const ExportTab = ({
         </div>
       )}
 
-      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
+      <div className="grid md:grid-cols-2 gap-4 mt-6">
         <ExportCard
           title={`Events TSV — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
           desc={
@@ -25625,9 +25625,9 @@ function AppMain({ initial }) {
       const norm = String(v || "").toLowerCase();
       const tone =
         norm === "true_positive" || norm === "tp"
-          ? { bg: "#00a3a6", label: "True positive" }
+          ? { bg: EVAL_TP_COLOR, label: "True positive" }
           : norm === "false_positive" || norm === "fp"
-            ? { bg: "#ed6e6c", label: "False positive" }
+            ? { bg: EVAL_FP_COLOR, label: "False positive" }
             : norm === "uncertain"
               ? { bg: "#c4c0b3", label: "Uncertain" }
               : { bg: "#e6e8e8", label: "Pending", textColor: "#5a5550" };
@@ -26113,8 +26113,8 @@ function AppMain({ initial }) {
     font-size: 20px;
     font-weight: 800;
   }
-  .stat.tp .value { color: #00a3a6; }
-  .stat.fp .value { color: #ed6e6c; }
+  .stat.tp .value { color: ${EVAL_TP_COLOR}; }
+  .stat.fp .value { color: ${EVAL_FP_COLOR}; }
   .stat.unc .value { color: #797870; }
   .stat.suppress .value { color: #ed6e6c; }
   .stat.keep .value { color: #00a3a6; }
