@@ -16898,7 +16898,7 @@ const ValidateTab = ({
                             ? EVAL_TP_COLOR
                             : autoScore.good >= Math.ceil(autoScore.total * 0.6)
                               ? "#d97a3c"
-                              : "#b84442",
+                              : EVAL_FP_COLOR,
                         fontWeight: 700,
                         fontFamily: '"Raleway", sans-serif',
                         letterSpacing: "0.02em",
@@ -16920,8 +16920,8 @@ const ValidateTab = ({
                         autoScore.good === autoScore.total
                           ? EVAL_TP_COLOR
                           : autoScore.good >= 3
-                            ? "#275662"
-                            : "#b84442",
+                            ? "#d97a3c"
+                            : EVAL_FP_COLOR,
                       fontFamily: '"Raleway", sans-serif',
                     }}
                   >
@@ -26419,7 +26419,7 @@ function AppMain({ initial }) {
   }
   .aggregate.all-pass { background: #f5dee5; color: #9b2e4d; }
   .aggregate.warn { background: #fde6d8; color: #b46028; }
-  .aggregate.fail { background: #fce0df; color: #b84442; }
+  .aggregate.fail { background: #dde6f1; color: #2566b0; }
   .footnote {
     margin-top: 32px;
     padding-top: 12px;
