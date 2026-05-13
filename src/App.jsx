@@ -23383,10 +23383,10 @@ function AppMain({ initial }) {
     const prev = prevTabRef.current;
     if (prev !== tab) {
       setLastTab(prev);
-      // On every tab change, smooth-scroll the tab nav to the top of
-      // the viewport so the new content has the full real estate
-      // below. The Samples-specific scroll restoration below can
-      // still override when there's a saved Y to come back to.
+      // On every tab change, bring the tab nav to the top of the
+      // viewport so the new content has the full real estate below.
+      // Samples-specific scroll restoration (below) can still override
+      // when there's a saved Y to come back to.
       tabsNavRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
     }
     if (prev === "samples" && tab !== "samples") {
@@ -23417,11 +23417,10 @@ function AppMain({ initial }) {
       const isDrillReturn = !!lastSamplesDrill || !!drillTargetId;
       if (!isDrillReturn) {
         const y = samplesUIRef.current.scrollY || 0;
-        // Only force a scroll when there's a real position to
-        // restore. y === 0 means we've never left Samples yet (or
-        // left from the very top) — in that case let the
-        // scroll-to-tabs above do its job rather than fighting it
-        // with scrollTo(0).
+        // Only force a scroll when there's a real position to restore.
+        // y === 0 means we've never left Samples yet (or left from the
+        // very top) — in that case let the tab-switch scroll-to-tabs
+        // above do its job rather than fighting it with scrollTo(0).
         if (y > 0) {
           const handle = window.setTimeout(() => {
             window.scrollTo({ top: y, behavior: "auto" });
@@ -28523,20 +28522,24 @@ function useKonamiCode(onCode) {
   }, [onCode]);
 }
 
+// Every non-wall cell is reachable from the player start at (1, 1):
+// rows 1, 3, 5, 7, 9, 11 are full horizontal corridors, and every
+// dot in an alternating wall row has a corridor cell directly above
+// or below. No 2x2 wall blocks ever fully enclose a dot.
 const ARCADE_MAZE = [
   "######################",
-  "#..........##........#",
-  "#.####.###.##.###.####",
-  "#.#..#.#.#....#.#..#.#",
-  "#.#..#.#.#.##.#.#..#.#",
-  "#.####.#.#.##.#.#.####",
-  "#......#.#.##.#.#....#",
-  "#.######.....##....###",
-  "#........###....##...#",
-  "#.######.###.##.##.#.#",
-  "#.#....#.....##.##.#.#",
-  "#.#.##.######.#.##.#.#",
-  "#...##........#......#",
+  "#....................#",
+  "#.##.####.##.####.##.#",
+  "#....................#",
+  "#.##.##.##.##.##.##..#",
+  "#....................#",
+  "#.####.##.##.##.####.#",
+  "#....................#",
+  "#.##.####.##.####.##.#",
+  "#....................#",
+  "#.##.##.##.##.##.##..#",
+  "#....................#",
+  "#.####.##.##.##.####.#",
   "######################",
 ];
 const ARCADE_W = ARCADE_MAZE[0].length;
@@ -28576,12 +28579,27 @@ function CrocArcade({ onClose }) {
   };
 
   // Player + enemies start at fixed positions inside the maze.
+  // Each enemy gets its own diagnostic-mistake label so the three
+  // hunters read as the curator's three failure modes (false
+  // negative, uncertain, false positive).
   const PLAYER_START = { x: 1, y: 1 };
   const ENEMY_STARTS = [
-    { x: 20, y: 1, color: "#423089" },
-    { x: 1, y: 12, color: "#d97a3c" },
-    { x: 20, y: 12, color: "#9aaab0" },
+    { x: 20, y: 1, color: "#423089", label: "FN" },
+    { x: 1, y: 12, color: "#d97a3c", label: "?" },
+    { x: 20, y: 12, color: "#9aaab0", label: "FP" },
   ];
+  // Four power pellets in the corner corridors. Eating one flips
+  // the hunters into "frightened" mode for a few seconds — touch
+  // them then to send them back to their spawn for bonus points.
+  const POWER_CELLS = [
+    { x: 1, y: 3 },
+    { x: 20, y: 3 },
+    { x: 1, y: 11 },
+    { x: 20, y: 11 },
+  ];
+  const isPowerCell = (x, y) =>
+    POWER_CELLS.some((c) => c.x === x && c.y === y);
+  const FRIGHTEN_TICKS = 30; // ~4.8 s at 160 ms/tick
   const TICK_MS = 160;
 
   const [dots, setDots] = useState(buildDots);
@@ -28590,7 +28608,13 @@ function CrocArcade({ onClose }) {
     ENEMY_STARTS.map((e) => ({ ...e, dx: 0, dy: 0 })),
   );
   const [score, setScore] = useState(0);
+  // `bonus` accumulates points from eating frightened enemies on
+  // top of the dot-count score (each eat = +5 = +50 in display).
+  const [bonus, setBonus] = useState(0);
   const [lives, setLives] = useState(3);
+  // Ticks remaining in frightened mode. > 0 means the player can
+  // eat enemies on contact; enemies render in cyan during this.
+  const [frightenTicks, setFrightenTicks] = useState(0);
   const [status, setStatus] = useState("playing"); // playing | won | lost
   // Direction inputs: `intent` is what the player pressed last (might
   // be blocked by a wall); `dir` is the actual moving direction. Each
@@ -28603,7 +28627,9 @@ function CrocArcade({ onClose }) {
     setPlayer({ ...PLAYER_START });
     setEnemies(ENEMY_STARTS.map((e) => ({ ...e, dx: 0, dy: 0 })));
     setScore(0);
+    setBonus(0);
     setLives(3);
+    setFrightenTicks(0);
     setStatus("playing");
     intentRef.current = [1, 0];
     dirRef.current = [0, 0];
@@ -28677,15 +28703,21 @@ function CrocArcade({ onClose }) {
         } else {
           dirRef.current = [ix, iy];
         }
-        // Eat the dot at the new cell.
+        // Eat the dot at the new cell. If it's one of the four
+        // power pellets, kick off frightened mode for the hunters.
         setDots((d) => {
           if (!d[ny][nx]) return d;
+          if (isPowerCell(nx, ny)) {
+            setFrightenTicks(FRIGHTEN_TICKS);
+          }
           const next = d.map((row) => row.slice());
           next[ny][nx] = false;
           return next;
         });
         return { ...p, x: nx, y: ny };
       });
+      // Tick down the frightened timer so it expires on its own.
+      setFrightenTicks((t) => (t > 0 ? t - 1 : 0));
       // Move enemies — at every tick, each enemy picks a random open
       // direction at intersections; otherwise it keeps its current
       // direction. They never reverse unless boxed in.
@@ -28730,14 +28762,28 @@ function CrocArcade({ onClose }) {
       (n, r) => n + Array.from(r).filter((c) => c === ".").length,
       0,
     );
-    setScore(total - remaining);
+    setScore(total - remaining + bonus);
     if (remaining === 0) {
       setStatus("won");
       return;
     }
     // Collision with any enemy?
-    if (enemies.some((en) => en.x === player.x && en.y === player.y)) {
-      if (lives <= 1) {
+    const hitIdx = enemies.findIndex(
+      (en) => en.x === player.x && en.y === player.y,
+    );
+    if (hitIdx >= 0) {
+      if (frightenTicks > 0) {
+        // Frightened mode: respawn just the hit enemy and pocket a
+        // chunky bonus instead of losing a life.
+        setEnemies((es) =>
+          es.map((en, i) =>
+            i === hitIdx
+              ? { ...ENEMY_STARTS[i], dx: 0, dy: 0 }
+              : en,
+          ),
+        );
+        setBonus((b) => b + 5);
+      } else if (lives <= 1) {
         setLives(0);
         setStatus("lost");
       } else {
@@ -28746,7 +28792,7 @@ function CrocArcade({ onClose }) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [player, enemies, dots]);
+  }, [player, enemies, dots, frightenTicks, bonus]);
 
   const W = ARCADE_W * ARCADE_CELL;
   const H = ARCADE_H * ARCADE_CELL;
@@ -28754,7 +28800,7 @@ function CrocArcade({ onClose }) {
   return (
     <div
       role="dialog"
-      aria-label="Croc Arcade — Konami easter egg"
+      aria-label="CroCoDeEL Arcade — Konami easter egg"
       style={{
         position: "fixed",
         inset: 0,
@@ -28779,7 +28825,7 @@ function CrocArcade({ onClose }) {
           fontWeight: 700,
         }}
       >
-        Croc Arcade · use arrows · esc to close · R to restart
+        CroCoDeEL Arcade · use arrows · esc to close · R to restart
       </div>
       <div
         style={{
@@ -28832,44 +28878,68 @@ function CrocArcade({ onClose }) {
             ) : null,
           ),
         )}
-        {/* Dots */}
+        {/* Dots — power pellets render bigger and outlined so the
+            curator can spot them as the strategic targets. */}
         {dots.map((row, y) =>
           row.map((on, x) =>
             on ? (
-              <circle
-                key={`d-${x}-${y}`}
-                cx={x * ARCADE_CELL + ARCADE_CELL / 2}
-                cy={y * ARCADE_CELL + ARCADE_CELL / 2}
-                r={3}
-                fill="#ed6e6c"
-              />
+              isPowerCell(x, y) ? (
+                <circle
+                  key={`d-${x}-${y}`}
+                  cx={x * ARCADE_CELL + ARCADE_CELL / 2}
+                  cy={y * ARCADE_CELL + ARCADE_CELL / 2}
+                  r={7}
+                  fill="#ed6e6c"
+                  stroke="#fff"
+                  strokeWidth="1.5"
+                />
+              ) : (
+                <circle
+                  key={`d-${x}-${y}`}
+                  cx={x * ARCADE_CELL + ARCADE_CELL / 2}
+                  cy={y * ARCADE_CELL + ARCADE_CELL / 2}
+                  r={3}
+                  fill="#ed6e6c"
+                />
+              )
             ) : null,
           ),
         )}
-        {/* Enemies */}
-        {enemies.map((en, i) => (
-          <g key={`e-${i}`}>
-            <circle
-              cx={en.x * ARCADE_CELL + ARCADE_CELL / 2}
-              cy={en.y * ARCADE_CELL + ARCADE_CELL / 2}
-              r={ARCADE_CELL / 2 - 3}
-              fill={en.color}
-              stroke="#fff"
-              strokeWidth="1"
-            />
-            <text
-              x={en.x * ARCADE_CELL + ARCADE_CELL / 2}
-              y={en.y * ARCADE_CELL + ARCADE_CELL / 2 + 3}
-              textAnchor="middle"
-              fill="#fff"
-              fontSize="9"
-              fontWeight="700"
-              fontFamily='"Raleway", sans-serif'
-            >
-              FP
-            </text>
-          </g>
-        ))}
+        {/* Enemies — each carries its own label (FN / ? / FP). In
+            frightened mode they all flip to brand-cyan with a blank
+            stare so the player knows they're edible. */}
+        {enemies.map((en, i) => {
+          const frightened = frightenTicks > 0;
+          // Last 8 ticks of frighten: blink to warn the player it's
+          // about to end.
+          const blinkOff = frightened && frightenTicks < 8 && frightenTicks % 2 === 0;
+          const fillColor = frightened
+            ? blinkOff ? "#d6dde0" : "#00a3a6"
+            : en.color;
+          return (
+            <g key={`e-${i}`}>
+              <circle
+                cx={en.x * ARCADE_CELL + ARCADE_CELL / 2}
+                cy={en.y * ARCADE_CELL + ARCADE_CELL / 2}
+                r={ARCADE_CELL / 2 - 3}
+                fill={fillColor}
+                stroke="#fff"
+                strokeWidth="1"
+              />
+              <text
+                x={en.x * ARCADE_CELL + ARCADE_CELL / 2}
+                y={en.y * ARCADE_CELL + ARCADE_CELL / 2 + 3}
+                textAnchor="middle"
+                fill="#fff"
+                fontSize="9"
+                fontWeight="700"
+                fontFamily='"Raleway", sans-serif'
+              >
+                {frightened ? "·_·" : en.label}
+              </text>
+            </g>
+          );
+        })}
         {/* Player — the CroCoDeEL logo, scaled into the cell */}
         <image
           href={logoSrc}
@@ -28891,7 +28961,9 @@ function CrocArcade({ onClose }) {
             textTransform: "uppercase",
           }}
         >
-          {status === "won" ? "All chomped!" : "Crocodile down"}
+          {status === "won"
+            ? "Curation complete · TP rate 100 %"
+            : "CroCoDeEL down"}
           <span
             style={{
               marginLeft: 16,
