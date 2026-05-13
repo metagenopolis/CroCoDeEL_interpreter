@@ -16895,7 +16895,7 @@ const ValidateTab = ({
                       style={{
                         color:
                           autoScore.good === autoScore.total
-                            ? "#00a3a6"
+                            ? EVAL_TP_COLOR
                             : autoScore.good >= Math.ceil(autoScore.total * 0.6)
                               ? "#d97a3c"
                               : "#b84442",
@@ -16918,7 +16918,7 @@ const ValidateTab = ({
                     style={{
                       color:
                         autoScore.good === autoScore.total
-                          ? "#00a3a6"
+                          ? EVAL_TP_COLOR
                           : autoScore.good >= 3
                             ? "#275662"
                             : "#b84442",
@@ -23790,6 +23790,15 @@ function AppMain({ initial }) {
         highlight: '[data-tutorial="tab-table"]',
       },
       {
+        title: "Samples — the per-sample cockpit",
+        body:
+          "Each event has an evaluation; each sample has its own verdict (Contaminated / Not contaminated / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are auto-tagged Not contaminated + Keep.\n\n" +
+          "The table splits events into two side-aware columns — Events as source / Events as target — each with its own count, TP/FP/Uncertain/Pending breakdown and → Scatter / → Events / → Network drill-ins that scope the destination tab to that side. A floating \"Back to Samples\" chip on the destination tab brings you back to the same row.\n\n" +
+          "Filter by metadata (autocomplete on subject / timepoint / group / biome / control / quality flags) or by \"count event source\" / \"count event target\" counters. The Bulk-apply dialog combines all those filters with per-side event-count chips and pre-conditions on the samples' current verdict / action so you can stamp a verdict / action on a precise subset.",
+        action: "tabSamples",
+        highlight: '[data-tutorial="tab-samples"]',
+      },
+      {
         title: "Scatterplots — visual evidence",
         body:
           "Each event becomes a scatterplot of source vs target abundances.\n\n" +
@@ -23850,15 +23859,6 @@ function AppMain({ initial }) {
           "On Validate: T (True positive), F (False positive), U (Uncertain), P (reset to Pending). ← / → jump to the previous/next pending event; ↑ / ↓ step through the queue regardless of evaluation. Press ? in the app to see the full cheatsheet.\n\n" +
           "On Samples: click a row to focus it, then ↑ / ↓ step the sorted list, ← / → jump to the previous/next sample whose action is still unset. K = Keep, S = Suppress on the focused row.",
         highlight: '[data-tutorial="verdict-buttons"]',
-      },
-      {
-        title: "Samples — the per-sample cockpit",
-        body:
-          "Each event has an evaluation; each sample has its own verdict (Contaminated / Not contaminated / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are auto-tagged Not contaminated + Keep.\n\n" +
-          "The table splits events into two side-aware columns — Events as source / Events as target — each with its own count, TP/FP/Uncertain/Pending breakdown and → Scatter / → Events / → Network drill-ins that scope the destination tab to that side. A floating \"Back to Samples\" chip on the destination tab brings you back to the same row.\n\n" +
-          "Filter by metadata (autocomplete on subject / timepoint / group / biome / control / quality flags) or by \"count event source\" / \"count event target\" counters. The Bulk-apply dialog combines all those filters with per-side event-count chips and pre-conditions on the samples' current verdict / action so you can stamp a verdict / action on a precise subset.",
-        action: "tabSamples",
-        highlight: '[data-tutorial="tab-samples"]',
       },
       {
         title: "Export your curated report",
@@ -26417,7 +26417,7 @@ function AppMain({ initial }) {
     font-weight: 700;
     letter-spacing: 0.02em;
   }
-  .aggregate.all-pass { background: #d8f0f1; color: #00a3a6; }
+  .aggregate.all-pass { background: #f5dee5; color: #9b2e4d; }
   .aggregate.warn { background: #fde6d8; color: #b46028; }
   .aggregate.fail { background: #fce0df; color: #b84442; }
   .footnote {
