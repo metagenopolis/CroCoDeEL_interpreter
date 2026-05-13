@@ -23373,10 +23373,22 @@ function AppMain({ initial }) {
   // itself and shouldn't persist when we come back. Same effect
   // records the previous tab into `lastTab` so the back chip knows
   // where to send the curator.
+  // Ref on the tab nav row so a tab switch can scroll it to the top
+  // of the viewport — otherwise the curator clicks a tab and the new
+  // content stays below the fold (the files bar + the tab row eat
+  // ~half the screen on first load).
+  const tabsNavRef = useRef(null);
   const prevTabRef = useRef(tab);
   useEffect(() => {
     const prev = prevTabRef.current;
-    if (prev !== tab) setLastTab(prev);
+    if (prev !== tab) {
+      setLastTab(prev);
+      // On every tab change, smooth-scroll the tab nav to the top of
+      // the viewport so the new content has the full real estate
+      // below. The Samples-specific scroll restoration below can
+      // still override when there's a saved Y to come back to.
+      tabsNavRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
     if (prev === "samples" && tab !== "samples") {
       samplesUIRef.current.scrollY = window.scrollY;
     } else if (prev !== "samples" && tab === "samples") {
@@ -23405,11 +23417,18 @@ function AppMain({ initial }) {
       const isDrillReturn = !!lastSamplesDrill || !!drillTargetId;
       if (!isDrillReturn) {
         const y = samplesUIRef.current.scrollY || 0;
-        const handle = window.setTimeout(() => {
-          window.scrollTo({ top: y, behavior: "auto" });
-        }, 0);
-        prevTabRef.current = tab;
-        return () => window.clearTimeout(handle);
+        // Only force a scroll when there's a real position to
+        // restore. y === 0 means we've never left Samples yet (or
+        // left from the very top) — in that case let the
+        // scroll-to-tabs above do its job rather than fighting it
+        // with scrollTo(0).
+        if (y > 0) {
+          const handle = window.setTimeout(() => {
+            window.scrollTo({ top: y, behavior: "auto" });
+          }, 0);
+          prevTabRef.current = tab;
+          return () => window.clearTimeout(handle);
+        }
       }
       prevTabRef.current = tab;
       return undefined;
@@ -27215,6 +27234,7 @@ function AppMain({ initial }) {
       {/* ==================== CONTENT ==================== */}
       <div className="max-w-7xl mx-auto px-6 py-5">
         <nav
+          ref={tabsNavRef}
           className="flex gap-0 mb-6 whitespace-nowrap"
           style={{ borderBottom: "2px solid #e6e8e8" }}
         >
