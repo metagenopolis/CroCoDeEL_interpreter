@@ -5197,8 +5197,8 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
           </>
         ) : (
           <>
-            These are the events CroCoDeEL flagged. Your role: distinguish
-            real contamination from coincidental abundance similarity.
+            These are cross-sample contamination events flagged by CroCoDeEL.
+            Your role: distinguish true contamination from false positives.
             Start from the highest-probability events.
           </>
         )}
