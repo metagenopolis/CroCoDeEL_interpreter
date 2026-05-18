@@ -5190,9 +5190,10 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
       <SectionTitle eyebrow="Overview" title="Your analysis at a glance">
         {noData ? (
           <>
-            Load a CroCoDeEL output (and ideally the matching abundance
-            table) to start curating. The counts and top-N lists appear
-            once the events are in.
+            Load a CroCoDeEL output file containing reported contamination events,
+            along with the corresponding species abundance table to begin curation.
+            If available, you can include plate maps and metadata files to provide
+            additional context for easier curation.
           </>
         ) : (
           <>
