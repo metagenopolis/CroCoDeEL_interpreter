@@ -19426,11 +19426,10 @@ const HelpTab = ({ onStartTour }) => {
             with a probability and a contamination rate.
           </p>
           <p>
-            CroCoDeEL could flag more events than there are real contaminations —
-            many candidate events turn out to be biologically explained
-            (longitudinal samples from the same person, mother-infant
-            transmission, etc.) rather than true cross-contamination. This
-            tool helps you triage that list interactively: look at each
+            CroCoDeEL may flag more events than there are true contaminations.
+            For instance, some false-positive events may be biologically
+            explained (e.g., longitudinal samples from the same person)
+            This tool helps you triage that list interactively: look at each
             event's scatterplot, diagnostic checks, plate position and
             sample metadata, then mark each one as true positive, false
             positive or uncertain. Export the curated TSV when done.
