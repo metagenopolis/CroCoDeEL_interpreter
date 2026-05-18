@@ -26857,10 +26857,10 @@ function AppMain({ initial }) {
                   className="text-[11px] mt-1"
                   style={{ color: "var(--ink-soft)", lineHeight: 1.5 }}
                 >
-                  Files stay local: parsing happens entirely in your browser.
-                  No data is sent to any server. Your work is auto-saved
-                  locally so you can close the tab and come back anytime
-                  (unless your browser cache is cleared). Use{" "}
+                  All parsing, image generation, and computation happen entirely in
+                  your browser. No data is sent to any server.
+                  Your work is auto-saved locally so you can close the tab and come
+                  back anytime (unless your browser cache is cleared). Use{" "}
                   <strong style={{ color: "var(--ink)" }}>Clear session</strong>{" "}
                   on the files bar to wipe everything and start fresh.
                 </div>
