@@ -5247,7 +5247,7 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
               >
                 Lou et al. 2023
               </a>
-              , P3). All counts below are zero until then.
+              , P3)
             </div>
           </div>
           {onLoadDemo && (
