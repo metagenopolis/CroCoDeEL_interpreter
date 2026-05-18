@@ -19004,11 +19004,10 @@ const LearnTab = () => {
             }
             signals={[
               "A clear, narrow linear cluster parallel to y = x",
-              "Most species off the line (target's own composition)",
+              "In most cases, many species below the metagenomic detection threshold are detected in the source but not in the target (many points lie on the Y-axis).",
               "RF probability ≈ 1 even though rate is small",
-              "Only one direction of contamination (not bidirectional)",
             ]}
-            watchOut="Don't dismiss low-rate events on principle. The probability is what tells you whether the line is real, not the rate."
+            watchOut="Don't dismiss low-rate events by default. Even low-rate events can bias downstream analyses, such as richness estimates."
           />
 
           <PatternCard
@@ -19046,14 +19045,13 @@ const LearnTab = () => {
                 In the example shown, about a third of the target reads
                 come from the source. For such heavy contamination, the
                 contamination line sits close to <code>y = x</code> and
-                covers the full abundance range. The target's own
-                biology is drowned out: very few species remain visible
-                outside the carried-over set.
+                covers the full abundance range. Almost all species
+                from the source are detected in the target.
               </>
             }
             signals={[
               "Contamination line spans the full abundance range and sits close to y = x",
-              "Very few species visible outside the carried-over set (native biology drowned out)",
+              "Almost all species from the source are detected in the target (few points lie on the Y-axis)",
               "Very high rate — strong evidence the target sample is heavily compromised",
             ]}
             watchOut="With such a high rate, downstream analyses on the target sample are likely unreliable. Consider excluding it entirely rather than just flagging."
