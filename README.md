@@ -56,7 +56,7 @@ The repository ships with `.github/workflows/deploy.yml` &mdash; pushing to `mai
 
 If the interface contributes to a publication, please cite CroCoDeEL itself:
 
-> Goulet L. et al., *Cross-sample Contamination Detection and Estimation of its Level (CroCoDeEL)*, Nature Communications 2026. [doi.org/10.1038/s41467-026-72637-9](https://doi.org/10.1038/s41467-026-72637-9)
+> Goulet L. et al., *CroCoDeEL: accurate control-free detection of cross-sample contamination in metagenomic data*, Nature Communications 2026. [doi.org/10.1038/s41467-026-72637-9](https://doi.org/10.1038/s41467-026-72637-9)
 
 See [`CITATION.cff`](./CITATION.cff) for the full author list and a machine-readable record.
 

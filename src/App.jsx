@@ -21402,8 +21402,7 @@ const HelpTab = ({ onStartTour }) => {
           >
             Goulet L. et al.,{" "}
             <em>
-              Cross-sample Contamination Detection and Estimation of its
-              Level (CroCoDeEL)
+            CroCoDeEL: accurate control-free detection of cross-sample contamination in metagenomic data
             </em>
             , Nature Communications 2026.{" "}
             <a
