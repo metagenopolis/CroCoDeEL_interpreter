@@ -11553,7 +11553,7 @@ const SamplesTab = ({
     <div>
       <SectionTitle eyebrow="Samples" title="Per-sample curation">
         Each sample carries its own <strong>verdict</strong> (contaminated /
-        correct / uncertain) and a downstream <strong>action</strong>{" "}
+        not contaminated / uncertain) and a downstream <strong>action</strong>{" "}
         (keep / suppress) — both independent of any single event's evaluation.
         Click an event count or the <em>Scatter / Events</em> chips to drill
         into a sample's flagged contaminations.
