@@ -19042,17 +19042,17 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_TP_HEAVY} rate={0.3207} lineSide="above" />}
             description={
               <>
-                In the example shown, about a third of the target reads
-                come from the source. For such heavy contamination, the
-                contamination line sits close to <code>y = x</code> and
-                covers the full abundance range. Almost all species
-                from the source are detected in the target.
+                For high contamination levels (typically {">"}10%), a large fraction of species
+                detected in the target sample originate from contamination.
+                These cases are usually detected by alternative methods that rely on strain sharing
+                between samples.
               </>
             }
             signals={[
-              "Contamination line spans the full abundance range and sits close to y = x",
-              "Almost all species from the source are detected in the target (few points lie on the Y-axis)",
-              "Very high rate — strong evidence the target sample is heavily compromised",
+                "The contamination line lies close to y = x and includes many species",
+                "It spans the full abundance range, including highly abundant species in the target sample",
+                "In many cases, although the contamination line is clearly visible, it does not form a well-defined cluster",
+                "Almost all species from the source are detected in the target (few points lie on the Y-axis)",
             ]}
             watchOut="With such a high rate, downstream analyses on the target sample are likely unreliable. Consider excluding it entirely rather than just flagging."
           />
