@@ -18959,12 +18959,12 @@ const LearnTab = () => {
         <p>
         When cross-sample contamination occurs, the plot reveals a subset of species
         with abundances that are proportional between the two samples:
-         <code>abundance_target = abundance_source × contamination_rate</code>
+        <code> abundance_target = abundance_source × contamination_rate</code>
         </p>
 
         <p>
-        These species correspond to contaminants introduced from the source into the
-        target sample. They form a linear structure named the contamination line.
+        These species correspond to contaminants introduced from the source into the target
+        sample. They form a linear structure named the <strong>contamination line</strong>.
         This line is parallel to the identity line <code>y = x</code>, with an offset 
         (<code>−log10(rate)</code>) determined by the contamination rate. Higher rates
         shift the line closer to the identity line. In the figures below, the
@@ -19296,6 +19296,7 @@ const LearnTab = () => {
             signals={[
               "Sparse scatter (fewer than ~30 species at meaningful abundance)",
               "Probability moderate (0.65-0.75)",
+
             ]}
             watchOut="A high probability with sparse scatter doesn't automatically promote to TP: the key question is whether ANY narrow line is visible. Here, no — and the limit-of-detection issue alone justifies Uncertain in some workflows."
           />
