@@ -18937,19 +18937,32 @@ const LearnTab = () => {
           lineHeight: 1.6,
         }}
       >
-        <strong>How to read these plots.</strong> Each point is a microbial
-        species. The Y axis is its abundance (log scale) in the alleged
-        source sample, the X axis is its abundance in the contaminated
-        (target) sample. The grey dashed diagonal <code>y = x</code> is just
-        a reference — points sitting on it simply happen to have equal
-        abundance in both samples, which on its own says nothing about
-        contamination. The real signature is the salmon dashed{" "}
-        <em>contamination line</em>, parallel to <code>y = x</code> but
-        offset by <code>log10(rate)</code>: when a fraction of the source
-        has leaked into the target, the carried-over species line up
-        there (target = rate × source). The more species land tightly on
-        that line over a wide abundance range, the more confident the
-        call.
+        <strong>How to read these plots.</strong>
+        Scatterplots allow visual comparison of species abundance profiles between
+        pairs of samples. Each point corresponds to a microbial species.
+
+        Abundances are shown on a logarithmic scale to improve visibility of
+        subdominant species. Since <code>log10(0)</code> is undefined, species not
+        detected in a sample are represented as half-points on the corresponding axis.
+        The grey dashed line represents the identity line <code>y = x</code>. Points
+        on this line correspond to species with equal abundance in both samples.
+
+        In contamination analyses, the Y-axis represents the suspected source sample,
+        and the X-axis represents the putative contaminated sample.
+
+        When cross-sample contamination occurs, the plot reveals a subset of species
+        with abundances that are proportional between the two samples:
+        <code>abundance(target) = abundance(source) × contamination rate</code>
+
+        These species correspond to contaminants introduced from the source into the
+        target sample. They form a linear structure named the contamination line.
+        This line is parallel to the identity line <code>y = x</code>, with an offset
+        determined by the contamination rate (<code>−log10(rate)</code>). Higher rates
+        shift the line closer to the identity line. In the figures below, the
+        contamination line is highlighted as a dashed salmon line.
+
+        The strength of evidence for contamination increases with both the number of
+        species forming this line and the range of abundances it spans.
       </div>
 
       {/* ============================== */}
