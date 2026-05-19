@@ -18958,8 +18958,8 @@ const LearnTab = () => {
 
         <p>
         When cross-sample contamination occurs, the plot reveals a subset of species
-        with abundances that are proportional between the two samples:  
-        <code>abundance_target = abundance_source × contamination_rate</code>
+        with abundances that are proportional between the two samples:
+         <code>abundance_target = abundance_source × contamination_rate</code>
         </p>
 
         <p>
@@ -19296,7 +19296,6 @@ const LearnTab = () => {
             signals={[
               "Sparse scatter (fewer than ~30 species at meaningful abundance)",
               "Probability moderate (0.65-0.75)",
-              "Sample biomass may be low on both sides",
             ]}
             watchOut="A high probability with sparse scatter doesn't automatically promote to TP: the key question is whether ANY narrow line is visible. Here, no — and the limit-of-detection issue alone justifies Uncertain in some workflows."
           />
