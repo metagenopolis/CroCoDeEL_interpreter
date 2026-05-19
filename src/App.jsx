@@ -18958,8 +18958,8 @@ const LearnTab = () => {
 
         <p>
         When cross-sample contamination occurs, the plot reveals a subset of species
-        with abundances that are proportional between the two samples: 
-        <code>abundance(target) = abundance(source) × contamination rate</code>
+        with abundances that are proportional between the two samples:  
+        <code>abundance_target = abundance_source × contamination_rate</code>
         </p>
 
         <p>
