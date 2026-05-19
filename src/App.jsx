@@ -18121,22 +18121,29 @@ const PatternCard = ({
         >
           {title}
         </h3>
-        {(rate || probability || introduced) && (
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--ink-muted)",
-              marginBottom: 10,
-              fontFamily: "ui-monospace, monospace",
-            }}
-          >
-            {rate && <>rate&nbsp;=&nbsp;{rate}</>}
-            {rate && (probability || introduced) && " · "}
-            {probability && <>p&nbsp;=&nbsp;{probability}</>}
-            {probability && introduced && " · "}
-            {introduced && <>intro&nbsp;=&nbsp;{introduced}</>}
-          </div>
-        )}
+        <div
+          aria-hidden={!(rate || probability || introduced) || undefined}
+          style={{
+            fontSize: 11,
+            color: "var(--ink-muted)",
+            marginBottom: 10,
+            fontFamily: "ui-monospace, monospace",
+            visibility:
+              rate || probability || introduced ? "visible" : "hidden",
+          }}
+        >
+          {rate || probability || introduced ? (
+            <>
+              {rate && <>rate&nbsp;=&nbsp;{rate}</>}
+              {rate && (probability || introduced) && " · "}
+              {probability && <>p&nbsp;=&nbsp;{probability}</>}
+              {probability && introduced && " · "}
+              {introduced && <>intro&nbsp;=&nbsp;{introduced}</>}
+            </>
+          ) : (
+            " "
+          )}
+        </div>
         <div className="mb-3" style={{ display: "flex", justifyContent: "center" }}>
           {plot}
         </div>
@@ -18194,9 +18201,20 @@ const PatternCard = ({
             >
               Watch out
             </div>
-            <p style={{ fontSize: 12, color: "var(--ink-soft)", lineHeight: 1.55 }}>
-              {watchOut}
-            </p>
+            {Array.isArray(watchOut) ? (
+              <ul
+                className="list-disc pl-5 text-[12px]"
+                style={{ color: "var(--ink-soft)", lineHeight: 1.55 }}
+              >
+                {watchOut.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            ) : (
+              <p style={{ fontSize: 12, color: "var(--ink-soft)", lineHeight: 1.55 }}>
+                {watchOut}
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -19085,7 +19103,7 @@ const LearnTab = () => {
             ]}
             watchOut={[
               "With such a high rate, downstream analyses on the target sample are likely unreliable. Consider excluding it entirely rather than just flagging.",
-              "Do not confuse high-rate contamination with false positives from samples with strongly correlated species abundance profiles (see below)."
+              "Do not confuse high-rate contamination with false positives from samples with strongly correlated species abundance profiles (see \"Same-subject longitudinal samples — correlated cloud\" below)."
             ]}
           />
 
@@ -19308,10 +19326,13 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_FN_CASCADE} />}
             description={
               <>
-                The two samples share a third common contamination source.
-                By transitivity, their abundance profiles correlate, but
-                the line is blurred — wider than a clean direct transfer.
-                CroCoDeEL learned to reject blurred lines and misses this.
+                A cascade occurs when source A contaminates target B,
+                but A has itself been contaminated by a third sample C.
+                The scatterplot then mixes A's own species with species
+                inherited from C, so the contamination line becomes
+                noticeably noisy with points sitting above it.
+                CroCoDeEL rejects blurred lines, so cascade contamination
+                is a common cause of false negatives.
               </>
             }
             signals={[
