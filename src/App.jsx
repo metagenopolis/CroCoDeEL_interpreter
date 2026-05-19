@@ -18937,32 +18937,44 @@ const LearnTab = () => {
           lineHeight: 1.6,
         }}
       >
-        <strong>How to read these plots.</strong>
+        <p><strong>How to read these plots.</strong></p>
+        <p>
         Scatterplots allow visual comparison of species abundance profiles between
         pairs of samples. Each point corresponds to a microbial species.
+        </p>
 
+        <p>
         Abundances are shown on a logarithmic scale to improve visibility of
         subdominant species. Since <code>log10(0)</code> is undefined, species not
         detected in a sample are represented as half-points on the corresponding axis.
         The grey dashed line represents the identity line <code>y = x</code>. Points
         on this line correspond to species with equal abundance in both samples.
+        </p>
 
+        <p>
         In contamination analyses, the Y-axis represents the suspected source sample,
         and the X-axis represents the putative contaminated sample.
+        </p>
 
+        <p>
         When cross-sample contamination occurs, the plot reveals a subset of species
-        with abundances that are proportional between the two samples:
+        with abundances that are proportional between the two samples: 
         <code>abundance(target) = abundance(source) × contamination rate</code>
+        </p>
 
+        <p>
         These species correspond to contaminants introduced from the source into the
         target sample. They form a linear structure named the contamination line.
-        This line is parallel to the identity line <code>y = x</code>, with an offset
-        determined by the contamination rate (<code>−log10(rate)</code>). Higher rates
+        This line is parallel to the identity line <code>y = x</code>, with an offset 
+        (<code>−log10(rate)</code>) determined by the contamination rate. Higher rates
         shift the line closer to the identity line. In the figures below, the
         contamination line is highlighted as a dashed salmon line.
+        </p>
 
+        <p>
         The strength of evidence for contamination increases with both the number of
         species forming this line and the range of abundances it spans.
+        </p>
       </div>
 
       {/* ============================== */}
