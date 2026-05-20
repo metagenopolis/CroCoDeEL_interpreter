@@ -19067,7 +19067,7 @@ const LearnTab = () => {
               </>
             }
             signals={[
-               "The contamination line is composed of at least a few dozen species, is clearly visible, and forms a well-defined cluster",
+               "The contamination line is composed of at least a few dozen species, is clearly visible, and forms a well-defined narrow cluster",
                "The contamination line spans 2 to 3 orders of magnitude on each axis",
                "The Random Forest probability is close to 1",
             ]}
@@ -19253,10 +19253,9 @@ const LearnTab = () => {
             }
             signals={[
               "A diffuse cloud of points appears in the top-left region.",
-              "These points do not align into a clear contamination line.",
+              "These points do not align into a contamination line.",
               "The Random Forest probability is near the decision threshold (typically 0.5–0.7), indicating uncertainty.",
               "Detection limits between source and target differ by several orders of magnitude.",
-              ""
             ]}
             watchOut="A borderline probability alone is not sufficient evidence for a false positive and should prompt manual inspection of the scatterplot."
           />
@@ -19306,26 +19305,26 @@ const LearnTab = () => {
 
           <PatternCard
             caseLabel="G"
-            title="Sparse points, weak structure"
+            title="Weak contamination line, few supporting species"
             verdict="FP_OR_UNCERTAIN"
             rate="0.64%"
             probability="0.70"
             plot={<PatternMiniPlot points={SHAPE_FP_DIFFUSE_BIO_3} rate={0.0064} lineSide="above" />}
             description={
               <>
-                Few points overall and no convincing contamination
-                line. The model
-                is moderately confident but the scatter doesn't back it
-                up. Borderline — depending on stringency, a curator may
-                tag this as Uncertain or keep it as TP.
+                A small number of points align into a potential contamination line, but the
+                signal is weak compared to true positive examples shown above, even when
+                model confidence is moderate.
+                These cases should generally be flagged as Uncertain.
+                Increasing sequencing depth or using a more sensitive taxonomic profiler can
+                help reduce ambiguity and improve confidence in the decision.
               </>
             }
             signals={[
-              "Sparse scatter (fewer than ~30 species at meaningful abundance)",
-              "Probability moderate (0.65-0.75)",
-
+                "A weak potential contamination line composed of only a few dozen species that do not clearly align.",
+                "The Random Forest probability is moderate (0.65–0.75)",
             ]}
-            watchOut="A high probability with sparse scatter doesn't automatically promote to TP: the key question is whether ANY narrow line is visible. Here, no — and the limit-of-detection issue alone justifies Uncertain in some workflows."
+            watchOut="A high probability with a weak contamination line is not sufficient for a true positive classification. The key criterion is the presence of a clearly visible, narrow line, which is not met in the example above."
           />
 
           <PatternCard
