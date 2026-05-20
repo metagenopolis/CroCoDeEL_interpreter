@@ -18885,7 +18885,7 @@ const CASE_K = [
    Each SHAPE_* name corresponds to one of the CASE_* arrays above. */
 const SHAPE_TP_LOW_RATE = CASE_A;
 const SHAPE_TP_CLEAR = CASE_C;
-const SHAPE_TP_HEAVY = CASE_D;
+const SHAPE_TP_HIGH = CASE_D;
 const SHAPE_FP_DIFFUSE_BIO = CASE_E;
 const SHAPE_FP_DIFFUSE_BIO_3 = CASE_G;
 const SHAPE_FN_CASCADE = CASE_K;
@@ -18965,7 +18965,7 @@ const LearnTab = () => {
         Abundances are shown on a logarithmic scale to improve visibility of
         subdominant species. Since <code>log10(0)</code> is undefined, species not
         detected in a sample are represented as half-points on the corresponding axis.
-        The grey dashed line represents the identity line <code>y = x</code>.
+        The grey dashed line represents the identity line <code>y = x</code>
         </p>
 
         <p>
@@ -19044,9 +19044,9 @@ const LearnTab = () => {
               </>
             }
             signals={[
-              "The contamination line is parallel to y = x but shifted toward the top left of the plot.",
+              "The contamination line is composed of a only few dozen species but usually forms a well-defined cluster.",
+              "The contamination line is shifted toward the top left of the plot.",
               "The contamination line consists of species that are abundant in the source but subdominant in the target sample.",
-              "The contamination line is composed of a few dozen species, is clearly visible, and usually forms a well-defined cluster.",
               "Many source species are undetected in the target due to metagenomic detection limits (many points lie on the Y-axis).",
               "The estimated contamination rate and proportion of introduced species are low, and the Random Forest probability is usually close to 1.",
             ]}
@@ -19055,7 +19055,7 @@ const LearnTab = () => {
 
           <PatternCard
             caseLabel="C"
-            title="Textbook contamination line"
+            title="Intermediate-rate contamination, well-defined contamination line"
             verdict="TP"
             rate="7.14%"
             probability="0.95"
@@ -19063,26 +19063,24 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_TP_CLEAR} rate={0.0714} lineSide="above" />}
             description={
               <>
-                The case you can't miss: a dense, narrow cluster aligned
-                on the contamination line across most of the abundance
-                range.
+                The case you can't miss with a strong and consistent contamination signal.
               </>
             }
             signals={[
-              "Tight, dense cluster sitting on a clean contamination line",
-              "Cluster spans 2-3 orders of magnitude on each axis",
-              "Probability close to 1",
+               "The contamination line is composed of at least a few dozen species, is clearly visible, and forms a well-defined cluster",
+               "The contamination line spans 2 to 3 orders of magnitude on each axis",
+               "The Random Forest probability is close to 1",
             ]}
           />
 
           <PatternCard
             caseLabel="D"
-            title="Heavy contamination"
+            title="High-rate contamination"
             verdict="TP"
             rate="32.07%"
             probability="1.00"
             introduced="39.1%"
-            plot={<PatternMiniPlot points={SHAPE_TP_HEAVY} rate={0.3207} lineSide="above" />}
+            plot={<PatternMiniPlot points={SHAPE_TP_HIGH} rate={0.3207} lineSide="above" />}
             description={
               <>
                 For high contamination levels (typically {">"}10%), a large fraction of
@@ -19297,7 +19295,7 @@ const LearnTab = () => {
             ]}
             watchOut={[
               "Flag these cases as false positives even if the proportion of introduced species and the Random Forest probability are high.",
-              "Do not confuse these cases with heavy contamination.",
+              "Do not confuse these cases with high-rate contamination.",
               "Contamination events involving related samples are not necessarily false positives, as these samples do not always exhibit similar abundance profiles. This is particularly true for infant microbiomes, which can change rapidly over time (e.g. 60D144 → 60D13 and 58D256 → 58D28 in the Lou et al. dataset).",
             ]}
           />
