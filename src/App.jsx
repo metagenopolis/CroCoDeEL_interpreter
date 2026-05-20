@@ -18965,8 +18965,7 @@ const LearnTab = () => {
         Abundances are shown on a logarithmic scale to improve visibility of
         subdominant species. Since <code>log10(0)</code> is undefined, species not
         detected in a sample are represented as half-points on the corresponding axis.
-        The grey dashed line represents the identity line <code>y = x</code>. Points
-        on this line correspond to species with equal abundance in both samples.
+        The grey dashed line represents the identity line <code>y = x</code>.
         </p>
 
         <p>
@@ -19020,7 +19019,7 @@ const LearnTab = () => {
               display: "inline-block",
             }}
           />
-          True positives — what real contamination looks like
+          True positives — cross-sample contamination events correctly identified by CroCoDeEL
         </h2>
         <div
           className="grid gap-5"
@@ -19028,7 +19027,7 @@ const LearnTab = () => {
         >
           <PatternCard
             caseLabel="B"
-            title="Faint contamination line, low rate"
+            title="Low-rate contamination, faint contamination line"
             verdict="TP"
             rate="1.18%"
             probability="1.00"
@@ -19182,13 +19181,13 @@ const LearnTab = () => {
               marginLeft: -6,
             }}
           />
-          False detections — what humans see but the model gets wrong
+          False positives and false negatives — contamination events incorrectly reported or missed by CroCoDeEL
         </h2>
         <p
           className="text-[13px] mb-3"
           style={{ color: "var(--ink-soft)", lineHeight: 1.6 }}
         >
-          Two failure modes show up here.
+          Two types of classification errors are presented below.
         </p>
         <ul
           className="text-[13px] mb-5 pl-5 list-disc space-y-1.5"
@@ -19196,22 +19195,23 @@ const LearnTab = () => {
         >
           <li>
             <strong style={{ color: EVAL_FP_COLOR }}>False positives</strong>{" "}
-            — pairs CroCoDeEL flagged that a curator reads as biological
-            pattern, not mechanical contamination. Typical give-aways:
-            diffuse clouds, mid-range probabilities, and the sneaky
-            case where the probability is high but the points don't
-            actually hug the line.
+            — events reported by CroCoDeEL that do not correspond to true
+            cross-sample contamination. In some cases, they arise from
+            biologically related samples with highly similar abundance
+            profiles. In other cases, no clear contamination line is
+            observed, but only noise or a weak signal.
           </li>
           <li>
             <strong style={{ color: "#1a1a1a" }}>False negatives</strong>{" "}
-            — real contaminations CroCoDeEL missed. By definition they
-            won't appear in your events table; knowing the patterns
-            helps you decide whether to widen the search (lower the
-            CroCoDeEL probability cutoff) or accept the residual blind
-            spots (should be very rare). You can also probe specific
-            suspect pairs in the Scatter tab's <strong>Explore</strong>{" "}
-            mode — feed any source / target combination and inspect
-            the scatter yourself, even if CroCoDeEL never flagged it.
+            — cross-sample contamination events not detected by CroCoDeEL.
+            By definition, these events are not reported in CroCoDeEL output
+            files. Below, the descriptions of false negatives help users
+            understand the limits of detection of CroCoDeEL and the types of
+            events that may be missed.
+            You can also explore specific suspect sample pairs (for instance,
+            those reported by other tools) in the Scatter tab using
+            <strong>Explore new pairs</strong> mode, where any source/target
+            combination can be visualized directly.
           </li>
         </ul>
         <div
