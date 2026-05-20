@@ -19275,31 +19275,30 @@ const LearnTab = () => {
 
                 The example above is from the Mediterranean-diet cohort
                 (Meslier et al. 2020, PRJEB33500). It shows two samples from 
-                subject D40
-                ({" "}
+                subject D40 (
                 <code style={{ fontFamily: "ui-monospace, monospace" }}>
                   ERS4277379
-                </code>{" "} and
+                </code>{" "} and {" "}
                 <code style={{ fontFamily: "ui-monospace, monospace" }}>
                   ERS4277462
                 </code>
-                {" "}), collected within a short time interval (4 weeks), that
+                ), collected within a short time interval (4 weeks), that
                 are incorrectly reported as cross-contaminated.
               </>
             }
             signals={[
-              "Samples originate from the same individual (longitudinal sampling) or from animals sharing the same environment",
-              "Most detected species are present in both samples (few points lie on the X-axis or Y-axis)",
-              "Many species have similar abundances and form a cloud of points around the identity line y = x",
-              "This linear trend is typically broader and noisier than a true contamination line",
-              "Species abundance profiles are highly correlated (Spearman ρ ≥ 0.7)",
-              "The estimated contamination rate is very high (typically >50%), but the reported contamination line does not overlap with y = x, although it should",
-              "The proportion of introduced species is high, and the Random Forest probability is usually close to 1",
+              "Samples originate from the same individual (longitudinal sampling) or from animals sharing the same environment.",
+              "Most detected species are present in both samples (few points lie on the X-axis or Y-axis).",
+              "Many species have similar abundances and form a cloud of points around the identity line.",
+              "This linear trend is typically broader and noisier than a true contamination line.",
+              "Species abundance profiles are highly correlated (Spearman ρ ≥ 0.7).",
+              "The estimated contamination rate is very high (typically >50%), but the reported contamination line does not fully overlap with y = x, although it should.",
+              "The proportion of introduced species is high, and the Random Forest probability is usually close to 1.",
             ]}
             watchOut={[
-              "Flag these cases as false positives even if the proportion of introduced species and the Random Forest probability are high",
-              "Do not confuse these cases with heavy contamination",
-              "Contamination events involving biologically related samples are not necessarily false positives, as related samples do not always exhibit similar species abundance profiles. This is particularly true for infant microbiomes, which can change rapidly over time (e.g. 60D144 → 60D13 and 58D256 → 58D28 in the Lou et al. dataset).",
+              "Flag these cases as false positives even if the proportion of introduced species and the Random Forest probability are high.",
+              "Do not confuse these cases with heavy contamination.",
+              "Contamination events involving related samples are not necessarily false positives, as these samples do not always exhibit similar abundance profiles. This is particularly true for infant microbiomes, which can change rapidly over time (e.g. 60D144 → 60D13 and 58D256 → 58D28 in the Lou et al. dataset).",
             ]}
           />
 
