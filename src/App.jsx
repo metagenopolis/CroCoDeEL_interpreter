@@ -19241,18 +19241,24 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_FP_DIFFUSE_BIO} rate={0.0113} lineSide="above" />}
             description={
               <>
-                Points spread across the plot area without forming a
-                clear contamination line. The probability reflects the
-                model's hesitation — anything around 0.5 should be
-                treated as a coin flip and inspected manually.
+                Some points form a diffuse cloud in the top-left region of the plot without aligning
+                along a well-defined contamination line. This pattern is characteristic of
+                cases in which model confidence is low.
+
+                This typically occurs when sequencing depth is much higher in the source
+                than in the target, leading to different effective detection limits between
+                samples. In the example above, the effective detection thresholds are
+                approximately 1e-6 in the source and 1e-4 in the target.
               </>
             }
             signals={[
-              "No clear contamination line",
-              "Probability between 0.5 and 0.7",
-              "Source and target often share a biome or subject_id",
+              "A diffuse cloud of points appears in the top-left region.",
+              "These points do not align into a clear contamination line.",
+              "The Random Forest probability is near the decision threshold (typically 0.5–0.7), indicating uncertainty.",
+              "Detection limits between source and target differ by several orders of magnitude.",
+              ""
             ]}
-            watchOut="A borderline probability is not by itself evidence of FP — it just means you, the human, must make the call."
+            watchOut="A borderline probability alone is not sufficient evidence for a false positive and should prompt manual inspection of the scatterplot."
           />
 
           <PatternCard
