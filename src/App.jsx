@@ -19106,7 +19106,7 @@ const LearnTab = () => {
 
           <PatternCard
             caseLabel="A"
-            title="Bidirectional contamination — one direction reported"
+            title="Bidirectional contamination"
             verdict="TP"
             rate="0.49%"
             probability="1.00"
@@ -19114,22 +19114,20 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_TP_LOW_RATE} rate={0.0049} lineSide="above" />}
             description={
               <>
-                The two samples contaminated each other. CroCoDeEL
-                reports this as two separate events, one per direction,
-                each with its own scatter and its own contamination
-                line. The mini-plot here reproduces the paper's combined
-                view (both directions on a single chart, hence the two
-                clusters); in the app you'd see one cluster and one
-                line per event.
+                 The two samples contaminated each other. CroCoDeEL reports these as two
+                 distinct events, one for each direction, with source and target samples
+                 swapped.
               </>
             }
             signals={[
-              "A clear, narrow linear cluster parallel to y = x",
-              "A reciprocal event exists in the events table for the opposite direction",
-              "RF probability ≈ 1 even at low rates",
-              "Both events should generally receive the same evaluation",
+              "Two contamination lines are visible on opposite sides of y = x. The line in the top-left corresponds to the current event, whereas the other corresponds to the reciprocal event.",
+              "A reciprocal event is reported with source and target samples swapped.",
             ]}
-            watchOut="When you validate one direction, search the events table for the reciprocal pair (source and target swapped). Don't classify them inconsistently."
+            watchOut={[
+                "When validating one event as a true positive, flag the reciprocal event consistently.",
+                "Observing two contamination lines on opposite sides of y = x is unlikely by chance and therefore strongly supports true cross-sample contamination.",
+                "Contamination rates may differ substantially between the two directions. Consequently, one sample may warrant exclusion while the other remains suitable for downstream analyses.",
+            ]}
           />
         </div>
       </div>
