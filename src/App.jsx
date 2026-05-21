@@ -19346,8 +19346,10 @@ const LearnTab = () => {
               </>
             }
             signals={[
-              "A line is visible but noticeably wider than a textbook TP",
-              "Investigation may reveal a third sample contaminating both",
+              "A contamination line is visible but noticeably wider and noisier than in typical true positives",
+              "Investigation may reveal a third sample contaminating the source sample",
+              "Some points lie above the contamination line",
+              "Some highly abundant species in the source may not be detected in the target (points on the upper part of the Y-axis)",
               "Cascade flag in the events table can hint at this when the third source IS detected",
               "Cascade detection runs only between UNRELATED samples (different subjects / groups) — related pairs are skipped because biological similarity already explains the same pattern more parsimoniously",
             ]}
