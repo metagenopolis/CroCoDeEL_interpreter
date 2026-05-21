@@ -58,7 +58,7 @@ If the interface contributes to a publication, please cite CroCoDeEL itself:
 
 > Goulet L. et al., *CroCoDeEL: accurate control-free detection of cross-sample contamination in metagenomic data*, Nature Communications 2026. [doi.org/10.1038/s41467-026-72637-9](https://doi.org/10.1038/s41467-026-72637-9)
 
-See [`CITATION.cff`](./CITATION.cff) for the full author list and a machine-readable record.
+See [`CITATION.cff`](https://github.com/metagenopolis/CroCoDeEL/blob/main/CITATION.cff) for the full author list and a machine-readable record.
 
 ## License
 
