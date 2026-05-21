@@ -1,6 +1,6 @@
 # CroCoDeEL Interpretation Interface
 
-A browser-based curation interface for [CroCoDeEL](https://github.com/metagenopolis/CroCoDeEL) contamination calls. Load a `contamination_events.tsv` and the matching `species_abundance.tsv` (and optionally a sample metadata file and a plate map), walk every flagged event through a scatterplot and seven diagnostic criteria with full sample/plate context, then commit a two-layer curation: an **event evaluation** (true positive / false positive / uncertain / pending) and, on the target sample, a **sample-level verdict** with an optional **keep / suppress** action. Export a curated TSV, a self-contained HTML report, or a full session JSON.
+A browser-based curation interface for contamination events reported by [CroCoDeEL](https://github.com/metagenopolis/CroCoDeEL). Load a `contamination_events.tsv` and the matching `species_abundance.tsv` (and optionally a sample metadata file and a plate map), walk every flagged event through a scatterplot and seven diagnostic criteria with full sample/plate context, then commit a two-layer curation: an **event evaluation** (true positive / false positive / uncertain / pending) and, on the target sample, a **sample-level verdict** with an optional **keep / suppress** action. Export a curated TSV, a self-contained HTML report, or a full session JSON.
 
 > **Live:** https://metagenopolis.github.io/CroCoDeEL_interpreter/
 >

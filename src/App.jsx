@@ -19063,7 +19063,7 @@ const LearnTab = () => {
             plot={<PatternMiniPlot points={SHAPE_TP_CLEAR} rate={0.0714} lineSide="above" />}
             description={
               <>
-                The case you can't miss with a strong and consistent contamination signal.
+                The textbook case you can't miss with a strong and consistent contamination signal.
               </>
             }
             signals={[
@@ -19329,18 +19329,20 @@ const LearnTab = () => {
 
           <PatternCard
             caseLabel="K"
-            title="Cascade contamination — blurred line"
+            title="Cascade contamination, blurred contamination line"
             verdict="FN"
             plot={<PatternMiniPlot points={SHAPE_FN_CASCADE} />}
             description={
               <>
-                A cascade occurs when source A contaminates target B,
-                but A has itself been contaminated by a third sample C.
-                The scatterplot then mixes A's own species with species
-                inherited from C, so the contamination line becomes
-                noticeably noisy with points sitting above it.
-                CroCoDeEL rejects blurred lines, so cascade contamination
-                is a common cause of false negatives.
+                Cascade contamination occurs when source A contaminates
+                target B, but A is later contaminated by a third sample
+                C. Consequently, the abundance profile of A at the time
+                of analysis no longer matches the profile it had when
+                contaminating B. The contamination line therefore
+                becomes noisy, with additional unexpected points
+                appearing above it. Because CroCoDeEL typically rejects
+                poorly defined contamination lines, cascade
+                contamination is a common cause of false negatives.
               </>
             }
             signals={[
