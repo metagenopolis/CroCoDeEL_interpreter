@@ -19254,24 +19254,6 @@ const LearnTab = () => {
           </li>
         </ul>
         <div
-          className="rounded-sm p-3 mb-5"
-          style={{
-            background: "rgba(196,192,179,0.15)",
-            borderLeft: "3px solid #c4c0b3",
-            fontSize: 12,
-            color: "var(--ink-soft)",
-            lineHeight: 1.55,
-          }}
-        >
-          The original Goulet et al. paper classified the third as a
-          false positive (i.e. real biological similarity, no actual
-          contamination). A stricter curator could legitimately tag it
-          as <strong>Uncertain</strong> rather than FP, and even{" "}
-          <strong>TP</strong>, especially when the metadata context is
-          itself ambiguous. Pick a stringency policy for your study and
-          apply it consistently.
-        </div>
-        <div
           className="grid gap-5"
           style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}
         >
