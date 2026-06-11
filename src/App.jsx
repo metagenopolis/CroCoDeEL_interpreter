@@ -683,14 +683,28 @@ export function buildScatter(ab, event) {
   }
   const introducedSet = new Set(introduced);
   const points = [];
+  // Species richness = number of species observed (relative abundance > 0)
+  // in each sample. Counted independently of the both-zero skip below.
+  let sourceRichness = 0;
+  let targetRichness = 0;
   ab.species.forEach((sp) => {
     const xs = ab.matrix[sp][tgtKey] || 0;
     const ys = ab.matrix[sp][srcKey] || 0;
+    if (xs > 0) targetRichness++;
+    if (ys > 0) sourceRichness++;
     if (xs === 0 && ys === 0) return;
     points.push({ species: sp, x: xs, y: ys, onLine: introducedSet.has(sp) });
   });
   const logC = rate > 0 ? Math.log10(rate) : null;
-  return { points, logC, source, target, logRange: ab.logRange || null };
+  return {
+    points,
+    logC,
+    source,
+    target,
+    sourceRichness,
+    targetRichness,
+    logRange: ab.logRange || null,
+  };
 }
 
 /** Complementary error function — Numerical-Recipes rational
@@ -1600,6 +1614,7 @@ const Scatterplot = ({
   pickedSpecies = [],
   colorOnLine = true,
   showSpearman = true,
+  showRichness = true,
 }) => {
   const [hover, setHover] = useState(null);
   if (!scatter) return null;
@@ -1751,6 +1766,12 @@ const Scatterplot = ({
           fill="#275662"
         >
           Target (contaminated) — {scatter.target}
+          {showRichness && typeof scatter.targetRichness === "number" && (
+            <tspan fill="#797870" fontWeight="500">
+              {"  ·  "}
+              {scatter.targetRichness} species
+            </tspan>
+          )}
         </text>
         <text
           x={-(pad.t + h / 2)}
@@ -1763,6 +1784,12 @@ const Scatterplot = ({
           fill="#275662"
         >
           Source — {scatter.source}
+          {showRichness && typeof scatter.sourceRichness === "number" && (
+            <tspan fill="#797870" fontWeight="500">
+              {"  ·  "}
+              {scatter.sourceRichness} species
+            </tspan>
+          )}
         </text>
         {lineEls}
         {pts.map((p, i) => {
@@ -8916,11 +8943,11 @@ const ScatterTab = ({
   focusEventId,
 }) => {
   const [mode, setMode] = useState("flagged"); // "flagged" or "explore"
-  const [sortBy, setSortBy] = useState("rate");
+  const [sortBy, setSortBy] = useState("score");
   // Direction per sort key — defaults match what most users expect
   // (descending for numeric severity, ascending for alphabetical).
   const SORT_DEFAULT_DIR = { score: "desc", rate: "desc", introducedPct: "desc", source: "asc", target: "asc", pending: "asc", action: "asc", targetVerdict: "asc" };
-  const [sortDir, setSortDir] = useState(SORT_DEFAULT_DIR.rate);
+  const [sortDir, setSortDir] = useState(SORT_DEFAULT_DIR.score);
   // Sort freeze: when a card opens its action popover, we hold the
   // gallery's order so the just-clicked card doesn't jump out from
   // under the popover. The hold releases as soon as the popover closes.
@@ -10937,7 +10964,7 @@ const SamplesTab = ({
       hasGroupIdCol: !!metadata?.hasGroupIdCol,
     };
   }, [metadata]);
-  const [sortBy, setSortBy] = useState(persisted.sortBy ?? "rate"); // rate | attention | id | events | verdict
+  const [sortBy, setSortBy] = useState(persisted.sortBy ?? "score"); // score | rate | attention | id | events | verdict
   const [sortDir, setSortDir] = useState(persisted.sortDir ?? "desc");
   const [bulkOpen, setBulkOpen] = useState(false);
   const [openNotes, setOpenNotes] = useState(
@@ -11025,6 +11052,19 @@ const SamplesTab = ({
   // are computed from the filtered set so they match what the user
   // sees in the other tabs.
   const eventsForSamples = filteredEvents || events;
+  // Species richness per sample: number of species observed (relative
+  // abundance > 0) in the abundance table. null when no abundance is
+  // loaded; samples absent from the table get null too (handled below).
+  const richnessBySample = useMemo(() => {
+    if (!ab?.matrix || !ab?.samples) return null;
+    const out = {};
+    for (const s of ab.samples) out[s] = 0;
+    for (const sp of Object.keys(ab.matrix)) {
+      const row = ab.matrix[sp];
+      for (const s of ab.samples) if ((row[s] || 0) > 0) out[s]++;
+    }
+    return out;
+  }, [ab]);
   // Heavy aggregates that depend on the events list, abundance, metadata
   // and plate map but NOT on sampleCuration. Splitting this out means a
   // verdict-click (which only mutates sampleCuration) doesn't trigger a
@@ -11114,9 +11154,10 @@ const SamplesTab = ({
         maxTargetScore,
         maxTargetIntroducedCount,
         maxTargetIntroducedPct,
+        richness: richnessBySample?.[id] ?? null,
       };
     });
-  }, [eventsForSamples, ab, metadata, plateMap]);
+  }, [eventsForSamples, ab, metadata, plateMap, richnessBySample]);
   // Cheap row-by-row merge of the curation layer onto the precomputed
   // aggregates. Re-runs on every sampleCuration write but is O(samples)
   // not O(events × samples).
@@ -11171,6 +11212,22 @@ const SamplesTab = ({
     const flip = sortDir === "asc" ? 1 : -1;
     if (sortBy === "id")
       copy.sort((a, b) => a.id.localeCompare(b.id) * flip);
+    else if (sortBy === "score") {
+      // Per-sample probability = the highest contamination probability
+      // observed on any event where this sample is the target. Mirrors
+      // the "rate" branch: samples that never appear as a target
+      // (score == null) sink to the bottom regardless of direction.
+      copy.sort((a, b) => {
+        const as = a.maxTargetScore;
+        const bs = b.maxTargetScore;
+        const aMissing = as == null;
+        const bMissing = bs == null;
+        if (aMissing && bMissing) return a.id.localeCompare(b.id);
+        if (aMissing) return 1;
+        if (bMissing) return -1;
+        return (as - bs) * flip || a.id.localeCompare(b.id);
+      });
+    }
     else if (sortBy === "rate") {
       // Per-sample rate = the highest contamination rate observed on
       // any event where this sample is the target. Samples that never
@@ -11195,6 +11252,21 @@ const SamplesTab = ({
           (a.name || "").localeCompare(b.name || "") * flip ||
           a.id.localeCompare(b.id),
       );
+    else if (sortBy === "richness") {
+      // Samples missing from the abundance table (richness == null)
+      // sink to the bottom regardless of direction, like the rate/score
+      // branches.
+      copy.sort((a, b) => {
+        const ar = a.richness;
+        const br = b.richness;
+        const aMissing = ar == null;
+        const bMissing = br == null;
+        if (aMissing && bMissing) return a.id.localeCompare(b.id);
+        if (aMissing) return 1;
+        if (bMissing) return -1;
+        return (ar - br) * flip || a.id.localeCompare(b.id);
+      });
+    }
     else if (sortBy === "events")
       copy.sort(
         (a, b) =>
@@ -11272,6 +11344,11 @@ const SamplesTab = ({
     !!plateMap;
   const columns = [
     { id: "sample", label: "Sample", sortKey: "id" },
+    hasAb && {
+      id: "richness",
+      label: "Richness",
+      sortKey: "richness",
+    },
     hasContext && {
       id: "context",
       label: "Context",
@@ -11853,6 +11930,39 @@ const SamplesTab = ({
                                 : null
                             }
                           />
+                        )}
+                        {col.id === "richness" && (
+                          <span
+                            title={
+                              r.richness == null
+                                ? "Sample absent from the abundance table"
+                                : `${r.richness} species observed (relative abundance > 0)`
+                            }
+                            style={{
+                              fontFamily: '"Raleway", sans-serif',
+                              fontWeight: 700,
+                              fontSize: 13,
+                              color:
+                                r.richness == null
+                                  ? "var(--border-strong)"
+                                  : "var(--ink)",
+                              fontStyle: r.richness == null ? "italic" : "normal",
+                            }}
+                          >
+                            {r.richness == null ? "—" : r.richness}
+                            {r.richness != null && (
+                              <span
+                                style={{
+                                  color: "var(--ink-muted)",
+                                  fontWeight: 500,
+                                  fontSize: 11,
+                                  marginLeft: 4,
+                                }}
+                              >
+                                species
+                              </span>
+                            )}
+                          </span>
                         )}
                         {col.id === "eventsSource" && (
                           <SampleEventsCell
@@ -16121,6 +16231,8 @@ const ValidateTab = ({
   setSampleVerdict,
   showSpearman,
   setShowSpearman,
+  showRichness,
+  setShowRichness,
   sampleCuration,
   metadata,
   plateMap,
@@ -16139,7 +16251,7 @@ const ValidateTab = ({
   // Queue + sort. Mirrors the gallery's sort affordance so the user
   // can step through events in the most useful order with the same
   // ↑/↓/←/→ shortcuts.
-  const [queueSortBy, setQueueSortBy] = useState("rate");
+  const [queueSortBy, setQueueSortBy] = useState("score");
   const QUEUE_SORT_DIR_DEFAULTS = {
     score: "desc",
     rate: "desc",
@@ -16149,7 +16261,7 @@ const ValidateTab = ({
     source: "asc",
   };
   const [queueSortDir, setQueueSortDir] = useState(
-    QUEUE_SORT_DIR_DEFAULTS.rate,
+    QUEUE_SORT_DIR_DEFAULTS.score,
   );
   const handleQueueSortClick = (id) => {
     if (queueSortBy === id) {
@@ -16707,6 +16819,7 @@ const ValidateTab = ({
                 pickedSpecies={pickedSpecies}
                 colorOnLine={colorOnLine}
                 showSpearman={showSpearman}
+                showRichness={showRichness}
               />
             ) : (
               <div
@@ -16761,6 +16874,18 @@ const ValidateTab = ({
                   style={{ accentColor: "#275662" }}
                 />
                 Show Spearman ρ
+              </label>
+              <label
+                className="flex items-center gap-2 select-none cursor-pointer"
+                title="Toggle the per-sample species richness (number of species observed) shown next to the source and target axis labels."
+              >
+                <input
+                  type="checkbox"
+                  checked={showRichness}
+                  onChange={(e) => setShowRichness(e.target.checked)}
+                  style={{ accentColor: "#275662" }}
+                />
+                Show richness
               </label>
             </div>
 
@@ -23558,6 +23683,10 @@ function AppMain({ initial }) {
   // ON so the correlation badge shows on the Validate main scatter
   // right away; turning it off declutters the corner.
   const [showSpearman, setShowSpearman] = useState(true);
+  // "Show richness" toggle — same lift-to-App pattern. Defaults to ON so
+  // the per-sample species richness shows next to the axis labels right
+  // away; turning it off declutters the source/target captions.
+  const [showRichness, setShowRichness] = useState(true);
   // Samples-tab UI state — lifted to App so sort order, page,
   // context filters, expanded notes and scroll position survive a
   // round-trip to the Scatter / Events tabs (otherwise drilling on a
@@ -23566,7 +23695,7 @@ function AppMain({ initial }) {
   // internally; values are synced into / out of the ref on mount
   // and on every change.
   const samplesUIRef = useRef({
-    sortBy: "rate",
+    sortBy: "score",
     sortDir: "desc",
     page: 1,
     openNotes: [],
@@ -23818,7 +23947,7 @@ function AppMain({ initial }) {
     };
   });
   const [sort, setSort] = useState(
-    initial?.sort || { by: "rate", dir: "desc" },
+    initial?.sort || { by: "score", dir: "desc" },
   );
   const [err, setErr] = useState(null);
   // Long-running file load / parse indicator. `null` when idle; an
@@ -27538,6 +27667,8 @@ function AppMain({ initial }) {
               setColorOnLine={setColorOnLine}
               showSpearman={showSpearman}
               setShowSpearman={setShowSpearman}
+              showRichness={showRichness}
+              setShowRichness={setShowRichness}
             />
           )}
           {tab === "samples" && (
