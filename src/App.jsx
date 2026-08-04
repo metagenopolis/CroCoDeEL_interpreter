@@ -756,6 +756,80 @@ export function abundanceToTSV(ab) {
   return lines.join("\n");
 }
 
+/** Apply the sample-level curation to the abundance table.
+
+    Samples the curator flagged `suppress` are removed entirely — that is
+    what the action means: the sample carries too much contamination to be
+    usable. Everything else passes through untouched, including samples
+    flagged `keep` and samples never reviewed.
+
+    No renormalisation happens, and none is needed: in a relative-abundance
+    table each column is closed independently, so removing a whole column
+    leaves every other column summing to exactly what it did before. (This
+    is the opposite of subtracting contamination WITHIN a column, which does
+    break the closure.)
+
+    `dropEmptySpecies` additionally removes species rows left at zero
+    everywhere once the suppressed columns are gone — taxa that were only
+    ever observed in a discarded sample. Off by default would keep the row
+    count comparable with the input; on by default keeps the output clean.
+    Both are defensible, so it is exposed to the user rather than decided
+    here. */
+export function buildCuratedAbundance(ab, sampleCuration, opts = {}) {
+  if (!ab) return null;
+  const dropEmptySpecies = opts.dropEmptySpecies ?? true;
+
+  // Curation is keyed by the sample names that appear in the events file;
+  // map them onto the abundance table's own keys the way every other join
+  // in this file does, so a case or whitespace difference does not silently
+  // fail to suppress a sample.
+  const suppressed = new Set();
+  if (sampleCuration) {
+    for (const name of Object.keys(sampleCuration)) {
+      if (sampleCuration[name]?.action !== "suppress") continue;
+      const key = resolveSample(ab, name);
+      if (key) suppressed.add(key);
+    }
+  }
+
+  const samples = ab.samples.filter((s) => !suppressed.has(s));
+  const droppedSamples = ab.samples.filter((s) => suppressed.has(s));
+
+  let species = ab.species;
+  const droppedSpecies = [];
+  if (dropEmptySpecies) {
+    const kept = [];
+    for (const sp of ab.species) {
+      let seen = false;
+      for (const s of samples) {
+        if ((ab.matrix[sp]?.[s] || 0) > 0) {
+          seen = true;
+          break;
+        }
+      }
+      if (seen) kept.push(sp);
+      else droppedSpecies.push(sp);
+    }
+    species = kept;
+  }
+
+  const matrix = {};
+  for (const sp of species) {
+    const row = {};
+    for (const s of samples) row[s] = ab.matrix[sp]?.[s] ?? 0;
+    matrix[sp] = row;
+  }
+
+  return {
+    samples,
+    species,
+    matrix,
+    logRange: ab.logRange,
+    droppedSamples,
+    droppedSpecies,
+  };
+}
+
 /** Serialize metadata back to TSV using whatever extra columns were present
     in the original upload. */
 function metadataToTSV(metadata) {
@@ -18183,7 +18257,7 @@ const ValidateTab = ({
 };
 
 /* ---------- EXPORT TAB ---------- */
-const ExportCard = ({ title, desc, action, onClick }) => (
+const ExportCard = ({ title, desc, action, onClick, children, disabled, disabledHint }) => (
   <div
     className="p-5 flex flex-col rounded-sm"
     style={{ border: "1px solid var(--border)", background: "var(--bg-card)" }}
@@ -18202,19 +18276,27 @@ const ExportCard = ({ title, desc, action, onClick }) => (
     <div className="text-[13px] flex-1 mb-4" style={{ color: "var(--ink-muted)", lineHeight: 1.5 }}>
       {desc}
     </div>
+    {children ? <div className="mb-4">{children}</div> : null}
     <button
       onClick={onClick}
+      disabled={disabled}
+      title={disabled ? disabledHint : undefined}
       className="px-4 py-2 text-[12px] rounded-sm flex items-center gap-2 self-start"
       style={{
-        background: "#275662",
-        color: "white",
+        background: disabled ? "var(--border-strong)" : "#275662",
+        color: disabled ? "var(--ink-muted)" : "white",
         fontWeight: 700,
         letterSpacing: "0.02em",
         border: "none",
+        cursor: disabled ? "not-allowed" : "pointer",
         fontFamily: '"Raleway", sans-serif',
       }}
-      onMouseOver={(e) => (e.currentTarget.style.background = "#00a3a6")}
-      onMouseOut={(e) => (e.currentTarget.style.background = "#275662")}
+      onMouseOver={(e) => {
+        if (!disabled) e.currentTarget.style.background = "#00a3a6";
+      }}
+      onMouseOut={(e) => {
+        if (!disabled) e.currentTarget.style.background = "#275662";
+      }}
     >
       <Download className="w-3.5 h-3.5" />
       {action}
@@ -22549,7 +22631,12 @@ const ExportTab = ({
   onExportHTML,
   onExportSamplesTSV,
   onExportSamplesHTML,
+  onExportCuratedAbundance,
+  curatedAbundanceStats,
 }) => {
+  // Species rows left at zero once the suppressed samples are gone can be
+  // dropped or kept; both are defensible, so the curator decides.
+  const [dropEmptySpecies, setDropEmptySpecies] = useState(true);
   // Compute counts from the filtered subset so the stat row reflects what
   // will actually go into the export. Action lives on samples now —
   // tally distinct target-sample actions across the events that pass
@@ -22706,6 +22793,73 @@ const ExportTab = ({
             onExportHTML(filteredEvents, { filter, actionEnabled })
           }
         />
+        {onExportCuratedAbundance && (
+          <ExportCard
+            title={
+              curatedAbundanceStats
+                ? `Curated abundance table — ${curatedAbundanceStats.keptSamples} of ${curatedAbundanceStats.totalSamples} samples`
+                : "Curated abundance table"
+            }
+            desc={
+              !hasAb ? (
+                "Load species_abundance.tsv to enable this export."
+              ) : curatedAbundanceStats?.suppressedSamples === 0 ? (
+                <>
+                  The abundance table with every sample set to{" "}
+                  <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
+                  removed. Nothing is set to suppress yet, so this would
+                  export the table unchanged — mark a sample{" "}
+                  <em>Contaminated</em> from the Samples, Validate or Network
+                  tab (which defaults its action to Suppress), or set the
+                  action by hand.
+                </>
+              ) : (
+                <>
+                  The abundance table with the{" "}
+                  <strong style={{ color: "var(--ink)" }}>
+                    {curatedAbundanceStats.suppressedSamples} sample
+                    {curatedAbundanceStats.suppressedSamples === 1 ? "" : "s"}
+                  </strong>{" "}
+                  set to <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
+                  removed — which includes every sample you marked{" "}
+                  <em>Contaminated</em> without then choosing <em>Keep</em>
+                  {curatedAbundanceStats.droppedSpecies > 0 && dropEmptySpecies
+                    ? `, and ${curatedAbundanceStats.droppedSpecies} species that are left at zero everywhere`
+                    : ""}
+                  . Remaining columns are untouched — dropping a sample does
+                  not change any other sample's relative abundances, so no
+                  renormalisation is applied. The suppressed ids are recorded
+                  in the file header.
+                </>
+              )
+            }
+            action="Download curated abundance TSV"
+            disabled={!hasAb}
+            disabledHint="Requires the abundance table"
+            onClick={() => onExportCuratedAbundance({ dropEmptySpecies })}
+          >
+            {hasAb && (
+              <label
+                className="flex items-start gap-2 text-[12px] cursor-pointer"
+                style={{ color: "var(--ink-muted)" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={dropEmptySpecies}
+                  onChange={(e) => setDropEmptySpecies(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Drop species observed only in the suppressed samples
+                  {curatedAbundanceStats
+                    ? ` (${curatedAbundanceStats.droppedSpecies})`
+                    : ""}
+                  . Uncheck to keep the species list identical to the input.
+                </span>
+              </label>
+            )}
+          </ExportCard>
+        )}
         {onExportSamplesHTML && (
           <ExportCard
             title="Samples HTML report"
@@ -25932,6 +26086,55 @@ const defaultFilter = () => ({
       introduced %, plus the curation triplet (verdict, action, notes).
       Empty / missing values become empty cells; the rows aren't
       filtered so downstream tooling can pivot on whatever it needs. */
+  /** Preview counts for the Export tab card. Cheap: one pass over the
+      matrix, and only when an abundance table is loaded. */
+  const curatedAbundanceStats = useMemo(() => {
+    if (!ab) return null;
+    const cur = buildCuratedAbundance(ab, sampleCuration, {
+      dropEmptySpecies: true,
+    });
+    return {
+      totalSamples: ab.samples.length,
+      keptSamples: cur.samples.length,
+      suppressedSamples: cur.droppedSamples.length,
+      totalSpecies: ab.species.length,
+      droppedSpecies: cur.droppedSpecies.length,
+    };
+  }, [ab, sampleCuration]);
+
+  const exportCuratedAbundance = (opts = {}) => {
+    if (!ab) return;
+    const cur = buildCuratedAbundance(ab, sampleCuration, opts);
+    const head = [
+      `# curated abundance table — ${cur.samples.length} of ${ab.samples.length} samples kept`,
+    ];
+    if (analysisTitle) head.push(`# study: ${tsvCell(analysisTitle)}`);
+    head.push(`# curated: ${new Date().toISOString()}`);
+    // Provenance: which samples were dropped and why the species list may
+    // be shorter. A reader must be able to reconstruct the input.
+    if (cur.droppedSamples.length > 0) {
+      head.push(
+        `# suppressed samples (${cur.droppedSamples.length}): ${cur.droppedSamples
+          .map(tsvCell)
+          .join(", ")}`,
+      );
+    } else {
+      head.push("# suppressed samples (0): none — table is unchanged");
+    }
+    if (cur.droppedSpecies.length > 0) {
+      head.push(
+        `# species dropped as all-zero after suppression (${cur.droppedSpecies.length})`,
+      );
+    }
+    head.push(
+      "# relative abundances are unchanged: removing a sample column does not affect the others",
+    );
+    downloadText(
+      head.join("\n") + "\n" + abundanceToTSV(cur),
+      "species_abundance_curated.tsv",
+    );
+  };
+
   const exportSamplesReport = () => {
     const sampleIds = new Set();
     (events || []).forEach((e) => {
@@ -27338,52 +27541,6 @@ const defaultFilter = () => ({
         ::-webkit-scrollbar-thumb:hover { background: #00a3a6; }
       `}</style>
 
-      {/* ==================== BETA BANNER ==================== */}
-      <div
-        style={{
-          background: "#ed6e6c",
-          color: "#fff",
-          textAlign: "center",
-          padding: "6px 16px",
-          fontSize: 12,
-          fontWeight: 700,
-          letterSpacing: "0.04em",
-          fontFamily: '"Raleway", sans-serif',
-        }}
-      >
-        <span
-          style={{
-            display: "inline-block",
-            background: "var(--bg-card)",
-            color: "#ed6e6c",
-            padding: "1px 8px",
-            borderRadius: 2,
-            marginRight: 10,
-            fontSize: 10,
-            fontWeight: 800,
-            letterSpacing: "0.08em",
-            verticalAlign: "1px",
-          }}
-        >
-          BETA
-        </span>
-        Interface in active development — bugs expected. Verify findings before publication. Report issues at{" "}
-        <a
-          href="https://github.com/metagenopolis/CroCoDeEL_interpreter/issues"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            color: "#fff",
-            textDecoration: "underline",
-            textUnderlineOffset: 2,
-            fontWeight: 700,
-          }}
-        >
-          github.com/metagenopolis/CroCoDeEL_interpreter/issues
-        </a>
-        .
-      </div>
-
       {/* ==================== HEADER ==================== */}
       <header style={{ borderBottom: "3px solid #00a3a6", background: "var(--bg-card)" }}>
         <div className="max-w-7xl mx-auto px-6 py-5">
@@ -28270,6 +28427,8 @@ const defaultFilter = () => ({
               onExportHTML={exportHTMLReport}
               onExportSamplesTSV={exportSamplesReport}
               onExportSamplesHTML={exportSamplesHTMLReport}
+              onExportCuratedAbundance={exportCuratedAbundance}
+              curatedAbundanceStats={curatedAbundanceStats}
             />
           )}
           {tab === "datasets" && (
