@@ -27907,15 +27907,29 @@ const defaultFilter = () => ({
             <div
               role="alert"
               aria-live="assertive"
-              className="flex items-center gap-2 text-sm px-3 py-2 rounded-sm"
+              className="flex items-start gap-2 text-sm px-3 py-2 rounded-sm"
               style={{
                 background: "var(--bg-alert)",
                 border: "1px solid #ed6e6c",
                 color: "#8a2422",
               }}
             >
-              <AlertCircle className="w-4 h-4" />
-              {err}
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              {/* Most callers pass a string, but the session-import handler
+                  passes { title, body }. Rendering that object directly threw
+                  "Objects are not valid as a React child" and took the whole
+                  app down — so a session file that failed to parse blanked
+                  the page instead of reporting the parse failure. */}
+              {err && typeof err === "object" ? (
+                <div>
+                  <strong>{err.title}</strong>
+                  {err.body ? (
+                    <div style={{ marginTop: 2 }}>{err.body}</div>
+                  ) : null}
+                </div>
+              ) : (
+                <div>{err}</div>
+              )}
             </div>
           </div>
         )}
