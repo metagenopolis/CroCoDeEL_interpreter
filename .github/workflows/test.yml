@@ -20,9 +20,16 @@ jobs:
 
       - run: npm ci
 
-      # Lint is intentionally NOT in this gate yet — the codebase has
-      # ~140 pre-existing lint errors that need a dedicated cleanup pass
-      # before the rule can fail the build. Run `npm run lint` locally.
+      # The FULL lint is intentionally NOT in this gate yet — the codebase
+      # has ~140 pre-existing errors (mostly no-unused-vars) that need a
+      # dedicated cleanup pass. Run `npm run lint` locally.
+      #
+      # rules-of-hooks is gated on its own: it is at zero, and it is the
+      # rule that catches a hook called after an early return — which
+      # crashes the whole app with "Rendered more hooks than during the
+      # previous render" and, with no route boundaries, blanks the page.
+      - name: Lint (rules of hooks only)
+        run: npx eslint src tests --config eslint.hooks.config.js
 
       - name: Unit tests
         run: npm test

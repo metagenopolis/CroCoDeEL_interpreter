@@ -104,6 +104,18 @@ function unquoteCell(s) {
   return s;
 }
 
+/** Flatten a value into a single TSV cell.
+
+    Both curated exports used to strip only `\t` from free-text fields while
+    stripping `[\t\n\r]` from the study title. Curator notes are multi-line
+    textareas AND the bulk-apply actions prepend `${tag}\n\n${notes}`
+    themselves, so one event could emit three physical lines — enough to
+    make `pandas.read_csv(sep='\t')` either raise or invent rows. Every
+    field of every writer goes through here. */
+export function tsvCell(v) {
+  return String(v ?? "").replace(/[\t\r\n]+/g, " ");
+}
+
 function parseTSV(text) {
   const allLines = text.replace(/\r/g, "").split("\n").filter((l) => l.length > 0);
   // Separate hash-prefixed header lines (e.g. CroCoDeEL run params) from data
@@ -198,17 +210,37 @@ const formatRatePct = (rate) => {
   return `${Math.round(pct)}%`;
 };
 
+/** Split the introduced-species cell into taxon names.
+
+    The separator is `,`. `;` used to be accepted as an alternative, but it
+    is ALSO the rank separator inside GTDB/SILVA-style lineages
+    (`d__Bacteria;p__Bacteroidota;...;s__Phocaeicola vulgatus`), and
+    splitting on it shreds every name into fragments that match nothing in
+    the abundance table — silently, since a shredded event simply ends up
+    with zero on-line points. So: split on `,` when the cell has one, and
+    only fall back to `;` for a cell that has neither a comma nor the
+    `x__` rank prefixes that mark a lineage. */
+export function splitSpeciesList(cell) {
+  const s = String(cell ?? "").trim();
+  if (!s) return [];
+  const isLineage = /[a-z]__/i.test(s);
+  const sep = s.includes(",") || isLineage ? /,\s*/ : /;\s*/;
+  return s
+    .split(sep)
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0);
+}
+
 function normalizeEvent(raw, cols, idx) {
-  const species = (raw[cols.species] || "")
-    .split(/[,;]\s*/)
-    .filter((s) => s.trim().length > 0);
-  // Probability resolution: prefer the canonical column, but fall back to
-  // an alternate column (typically `score` in older CroCoDeEL outputs)
-  // when the canonical one is empty for this row. Picks the first
-  // non-empty value across all known aliases.
+  const species = splitSpeciesList(raw[cols.species]);
+  // Probability resolution: prefer the column pickCol actually resolved in
+  // this file's header (which matches case-insensitively), then fall back
+  // to the literal aliases for files that carry several score columns and
+  // leave the canonical one empty on some rows.
   let probValue = "";
-  for (const alias of EVENT_COLS.score) {
-    const v = raw[alias];
+  for (const key of [cols.score, ...EVENT_COLS.score]) {
+    if (!key) continue;
+    const v = raw[key];
     if (v != null && String(v).trim() !== "") {
       probValue = v;
       break;
@@ -241,54 +273,116 @@ export function parseEvents(text) {
       "Could not find source/target columns. Expected headers like 'source' and 'target' (or 'contaminated_sample').",
     );
   }
+  // A missing rate column is not fatal — source/target alone still make a
+  // browsable event list — but every rate silently becomes 0, which means
+  // no contamination line is drawn and several diagnostics quietly go
+  // uninformative. Say so rather than letting the user wonder.
+  const warnings = [];
+  if (!cols.rate) {
+    warnings.push(
+      "No contamination-rate column found (expected 'rate' or 'contamination_rate'). " +
+        "Every rate reads as 0, so no contamination line can be drawn.",
+    );
+  }
+  if (!cols.species) {
+    warnings.push(
+      "No introduced-species column found (expected 'contamination_specific_species'). " +
+        "Scatterplots will show no highlighted species.",
+    );
+  }
   return {
     events: rows.map((r, i) => normalizeEvent(r, cols, i)),
     runMetadata: parseRunMetadata(headerComments),
+    warnings,
   };
 }
 
 /* ---------- species_abundance.tsv ---------- */
+
+/** Report the first repeated entry in a list, or null. Duplicates are a
+    silent-corruption hazard here: parseTSV keys rows by header name, so a
+    repeated sample column makes two samples share one profile, and a
+    repeated species row makes the last one win while the lost row's counts
+    still leave the column total alone — which the renormalisation below
+    then spreads over every OTHER species. */
+function firstDuplicate(names) {
+  const seen = new Set();
+  for (const n of names) {
+    if (seen.has(n)) return n;
+    seen.add(n);
+  }
+  return null;
+}
+
 export function parseAbundance(text) {
   const { header, rows } = parseTSV(text);
   if (header.length < 2) return null;
   const speciesCol = header[0];
   const samples = header.slice(1);
+
+  const dupSample = firstDuplicate(samples);
+  if (dupSample) {
+    throw new Error(
+      `Duplicate sample column "${dupSample}" in the abundance table. ` +
+        `Each sample must appear exactly once — merge or rename the columns and reload.`,
+    );
+  }
+  const speciesNames = rows.map((r) => r[speciesCol]).filter(Boolean);
+  const dupSpecies = firstDuplicate(speciesNames);
+  if (dupSpecies) {
+    throw new Error(
+      `Duplicate species row "${dupSpecies}" in the abundance table. ` +
+        `Each species must appear exactly once — aggregate the rows and reload.`,
+    );
+  }
+
   const matrix = {};
+  let nonNumericCells = 0;
   rows.forEach((r) => {
     const sp = r[speciesCol];
     if (!sp) return;
-    matrix[sp] = {};
+    const row = {};
     samples.forEach((s) => {
-      const v = parseFloat(r[s]);
-      matrix[sp][s] = Number.isFinite(v) ? v : 0;
+      const raw = r[s];
+      const v = parseFloat(raw);
+      if (!Number.isFinite(v) && raw != null && String(raw).trim() !== "") {
+        nonNumericCells++;
+      }
+      row[s] = Number.isFinite(v) ? v : 0;
     });
+    matrix[sp] = row;
   });
-  // normalize to relative abundances per sample
+
+  // Hoisted once: this used to rebuild Object.keys(matrix) twice per
+  // sample, which on a 2000 x 1000 table is the bulk of the parse time.
+  const speciesKeys = Object.keys(matrix);
+
+  // normalize to relative abundances per sample, and collect the log10
+  // extremes in the same pass
+  let minVal = Infinity;
+  let maxVal = -Infinity;
+  let emptySamples = 0;
   samples.forEach((s) => {
     let total = 0;
-    Object.keys(matrix).forEach((sp) => (total += matrix[sp][s] || 0));
+    for (const sp of speciesKeys) total += matrix[sp][s] || 0;
     if (total > 0) {
-      Object.keys(matrix).forEach(
-        (sp) => (matrix[sp][s] = (matrix[sp][s] || 0) / total),
-      );
+      for (const sp of speciesKeys) {
+        const v = (matrix[sp][s] || 0) / total;
+        matrix[sp][s] = v;
+        if (v > 0) {
+          if (v < minVal) minVal = v;
+          if (v > maxVal) maxVal = v;
+        }
+      }
+    } else {
+      emptySamples++;
     }
   });
+
   // Per-dataset log10 range, computed from non-zero relative abundances.
   // Used as the axis bounds for every scatterplot in this dataset (gallery
   // thumbnails AND the big validation/explore plots) so events are
   // visually comparable and the points aren't squashed into a corner.
-  let minVal = Infinity;
-  let maxVal = -Infinity;
-  const speciesKeys = Object.keys(matrix);
-  samples.forEach((s) => {
-    speciesKeys.forEach((sp) => {
-      const v = matrix[sp][s];
-      if (v > 0) {
-        if (v < minVal) minVal = v;
-        if (v > maxVal) maxVal = v;
-      }
-    });
-  });
   const logRange =
     Number.isFinite(minVal) && Number.isFinite(maxVal)
       ? {
@@ -297,7 +391,31 @@ export function parseAbundance(text) {
           max: Math.min(0, Math.ceil(Math.log10(maxVal))),
         }
       : { min: -8, max: 0 };
-  return { samples, species: speciesKeys, matrix, logRange };
+
+  // Non-numeric cells are coerced to 0 by design (NA / empty are legitimate
+  // in these tables). But a table whose decimal separator is a comma parses
+  // "successfully" into an all-zero matrix with the right species and sample
+  // counts and blank plots everywhere, so surface the tally instead of
+  // failing silently.
+  const warnings = [];
+  if (emptySamples === samples.length) {
+    warnings.push(
+      `Every sample column sums to 0 — no abundance could be read. ` +
+        `Check the decimal separator (a comma is not recognised) and that the ` +
+        `first column holds species names.`,
+    );
+  } else if (emptySamples > 0) {
+    warnings.push(
+      `${emptySamples} of ${samples.length} sample columns sum to 0 and were left empty.`,
+    );
+  }
+  if (nonNumericCells > 0) {
+    warnings.push(
+      `${nonNumericCells.toLocaleString()} non-empty cells were not numeric and were read as 0.`,
+    );
+  }
+
+  return { samples, species: speciesKeys, matrix, logRange, warnings };
 }
 
 /* ---------- metadata.tsv ---------- */
@@ -443,7 +561,7 @@ export function flagSample(sampleId, metadata) {
     other: {},
   };
   if (!sampleId) return flags;
-  const meta = metadata?.bySample?.[sampleId];
+  const meta = lookupBySample(metadata?.bySample, sampleId);
   if (!meta) return flags;
 
   if (meta.isControl === true) flags.isControl = true;
@@ -478,6 +596,37 @@ export function flagSample(sampleId, metadata) {
   return flags;
 }
 
+/** Look a sample up in a `bySample` index, tolerating the case and
+    whitespace differences that appear whenever the metadata / plate map
+    come from a LIMS export while the abundance table is keyed on
+    filenames. `resolveSample` already does this for the events↔abundance
+    join; these indexes were the only ones still doing raw object
+    indexing, and the cost of a miss is not an error message but a silent
+    `null` — indistinguishable from "these two samples are unrelated", so
+    the same-subject false-positive rule and the cascade skip just never
+    fired. The normalised map is built once and cached on the index. */
+function lookupBySample(index, sampleId) {
+  if (!index || !sampleId) return undefined;
+  const hit = index[sampleId];
+  if (hit !== undefined) return hit;
+  let norm = index.__normIndex;
+  if (!norm) {
+    norm = new Map();
+    for (const key of Object.keys(index)) {
+      const k = String(key).toLowerCase().trim();
+      if (!norm.has(k)) norm.set(k, index[key]);
+    }
+    // Non-enumerable so it never reaches Object.keys(), a TSV export or
+    // the structured clone written to IndexedDB.
+    Object.defineProperty(index, "__normIndex", {
+      value: norm,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return norm.get(String(sampleId).toLowerCase().trim());
+}
+
 /** Look up the optional human-readable name for a sample. Returns the
     trimmed `sample_name` field from the metadata when present and
     distinct from the canonical `sample_id`, or null otherwise. The
@@ -485,7 +634,7 @@ export function flagSample(sampleId, metadata) {
     is to add. */
 export function sampleName(metadata, sampleId) {
   if (!sampleId || !metadata?.bySample) return null;
-  const meta = metadata.bySample[sampleId];
+  const meta = lookupBySample(metadata.bySample, sampleId);
   if (!meta) return null;
   const n = (meta.sampleName || "").trim();
   if (!n || n === sampleId) return null;
@@ -841,6 +990,63 @@ export function pointsAboveLine(scatter) {
   return { count: above, maxDist, farAbove };
 }
 
+/** Exact upper-tail probability P(X ≥ k) for a Poisson-binomial sum
+    X = Σ Bernoulli(p_i), by dynamic programming over the p_i.
+
+    Only one tail is ever materialised. Computing P(X ≥ k) directly as
+    1 − P(X ≤ k−1) needs k terms; the complement Y = n − X (a Poisson-
+    binomial on the 1 − p_i) gives P(X ≥ k) = P(Y ≤ n − k) and needs
+    n − k + 1 terms. We take whichever is shorter, so the cost is
+    O(n × min(k, n−k+1)) — at most n²/2, a few milliseconds for the few
+    thousand species these tables carry, and far less in the usual case
+    where the miss count is small.
+
+    Falls back to a continuity-corrected normal tail only if the DP would
+    be genuinely large, which real inputs do not reach. */
+export function poissonBinomialUpperTail(ps, k) {
+  const n = ps.length;
+  if (k <= 0) return 1;
+  if (n === 0) return 0;
+  if (k > n) return 0;
+
+  const useComplement = n - k + 1 < k;
+  const limit = useComplement ? n - k : k - 1;
+
+  if ((limit + 1) * n > 5e6) {
+    // Unreachable with realistic species counts; keeps the function total.
+    let mean = 0;
+    let variance = 0;
+    for (const p of ps) {
+      mean += p;
+      variance += p * (1 - p);
+    }
+    const sd = Math.sqrt(variance);
+    if (sd <= 0) return k <= mean ? 1 : 0;
+    return 0.5 * erfc((k - 0.5 - mean) / (sd * Math.SQRT2));
+  }
+
+  // dist[j] = P(exactly j successes), truncated above `limit` — the
+  // dropped mass is precisely the other tail, which we never read.
+  const dist = new Float64Array(limit + 1);
+  dist[0] = 1;
+  for (let i = 0; i < n; i++) {
+    const p = useComplement ? 1 - ps[i] : ps[i];
+    const q = 1 - p;
+    const top = Math.min(limit, i + 1);
+    for (let j = top; j >= 1; j--) {
+      dist[j] = dist[j] * q + dist[j - 1] * p;
+    }
+    dist[0] *= q;
+  }
+
+  let cum = 0;
+  for (let j = 0; j <= limit; j++) cum += dist[j];
+  // useComplement: cum is P(Y ≤ n−k) = P(X ≥ k) directly.
+  // otherwise:     cum is P(X ≤ k−1), so the upper tail is its complement.
+  const tail = useComplement ? cum : 1 - cum;
+  return Math.min(1, Math.max(0, tail));
+}
+
 /** Are the source species detected in the target as the contamination
     model predicts? Poisson-binomial detection test over EVERY species
     present in the source — no abundance pre-filter is needed because
@@ -881,6 +1087,7 @@ export function missingAbundantFromSource(ab, source, target, rate) {
   let variance = 0;
   let evaluated = 0;
   let coreSize = 0;
+  const missProbs = [];
   ab.species.forEach((sp) => {
     const ys = ab.matrix[sp][srcKey] || 0;
     if (ys <= 0) return;
@@ -892,14 +1099,20 @@ export function missingAbundantFromSource(ab, source, target, rate) {
     const pMiss = Math.exp(-lambda);
     expectedMissing += pMiss;
     variance += pMiss * (1 - pMiss);
+    missProbs.push(pMiss);
     evaluated++;
     if (xs < targetLOD) missing++;
   });
   const sigma = Math.sqrt(variance);
   const zScore = sigma > 0 ? (missing - expectedMissing) / sigma : 0;
-  // One-sided p-value (probability of seeing this many misses or more
-  // under H_real). 1 - Φ(z) = 0.5 × erfc(z / √2).
-  const pValue = 0.5 * erfc(zScore / Math.SQRT2);
+  // One-sided p-value: P(X ≥ missing) under H_real. The normal
+  // approximation `0.5 × erfc(z/√2)` that used to stand here is badly
+  // wrong in exactly the regime this test lives in — most λ are ≪ 1, so
+  // the Poisson-binomial is heavily skewed and nowhere near normal. It
+  // reported p = 3.3e-167 where the exact value is 1.9e-23, and it flipped
+  // the 0.05 decision on real events. The exact DP is O(n × tail) with n a
+  // few hundred, so there is no reason to approximate.
+  const pValue = poissonBinomialUpperTail(missProbs, missing);
   return {
     count: missing,
     evaluated,
@@ -913,14 +1126,14 @@ export function missingAbundantFromSource(ab, source, target, rate) {
 }
 
 function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
-  let good = 0;
   // Each reason carries a stable `key` so the Validate panel can pair
   // the colloquial summary line with its matching Criterion card
   // even when some entries are missing (no abundance loaded etc.).
+  // `ok` is true (pass), false (fail) or null (evaluated but inconclusive
+  // — counts for neither the numerator nor the denominator).
   const reasons = [];
   if (diag && diag.r2 != null) {
     if (diag.r2 > 0.8) {
-      good++;
       reasons.push({ key: "r2", ok: true, label: `Straight line (R² = ${diag.r2.toFixed(2)})` });
     } else {
       reasons.push({ key: "r2", ok: false, label: `Dispersed line (R² = ${diag.r2.toFixed(2)})` });
@@ -928,7 +1141,6 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
   }
   if (diag && diag.n != null) {
     if (diag.n > 10) {
-      good++;
       reasons.push({ key: "n", ok: true, label: `${diag.n} species on line (> 10)` });
     } else {
       reasons.push({ key: "n", ok: false, label: `Only ${diag.n} species on line` });
@@ -944,7 +1156,6 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
   if (diag && diag.decadeRange != null) {
     const dr = diag.decadeRange;
     if (dr >= 1.5) {
-      good++;
       reasons.push({
         key: "decade",
         ok: true,
@@ -967,15 +1178,15 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
     } = nMissing;
     if (evaluated === 0) {
       // No core species had any predictable contribution (rate ≈ 0 or
-      // empty source). Cannot inform the verdict.
+      // empty source). Cannot inform the verdict — mark it inconclusive
+      // rather than passing it, which used to hand a free point to every
+      // event whose rate column failed to parse.
       reasons.push({
         key: "missing",
-        ok: true,
+        ok: null,
         label: `Missing-species check not informative (no species expected in target given rate)`,
       });
-      good++;
     } else if (missingCount === 0) {
-      good++;
       reasons.push({
         key: "missing",
         ok: true,
@@ -987,7 +1198,6 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
       // keep the criterion as a pass. Headline stays short so the
       // card row doesn't spill over; the p-value / expected count
       // are surfaced in the dropdown's technical readout.
-      good++;
       reasons.push({
         key: "missing",
         ok: true,
@@ -1001,23 +1211,24 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
       });
     }
   }
-  // Above-line points: pure mechanical contamination cannot produce
-  // points where target > source-predicted-abundance. ANY point above
-  // the line is a signal, but the magnitude matters more than the
-  // count: a single point 3 decades above is much stronger evidence of
-  // biological similarity than 5 points slightly above. Threshold:
+  // Above-line points. buildScatter puts TARGET on x and SOURCE on y, so
+  // pointsAboveLine's `dist > 0` is log10(rate × source / target) > 0,
+  // i.e. target < rate × source — the half-plane additive contamination
+  // cannot reach, since the target keeps its own natives on top of what
+  // it received. ANY such point is a signal, but the magnitude matters
+  // more than the count: a single point 3 decades off is much stronger
+  // evidence than 5 points slightly off. Threshold:
   // PASS if no point is more than 0.5 decade above the line (tight
-  // tolerance — anything beyond that means target has 3×+ more of a
-  // species than mechanical contamination could deliver); FAIL
+  // tolerance — beyond that the target holds ≤ 1/3 of the delivered
+  // contamination, so either the rate is over-estimated or the line is
+  // shared biology rather than transfer); FAIL
   // otherwise. The exception is cascade contamination — we soften the
   // wording when a cascade has been detected upstream.
   if (aboveInfo != null) {
     const { count: nAbove, maxDist, farAbove } = aboveInfo;
     if (nAbove === 0) {
-      good++;
       reasons.push({ key: "above", ok: true, label: `No points above the line` });
     } else if (maxDist < 0.5) {
-      good++;
       reasons.push({
         key: "above",
         ok: true,
@@ -1045,9 +1256,8 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
   //   • high ρ + samples NOT related   → strong contamination plausible → PASS (TP-leaning)
   //   • high ρ + samples ARE related   → biological persistence  → FAIL (FP-leaning)
   //   • low ρ                          → profiles distinct  → PASS
-  //   • high ρ + no metadata           → ambiguous, mark inconclusive (no good++)
+  //   • high ρ + no metadata           → ambiguous, mark inconclusive (ok: null)
   // Replaces the older separate Spearman + relatedness criteria.
-  let total = 6;
   if (diag && diag.spearman != null) {
     const rho = diag.spearman;
     const rhoText = `ρ = ${rho.toFixed(2)}`;
@@ -1058,7 +1268,6 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
         : null;
     if (related === null) {
       if (!high) {
-        good++;
         reasons.push({
           key: "biosim",
           ok: true,
@@ -1075,7 +1284,6 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
         });
       }
     } else if (related === false) {
-      good++;
       if (high) {
         reasons.push({
           key: "biosim",
@@ -1102,7 +1310,6 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
           label: `Profiles highly correlated (${rhoText}) AND ${kindText} — biological persistence, likely FP`,
         });
       } else {
-        good++;
         reasons.push({
           key: "biosim",
           ok: true,
@@ -1111,6 +1318,16 @@ function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
       }
     }
   }
+  // Derive both counts from `reasons` rather than maintaining a `good++`
+  // alongside a hard-coded `total = 6`. Criteria are only pushed when
+  // their input exists, so `total` is now the number of criteria actually
+  // evaluated — 0 when no abundance table is loaded (the callers guard on
+  // `total > 0` and suppress the banner) instead of a red "0 / 6 —
+  // PROBABLY NOT CONTAMINATED" printed above "Open the abundance table to
+  // compute." And an `ok: null` abstention no longer silently consumes a
+  // point, which used to cap otherwise-perfect events at 5/6.
+  const total = reasons.filter((r) => r.ok !== null).length;
+  const good = reasons.filter((r) => r.ok === true).length;
   return { good, total, reasons };
 }
 
@@ -1172,8 +1389,8 @@ function detectCascades(events, abundance, metadata) {
     why two samples are related (or {related: false} if unrelated). */
 export function areRelated(metadata, source, target) {
   if (!metadata) return null;
-  const a = metadata.bySample[source];
-  const b = metadata.bySample[target];
+  const a = lookupBySample(metadata.bySample, source);
+  const b = lookupBySample(metadata.bySample, target);
   if (!a || !b) return null;
   if (a.subject && b.subject && a.subject === b.subject) {
     return { related: true, kind: "subject", value: a.subject };
@@ -1188,8 +1405,8 @@ export function areRelated(metadata, source, target) {
 /** Chebyshev distance on the plate */
 export function plateDistance(plateMap, source, target) {
   if (!plateMap) return null;
-  const a = plateMap.bySample[source];
-  const b = plateMap.bySample[target];
+  const a = lookupBySample(plateMap.bySample, source);
+  const b = lookupBySample(plateMap.bySample, target);
   if (!a || !b) return null;
   if (a.plate !== b.plate) return { distance: null, samePlate: false };
   const dr = Math.abs(a.row - b.row);
@@ -1452,7 +1669,7 @@ const Chevron = ({ size = 16, color = "#00a3a6" }) => (
   </svg>
 );
 
-const Stat = ({ label, value, tone = "neutral" }) => {
+const Stat = ({ label, value, tone = "neutral", hint }) => {
   const styles = {
     neutral: { background: "var(--bg-soft)", color: "var(--ink)" },
     good: { background: "#00a3a6", color: "white" },
@@ -1481,7 +1698,11 @@ const Stat = ({ label, value, tone = "neutral" }) => {
     cascade: { background: "#423089", color: "white" },
   };
   return (
-    <div className="px-4 py-4 rounded-sm" style={{ ...styles[tone], border: "1px solid var(--border)" }}>
+    <div
+      className="px-4 py-4 rounded-sm"
+      style={{ ...styles[tone], border: "1px solid var(--border)" }}
+      title={hint || undefined}
+    >
       <div
         className="text-[10px] tracking-[0.15em] uppercase"
         style={{
@@ -2117,7 +2338,22 @@ const NetworkGraph = ({
   const svgRef = useRef(null);
   const zoomBehaviorRef = useRef(null);
 
-  const components = useMemo(() => buildComponents(events), [events]);
+  // Keyed on the TOPOLOGY, not on the `events` array identity. Every
+  // verdict click produces a fresh array via setRawEvents, which used to
+  // invalidate this memo and the whole sortedComponents → visibleComponents
+  // → laidOut chain behind it — re-running 300 synchronous d3 force ticks
+  // per component on every single curation click. The graph shape does not
+  // change when a verdict does. (The author already reasoned this way for
+  // filters, see the comment above; verdicts were just missed.)
+  const topologyKey = useMemo(
+    () => events.map((e) => `${e.source}\u0000${e.target}`).join("\n"),
+    [events],
+  );
+  const components = useMemo(
+    () => buildComponents(events),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [topologyKey],
+  );
 
   // For the "curation" colour scheme: for every sample, the action
   // recorded directly on the sample (sampleCuration[id].action).
@@ -5198,13 +5434,24 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
     [events],
   );
 
-  // Number of samples annotated in the metadata file (null when none
-  // loaded). Useful to compare against `samples involved` to see what
-  // fraction of the dataset has context.
+  // How many metadata rows actually MATCH a sample that appears in the
+  // events. This used to report `Object.keys(bySample).length`, i.e. the
+  // metadata file's own row count — which reads as "everything is
+  // annotated" even when the sample ids do not line up at all and every
+  // relatedness check is silently returning null.
   const annotatedCount = useMemo(() => {
     if (!metadata) return null;
-    return Object.keys(metadata.bySample || {}).length;
-  }, [metadata]);
+    const ids = new Set();
+    events.forEach((e) => {
+      if (e.source) ids.add(e.source);
+      if (e.target) ids.add(e.target);
+    });
+    let matched = 0;
+    ids.forEach((id) => {
+      if (lookupBySample(metadata.bySample, id)) matched++;
+    });
+    return { matched, involved: ids.size, rows: Object.keys(metadata.bySample || {}).length };
+  }, [metadata, events]);
 
   const avgIntroducedPct =
     eventsWithIntroduced.length > 0
@@ -5344,10 +5591,24 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
               value={componentCount}
             />
           )}
-          {metadata && (
+          {metadata && annotatedCount && (
             <Stat
               label="Annotated samples (metadata)"
-              value={`${annotatedCount}`}
+              value={`${annotatedCount.matched} / ${annotatedCount.involved}`}
+              tone={
+                annotatedCount.matched === 0
+                  ? "suppress"
+                  : annotatedCount.matched < annotatedCount.involved
+                    ? "warn"
+                    : "neutral"
+              }
+              hint={
+                annotatedCount.matched < annotatedCount.involved
+                  ? `${annotatedCount.rows} rows in the metadata file; ${
+                      annotatedCount.involved - annotatedCount.matched
+                    } samples involved in events have no match. Relatedness checks are inactive for those.`
+                  : undefined
+              }
             />
           )}
           {metadata && (
@@ -8917,7 +9178,35 @@ const Pagination = ({ page, totalPages, onChange }) => {
   );
 };
 
-const ScatterTab = ({
+/** The gallery needs the abundance table, and the guard has to live in a
+    component that owns no hooks: this used to be an early `return` sitting
+    between `useMemo` calls, so loading the abundance table while the tab was
+    open (exactly what the notice below tells the user to do) changed the
+    hook count between two renders of the same component and React threw
+    "Rendered more hooks than during the previous render". Splitting the
+    guard out means ScatterTabInner mounts and unmounts instead. */
+const ScatterTab = (props) => {
+  if (!props.ab) {
+    return (
+      <div>
+        <SectionTitle eyebrow="Scatterplots" title="Scatterplot gallery">
+          Browse every flagged event as a scatterplot thumbnail. Click any card
+          to open it in the Guided validation workflow.
+        </SectionTitle>
+        <div
+          className="p-6 rounded-sm"
+          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "#8a2422" }}
+        >
+          <strong>Scatterplots require the abundance table.</strong> Drop{" "}
+          <code>species_abundance.tsv</code> above to enable this view.
+        </div>
+      </div>
+    );
+  }
+  return <ScatterTabInner {...props} />;
+};
+
+const ScatterTabInner = ({
   events,
   filtered,
   filter,
@@ -9011,24 +9300,6 @@ const ScatterTab = ({
     events.forEach((e) => s.add(`${e.source}\u0000${e.target}`));
     return s;
   }, [events]);
-
-  if (!ab) {
-    return (
-      <div>
-        <SectionTitle eyebrow="Scatterplots" title="Scatterplot gallery">
-          Browse every flagged event as a scatterplot thumbnail. Click any card
-          to open it in the Guided validation workflow.
-        </SectionTitle>
-        <div
-          className="p-6 rounded-sm"
-          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "#8a2422" }}
-        >
-          <strong>Scatterplots require the abundance table.</strong> Drop{" "}
-          <code>species_abundance.tsv</code> above to enable this view.
-        </div>
-      </div>
-    );
-  }
 
   const sorted = useMemo(() => {
     // While at least one action popover is open, freeze the order so
@@ -14662,16 +14933,19 @@ const BulkPreviewOverlay = ({
       setSortDir("desc");
     }
   };
-  // Build a scatter for each matched event lazily, then sort.
-  const scatters = useMemo(() => {
-    if (!ab) return null;
-    const all = matched.map((e) => {
-      try {
-        return { e, sc: buildScatter(ab, e) };
-      } catch {
-        return { e, sc: null };
-      }
-    });
+  // Sort the matched events, then build a scatter ONLY for the page being
+  // shown. This used to call buildScatter for every matched event and mount
+  // one <circle> per species for each of them: with the default ranges every
+  // pending event matches, so a 16,000-event dataset produced roughly three
+  // million SVG nodes in one synchronous pass — an out-of-memory tab crash,
+  // not merely a slow render.
+  const SCATTER_PAGE = 60;
+  const [scatterPage, setScatterPage] = useState(1);
+  useEffect(() => {
+    setScatterPage(1);
+  }, [matched, sortBy, sortDir]);
+  const sortedMatched = useMemo(() => {
+    const all = matched.map((e) => ({ e }));
     const flip = sortDir === "asc" ? 1 : -1;
     const key = (e) => {
       if (sortBy === "prob") return e.score ?? 0;
@@ -14691,7 +14965,22 @@ const BulkPreviewOverlay = ({
       return (ka - kb) * flip;
     });
     return all;
-  }, [matched, ab, sortBy, sortDir]);
+  }, [matched, sortBy, sortDir]);
+  const scatterPageCount = Math.max(
+    1,
+    Math.ceil(sortedMatched.length / SCATTER_PAGE),
+  );
+  const scatters = useMemo(() => {
+    if (!ab) return null;
+    const start = (scatterPage - 1) * SCATTER_PAGE;
+    return sortedMatched.slice(start, start + SCATTER_PAGE).map(({ e }) => {
+      try {
+        return { e, sc: buildScatter(ab, e) };
+      } catch {
+        return { e, sc: null };
+      }
+    });
+  }, [sortedMatched, ab, scatterPage]);
   // Esc closes the overlay; trap focus inside the overlay so background
   // shortcuts don't fire while the curator is reviewing.
   useEffect(() => {
@@ -15014,6 +15303,51 @@ const BulkPreviewOverlay = ({
             })}
           </div>
         )}
+        {matched.length > 0 && ab && scatterPageCount > 1 && (
+          <div
+            className="flex items-center justify-center gap-3 mt-3 text-[12px]"
+            style={{ color: "var(--ink-muted)" }}
+          >
+            <button
+              type="button"
+              onClick={() => setScatterPage((p) => Math.max(1, p - 1))}
+              disabled={scatterPage <= 1}
+              className="px-3 py-1 rounded-sm"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg-card)",
+                color: "var(--ink)",
+                cursor: scatterPage <= 1 ? "not-allowed" : "pointer",
+                opacity: scatterPage <= 1 ? 0.4 : 1,
+              }}
+            >
+              ‹ Prev
+            </button>
+            <span>
+              Plots {(scatterPage - 1) * SCATTER_PAGE + 1}–
+              {Math.min(scatterPage * SCATTER_PAGE, sortedMatched.length)} of{" "}
+              {sortedMatched.length}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                setScatterPage((p) => Math.min(scatterPageCount, p + 1))
+              }
+              disabled={scatterPage >= scatterPageCount}
+              className="px-3 py-1 rounded-sm"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg-card)",
+                color: "var(--ink)",
+                cursor:
+                  scatterPage >= scatterPageCount ? "not-allowed" : "pointer",
+                opacity: scatterPage >= scatterPageCount ? 0.4 : 1,
+              }}
+            >
+              Next ›
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -15163,11 +15497,20 @@ const BulkApplyByCriteriaDialog = ({
   // clobbered by a later sweeping rule.
   const [skipDecided, setSkipDecided] = useState(true);
 
-  // Compute the 6-criteria pass/fail status for every event once. Each
-  // entry is { shape, nOnLine, decade, missing, above, spearman } where
-  // each value is true (pass), false (fail), or null (not evaluable).
+  // True as soon as the curator constrains at least one of the six
+  // criteria. Until then `eventCriteria` is not needed at all, and
+  // computing it eagerly meant every open of this dialog ran buildScatter
+  // + lineDiagnostics + pointsAboveLine + missingAbundantFromSource over
+  // EVERY event, synchronously, inside a useMemo during the render phase —
+  // seconds of frozen dialog on the larger bundled datasets, with no
+  // spinner because LoadingProgress is not wired to this path.
+  const critActive = Object.values(crit).some((v) => v !== "any");
+
+  // Compute the 6-criteria pass/fail status for every event. Each entry is
+  // { shape, nOnLine, decade, missing, above, spearman } where each value
+  // is true (pass), false (fail), or null (not evaluable).
   const eventCriteria = useMemo(() => {
-    if (!ab) return null;
+    if (!ab || !critActive) return null;
     return events.map((e) => {
       try {
         const sc = buildScatter(ab, e);
@@ -15179,8 +15522,17 @@ const BulkApplyByCriteriaDialog = ({
           shape: di?.r2 != null ? di.r2 > 0.8 : null,
           nOnLine: di?.n != null ? di.n > 10 : null,
           decade: di?.decadeRange != null ? di.decadeRange >= 1.5 : null,
+          // Same rule as automaticScore's "missing" criterion and as this
+          // checkbox's own label ("within Poisson sampling noise, p ≥
+          // 0.05"). It used to test `count <= 2`, a third, unrelated rule:
+          // the dialog then selected a completely different set of events
+          // from the one the Validate panel showed a green tick for.
           missing:
-            mi != null ? mi.evaluated === 0 || mi.count <= 2 : null,
+            mi == null
+              ? null
+              : mi.evaluated === 0
+                ? null
+                : mi.count === 0 || mi.pValue >= 0.05,
           above:
             ab2 != null ? ab2.count === 0 || ab2.maxDist < 0.5 : null,
           spearman: di?.spearman != null ? di.spearman < 0.7 : null,
@@ -15189,7 +15541,7 @@ const BulkApplyByCriteriaDialog = ({
         return null;
       }
     });
-  }, [events, ab]);
+  }, [events, ab, critActive]);
 
   const introducedFilterActive = minIntroduced > 0 || maxIntroduced < 100;
 
@@ -16340,14 +16692,20 @@ const ValidateTab = ({
       events.find((e) => e.id === selected.id) ||
       queue[0]
     : queue[0];
-  if (!sel) return null;
-  const idx = queue.findIndex((e) => e.id === sel.id);
-  const related = areRelated(metadata, sel.source, sel.target);
-  const pd = plateDistance(plateMap, sel.source, sel.target);
+  // NOTE: the `!sel` guard lives at the bottom of this component, just
+  // above the JSX. It used to sit here, ahead of ten more hooks, which
+  // makes the hook count depend on whether the queue is empty — the same
+  // rules-of-hooks violation that crashed ScatterTab. Everything between
+  // here and the guard must therefore tolerate `sel === undefined`.
+  const idx = sel ? queue.findIndex((e) => e.id === sel.id) : -1;
+  const related = sel ? areRelated(metadata, sel.source, sel.target) : null;
+  const pd = sel ? plateDistance(plateMap, sel.source, sel.target) : null;
 
   const hasSampleInfoPanel = !!(
-    (plateMap && pd?.samePlate) ||
-    (metadata && (metadata.bySample[sel.source] || metadata.bySample[sel.target]))
+    sel &&
+    ((plateMap && pd?.samePlate) ||
+      (metadata &&
+        (metadata.bySample[sel.source] || metadata.bySample[sel.target])))
   );
 
   // Picked species — clicking a chip in the "Introduced species" list
@@ -16441,6 +16799,9 @@ const ValidateTab = ({
     const handler = (e) => {
       // Don't compete with the bulk-apply dialog's own input handling.
       if (bulkApplyOpen) return;
+      // The effect is registered before the `!sel` render guard below, so
+      // the listener can outlive an empty queue by one commit.
+      if (!sel) return;
       const tag = (e.target?.tagName || "").toLowerCase();
       const editable = e.target?.isContentEditable;
       if (tag === "input" || tag === "textarea" || editable) return;
@@ -16495,7 +16856,10 @@ const ValidateTab = ({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [sel.id, idx, events, bulkApplyOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sel?.id, idx, events, bulkApplyOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Every hook above runs unconditionally; only the render bails out.
+  if (!sel) return null;
 
   return (
     <div>
@@ -17045,7 +17409,8 @@ const ValidateTab = ({
                       color:
                         autoScore.good === autoScore.total
                           ? EVAL_TP_COLOR
-                          : autoScore.good >= 3
+                          : autoScore.good >=
+                              Math.ceil(autoScore.total * 0.6)
                             ? "#d97a3c"
                             : EVAL_FP_COLOR,
                       fontFamily: '"Raleway", sans-serif',
@@ -17132,15 +17497,25 @@ const ValidateTab = ({
                 );
               })()}
               {(() => {
-                const summaryFor = (key) =>
-                  autoScore.reasons.find((r) => r.key === key)?.label;
+                const reasonFor = (key) =>
+                  autoScore.reasons.find((r) => r.key === key);
+                const summaryFor = (key) => reasonFor(key)?.label;
+                // The ✓/✗ icon MUST come from the same evaluation that
+                // produced the sentence next to it and the N/total headline
+                // above it. Recomputing the pass condition here is how the
+                // card ended up showing a red ✗ beside the words "within
+                // Poisson noise": criterion 04 tested `count <= 2` while
+                // automaticScore tested the p-value. One source of truth.
+                // `null` (not evaluated, or evaluated-inconclusive) renders
+                // the neutral grey state Criterion already handles.
+                const passFor = (key) => reasonFor(key)?.ok ?? null;
                 return (
               <div className="mt-4">
                 <Criterion
                   n="01"
                   title="Shape of the contamination line"
                   wiki="Must be an actual straight line, not a scatter of points."
-                  pass={diag?.r2 != null ? diag.r2 > 0.8 : null}
+                  pass={passFor("r2")}
                   value={
                     diag?.r2 != null
                       ? `R² = ${diag.r2.toFixed(3)}`
@@ -17152,7 +17527,7 @@ const ValidateTab = ({
                   n="02"
                   title="Number of points on the line"
                   wiki="More than 10 species expected. Below this threshold the alignment may be statistical noise."
-                  pass={diag?.n != null ? diag.n > 10 : null}
+                  pass={passFor("n")}
                   value={
                     diag?.n != null ? `${diag.n} species` : "abundance table required"
                   }
@@ -17162,7 +17537,7 @@ const ValidateTab = ({
                   n="03"
                   title="Spread of the contamination line"
                   wiki="A real contamination transfers ALL species proportionally, so the line spans many decades of abundance. Biological similarity tends to share only abundant species — line concentrated in 1-1.5 decades."
-                  pass={diag?.decadeRange != null ? diag.decadeRange >= 1.5 : null}
+                  pass={passFor("decade")}
                   value={
                     diag?.decadeRange != null
                       ? `${diag.decadeRange.toFixed(1)} decades`
@@ -17231,11 +17606,7 @@ const ValidateTab = ({
                       </div>
                     </>
                   }
-                  pass={
-                    missing != null
-                      ? missing.evaluated === 0 || missing.count <= 2
-                      : null
-                  }
+                  pass={passFor("missing")}
                   value={
                     missing != null
                       ? missing.evaluated === 0
@@ -17255,8 +17626,8 @@ const ValidateTab = ({
                 <Criterion
                   n="05"
                   title="Points above the contamination line"
-                  wiki="Pure mechanical contamination cannot put more of a species in the target than in the source. A few points slightly above (within 0.5 decade) can be tolerable biological noise, but ANY point sitting 0.5+ decade above means the target has ≥ 3× more of that species than the contamination could deliver — strong evidence the species belongs to the target's own biology."
-                  pass={above != null ? above.count === 0 || above.maxDist < 0.5 : null}
+                  wiki="Mechanical contamination is additive: the target receives rate × source of every species ON TOP of whatever it already had, so no species can end up below rate × source. Points above the contamination line are exactly those model-impossible species — the source carries more of them than the target can account for at this rate. A few points within 0.5 decade above are tolerable measurement noise; ANY point 0.5+ decade above means the target holds ≤ 1/3 of what the contamination should have delivered, which points to an over-estimated rate or to an apparent line that is shared biology rather than transfer."
+                  pass={passFor("above")}
                   value={
                     above != null
                       ? above.count === 0
@@ -17274,17 +17645,7 @@ const ValidateTab = ({
                   n="06"
                   title="Biological similarity (ρ × relatedness)"
                   wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
-                  pass={(() => {
-                    if (diag?.spearman == null) return null;
-                    const high = diag.spearman >= 0.7;
-                    const isRelated =
-                      related && related.related != null
-                        ? related.related
-                        : null;
-                    if (isRelated === null) return !high ? true : null;
-                    if (isRelated === true) return !high;
-                    return true; // different subjects → pass either way
-                  })()}
+                  pass={passFor("biosim")}
                   value={(() => {
                     if (diag?.spearman == null) return "abundance table required";
                     const rhoText = `ρ = ${diag.spearman.toFixed(2)}`;
@@ -17782,33 +18143,31 @@ const ValidateTab = ({
           />
           <div className="mt-4 flex justify-between">
             <button
-              onClick={() => onSelect(events[Math.max(0, idx - 1)].id)}
-              disabled={idx === 0}
+              onClick={goPrev}
+              disabled={idx <= 0}
               className="px-5 py-2 text-[12px] rounded-sm"
               style={{
                 border: "1px solid #275662",
                 background: "var(--bg-card)",
                 color: "var(--ink)",
                 fontWeight: 700,
-                opacity: idx === 0 ? 0.3 : 1,
-                cursor: idx === 0 ? "not-allowed" : "pointer",
+                opacity: idx <= 0 ? 0.3 : 1,
+                cursor: idx <= 0 ? "not-allowed" : "pointer",
                 fontFamily: '"Raleway", sans-serif',
               }}
             >
               ← Previous
             </button>
             <button
-              onClick={() =>
-                onSelect(events[Math.min(events.length - 1, idx + 1)].id)
-              }
-              disabled={idx === events.length - 1}
+              onClick={goNext}
+              disabled={idx >= queue.length - 1}
               className="px-5 py-2 text-[12px] rounded-sm"
               style={{
                 background: "#00a3a6",
                 color: "white",
                 fontWeight: 700,
-                opacity: idx === events.length - 1 ? 0.3 : 1,
-                cursor: idx === events.length - 1 ? "not-allowed" : "pointer",
+                opacity: idx >= queue.length - 1 ? 0.3 : 1,
+                cursor: idx >= queue.length - 1 ? "not-allowed" : "pointer",
                 border: "none",
                 fontFamily: '"Raleway", sans-serif',
               }}
@@ -20902,13 +21261,18 @@ const HelpTab = ({ onStartTour }) => {
                 <td className="py-2.5 pr-3 align-top text-[12px]" style={{ color: "var(--ink-muted)", fontWeight: 700 }}>05</td>
                 <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Points above the contamination line</td>
                 <td className="py-2.5 align-top text-[13px]">
-                  Pure mechanical contamination cannot put more of a
-                  species in the target than in the source. A few
-                  points within 0.5 decade above the line are tolerable
-                  noise; anything 0.5+ decade above means the target
-                  has ≥ 3× more of that species than the contamination
-                  could deliver — strong evidence the species belongs
-                  to the target's own biology. Passes when no point is
+                  Mechanical contamination is additive — the target
+                  receives rate × source of every species on top of
+                  what it already had — so no species can end up below
+                  rate × source. Points above the line are exactly
+                  those model-impossible species, where the source
+                  carries more than the target can account for at this
+                  rate. A few within 0.5 decade are tolerable
+                  measurement noise; anything 0.5+ decade above means
+                  the target holds ≤ 1/3 of what the contamination
+                  should have delivered, pointing to an over-estimated
+                  rate or to an apparent line that is shared biology
+                  rather than transfer. Passes when no point is
                   ≥ 0.5 decade above (cascade events soften the
                   failure label).
                 </td>
@@ -22602,22 +22966,34 @@ async function loadFromStorage() {
 /** Persist the session to IndexedDB. The main payload is rewritten on
     every call; the abundance matrix is rewritten only when
     options.saveAb is true (i.e. when its reference actually changed).
-    All writes are async — this returns a promise resolving to true on
-    success. Errors are caught and logged but do not propagate so the
-    caller's render loop is unaffected. */
+    All writes are async — this returns a promise resolving to
+    `{ main, ab }`, each a boolean. Errors are caught and logged but do
+    not propagate so the caller's render loop is unaffected.
+
+    The two outcomes MUST be reported separately. This used to return a
+    bare `true` even when the abundance write had thrown, so the caller
+    latched `lastSavedAbRef` on a matrix that was never written: from
+    then on `abChanged` stayed false, the pill kept saying "Saved just
+    now", and the next reload restored every verdict with `ab === null`
+    — no scatter, no diagnostic, no cascade, no explanation. */
 async function saveToStorage(payload, options) {
   const { saveAb } = options || {};
   const { ab, ...rest } = payload;
+  // `ab: !saveAb` — when there was nothing to write, there is nothing to
+  // report as failed.
+  const result = { main: false, ab: !saveAb };
   try {
     await idbSet(KEY_MAIN, rest);
+    result.main = true;
   } catch (e) {
     console.warn("[crocodeel] IndexedDB save (main) failed:", e?.message);
-    return false;
+    return result;
   }
   if (saveAb) {
     if (ab) {
       try {
         await idbSet(KEY_AB, sparsifyAbundance(ab));
+        result.ab = true;
       } catch (e) {
         console.warn("[crocodeel] IndexedDB save (ab) failed:", e?.message);
         // Drop the stale ab if any; otherwise the loader would splice
@@ -22627,6 +23003,7 @@ async function saveToStorage(payload, options) {
         } catch {
           // ignore
         }
+        result.ab = false;
       }
     } else {
       try {
@@ -22634,9 +23011,10 @@ async function saveToStorage(payload, options) {
       } catch {
         // ignore
       }
+      result.ab = true;
     }
   }
-  return true;
+  return result;
 }
 
 async function clearStorage() {
@@ -22904,7 +23282,7 @@ const AnalysisTitleField = ({ value, onChange }) => {
 /** Floating "Saved" pill that appears briefly each time the curation
     work is auto-saved. The parent passes a timestamp; whenever it
     changes, we show the pill for 1.4s then fade. */
-const SavedPill = ({ timestamp }) => {
+const SavedPill = ({ timestamp, abFailed }) => {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (!timestamp) {
@@ -22915,6 +23293,45 @@ const SavedPill = ({ timestamp }) => {
     const t = setTimeout(() => setVisible(false), 1400);
     return () => clearTimeout(t);
   }, [timestamp]);
+
+  // A failed abundance write is not transient: verdicts are safe but the
+  // matrix will be missing on reload, so the warning stays up until the
+  // write succeeds instead of fading after 1.4 s like the "Saved" pill.
+  if (abFailed) {
+    return (
+      <div
+        role="status"
+        aria-live="assertive"
+        style={{
+          position: "fixed",
+          bottom: 16,
+          right: 16,
+          zIndex: 900,
+          maxWidth: 330,
+          padding: "8px 12px",
+          background: "#8a2422",
+          color: "#fff",
+          fontSize: 11,
+          fontWeight: 600,
+          fontFamily: '"Raleway", sans-serif',
+          borderRadius: 3,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 6,
+          lineHeight: 1.45,
+        }}
+      >
+        <AlertCircle className="w-3.5 h-3.5 shrink-0" style={{ marginTop: 1 }} />
+        <span>
+          Verdicts saved, but the abundance table could not be stored
+          (browser storage is full or blocked). Reload this session and you
+          will need to drop <code>species_abundance.tsv</code> again — or
+          export the session now from the Export tab.
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -23891,7 +24308,24 @@ function AppMain({ initial }) {
   // Exposed so the dataset / demo / file-load paths can reset cleanly
   // when the user switches studies (otherwise stale scope / sliders
   // from the previous dataset can hide every event in the new one).
-  const defaultFilter = () => ({
+  /** Seed a fresh filter with the cutoffs CroCoDeEL recorded in its own run
+    header. Applied at LOAD time only. This used to live in an effect keyed
+    on `runMetadata`, which also fires when a session is restored from
+    storage — so a curator who had raised the probability slider to 0.9 came
+    back to the file's 0.5 and a silently doubled queue. */
+function withRunCutoffs(f, runMetadata) {
+  const probCutoff = parseFloat(runMetadata?.probability_cutoff);
+  const rateCutoff = parseFloat(runMetadata?.rate_cutoff);
+  return {
+    ...f,
+    minScore:
+      Number.isFinite(probCutoff) && probCutoff > 0 ? probCutoff : f.minScore,
+    minRate:
+      Number.isFinite(rateCutoff) && rateCutoff > 0 ? rateCutoff : f.minRate,
+  };
+}
+
+const defaultFilter = () => ({
     q: "",
     minScore: 0,
     minRate: 0,
@@ -23963,6 +24397,9 @@ function AppMain({ initial }) {
      auto-save. Set to a timestamp on save; the indicator fades out via
      a separate timeout. */
   const [savedAt, setSavedAt] = useState(null);
+  // True when the last save wrote the verdicts but failed to write the
+  // abundance matrix — surfaced persistently, see SavedPill.
+  const [abSaveFailed, setAbSaveFailed] = useState(false);
 
   /* Tutorial state — two pieces:
      - welcomeOpen: the first-visit popup that asks "Take the tour or
@@ -24017,7 +24454,7 @@ function AppMain({ initial }) {
         title: "Scatterplots — visual evidence",
         body:
           "Each event becomes a scatterplot of source vs target abundances.\n\n" +
-          "Points on the y=x diagonal mean the species are equally abundant in both samples — a clean contamination signature. Points above the line mean the species is more abundant in the target than the source, which weakens the case.",
+          "The contamination line sits at target = rate × source; species carried over from the source line up along it. Species native to the target sit BELOW it (to the right), because the target keeps its own abundance on top of what it received — that is expected and healthy. Points ABOVE the line are the suspicious ones: there the target holds less than the rate says it should, which additive contamination cannot produce.",
         action: "tabScatter",
         highlight: '[data-tutorial="tab-scatter"]',
       },
@@ -24204,8 +24641,8 @@ function AppMain({ initial }) {
     const handle = setTimeout(() => {
       // saveToStorage is async (IndexedDB) — fire-and-forget; the save
       // indicator updates from inside the promise. Errors are already
-      // caught + logged inside saveToStorage so the resolved value is
-      // boolean ok.
+      // caught + logged inside saveToStorage, which reports the main and
+      // abundance writes separately.
       saveToStorage(
         {
           version: 1,
@@ -24224,31 +24661,20 @@ function AppMain({ initial }) {
           sort,
         },
         { saveAb: abChanged },
-      ).then((ok) => {
-        if (ok) {
-          if (abChanged) lastSavedAbRef.current = ab;
-          setSavedAt(Date.now());
-        }
+      ).then((res) => {
+        if (!res.main) return;
+        // Only latch the reference when the matrix actually made it to
+        // disk — otherwise the next tick sees abChanged === false and
+        // never retries, silently dropping the abundance table from the
+        // restored session.
+        if (abChanged && res.ab) lastSavedAbRef.current = ab;
+        setAbSaveFailed(abChanged && !res.ab);
+        setSavedAt(Date.now());
       });
     }, 1000);
     return () => clearTimeout(handle);
   }, [rawEvents, sampleCuration, runMetadata, metadata, plateMap, ab, analysisTitle, tab, selId, filter, sort]);
 
-  /* When a CroCoDeEL run header carries explicit cutoffs, pre-set the
-     events-table filters to those values. The user can still lower them
-     manually if they want to inspect events the cutoff filtered out
-     (though CroCoDeEL itself wouldn't have written them anyway). */
-  useEffect(() => {
-    const probCutoff = parseFloat(runMetadata?.probability_cutoff);
-    const rateCutoff = parseFloat(runMetadata?.rate_cutoff);
-    setFilter((f) => ({
-      ...f,
-      minScore:
-        Number.isFinite(probCutoff) && probCutoff > 0 ? probCutoff : f.minScore,
-      minRate:
-        Number.isFinite(rateCutoff) && rateCutoff > 0 ? rateCutoff : f.minRate,
-    }));
-  }, [runMetadata]);
 
   /* ---- derived state ---- */
   /** Count of species with non-zero abundance per sample. Used to compute
@@ -24376,6 +24802,48 @@ function AppMain({ initial }) {
       casediff: Array.from(casediff).slice(0, 5),
       casediffCount: casediff.size,
     };
+  }, [ab, rawEvents]);
+
+  /* Data-quality warnings that are NOT about sample names.
+
+     The motivating case: CroCoDeEL outputs whose species column holds
+     full GTDB lineages. The interpreter used to split that column on both
+     `,` and `;`, shredding every lineage into rank fragments that matched
+     nothing — and the failure was completely silent, because an event with
+     zero resolvable species simply has zero on-line points and gets graded
+     "PROBABLY NOT CONTAMINATED" with the contamination line still drawn.
+     The split is fixed, but the class of failure (any name mismatch between
+     the two files) deserves a permanent detector rather than a one-off fix. */
+  const dataWarnings = useMemo(() => {
+    const out = [];
+    if (ab?.warnings?.length) out.push(...ab.warnings);
+    if (rawEvents.length > 0 && rawEvents.every((e) => !(e.rate > 0))) {
+      out.push(
+        "Every event has a contamination rate of 0 — no contamination line can be drawn. " +
+          "Check that the events file has a 'rate' column and that it uses a dot as decimal separator.",
+      );
+    }
+    if (ab && rawEvents.length > 0) {
+      const known = new Set(ab.species);
+      let withSpecies = 0;
+      let unresolved = 0;
+      for (const e of rawEvents) {
+        if (!e.introduced?.length) continue;
+        withSpecies++;
+        if (!e.introduced.some((sp) => known.has(sp))) unresolved++;
+      }
+      if (withSpecies > 0 && unresolved / withSpecies > 0.5) {
+        const sample = rawEvents.find((e) => e.introduced?.length)?.introduced[0];
+        out.push(
+          `${unresolved} of ${withSpecies} events list introduced species that match NOTHING in the ` +
+            `abundance table, so their scatterplots have no highlighted points and their diagnostics ` +
+            `are meaningless. The two files probably use different taxon naming` +
+            (sample ? ` (events say "${sample}")` : "") +
+            ".",
+        );
+      }
+    }
+    return out;
   }, [ab, rawEvents]);
 
   const filtered = useMemo(() => {
@@ -25123,7 +25591,7 @@ function AppMain({ initial }) {
       // Reset the filter so any scope / sliders / sample-verdict
       // selection from a previous study don't silently hide every
       // event in the new file.
-      setFilter(defaultFilter());
+      setFilter(withRunCutoffs(defaultFilter(), parsed.runMetadata));
       setRunMetadata(parsed.runMetadata);
       // Default the study label to the events filename (without
       // extension) so the curator gets some context immediately.
@@ -25210,9 +25678,8 @@ function AppMain({ initial }) {
       setSampleCuration({});
       // Reset the filter so any scope / sliders / sample-verdict
       // selection from a previous study don't silently hide every
-      // event of the demo. The runMetadata effect re-applies the
-      // probability / rate cutoffs right after.
-      setFilter(defaultFilter());
+      // event of the demo, seeded with the run header's own cutoffs.
+      setFilter(withRunCutoffs(defaultFilter(), parsedEvents.runMetadata));
       setRunMetadata(parsedEvents.runMetadata);
       setAb(parsedAb);
       // Stamp a study title so the upload-bar chip shows the user
@@ -25298,7 +25765,7 @@ function AppMain({ initial }) {
         // selection from the previous study don't silently hide every
         // event of the new one (a stale scopeSamples list is the most
         // common offender — its sample ids no longer exist here).
-        setFilter(defaultFilter());
+        setFilter(withRunCutoffs(defaultFilter(), parsedEvents.runMetadata));
         setRunMetadata(parsedEvents.runMetadata);
         setAb(parsedAb);
         setMetadata(null);
@@ -25428,7 +25895,7 @@ function AppMain({ initial }) {
     // CroCoDeEL-style header comments — the study name lets downstream
     // tools or readers identify which dataset this curation belongs to.
     if (analysisTitle) {
-      lines.push(`# study: ${analysisTitle.replace(/[\t\n\r]/g, " ")}`);
+      lines.push(`# study: ${tsvCell(analysisTitle)}`);
     }
     lines.push(header.join("\t"));
     list.forEach((e) => {
@@ -25445,8 +25912,10 @@ function AppMain({ initial }) {
           // row so downstream tools that consume this TSV see the same
           // shape they did before the sample-level refactor.
           sampleCuration?.[e.target]?.action || "",
-          (e.notes || "").replace(/\t/g, " "),
-        ].join("\t"),
+          e.notes,
+        ]
+          .map(tsvCell)
+          .join("\t"),
       );
     });
     downloadFile(
@@ -25539,7 +26008,7 @@ function AppMain({ initial }) {
     ];
     const lines = [];
     if (analysisTitle) {
-      lines.push(`# study: ${analysisTitle.replace(/[\t\n\r]/g, " ")}`);
+      lines.push(`# study: ${tsvCell(analysisTitle)}`);
     }
     lines.push(header.join("\t"));
 
@@ -25584,8 +26053,10 @@ function AppMain({ initial }) {
             num(a.maxTargetIntroducedPct, 2),
             c.verdict || "",
             c.action || "",
-            (c.notes || "").replace(/\t/g, " "),
-          ].join("\t"),
+            c.notes,
+          ]
+            .map(tsvCell)
+            .join("\t"),
         );
       });
     downloadFile(
@@ -26124,18 +26595,29 @@ function AppMain({ initial }) {
       const pad = { l: 50, r: 12, t: 12, b: 36 };
       const plotW = W - pad.l - pad.r;
       const plotH = H - pad.t - pad.b;
-      // Log10 mapping with a fixed range -5 .. 0
-      const LMIN = -5;
-      const LMAX = 0;
+      // Log10 mapping over the DATASET's own range — the same
+      // `scatter.logRange` the on-screen Scatterplot and MiniScatter use.
+      // This was hard-coded to [-5, 0], which clamps every abundance below
+      // 1e-5 onto the axis border while the contamination line is still
+      // drawn with its true slope across the whole box: the on-line points
+      // visibly detach from the line they are the evidence for. Most
+      // bundled datasets reach -6 or -7.
+      const LMIN = sc.logRange?.min ?? -5;
+      const LMAX = sc.logRange?.max ?? 0;
       const sx = (logV) =>
         pad.l + ((logV - LMIN) / (LMAX - LMIN)) * plotW;
       const sy = (logV) =>
         pad.t + plotH - ((logV - LMIN) / (LMAX - LMIN)) * plotH;
       const safeLog = (v) => (v > 0 ? Math.max(LMIN, Math.log10(v)) : LMIN);
 
-      // Gridlines + tick labels at log -5, -3, -1
-      const ticks = [-5, -3, -1];
-      const tickLabels = { "-5": "1e-5", "-3": "1e-3", "-1": "1e-1" };
+      // Gridlines + tick labels — evenly spaced inside the actual range
+      // rather than the old fixed -5 / -3 / -1.
+      const ticks = [];
+      for (let i = 1; i <= 3; i++) {
+        ticks.push(Math.round(LMIN + ((LMAX - LMIN) * i) / 4));
+      }
+      const tickLabels = {};
+      ticks.forEach((t) => (tickLabels[t] = `1e${t}`));
       let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="background:#fff;border:1px solid #e6e8e8;border-radius:3px;">`;
       ticks.forEach((t) => {
         svg += `<line x1="${sx(t)}" y1="${pad.t}" x2="${sx(t)}" y2="${pad.t + plotH}" stroke="#eee" stroke-width="0.5"/>`;
@@ -26239,20 +26721,32 @@ function AppMain({ initial }) {
           <div>
             <ul class="checklist">
               ${score.reasons
-                .map(
-                  (r) =>
-                    `<li><span class="${r.ok ? "ok" : "bad"}">${r.ok ? "✓" : "✗"}</span> ${escapeHTML(r.label)}</li>`,
-                )
+                .map((r) => {
+                  // ok === null is an evaluated-but-inconclusive criterion
+                  // (e.g. high ρ with no metadata to disambiguate). It is
+                  // neither a pass nor a fail and must not be printed as a
+                  // hard red ✗.
+                  const cls =
+                    r.ok === null ? "skip" : r.ok ? "ok" : "bad";
+                  const mark = r.ok === null ? "–" : r.ok ? "✓" : "✗";
+                  return `<li><span class="${cls}">${mark}</span> ${escapeHTML(r.label)}</li>`;
+                })
                 .join("")}
             </ul>
-            <div class="aggregate ${score.good === score.total ? "all-pass" : score.good >= Math.ceil(score.total * 0.6) ? "warn" : "fail"}">
+            ${
+              score.total > 0
+                ? `<div class="aggregate ${score.good === score.total ? "all-pass" : score.good >= Math.ceil(score.total * 0.6) ? "warn" : "fail"}">
               ${score.good} / ${score.total} —
-              ${score.good === score.total
-                ? "CONTAMINATED — CroCoDeEL is probably right"
-                : score.good >= Math.ceil(score.total * 0.6)
-                  ? "POSSIBLY NOT CONTAMINATED — use CroCoDeEL's call with prudence"
-                  : "PROBABLY NOT CONTAMINATED — review carefully"}
-            </div>
+              ${
+                score.good === score.total
+                  ? "CONTAMINATED — CroCoDeEL is probably right"
+                  : score.good >= Math.ceil(score.total * 0.6)
+                    ? "POSSIBLY NOT CONTAMINATED — use CroCoDeEL's call with prudence"
+                    : "PROBABLY NOT CONTAMINATED — review carefully"
+              }
+            </div>`
+                : `<div class="aggregate skip">No criterion could be evaluated — load the abundance table.</div>`
+            }
           </div>
           ${valueTable ? `<div>${valueTable}</div>` : ""}
         </div>
@@ -26326,7 +26820,15 @@ function AppMain({ initial }) {
       })
       .join("");
 
+    // One detail page carries a full SVG scatter (one <circle> per point,
+    // ~144 points on average). Uncapped, the bundled 16,555-event dataset
+    // produces a file in the hundreds of megabytes that no browser can
+    // open or print. The overview table above stays complete; only the
+    // per-event pages are capped, and the omission is stated in the file.
+    const DETAIL_PAGE_CAP = 300;
+    const detailOmitted = Math.max(0, list.length - DETAIL_PAGE_CAP);
     const detailPages = list
+      .slice(0, DETAIL_PAGE_CAP)
       .map((e, i) => {
         // Build the scatter bundle once per event and thread it
         // through both renderers — buildScatter is O(species) and
@@ -26624,6 +27126,7 @@ function AppMain({ initial }) {
   }
   .checklist .ok { color: #00a3a6; font-weight: 700; }
   .checklist .bad { color: #ed6e6c; font-weight: 700; }
+  .checklist .skip { color: #8a8f98; font-weight: 700; }
   .aggregate {
     margin-top: 8px;
     padding: 6px 10px;
@@ -26635,6 +27138,7 @@ function AppMain({ initial }) {
   .aggregate.all-pass { background: #f5dee5; color: #9b2e4d; }
   .aggregate.warn { background: #fde6d8; color: #b46028; }
   .aggregate.fail { background: #dde6f1; color: #2566b0; }
+  .aggregate.skip { background: #eceef1; color: #5b6068; }
   .footnote {
     margin-top: 32px;
     padding-top: 12px;
@@ -26748,6 +27252,15 @@ function AppMain({ initial }) {
   </table>
 
   <h2>Per-event detail</h2>
+  ${
+    detailOmitted > 0
+      ? `<div class="event-page"><h3>Detail pages capped</h3><p style="font-size:12px;color:#5a5550;">
+           This report covers <strong>${list.length}</strong> events. The overview table above is complete,
+           but per-event detail pages are limited to the first <strong>${DETAIL_PAGE_CAP}</strong>
+           (each embeds a full scatterplot). <strong>${detailOmitted}</strong> detail pages were omitted —
+           narrow the filter and export again to inspect the rest.</p></div>`
+      : ""
+  }
   ${detailPages}
 
   <div class="footnote">
@@ -27443,6 +27956,31 @@ function AppMain({ initial }) {
             </div>
           </div>
         )}
+        {dataWarnings.length > 0 && (
+          <div className="max-w-7xl mx-auto px-6 pb-4">
+            <div
+              className="flex items-start gap-2 text-[13px] px-3 py-2 rounded-sm"
+              style={{
+                background: "#fff3cd",
+                border: "1px solid #e3a100",
+                color: "#6b4500",
+              }}
+            >
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div>
+                <strong>Check the input files.</strong>
+                <ul
+                  className="list-disc"
+                  style={{ paddingLeft: 18, marginTop: 3 }}
+                >
+                  {dataWarnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* ==================== CONTENT ==================== */}
@@ -27741,7 +28279,7 @@ function AppMain({ initial }) {
           successful auto-save and fades out after a couple of seconds.
           Lets the user know the work is being persisted without
           interrupting the flow. */}
-      <SavedPill timestamp={savedAt} />
+      <SavedPill timestamp={savedAt} abFailed={abSaveFailed} />
 
       {/* First-visit welcome popup. Asks the user whether to take the
           guided tour or skip. Sets the tutorial-seen flag in either
@@ -28328,7 +28866,7 @@ function AppMain({ initial }) {
           onAdoptEvents={(parsed) => {
             setRawEvents(parsed.events);
             setSampleCuration({});
-            setFilter(defaultFilter());
+            setFilter(withRunCutoffs(defaultFilter(), parsed.runMetadata));
             setRunMetadata(parsed.runMetadata);
             if (!analysisTitle) {
               setAnalysisTitle("CroCoDeEL run (in-browser)");
