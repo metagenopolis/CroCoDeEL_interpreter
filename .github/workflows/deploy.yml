@@ -15,7 +15,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Run the full suite first. Without this the two workflows fired
+  # independently on a push to main, so a red test run did not stop the
+  # deployment — only a failing BUILD did, since the build job below repeats
+  # it. Tests now gate the release.
+  tests:
+    uses: ./.github/workflows/test.yml
+
   build:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

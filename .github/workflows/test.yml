@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  # Called by deploy.yml so a release cannot go out on a red suite.
+  workflow_call:
 
 jobs:
-  test:
+  unit:
+    name: Lint, unit tests, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,10 +32,37 @@ jobs:
       # crashes the whole app with "Rendered more hooks than during the
       # previous render" and, with no route boundaries, blanks the page.
       - name: Lint (rules of hooks only)
-        run: npx eslint src tests --config eslint.hooks.config.js
+        run: npx eslint src tests e2e --config eslint.hooks.config.js
 
       - name: Unit tests
         run: npm test
 
       - name: Production build
         run: npm run build
+
+  e2e:
+    name: Browser smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Only chromium: the app is a static SPA and the smoke test is about
+      # render-phase crashes, not cross-browser behaviour.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - run: npm run build
+
+      # Drives a real browser through the paths unit tests cannot reach:
+      # every tab mounting, the hook-order regression in ScatterTab, the
+      # error-object regression on session import, and the curated
+      # abundance export read back from the downloaded file.
+      - name: Smoke test
+        run: npm run test:e2e
