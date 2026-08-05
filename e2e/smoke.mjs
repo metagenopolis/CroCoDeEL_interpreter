@@ -254,6 +254,91 @@ try {
     check(errors.length === 0, "no JS error across the export flow", errors[0] || "");
     await ctx.close();
   }
+
+  /* ------------------------- 5. pin a species by clicking a scatter point */
+  {
+    const { ctx, page, errors } = await newPage();
+    await loadDemo(page);
+    await page.getByRole("button", { name: /^Validate$/ }).first().click();
+    await page.waitForTimeout(2500);
+
+    const rings = () => page.locator('svg circle[stroke="#423089"]').count();
+    check((await rings()) === 0, "no species is pinned to start with");
+
+    // Click by coordinate: the dots overlap, so Playwright's actionability
+    // check on an individual <circle> never settles.
+    const at = await page.evaluate(() => {
+      const svg = [...document.querySelectorAll("svg")].find(
+        (s) => s.querySelectorAll("circle").length > 50,
+      );
+      const c = svg
+        ? [...svg.querySelectorAll("circle")].find(
+            (x) => x.style.cursor === "pointer" && x.querySelector("title"),
+          )
+        : null;
+      if (!c) return null;
+      const r = c.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    check(!!at, "the scatter renders clickable points");
+    if (at) {
+      await page.mouse.click(at.x, at.y);
+      await page.waitForTimeout(600);
+      check((await rings()) === 1, "clicking a point pins that species");
+      await page.mouse.click(at.x, at.y);
+      await page.waitForTimeout(600);
+      check((await rings()) === 0, "clicking it again unpins it");
+    }
+    check(errors.length === 0, "no JS error while pinning", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* --------------------------------- 6. contamination graph export */
+  {
+    const { ctx, page, errors } = await newPage();
+    await loadDemo(page);
+    await page.getByRole("button", { name: /^Export$/ }).first().click();
+    await page.waitForTimeout(1500);
+    const card = await page.locator("body").innerText();
+    const counts = card.match(/Contamination graph — (\d+) nodes?, (\d+) edges?/);
+    check(!!counts, "the graph card reports node and edge counts", counts ? counts[0] : "");
+
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+      page.getByRole("button", { name: /Download GraphML/i }).first().click(),
+    ]);
+    check(!!download, "the GraphML downloads");
+    if (download && counts) {
+      const xml = readFileSync(await download.path(), "utf8");
+      // Parse it rather than pattern-match: a malformed file is the whole
+      // failure mode, and Gephi would just refuse to open it.
+      const parsed = await page.evaluate((text) => {
+        const doc = new DOMParser().parseFromString(text, "application/xml");
+        if (doc.querySelector("parsererror")) return { error: true };
+        const declared = new Set(
+          [...doc.getElementsByTagName("key")].map((k) => k.getAttribute("id")),
+        );
+        return {
+          directed: doc.querySelector("graph")?.getAttribute("edgedefault"),
+          nodes: doc.getElementsByTagName("node").length,
+          edges: doc.getElementsByTagName("edge").length,
+          orphan: [...doc.getElementsByTagName("data")].filter(
+            (d) => !declared.has(d.getAttribute("key")),
+          ).length,
+        };
+      }, xml);
+      check(!parsed.error, "the GraphML is well-formed XML");
+      check(parsed.directed === "directed", "the graph is declared directed");
+      check(
+        String(parsed.nodes) === counts[1] && String(parsed.edges) === counts[2],
+        "the file matches the counts shown on the card",
+        `file ${parsed.nodes}/${parsed.edges} vs card ${counts[1]}/${counts[2]}`,
+      );
+      check(parsed.orphan === 0, "every <data> resolves to a declared key");
+    }
+    check(errors.length === 0, "no JS error across the graph export", errors[0] || "");
+    await ctx.close();
+  }
 } finally {
   await browser.close();
   stopServer();

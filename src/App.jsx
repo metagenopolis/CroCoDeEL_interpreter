@@ -574,16 +574,22 @@ export function flagSample(sampleId, metadata) {
 
   // Other extra columns the user provided that aren't in our standard set
   if (meta.extra) {
+    // `cols` records which header each standard field came from, so those
+    // columns are not repeated in `other`. It is always present on a
+    // parseMetadata result, but a hand-edited session JSON can carry a
+    // bySample map without it — and dereferencing it unguarded threw
+    // during render, which blanks the app.
+    const cols = metadata.cols || {};
     const skip = new Set(
       [
-        metadata.cols.sample,
-        metadata.cols.sampleName,
-        metadata.cols.subject,
-        metadata.cols.timepoint,
-        metadata.cols.biome,
-        metadata.cols.lowBiomass,
-        metadata.cols.lowSequencingDepth,
-        metadata.cols.groupId,
+        cols.sample,
+        cols.sampleName,
+        cols.subject,
+        cols.timepoint,
+        cols.biome,
+        cols.lowBiomass,
+        cols.lowSequencingDepth,
+        cols.groupId,
       ].filter(Boolean),
     );
     Object.entries(meta.extra).forEach(([k, v]) => {
@@ -827,6 +833,260 @@ export function buildCuratedAbundance(ab, sampleCuration, opts = {}) {
     logRange: ab.logRange,
     droppedSamples,
     droppedSpecies,
+  };
+}
+
+/* ---------- contamination graph export ----------
+   The Network tab already treats the events as a directed graph
+   (source → target). These two functions hand that same graph to a real
+   network tool, carrying every annotation the curator produced so it can
+   drive layout, colour and filtering there instead of being re-typed. */
+
+/** Build the node and edge tables for the contamination graph.
+
+    Only samples touched by one of the exported events become nodes: a
+    network view of several hundred isolated vertices is noise, and the
+    abundance table is exported separately anyway.
+
+    Node and edge attribute names are snake_case and stable — they become
+    column headers in Gephi's data laboratory and Cytoscape's table panel,
+    so renaming them later would break saved styles. */
+export function buildContaminationGraph(events, opts = {}) {
+  const { sampleCuration, metadata, plateMap, ab } = opts;
+  const list = events || [];
+
+  const ids = new Set();
+  for (const e of list) {
+    if (e.source) ids.add(e.source);
+    if (e.target) ids.add(e.target);
+  }
+
+  const agg = new Map();
+  for (const id of ids) {
+    agg.set(id, {
+      asSource: 0,
+      asTarget: 0,
+      tp: 0,
+      fp: 0,
+      uncertain: 0,
+      pending: 0,
+      maxIncomingRate: null,
+      maxIntroducedPct: null,
+    });
+  }
+  for (const e of list) {
+    const s = agg.get(e.source);
+    if (s) s.asSource++;
+    const t = agg.get(e.target);
+    if (!t) continue;
+    t.asTarget++;
+    if (e.verdict === "true_positive") t.tp++;
+    else if (e.verdict === "false_positive") t.fp++;
+    else if (e.verdict === "uncertain") t.uncertain++;
+    else t.pending++;
+    if (typeof e.rate === "number") {
+      if (t.maxIncomingRate == null || e.rate > t.maxIncomingRate) {
+        t.maxIncomingRate = e.rate;
+      }
+    }
+    if (typeof e.introducedPct === "number") {
+      if (t.maxIntroducedPct == null || e.introducedPct > t.maxIntroducedPct) {
+        t.maxIntroducedPct = e.introducedPct;
+      }
+    }
+  }
+
+  const nodes = Array.from(ids)
+    .sort((a, b) => a.localeCompare(b))
+    .map((id) => {
+      const flags = flagSample(id, metadata);
+      const placement = plateMap ? lookupBySample(plateMap.bySample, id) : null;
+      const cur = sampleCuration?.[id] || {};
+      const a = agg.get(id);
+      const abKey = ab ? resolveSample(ab, id) : null;
+      let richness = null;
+      if (abKey) {
+        richness = 0;
+        for (const sp of ab.species) {
+          if ((ab.matrix[sp]?.[abKey] || 0) > 0) richness++;
+        }
+      }
+      return {
+        id,
+        label: sampleName(metadata, id) || id,
+        sample_verdict: cur.verdict || "pending",
+        sample_action: cur.action || "",
+        notes: cur.notes || "",
+        subject: flags.subject || "",
+        timepoint: flags.timepoint || "",
+        group: flags.groupId || "",
+        biome: flags.biome || "",
+        is_control: !!flags.isControl,
+        is_low_biomass: !!flags.isLowBiomass,
+        is_low_seq_depth: !!flags.isLowSequencingDepth,
+        plate: placement?.plate || "",
+        well:
+          placement && Number.isFinite(placement.row) && Number.isFinite(placement.col)
+            ? `${String.fromCharCode(65 + placement.row)}${String(placement.col + 1).padStart(2, "0")}`
+            : "",
+        events_as_source: a.asSource,
+        events_as_target: a.asTarget,
+        tp_as_target: a.tp,
+        fp_as_target: a.fp,
+        uncertain_as_target: a.uncertain,
+        pending_as_target: a.pending,
+        max_incoming_rate: a.maxIncomingRate ?? 0,
+        max_introduced_pct: a.maxIntroducedPct ?? 0,
+        species_richness: richness ?? -1,
+        in_abundance_table: !!abKey,
+      };
+    });
+
+  const edges = list.map((e, i) => {
+    const rel = areRelated(metadata, e.source, e.target);
+    const pd = plateDistance(plateMap, e.source, e.target);
+    return {
+      id: `e${e.id ?? i}`,
+      source: e.source,
+      target: e.target,
+      // Gephi and Cytoscape both read `weight` for edge thickness by
+      // convention; the contamination rate is the natural quantity.
+      weight: e.rate ?? 0,
+      rate: e.rate ?? 0,
+      probability: e.score ?? 0,
+      introduced_pct: typeof e.introducedPct === "number" ? e.introducedPct : -1,
+      n_introduced: e.introduced?.length ?? 0,
+      event_verdict: e.verdict || "pending",
+      notes: e.notes || "",
+      is_cascade: !!e.cascade,
+      same_subject: rel?.related === true && rel.kind === "subject",
+      same_group: rel?.related === true && rel.kind === "group",
+      relatedness:
+        rel == null ? "unknown" : rel.related ? rel.kind || "related" : "unrelated",
+      same_plate: pd?.samePlate === true,
+      plate_distance: Number.isFinite(pd?.distance) ? pd.distance : -1,
+    };
+  });
+
+  return { nodes, edges };
+}
+
+/** Serialize a graph to GraphML.
+
+    GraphML rather than GEXF or SIF: Gephi and Cytoscape both import it
+    natively with typed attributes, so one file covers both tools and the
+    annotations arrive as real columns rather than as strings to re-parse.
+
+    Numeric absence is encoded as -1 rather than omitted, because Gephi
+    renders a missing numeric attribute as 0, which would read as a real
+    measurement. -1 is out of range for every quantity here (rates,
+    percentages, counts and distances are all >= 0). */
+export function graphToGraphML(graph, meta = {}) {
+  const esc = (v) =>
+    String(v ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;");
+
+  const typeOf = (v) =>
+    typeof v === "boolean" ? "boolean" : typeof v === "number" ? "double" : "string";
+
+  const sample = (rows) => {
+    // Union of keys across rows, so an attribute present on only some
+    // nodes still gets declared.
+    const keys = [];
+    const seen = new Set();
+    for (const r of rows) {
+      for (const k of Object.keys(r)) {
+        if (!seen.has(k)) {
+          seen.add(k);
+          keys.push(k);
+        }
+      }
+    }
+    return keys;
+  };
+
+  const nodeKeys = sample(graph.nodes).filter((k) => k !== "id");
+  const edgeKeys = sample(graph.edges).filter(
+    (k) => k !== "id" && k !== "source" && k !== "target",
+  );
+
+  const firstDefined = (rows, k) => {
+    for (const r of rows) if (r[k] !== undefined && r[k] !== null) return r[k];
+    return "";
+  };
+
+  const decls = [];
+  nodeKeys.forEach((k, i) => {
+    decls.push(
+      `  <key id="n${i}" for="node" attr.name="${esc(k)}" attr.type="${typeOf(firstDefined(graph.nodes, k))}"/>`,
+    );
+  });
+  edgeKeys.forEach((k, i) => {
+    decls.push(
+      `  <key id="e${i}" for="edge" attr.name="${esc(k)}" attr.type="${typeOf(firstDefined(graph.edges, k))}"/>`,
+    );
+  });
+
+  const body = [];
+  for (const n of graph.nodes) {
+    const data = nodeKeys
+      .map((k, i) => `      <data key="n${i}">${esc(n[k])}</data>`)
+      .join("\n");
+    body.push(`    <node id="${esc(n.id)}">\n${data}\n    </node>`);
+  }
+  for (const e of graph.edges) {
+    const data = edgeKeys
+      .map((k, i) => `      <data key="e${i}">${esc(e[k])}</data>`)
+      .join("\n");
+    body.push(
+      `    <edge id="${esc(e.id)}" source="${esc(e.source)}" target="${esc(e.target)}">\n${data}\n    </edge>`,
+    );
+  }
+
+  const comments = [];
+  if (meta.title) comments.push(`  <desc>${esc(meta.title)}</desc>`);
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<graphml xmlns="http://graphml.graphdrawing.org/xmlns"',
+    '         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
+    '         xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">',
+    ...comments,
+    ...decls,
+    // Contamination has a direction: the source contaminates the target.
+    '  <graph id="contamination" edgedefault="directed">',
+    ...body,
+    "  </graph>",
+    "</graphml>",
+  ].join("\n");
+}
+
+/** Node and edge tables as CSV, for tools and scripts that would rather
+    read two flat files than XML (Cytoscape's table import, igraph, R,
+    pandas). Same attributes, same names. */
+export function graphToCSV(graph) {
+  const cell = (v) => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const table = (rows, firstCols) => {
+    if (rows.length === 0) return "";
+    const keys = [
+      ...firstCols,
+      ...Object.keys(rows[0]).filter((k) => !firstCols.includes(k)),
+    ];
+    return [
+      keys.join(","),
+      ...rows.map((r) => keys.map((k) => cell(r[k])).join(",")),
+    ].join("\n");
+  };
+  return {
+    nodes: table(graph.nodes, ["id", "label"]),
+    edges: table(graph.edges, ["source", "target", "weight"]),
   };
 }
 
@@ -1907,6 +2167,10 @@ const Scatterplot = ({
   width = 560,
   height = 500,
   pickedSpecies = [],
+  // Optional: clicking a point pins / unpins that species, exactly like
+  // clicking its chip in the "Introduced species" list. Passing it also
+  // widens the hit area of the small points — see below.
+  onPickSpecies,
   colorOnLine = true,
   showSpearman = true,
   showRichness = true,
@@ -2093,6 +2357,13 @@ const Scatterplot = ({
           // the same neutral grey so the curator can read the line shape
           // without the model's introduced-species highlight.
           const highlight = p.onLine && colorOnLine;
+          const pinned = pickedSpecies.includes(p.species);
+          // A 2.8 px dot is a small click target. A transparent stroke is
+          // still a painted stroke, so it widens the hit area at no visual
+          // cost and without adding a second element per point — which
+          // matters, there is one of these per species.
+          const hitStroke = highlight ? "#b84442" : "transparent";
+          const hitWidth = highlight ? 0.7 : 7;
           return (
             <circle
               key={i}
@@ -2101,8 +2372,8 @@ const Scatterplot = ({
               r={highlight ? 4 : 2.8}
               fill={highlight ? "#ed6e6c" : "#7d8b91"}
               fillOpacity={highlight ? 0.9 : 0.55}
-              stroke={highlight ? "#b84442" : "none"}
-              strokeWidth="0.7"
+              stroke={hitStroke}
+              strokeWidth={hitWidth}
               onMouseEnter={() =>
                 setHover({
                   species: p.species,
@@ -2114,8 +2385,17 @@ const Scatterplot = ({
                 })
               }
               onMouseLeave={() => setHover(null)}
-              style={{ cursor: "pointer" }}
-            />
+              onClick={
+                onPickSpecies ? () => onPickSpecies(p.species) : undefined
+              }
+              style={{ cursor: onPickSpecies ? "pointer" : "default" }}
+            >
+              {onPickSpecies && (
+                <title>
+                  {`${p.species} — click to ${pinned ? "unpin" : "pin"}`}
+                </title>
+              )}
+            </circle>
           );
         })}
         {/* Violet rings + tiny labels on points the user has pinned via
@@ -17255,6 +17535,7 @@ const ValidateTab = ({
                 width={520}
                 height={450}
                 pickedSpecies={pickedSpecies}
+                onPickSpecies={togglePickedSpecies}
                 colorOnLine={colorOnLine}
                 showSpearman={showSpearman}
                 showRichness={showRichness}
@@ -17266,6 +17547,37 @@ const ValidateTab = ({
               >
                 Open <code>species_abundance.tsv</code> to see the plot and
                 enable diagnostic checks.
+              </div>
+            )}
+            {hasAb && (
+              <div
+                className="mt-2 text-[11px]"
+                style={{ color: "var(--ink-muted)", fontFamily: '"Raleway", sans-serif' }}
+              >
+                Click any point to pin it — same as clicking a name in the
+                Introduced species list below.
+                {pickedSpecies.length > 0 && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      onClick={() => setPickedSpecies([])}
+                      className="underline"
+                      style={{
+                        background: "transparent",
+                        border: 0,
+                        padding: 0,
+                        color: "#423089",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        fontSize: "inherit",
+                      }}
+                    >
+                      Unpin all ({pickedSpecies.length})
+                    </button>
+                  </>
+                )}
               </div>
             )}
             <div className="mt-4 grid grid-cols-3 gap-2">
@@ -22633,6 +22945,8 @@ const ExportTab = ({
   onExportSamplesHTML,
   onExportCuratedAbundance,
   curatedAbundanceStats,
+  onExportGraph,
+  graphStats,
 }) => {
   // Species rows left at zero once the suppressed samples are gone can be
   // dropped or kept; both are defensible, so the curator decides.
@@ -22858,6 +23172,56 @@ const ExportTab = ({
                 </span>
               </label>
             )}
+          </ExportCard>
+        )}
+        {onExportGraph && (
+          <ExportCard
+            title={
+              graphStats
+                ? `Contamination graph — ${graphStats.nodes} node${graphStats.nodes === 1 ? "" : "s"}, ${graphStats.edges} edge${graphStats.edges === 1 ? "" : "s"}`
+                : "Contamination graph"
+            }
+            desc={
+              <>
+                The directed sample-to-sample graph (source → target) as{" "}
+                <strong style={{ color: "var(--ink)" }}>GraphML</strong>, which
+                both <strong style={{ color: "var(--ink)" }}>Gephi</strong> and{" "}
+                <strong style={{ color: "var(--ink)" }}>Cytoscape</strong> open
+                natively. Every annotation travels as a typed attribute you can
+                style, filter and lay out on: per sample the verdict, action,
+                notes, subject / timepoint / group / biome, control and
+                low-biomass flags, plate and well, per-side event counts and
+                species richness; per event the rate (also written as{" "}
+                <code>weight</code>), probability, introduced %, verdict,
+                notes, cascade flag, relatedness and plate distance. Scoped by
+                the filter above.
+              </>
+            }
+            action="Download GraphML"
+            disabled={!graphStats || graphStats.edges === 0}
+            disabledHint="No event matches the current filter"
+            onClick={() => onExportGraph("graphml")}
+          >
+            <button
+              type="button"
+              onClick={() => onExportGraph("csv")}
+              disabled={!graphStats || graphStats.edges === 0}
+              className="text-[12px] underline"
+              style={{
+                background: "transparent",
+                border: 0,
+                padding: 0,
+                color: "var(--ink-muted)",
+                cursor:
+                  !graphStats || graphStats.edges === 0
+                    ? "not-allowed"
+                    : "pointer",
+                fontFamily: '"Raleway", sans-serif',
+              }}
+              title="Two CSV files — node table and edge table — for Cytoscape's table import, igraph, R or pandas. Your browser may ask before the second download."
+            >
+              …or a node + edge CSV pair instead
+            </button>
           </ExportCard>
         )}
         {onExportSamplesHTML && (
@@ -26135,6 +26499,47 @@ const defaultFilter = () => ({
     );
   };
 
+  /** The contamination graph, annotated with everything the curator
+      produced, for Gephi / Cytoscape. Scoped by the events filter like the
+      other exports on this tab. */
+  const exportGraph = (format) => {
+    const graph = buildContaminationGraph(filtered, {
+      sampleCuration,
+      metadata,
+      plateMap,
+      ab,
+    });
+    const stem = "contamination_graph";
+    if (format === "csv") {
+      const csv = graphToCSV(graph);
+      downloadFile(csv.nodes, `${stem}_nodes.csv`, "text/csv");
+      // Two files; the browser may ask before the second one.
+      setTimeout(
+        () => downloadFile(csv.edges, `${stem}_edges.csv`, "text/csv"),
+        350,
+      );
+      return;
+    }
+    downloadFile(
+      graphToGraphML(graph, {
+        title: analysisTitle
+          ? `CroCoDeEL contamination graph — ${analysisTitle}`
+          : "CroCoDeEL contamination graph",
+      }),
+      `${stem}.graphml`,
+      "application/xml",
+    );
+  };
+
+  const graphStats = useMemo(() => {
+    const ids = new Set();
+    for (const e of filtered) {
+      if (e.source) ids.add(e.source);
+      if (e.target) ids.add(e.target);
+    }
+    return { nodes: ids.size, edges: filtered.length };
+  }, [filtered]);
+
   const exportSamplesReport = () => {
     const sampleIds = new Set();
     (events || []).forEach((e) => {
@@ -28429,6 +28834,8 @@ const defaultFilter = () => ({
               onExportSamplesHTML={exportSamplesHTMLReport}
               onExportCuratedAbundance={exportCuratedAbundance}
               curatedAbundanceStats={curatedAbundanceStats}
+              onExportGraph={exportGraph}
+              graphStats={graphStats}
             />
           )}
           {tab === "datasets" && (
