@@ -7,6 +7,7 @@ import {
   parseEvents,
   parseAbundance,
   parseMetadata,
+  remapMetadata,
   metadataToTSV,
   parsePlateMap,
   plateMapToTSV,
@@ -20401,7 +20402,11 @@ const HelpTab = ({ onStartTour }) => {
             Download button writes the table back under the canonical names
             (a <code style={{ fontFamily: "ui-monospace, monospace" }}>patient</code>{" "}
             column becomes subject_id), other columns unchanged, so the file
-            reloads with the same subjects, groups and flags.
+            reloads with the same subjects, groups and flags. Metadata kept
+            by a session saved with an earlier version, which matched
+            headers more loosely, is read again with these rules when the
+            session is reopened or imported; the card then says which field
+            changed column.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -26608,7 +26613,7 @@ const defaultFilter = () => ({
     setRawEvents(restoredEvents);
     setSampleCuration(migratedFromEvents.sampleCuration);
     setRunMetadata(json.run_metadata || null);
-    setMetadata(json.metadata || null);
+    setMetadata(remapMetadata(json.metadata) || null);
     setPlateMap(json.plate_map || null);
     setAb(json.abundance || null);
     setAnalysisTitle(json.analysis_title || "");
@@ -31188,6 +31193,9 @@ export default function App() {
     let cancelled = false;
     loadFromStorage()
       .then((initial) => {
+        // Metadata saved by an earlier version is read again with the
+        // current header rules (remapMetadata, src/parsing.js).
+        if (initial?.metadata) initial.metadata = remapMetadata(initial.metadata);
         if (!cancelled) setBoot({ status: "ready", initial });
       })
       .catch((err) => {

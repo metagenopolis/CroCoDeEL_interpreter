@@ -760,6 +760,56 @@ function parseBool(v) {
   return null;
 }
 
+/** The header read for each metadata field (field → header, or null). */
+function metadataCols(header) {
+  const cols = {};
+  for (const [field, names] of Object.entries(METADATA_COLS)) {
+    cols[field] = pickColExact(header, names);
+  }
+  return cols;
+}
+
+/** What the app reads of one sample, from its row `r` (cells keyed by
+    header) and the column mapping. */
+function metadataEntry(r, cols) {
+  const cell = (field) => {
+    const v = cols[field] ? r[cols[field]] : null;
+    return v == null ? "" : String(v);
+  };
+  const biome = cell("biome");
+  return {
+    sampleName: cell("sampleName"),
+    subject: cell("subject"),
+    timepoint: cell("timepoint"),
+    biome,
+    // Control detection: solely from the biome column. Any biome value
+    // matching "control", "blank" or "negative" (case-insensitive) flags
+    // the sample as a negative control.
+    isControl: /control|blank|negative/i.test(biome),
+    lowBiomassExplicit: parseBool(cols.lowBiomass ? r[cols.lowBiomass] : null),
+    lowSequencingDepthExplicit: parseBool(
+      cols.lowSequencingDepth ? r[cols.lowSequencingDepth] : null,
+    ),
+    groupId: cell("groupId"),
+    extra: { ...r },
+  };
+}
+
+/** The metadata object the app keeps, around a mapping and its entries. */
+function metadataResult(cols, bySample, warnings) {
+  return {
+    cols,
+    bySample,
+    warnings,
+    nSamples: Object.keys(bySample).length,
+    hasSampleNameCol: !!cols.sampleName,
+    hasBiomeCol: !!cols.biome,
+    hasLowBiomassCol: !!cols.lowBiomass,
+    hasLowSequencingDepthCol: !!cols.lowSequencingDepth,
+    hasGroupIdCol: !!cols.groupId,
+  };
+}
+
 export function parseMetadata(text) {
   const { header, rows } = parseTSV(text);
   if (header.length < 2) {
@@ -768,16 +818,7 @@ export function parseMetadata(text) {
   // The resolved mapping (field → header, or null) is returned as `cols`
   // and shown on the upload card, so a curator can see which column was
   // taken for the subject and the group.
-  const cols = {
-    sample: pickColExact(header, METADATA_COLS.sample),
-    sampleName: pickColExact(header, METADATA_COLS.sampleName),
-    subject: pickColExact(header, METADATA_COLS.subject),
-    timepoint: pickColExact(header, METADATA_COLS.timepoint),
-    biome: pickColExact(header, METADATA_COLS.biome),
-    lowBiomass: pickColExact(header, METADATA_COLS.lowBiomass),
-    lowSequencingDepth: pickColExact(header, METADATA_COLS.lowSequencingDepth),
-    groupId: pickColExact(header, METADATA_COLS.groupId),
-  };
+  const cols = metadataCols(header);
   if (!cols.sample) throw new Error("sample_id column not found");
   if (!cols.subject) throw new Error("subject_id column not found");
   const bySample = {};
@@ -792,42 +833,99 @@ export function parseMetadata(text) {
       return;
     }
     seen.add(id);
-    const biomeVal = cols.biome ? r[cols.biome] || "" : "";
-    // Control detection: solely from the biome column. Any biome value
-    // matching "control", "blank" or "negative" (case-insensitive) flags
-    // the sample as a negative control.
-    const isControl = /control|blank|negative/i.test(biomeVal);
-    bySample[id] = {
-      sampleName: cols.sampleName ? r[cols.sampleName] || "" : "",
-      subject: r[cols.subject] || "",
-      timepoint: cols.timepoint ? r[cols.timepoint] || "" : "",
-      biome: biomeVal,
-      isControl,
-      lowBiomassExplicit: parseBool(
-        cols.lowBiomass ? r[cols.lowBiomass] : null,
-      ),
-      lowSequencingDepthExplicit: parseBool(
-        cols.lowSequencingDepth ? r[cols.lowSequencingDepth] : null,
-      ),
-      groupId: cols.groupId ? r[cols.groupId] || "" : "",
-      extra: { ...r },
-    };
+    bySample[id] = metadataEntry(r, cols);
   });
 
   const warnings = [];
   if (dups.length > 0) warnings.push(duplicateIdsWarning(dups));
+  return metadataResult(cols, bySample, warnings);
+}
 
-  return {
-    cols,
-    bySample,
-    warnings,
-    nSamples: Object.keys(bySample).length,
-    hasSampleNameCol: !!cols.sampleName,
-    hasBiomeCol: !!cols.biome,
-    hasLowBiomassCol: !!cols.lowBiomass,
-    hasLowSequencingDepthCol: !!cols.lowSequencingDepth,
-    hasGroupIdCol: !!cols.groupId,
+/** The values of a metadata entry that the app reads. */
+const ENTRY_FIELDS = [
+  "sampleName",
+  "subject",
+  "timepoint",
+  "biome",
+  "isControl",
+  "lowBiomassExplicit",
+  "lowSequencingDepthExplicit",
+  "groupId",
+];
+
+/** Metadata kept by a session (IndexedDB, session JSON), read again with
+    the current header rules.
+
+    A session stores the parsed metadata, not the file. One saved before
+    headers were matched exactly still holds the substring mapping of
+    that time — age_group read as the group_id, host_age as the subject —
+    and the relatedness it invented, which the new rules would otherwise
+    only remove for a curator who uploads the file again; the metadata
+    download even wrote it back under the canonical names. Every entry
+    keeps its row (`extra`), so the mapping is resolved again from those
+    headers and each entry derived again; the sample ids stay what they
+    were. A field that changes column is named in a warning, shown on the
+    metadata card.
+
+    Returns `metadata` itself when nothing changes, which is the case for
+    whatever this version parsed, and anything without rows to read again
+    as it is. */
+export function remapMetadata(metadata) {
+  const bySample = metadata?.bySample;
+  if (!bySample || typeof bySample !== "object") return metadata;
+  const ids = Object.keys(bySample);
+  const rowOf = (id) => {
+    const extra = bySample[id]?.extra;
+    return extra && typeof extra === "object" ? extra : null;
   };
+  // The file's header, from the rows the entries keep.
+  const headerSet = new Set();
+  for (const id of ids) Object.keys(rowOf(id) || {}).forEach((k) => headerSet.add(k));
+  if (headerSet.size === 0) return metadata;
+  const old = metadata.cols && typeof metadata.cols === "object" ? metadata.cols : null;
+  const cols = metadataCols([...headerSet]);
+  // The ids were read from the stored sample column: it stays the one.
+  if (old?.sample && headerSet.has(old.sample)) cols.sample = old.sample;
+
+  const colsChanged = !old || Object.keys(cols).some((k) => (old[k] || null) !== cols[k]);
+  let entriesChanged = false;
+  const next = {};
+  for (const id of ids) {
+    const m = bySample[id];
+    const r = rowOf(id);
+    const e = r && metadataEntry(r, cols);
+    if (!e || ENTRY_FIELDS.every((f) => m[f] === e[f])) {
+      next[id] = m;
+    } else {
+      next[id] = { ...m, ...e, extra: m.extra };
+      entriesChanged = true;
+    }
+  }
+  if (!colsChanged && !entriesChanged) return metadata;
+
+  const warnings = Array.isArray(metadata.warnings) ? [...metadata.warnings] : [];
+  const moves = [];
+  for (const [field, names] of Object.entries(METADATA_COLS)) {
+    if (field === "sample" || !old) continue;
+    const was = old[field] || null;
+    const now = cols[field];
+    if (was === now) continue;
+    if (!now) moves.push(`${names[0]} is no longer read from ${was}`);
+    else if (!was) moves.push(`${names[0]} is now read from ${now}`);
+    else moves.push(`${names[0]} is now read from ${now}, not ${was}`);
+  }
+  if (moves.length > 0 || entriesChanged) {
+    warnings.push(
+      "Saved by an earlier version, which matched headers more loosely; read again with " +
+        "the current rules" +
+        (moves.length > 0 ? `: ${moves.join("; ")}.` : ".") +
+        (cols.subject
+          ? ""
+          : " No column is recognised as the subject, so no two samples count as the same " +
+            "subject: name the subject column subject_id and upload the file again."),
+    );
+  }
+  return { ...metadata, ...metadataResult(cols, next, warnings) };
 }
 
 /** Serialize metadata back to a TSV that parseMetadata reads to the same
@@ -840,26 +938,27 @@ export function parseMetadata(text) {
     a file that said SampleID / patient came back with an empty subject_id,
     and reloading it lost every relatedness. Values keep their spelling
     ("yes" stays "yes"); the canonical columns come first, so a reload
-    picks them over any other column matching the same name. */
-export function metadataToTSV(metadata) {
-  if (!metadata) return "";
+    picks them over any other column matching the same name.
+
+    The mapping written is always the current one (remapMetadata): a
+    session saved by an earlier version may still hold a substring
+    mapping, which this writer would otherwise make permanent — age_group
+    written out as group_id. */
+export function metadataToTSV(stored) {
+  const metadata = remapMetadata(stored);
+  if (!metadata?.bySample || typeof metadata.bySample !== "object") return "";
   const sampleIds = Object.keys(metadata.bySample);
   if (sampleIds.length === 0) return "";
   // Collect the union of all extra keys from the original rows
   const allKeys = new Set();
   sampleIds.forEach((id) => {
-    const extras = metadata.bySample[id].extra || {};
+    const extras = metadata.bySample[id]?.extra || {};
     Object.keys(extras).forEach((k) => allKeys.add(k));
   });
-  // The header each field was read from; for a session saved without the
-  // mapping, found again from the headers.
   const header = [...allKeys];
+  // The header each field was read from.
   const colOf = {};
-  for (const k of Object.keys(METADATA_COLS)) {
-    colOf[k] = metadata.cols
-      ? metadata.cols[k] || null
-      : pickColExact(header, METADATA_COLS[k]);
-  }
+  for (const k of Object.keys(METADATA_COLS)) colOf[k] = metadata.cols?.[k] || null;
   // The value parseMetadata derived, for a row without the original cell.
   const boolText = (b) => (b === true ? "true" : b === false ? "false" : "");
   const parsedValue = {
@@ -873,7 +972,7 @@ export function metadataToTSV(metadata) {
     groupId: (m) => m.groupId,
   };
   const valueOf = (k, id) => {
-    const m = metadata.bySample[id];
+    const m = metadata.bySample[id] || {};
     const col = colOf[k];
     if (k !== "sample" && col && m.extra && col in m.extra) return m.extra[col] ?? "";
     return parsedValue[k](m, id) ?? "";
@@ -901,7 +1000,7 @@ export function metadataToTSV(metadata) {
   });
   const lines = [[...names, ...extraNames].map(tsvCell).join("\t")];
   sampleIds.forEach((id) => {
-    const extra = metadata.bySample[id].extra || {};
+    const extra = metadata.bySample[id]?.extra || {};
     const cells = [
       ...fields.map((k) => valueOf(k, id)),
       ...extras.map((k) => extra[k] ?? ""),
