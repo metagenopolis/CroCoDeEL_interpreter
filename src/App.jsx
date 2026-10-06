@@ -11775,6 +11775,9 @@ const SamplesTab = ({
           ...agg,
           verdict: cur.verdict || "pending",
           action: cur.action || null,
+          // Set by the event-driven rule rather than by the curator.
+          verdictAuto: !!(cur.verdict && cur.verdictAuto),
+          actionAuto: !!(cur.action && cur.actionAuto),
           notes: cur.notes || "",
         };
       }),
@@ -13062,7 +13065,10 @@ const BulkSampleApplyDialog = ({
   const [action, setAction] = useState(""); // "" | "keep" | "suppress" | "clear"
   // Two independent safety toggles, both default ON to protect prior
   // curation work. They layer on top of the pre-condition multi-
-  // selects below; AND-ed together when both are checked.
+  // selects below; AND-ed together when both are checked. Only values
+  // the curator set by hand count as prior work: automatic ones (from
+  // the events, or the default of a never-targeted sample) are the
+  // rule's, and are overwritten like an empty slot.
   const [skipExistingVerdict, setSkipExistingVerdict] = useState(true);
   const [skipExistingAction, setSkipExistingAction] = useState(true);
   // Pre-condition multi-selects: only modify samples whose CURRENT
@@ -13133,8 +13139,15 @@ const BulkSampleApplyDialog = ({
       const ca = s.action || "unset";
       if (!matchVerdicts.includes(cv)) return false;
       if (actionEnabled && !matchActions.includes(ca)) return false;
-      if (skipExistingVerdict && cv !== "pending") return false;
-      if (skipExistingAction && actionEnabled && ca !== "unset") return false;
+      if (skipExistingVerdict && cv !== "pending" && !s.verdictAuto)
+        return false;
+      if (
+        skipExistingAction &&
+        actionEnabled &&
+        ca !== "unset" &&
+        !s.actionAuto
+      )
+        return false;
       const f = s.flags || {};
       if (ctxSubject && f.subject !== ctxSubject) return false;
       if (ctxTimepoint && f.timepoint !== ctxTimepoint) return false;
@@ -13546,6 +13559,7 @@ const BulkSampleApplyDialog = ({
         <label
           className="flex items-center gap-2 mb-3 text-[11px] cursor-pointer"
           style={{ color: "var(--ink)", userSelect: "none" }}
+          title="Automatic verdicts (derived from the events) do not count as already set: they are replaced."
         >
           <input
             type="checkbox"
@@ -13553,7 +13567,7 @@ const BulkSampleApplyDialog = ({
             onChange={(e) => setSkipExistingVerdict(e.target.checked)}
             style={{ accentColor: "#00a3a6" }}
           />
-          Don't overwrite samples that already have a verdict.
+          Don't overwrite samples that already have a verdict set by hand.
         </label>
 
         {/* Action to set */}
@@ -13602,6 +13616,7 @@ const BulkSampleApplyDialog = ({
             <label
               className="flex items-center gap-2 mb-3 text-[11px] cursor-pointer"
               style={{ color: "var(--ink)", userSelect: "none" }}
+              title="Automatic actions (Suppress paired with Contaminated) do not count as already set: they are replaced."
             >
               <input
                 type="checkbox"
@@ -13609,7 +13624,8 @@ const BulkSampleApplyDialog = ({
                 onChange={(e) => setSkipExistingAction(e.target.checked)}
                 style={{ accentColor: "#00a3a6" }}
               />
-              Don't overwrite samples that already have an action.
+              Don't overwrite samples that already have an action set by
+              hand.
             </label>
           </>
         )}
@@ -21552,10 +21568,11 @@ const HelpTab = ({ onStartTour }) => {
           <p style={{ marginTop: 6 }}>
             The Bulk-apply by criteria dialog (Validate sidebar) lets
             you stamp evaluation, target verdict and target action in a
-            single sweep — each layer with its own "don't overwrite
-            previous" safety toggle. The Samples-tab Bulk-apply dialog
-            does the same per-sample, with its own pre-condition
-            multi-selects.
+            single sweep — each layer with its own "don't overwrite"
+            safety toggle. The Samples-tab Bulk-apply dialog does the
+            same per-sample, with its own pre-condition multi-selects.
+            Those toggles protect what you set by hand: an automatic
+            value is the rule's, not a decision, and is overwritten.
           </p>
         </HelpSection>
 

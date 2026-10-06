@@ -129,6 +129,32 @@ async function negativeControlPreset(page) {
   await page.waitForTimeout(600);
 }
 
+/** The Samples tab's bulk dialog. */
+async function openSampleBulkDialog(page) {
+  await openTab(page, "Samples");
+  await page
+    .locator('button[aria-label^="Bulk-apply a sample-level verdict"]')
+    .first()
+    .click();
+  await page.getByText(/^New action$/).waitFor({ timeout: 20000 });
+  return page
+    .locator("div")
+    .filter({ has: page.getByText(/^New action$/) })
+    .filter({ has: page.getByRole("button", { name: /^Apply to \d+$/ }) })
+    .last();
+}
+
+/** Click a verdict button in the Samples-tab row of `id`. */
+async function setSampleVerdictInTable(page, id, label) {
+  await openTab(page, "Samples");
+  const row = page
+    .locator("tr")
+    .filter({ has: page.locator(`button[aria-label="Set verdict to ${label}"]`) })
+    .filter({ has: page.getByText(id, { exact: true }) });
+  await row.locator(`button[aria-label="Set verdict to ${label}"]`).click();
+  await page.waitForTimeout(200);
+}
+
 await startServer();
 const browser = await launchBrowser();
 try {
@@ -265,6 +291,60 @@ try {
     s = await overviewStats(page);
     check(s.fp === demoEvents.length && s.suppress === 0, "(e) Overview: all FP, nothing to suppress", `fp=${s.fp} suppress=${s.suppress}`);
     check(errors.length === 0, "(e) no JS error", errors[0] || "");
+    await ctx.close();
+  }
+  /* A3.2 "Don't overwrite …" protects what the curator set by hand,
+     not the automatic values: an automatic Suppress must not make a
+     bulk Keep skip the sample. Events dialog first. */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    await loadDemo(page);
+    await openTab(page, "Events");
+    await clickEvent(page, "63D250", "63D9", "tp"); // 63D9: automatic Contaminated + Suppress
+    const dialog = await openBulkDialog(page);
+    await dialog.getByRole("button", { name: /^True positive$/ }).first().click();
+    await dialog.getByRole("button", { name: /^Keep$/ }).first().click();
+    await dialog.getByRole("button", { name: /^Apply to \d+ events?$/ }).click();
+    await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(600);
+    const sc = await storedCuration(page);
+    check(
+      sc["63D9"]?.action === "keep" && !sc["63D9"].actionAuto,
+      "A3.2 bulk Keep (don't overwrite on) replaces 63D9's automatic Suppress",
+      show(sc["63D9"]),
+    );
+    check(errors.length === 0, "A3.2 no JS error (events dialog)", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* A3.2, the Samples tab's own bulk dialog. */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    await loadDemo(page);
+    await openTab(page, "Events");
+    await clickEvent(page, "63D250", "63D9", "tp"); // automatic Contaminated + Suppress
+    await clickEvent(page, "63D29", "63D40", "tp");
+    await setSampleVerdictInTable(page, "63D40", "Uncertain"); // by hand
+    const dialog = await openSampleBulkDialog(page);
+    await dialog.getByRole("button", { name: /^Not contaminated$/ }).last().click();
+    await dialog.getByRole("button", { name: /^Keep$/ }).last().click();
+    await dialog.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(600);
+    const sc = await storedCuration(page);
+    check(
+      sc["63D9"]?.verdict === "correct" &&
+        !sc["63D9"].verdictAuto &&
+        sc["63D9"].action === "keep" &&
+        !sc["63D9"].actionAuto,
+      "A3.2 Samples bulk dialog overwrites 63D9's automatic values",
+      show(sc["63D9"]),
+    );
+    check(
+      sc["63D40"]?.verdict === "uncertain" && !sc["63D40"].verdictAuto && sc["63D40"].action == null,
+      "A3.2 Samples bulk dialog leaves 63D40's verdict set by hand alone",
+      show(sc["63D40"]),
+    );
+    check(errors.length === 0, "A3.2 no JS error (Samples dialog)", errors[0] || "");
     await ctx.close();
   }
 } finally {
