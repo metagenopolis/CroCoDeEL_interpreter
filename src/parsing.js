@@ -487,6 +487,27 @@ export function parseEvents(text) {
 
 /* ---------- species_abundance.tsv ---------- */
 
+/** Parse the species × sample table into relative abundances.
+
+    Returns { samples, species, matrix, logRange, warnings }, where
+    matrix[sp][s] is a fraction and every non-empty column sums to 1 (null
+    when the file has no sample column). The fractions are what every
+    diagnostic uses, but they cannot give the user's table back: counts
+    1500 / 500 become 0.75 / 0.25. So the result also keeps what an export
+    needs to rebuild it:
+      firstHeader  the first header cell as written ("id_mgs",
+                   "clade_name"), which an export would otherwise call
+                   "species";
+      colSums      { sample: the sum of its column as read, before
+                   normalisation }; matrix[sp][s] * colSums[s] is the value
+                   read (an all-zero column keeps fractions of 0 and a sum
+                   of 0);
+      integerCols  { sample: true when every value read in that column is
+                   an integer, i.e. counts }: rounding the product then
+                   gives them back exactly;
+      species      in file order — Object.keys(matrix) would list
+                   integer-like names ("1", "2", …) first.
+    Cells read as 0 (empty, NA, not a number, negative) come back as 0. */
 export function parseAbundance(text) {
   const { header, rows } = parseTSV(text);
   if (header.length < 2) return null;
@@ -526,6 +547,10 @@ export function parseAbundance(text) {
   // number, or is negative, also reads as 0 but is counted, with the first
   // one kept as an example for the warning.
   const matrix = {};
+  // Built here, in file order (see the doc comment): duplicates are refused
+  // above, so each species is pushed once.
+  const speciesKeys = [];
+  const integerCol = new Array(samples.length).fill(true);
   let nonNumericCells = 0;
   let commaCells = 0;
   let negativeCells = 0;
@@ -555,23 +580,25 @@ export function parseAbundance(text) {
         if (!firstNegative) firstNegative = { cell: raw, sp, s };
         v = 0;
       }
+      if (integerCol[j] && !Number.isInteger(v)) integerCol[j] = false;
       row[s] = v;
     }
     matrix[sp] = row;
+    speciesKeys.push(sp);
   });
-
-  // Hoisted once: this used to rebuild Object.keys(matrix) twice per
-  // sample, which on a 2000 x 1000 table is the bulk of the parse time.
-  const speciesKeys = Object.keys(matrix);
 
   // normalize to relative abundances per sample, and collect the log10
   // extremes in the same pass
   let minVal = Infinity;
   let maxVal = -Infinity;
   let emptySamples = 0;
-  samples.forEach((s) => {
+  const colSums = {};
+  const integerCols = {};
+  samples.forEach((s, j) => {
     let total = 0;
     for (const sp of speciesKeys) total += matrix[sp][s] || 0;
+    colSums[s] = total;
+    integerCols[s] = integerCol[j];
     if (total > 0) {
       for (const sp of speciesKeys) {
         const v = (matrix[sp][s] || 0) / total;
@@ -643,7 +670,16 @@ export function parseAbundance(text) {
     );
   }
 
-  return { samples, species: speciesKeys, matrix, logRange, warnings };
+  return {
+    samples,
+    species: speciesKeys,
+    matrix,
+    logRange,
+    warnings,
+    firstHeader: speciesCol,
+    colSums,
+    integerCols,
+  };
 }
 
 /* ---------- metadata.tsv ----------
