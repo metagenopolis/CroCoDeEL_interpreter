@@ -4192,8 +4192,7 @@ const UploadCard = ({
 
 /** The extra lines of the metadata and plate-map cards: which header was
     read as which field, then the parser's warnings (repeated sample ids,
-    unreadable wells).
-    A session saved before these existed has neither. */
+    unreadable wells). A session saved before these existed has neither. */
 const uploadCardDetails = (columnsLine, warnings) =>
   columnsLine || warnings?.length ? (
     <>

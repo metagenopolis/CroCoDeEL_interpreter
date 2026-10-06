@@ -851,11 +851,15 @@ export function metadataToTSV(metadata) {
     const extras = metadata.bySample[id].extra || {};
     Object.keys(extras).forEach((k) => allKeys.add(k));
   });
-  // A session saved without the mapping: find it again from the headers.
-  const cols = metadata.cols || {};
+  // The header each field was read from; for a session saved without the
+  // mapping, found again from the headers.
   const header = [...allKeys];
-  const colOf = (k) =>
-    metadata.cols ? cols[k] || null : pickColExact(header, METADATA_COLS[k]);
+  const colOf = {};
+  for (const k of Object.keys(METADATA_COLS)) {
+    colOf[k] = metadata.cols
+      ? metadata.cols[k] || null
+      : pickColExact(header, METADATA_COLS[k]);
+  }
   // The value parseMetadata derived, for a row without the original cell.
   const boolText = (b) => (b === true ? "true" : b === false ? "false" : "");
   const parsedValue = {
@@ -870,7 +874,7 @@ export function metadataToTSV(metadata) {
   };
   const valueOf = (k, id) => {
     const m = metadata.bySample[id];
-    const col = colOf(k);
+    const col = colOf[k];
     if (k !== "sample" && col && m.extra && col in m.extra) return m.extra[col] ?? "";
     return parsedValue[k](m, id) ?? "";
   };
@@ -880,13 +884,13 @@ export function metadataToTSV(metadata) {
     (k) =>
       k === "sample" ||
       k === "subject" ||
-      colOf(k) ||
+      colOf[k] ||
       sampleIds.some((id) => valueOf(k, id) !== ""),
   );
   const names = fields.map((k) => METADATA_COLS[k][0]);
   // The other columns, as they were; one whose name is now taken by a
   // canonical column gets a ".1"-style suffix rather than shadowing it.
-  const mapped = new Set(fields.map(colOf).filter(Boolean));
+  const mapped = new Set(fields.map((k) => colOf[k]).filter(Boolean));
   const extras = header.filter((k) => !mapped.has(k));
   const taken = new Set(names);
   const extraNames = extras.map((k) => {
