@@ -225,3 +225,37 @@ export function scoreGrade(good, total) {
   if (good >= Math.ceil(total * 0.6)) return "possibly_not";
   return "probably_not";
 }
+
+/** The bulk dialog's six criteria for one event, read off automaticScore —
+    the very evaluation behind Guided validation's ✓ / ✗ — so "✓ pass" in
+    the dialog selects exactly the events the panel ticks. Each value is
+    true (pass), false (fail) or null (not evaluated, or inconclusive —
+    matched by neither the pass nor the fail filter). Keys are BULK_CRIT's
+    ids; `spearman` carries the joint biological-similarity criterion
+    (automaticScore's "biosim": ρ read together with relatedness). */
+export function bulkCriteria(score) {
+  const ok = (key) => score?.reasons?.find((r) => r.key === key)?.ok ?? null;
+  return {
+    shape: ok("r2"),
+    nOnLine: ok("n"),
+    decade: ok("decade"),
+    missing: ok("missing"),
+    above: ok("above"),
+    spearman: ok("biosim"),
+  };
+}
+
+/** Does one event's bulkCriteria record satisfy the dialog's per-criterion
+    picks ("any" / "pass" / "fail")? An event without a record — no
+    abundance table, or a pair missing from it — only matches when every
+    pick is "any". */
+export function matchesBulkCriteria(criteria, picks) {
+  for (const k of Object.keys(picks)) {
+    const want = picks[k];
+    if (want === "any") continue;
+    if (!criteria) return false;
+    if (want === "pass" && criteria[k] !== true) return false;
+    if (want === "fail" && criteria[k] !== false) return false;
+  }
+  return true;
+}

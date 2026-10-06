@@ -2,7 +2,11 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as d3 from "d3";
 import { Range, getTrackBackground } from "react-range";
 import LZString from "lz-string";
-import { automaticScore } from "./diagnostics.js";
+import {
+  automaticScore,
+  bulkCriteria,
+  matchesBulkCriteria,
+} from "./diagnostics.js";
 import {
   FolderOpen,
   AlertCircle,
@@ -14980,10 +14984,11 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
 /* ---------- BULK APPLY BY CRITERIA DIALOG ----------
    Modal that lets the user bulk-apply a verdict (TP / FP / Uncertain /
    Reset) to every event matching a rate range, a probability range and
-   a per-criterion pass/fail filter. The 6 criteria mirror the
-   data-driven checks displayed inline in the Guided validation panel —
-   they're computed here on demand for every event using the abundance
-   table.
+   a per-criterion pass/fail filter. The 6 criteria ARE the data-driven
+   checks displayed inline in the Guided validation panel: computed on
+   demand for every event using the abundance table, and read off the
+   same automaticScore evaluation (bulkCriteria), so a "pass" here is a
+   ✓ there.
 
    Comment behaviour: if the textarea is empty, existing notes on each
    matched event are preserved untouched. If non-empty, the comment is
@@ -14995,7 +15000,9 @@ const BULK_CRIT = [
   { id: "decade", label: "Decade range — line spans ≥ 1.5 decades" },
   { id: "missing", label: "Missing source species — observed misses within Poisson sampling noise (p ≥ 0.05)" },
   { id: "above", label: "Above-line points — none, or all within 0.5 decade" },
-  { id: "spearman", label: "Profile dissimilarity — Spearman ρ < 0.7" },
+  // id kept from when this was a Spearman-only check; it now carries the
+  // joint ρ × relatedness criterion 06 of the Validate panel.
+  { id: "spearman", label: "Biological similarity — ρ < 0.7, or ρ ≥ 0.7 between different subjects (needs metadata)" },
 ];
 
 /** Two-thumb (low / high) slider built on react-range. The track lights
@@ -15673,6 +15680,14 @@ const BulkApplyByCriteriaDialog = ({
   // Compute the 6-criteria pass/fail status for every event. Each entry is
   // { shape, nOnLine, decade, missing, above, spearman } where each value
   // is true (pass), false (fail), or null (not evaluable).
+  //
+  // The values are read off automaticScore (bulkCriteria), the evaluation
+  // the Validate panel draws its ✓ / ✗ from, instead of being re-derived
+  // here. Two re-derivations had already drifted: "missing" once tested
+  // `count <= 2`, and "spearman" tested ρ < 0.7 alone, failing the high-ρ
+  // pairs from different subjects that the panel (and the Help) pass as
+  // strong contamination — so "✓ pass" here skipped events the panel
+  // ticked.
   const eventCriteria = useMemo(() => {
     if (!ab || !critActive) return null;
     return events.map((e) => {
@@ -15682,30 +15697,13 @@ const BulkApplyByCriteriaDialog = ({
         const di = lineDiagnostics(sc);
         const ab2 = pointsAboveLine(sc);
         const mi = missingAbundantFromSource(ab, e.source, e.target, e.rate);
-        return {
-          shape: di?.r2 != null ? di.r2 > 0.8 : null,
-          nOnLine: di?.n != null ? di.n > 10 : null,
-          decade: di?.decadeRange != null ? di.decadeRange >= 1.5 : null,
-          // Same rule as automaticScore's "missing" criterion and as this
-          // checkbox's own label ("within Poisson sampling noise, p ≥
-          // 0.05"). It used to test `count <= 2`, a third, unrelated rule:
-          // the dialog then selected a completely different set of events
-          // from the one the Validate panel showed a green tick for.
-          missing:
-            mi == null
-              ? null
-              : mi.evaluated === 0
-                ? null
-                : mi.count === 0 || mi.pValue >= 0.05,
-          above:
-            ab2 != null ? ab2.count === 0 || ab2.maxDist < 0.5 : null,
-          spearman: di?.spearman != null ? di.spearman < 0.7 : null,
-        };
+        const rel = areRelated(metadata, e.source, e.target);
+        return bulkCriteria(automaticScore(di, ab2, mi, e.cascade, rel));
       } catch {
         return null;
       }
     });
-  }, [events, ab, critActive]);
+  }, [events, ab, metadata, critActive]);
 
   const introducedFilterActive = minIntroduced > 0 || maxIntroduced < 100;
 
@@ -15722,15 +15720,7 @@ const BulkApplyByCriteriaDialog = ({
         if (e.introducedPct < minIntroduced || e.introducedPct > maxIntroduced)
           return false;
       }
-      const c = eventCriteria?.[i];
-      for (const k of Object.keys(crit)) {
-        const want = crit[k];
-        if (want === "any") continue;
-        if (!c) return false; // criteria not computable but a filter is set
-        if (want === "pass" && c[k] !== true) return false;
-        if (want === "fail" && c[k] !== false) return false;
-      }
-      return true;
+      return matchesBulkCriteria(eventCriteria?.[i], crit);
     });
   }, [
     events,
@@ -21879,8 +21869,9 @@ const HelpTab = ({ onStartTour }) => {
               range in %, probability range, introduced % range, and
               pass / fail / any per criterion: shape, n on line,
               decade range, missing source species, above-line points,
-              Spearman profile dissimilarity), then apply, in one
-              sweep:
+              biological similarity — the very ✓ / ✗ Guided validation
+              shows, ρ read together with the metadata), then apply, in
+              one sweep:
               <ul className="list-disc pl-5 mt-2 space-y-1">
                 <li>
                   An <em>event evaluation</em> (TP / FP / Uncertain /
