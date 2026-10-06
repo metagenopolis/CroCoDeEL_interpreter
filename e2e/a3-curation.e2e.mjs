@@ -32,9 +32,12 @@ const targets = new Set(demoEvents.map((c) => c[1]));
 const NC3_SOURCES = demoEvents.filter((c) => c[1] === "NC3").map((c) => c[0]);
 
 /** The sample curation stored by the app, once the autosave has caught
-    up with everything done so far (it is debounced by one second). */
+    up with everything done so far. Saves are debounced by one second
+    after the last change; when nothing changed, none comes and the
+    stored session is already current. */
 async function storedCuration(page) {
   const since = await page.evaluate(() => Date.now());
+  let latest = null;
   for (let i = 0; i < 40; i++) {
     await page.waitForTimeout(250);
     const main = await page.evaluate(
@@ -54,8 +57,10 @@ async function storedCuration(page) {
     if (main && Date.parse(main.savedAt) > since) {
       return main.sampleCuration || {};
     }
+    latest = main;
+    if (i >= 12 && latest) return latest.sampleCuration || {};
   }
-  throw new Error("the session was not autosaved within 10 s");
+  throw new Error("no autosaved session found");
 }
 
 const show = (entry) => JSON.stringify(entry ?? null);
@@ -127,6 +132,37 @@ async function negativeControlPreset(page) {
     .click();
   await page.getByRole("button", { name: /^Mark \d+ as TP$/ }).click();
   await page.waitForTimeout(600);
+}
+
+/** Click a node of the Network graph; resolves once its popover is open. */
+async function openNodePopover(page, id) {
+  await openTab(page, "Network");
+  await page.waitForTimeout(1200);
+  // Dispatched on the circle itself: the nodes overlap their labels and
+  // edges, so a click at coordinates can land on a neighbour.
+  const found = await page.evaluate((id) => {
+    const label = [...document.querySelectorAll("svg g > text")].find(
+      (t) => t.textContent.trim() === id,
+    );
+    const circle = label?.parentElement.querySelector("circle");
+    if (!circle) return false;
+    const r = circle.getBoundingClientRect();
+    circle.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        clientX: r.x + r.width / 2,
+        clientY: r.y + r.height / 2,
+      }),
+    );
+    return true;
+  }, id);
+  if (!found) throw new Error(`no Network node labelled ${id}`);
+  await page.getByText(/^Apply to events targeting$/i).waitFor({ timeout: 10000 });
+  return page
+    .locator("div")
+    .filter({ has: page.getByText(/^Apply to events targeting$/i) })
+    .filter({ has: page.getByRole("button", { name: /^Apply$/ }) })
+    .last();
 }
 
 /** The Samples tab's bulk dialog. */
@@ -345,6 +381,41 @@ try {
       show(sc["63D40"]),
     );
     check(errors.length === 0, "A3.2 no JS error (Samples dialog)", errors[0] || "");
+    await ctx.close();
+  }
+  /* A3.3 The Network node popover writes the sample verdict / action
+     with the events, on confirmation: cancelling leaves the sample as it
+     was. */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    await loadDemo(page);
+    let pop = await openNodePopover(page, "NC3");
+    await pop.getByRole("button", { name: /^Apply$/ }).click(); // TP defaults
+    await page.getByRole("button", { name: /^Apply to \d+$/ }).waitFor({ timeout: 10000 });
+    await page.getByRole("button", { name: /^Cancel$/ }).last().click();
+    let sc = await storedCuration(page);
+    let s = await overviewStats(page);
+    check(
+      sc.NC3 === undefined && s.tp === 0 && s.suppress === 0,
+      "A3.3 Network → NC3 → Apply → Cancel leaves NC3 and its events untouched",
+      `NC3=${show(sc.NC3)} tp=${s.tp} suppress=${s.suppress}`,
+    );
+    pop = await openNodePopover(page, "NC3");
+    await pop.getByRole("button", { name: /^Apply$/ }).click();
+    await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(600);
+    sc = await storedCuration(page);
+    s = await overviewStats(page);
+    check(
+      sc.NC3?.verdict === "contaminated" &&
+        !sc.NC3.verdictAuto &&
+        sc.NC3.action === "suppress" &&
+        !sc.NC3.actionAuto &&
+        s.tp === NC3_SOURCES.length,
+      "A3.3 …and confirming applies the events and NC3's verdict / action",
+      `NC3=${show(sc.NC3)} tp=${s.tp}`,
+    );
+    check(errors.length === 0, "A3.3 no JS error", errors[0] || "");
     await ctx.close();
   }
 } finally {

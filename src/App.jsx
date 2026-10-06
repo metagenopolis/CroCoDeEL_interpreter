@@ -3827,15 +3827,30 @@ const NetworkGraph = ({
             const note = `applied via Network → node ${nodePopover.id} (as target)`;
             // Event evaluation goes to the matched events; verdict
             // and action go to the clicked sample (always the target
-            // of the matched events here).
+            // of the matched events here). The action row is only
+            // offered for a Contaminated target, so only then does its
+            // choice apply. "Automatic" (null / undefined) leaves the
+            // sample to the event-driven rule.
+            const targetAction =
+              popTargetVerdict === "contaminated" && popAction
+                ? popAction
+                : undefined;
             if (ids.length > 0 && onApplyToEventIds) {
-              onApplyToEventIds(ids, popVerdict, note);
-            }
-            if (popTargetVerdict && onApplySampleVerdict) {
-              onApplySampleVerdict(nodePopover.id, popTargetVerdict);
-            }
-            if (popAction && onApplySampleAction) {
-              onApplySampleAction(nodePopover.id, popAction);
+              // The sample decisions ride with the events: written when
+              // the curator confirms the update, so cancelling it
+              // leaves the sample exactly as it was.
+              onApplyToEventIds(ids, popVerdict, note, {
+                targetVerdict: popTargetVerdict || null,
+                targetAction,
+              });
+            } else {
+              // No event update to confirm: apply them right away.
+              if (popTargetVerdict && onApplySampleVerdict) {
+                onApplySampleVerdict(nodePopover.id, popTargetVerdict);
+              }
+              if (targetAction && onApplySampleAction) {
+                onApplySampleAction(nodePopover.id, targetAction);
+              }
             }
             setNodePopover(null);
           }}
