@@ -24615,77 +24615,12 @@ function AppMain({ initial }) {
     window.addEventListener("popstate", handler);
     return () => window.removeEventListener("popstate", handler);
   }, [tab]);
-  // Save the page scroll position when leaving the Samples tab and
-  // restore it when coming back, so the curator lands back on the
-  // sample row they were studying after a Scatter / Events drill-in.
-  // Also clear any sample-list scope on entering the Samples tab —
-  // the scope was almost certainly set by a drill-in from Samples
-  // itself and shouldn't persist when we come back. Same effect
-  // records the previous tab into `lastTab` so the back chip knows
-  // where to send the curator.
   // Ref on the tab nav row so a tab switch can scroll it to the top
   // of the viewport — otherwise the curator clicks a tab and the new
   // content stays below the fold (the files bar + the tab row eat
   // ~half the screen on first load).
   const tabsNavRef = useRef(null);
   const prevTabRef = useRef(tab);
-  useEffect(() => {
-    const prev = prevTabRef.current;
-    if (prev !== tab) {
-      setLastTab(prev);
-      // On every tab change, bring the tab nav to the top of the
-      // viewport so the new content has the full real estate below.
-      // Samples-specific scroll restoration (below) can still override
-      // when there's a saved Y to come back to.
-      tabsNavRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-    }
-    if (prev === "samples" && tab !== "samples") {
-      samplesUIRef.current.scrollY = window.scrollY;
-    } else if (prev !== "samples" && tab === "samples") {
-      // If we arrive on Samples with a single-sample scope (almost
-      // certainly a drill-in from Network or elsewhere), promote
-      // that id to lastSamplesDrill so the row is highlighted on
-      // arrival, then clear the scope so the table shows everything.
-      let drillTargetId = null;
-      setFilter((f) => {
-        if (Array.isArray(f.scopeSamples) && f.scopeSamples.length === 1) {
-          drillTargetId = f.scopeSamples[0];
-          setLastSamplesDrill(drillTargetId);
-        }
-        return Array.isArray(f.scopeSamples) && f.scopeSamples.length > 0
-          ? { ...f, scopeSamples: null, scopeSide: "either" }
-          : f;
-      });
-      // When returning from a drill (lastSamplesDrill is set), let
-      // the SamplesTab's focus-on-arrival logic scroll to the
-      // matching row — it uses scrollIntoView({ block: "center" }),
-      // which is more useful than restoring the previous Y. Without
-      // this guard, our setTimeout(scrollTo(savedY)) below races
-      // with the SamplesTab scroll and lands the curator back at the
-      // top of the page when savedY was 0 (typical when the drill
-      // started from a row that was already in view).
-      const isDrillReturn = !!lastSamplesDrill || !!drillTargetId;
-      if (!isDrillReturn) {
-        const y = samplesUIRef.current.scrollY || 0;
-        // Only force a scroll when there's a real position to restore.
-        // y === 0 means we've never left Samples yet (or left from the
-        // very top) — in that case let the tab-switch scroll-to-tabs
-        // above do its job rather than fighting it with scrollTo(0).
-        if (y > 0) {
-          const handle = window.setTimeout(() => {
-            window.scrollTo({ top: y, behavior: "auto" });
-          }, 0);
-          prevTabRef.current = tab;
-          return () => window.clearTimeout(handle);
-        }
-      }
-      prevTabRef.current = tab;
-      return undefined;
-    }
-    prevTabRef.current = tab;
-    return undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
   // Analysis title — surfaces in the sidebar between "Interpretation
   // interface" and the version chip so the curator (and anyone looking
   // over their shoulder) sees which study they're working on. Auto-set
@@ -25765,6 +25700,84 @@ const defaultFilter = () => ({
     },
     [scopeToSamples],
   );
+
+  // Save the page scroll position when leaving the Samples tab and
+  // restore it when coming back, so the curator lands back on the
+  // sample row they were studying after a Scatter / Events drill-in.
+  // Also clear any sample-list scope on entering the Samples tab —
+  // the scope was almost certainly set by a drill-in from Samples
+  // itself and shouldn't persist when we come back. Same effect
+  // records the previous tab into `lastTab` so the back chip knows
+  // where to send the curator.
+  // (Declared here, below `filter` and `lastSamplesDrill`, which it
+  // reads: the tab nav ref and prevTabRef it uses are declared with the
+  // tab state above.)
+  useEffect(() => {
+    const prev = prevTabRef.current;
+    if (prev !== tab) {
+      setLastTab(prev);
+      // On every tab change, bring the tab nav to the top of the
+      // viewport so the new content has the full real estate below.
+      // Samples-specific scroll restoration (below) can still override
+      // when there's a saved Y to come back to.
+      tabsNavRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+    if (prev === "samples" && tab !== "samples") {
+      samplesUIRef.current.scrollY = window.scrollY;
+    } else if (prev !== "samples" && tab === "samples") {
+      // If we arrive on Samples with a single-sample scope (almost
+      // certainly a drill-in from Network or elsewhere), promote
+      // that id to lastSamplesDrill so the row is highlighted on
+      // arrival, then clear the scope so the table shows everything.
+      // Read the scope from the committed filter — this effect runs
+      // after the render that switched the tab, so `filter` is current —
+      // and call the setters out here. Collecting drillTargetId inside a
+      // setFilter updater left it null whenever React deferred that
+      // updater to the next render (always, here: setLastTab above has
+      // already queued an update), so a drill-in was taken for a plain
+      // tab switch and the saved scroll position was restored over it.
+      const scope = Array.isArray(filter.scopeSamples)
+        ? filter.scopeSamples
+        : null;
+      const drillTargetId = scope && scope.length === 1 ? scope[0] : null;
+      if (drillTargetId) setLastSamplesDrill(drillTargetId);
+      if (scope && scope.length > 0) {
+        setFilter((f) =>
+          Array.isArray(f.scopeSamples) && f.scopeSamples.length > 0
+            ? { ...f, scopeSamples: null, scopeSide: "either" }
+            : f,
+        );
+      }
+      // When returning from a drill (lastSamplesDrill is set), let
+      // the SamplesTab's focus-on-arrival logic scroll to the
+      // matching row — it uses scrollIntoView({ block: "center" }),
+      // which is more useful than restoring the previous Y. Without
+      // this guard, our setTimeout(scrollTo(savedY)) below races
+      // with the SamplesTab scroll and lands the curator back at the
+      // top of the page when savedY was 0 (typical when the drill
+      // started from a row that was already in view).
+      const isDrillReturn = !!lastSamplesDrill || !!drillTargetId;
+      if (!isDrillReturn) {
+        const y = samplesUIRef.current.scrollY || 0;
+        // Only force a scroll when there's a real position to restore.
+        // y === 0 means we've never left Samples yet (or left from the
+        // very top) — in that case let the tab-switch scroll-to-tabs
+        // above do its job rather than fighting it with scrollTo(0).
+        if (y > 0) {
+          const handle = window.setTimeout(() => {
+            window.scrollTo({ top: y, behavior: "auto" });
+          }, 0);
+          prevTabRef.current = tab;
+          return () => window.clearTimeout(handle);
+        }
+      }
+      prevTabRef.current = tab;
+      return undefined;
+    }
+    prevTabRef.current = tab;
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   /** Add a user-curated event to the events list. Used by the
       "Explore new pairs" feature in the Scatterplots tab when the user

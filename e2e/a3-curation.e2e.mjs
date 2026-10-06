@@ -655,6 +655,74 @@ try {
       `${value(samplesHtml, "Suppress")} / ${value(samplesHtml, "Keep")}`,
     );
   });
+  /* A3.8 Drilling from the Network into one sample of the Samples tab
+     is recognised as a drill-in: the row is focused, and the scroll
+     position saved when the Samples tab was left is NOT restored over
+     it (the drill target used to be read inside a deferred setFilter
+     updater, so the return looked like a plain tab switch). */
+  await scenario("A3.8", async (page) => {
+    await openTab(page, "Samples");
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(500);
+    const pop = await openNodePopover(page, "NC3"); // leaves Samples scrolled down
+    await page.evaluate(() => {
+      window.__scrollTo = [];
+      const scrollTo = window.scrollTo.bind(window);
+      window.scrollTo = (...args) => {
+        window.__scrollTo.push(args);
+        return scrollTo(...args);
+      };
+    });
+    await pop.getByRole("button", { name: "→ Samples" }).click();
+    await page.waitForTimeout(2000);
+    const restores = await page.evaluate(() => window.__scrollTo.length);
+    check(restores === 0, "A3.8 the drill-in does not restore the old scroll position", `${restores} scrollTo call(s)`);
+    const row = await page.evaluate(() => {
+      const r = document.getElementById("samplerow-NC3")?.getBoundingClientRect();
+      return r ? { top: r.top, bottom: r.bottom, h: window.innerHeight } : null;
+    });
+    check(
+      !!row && row.top >= 0 && row.bottom <= row.h,
+      "A3.8 the NC3 row is in view",
+      JSON.stringify(row),
+    );
+    const text = await page.locator("body").innerText();
+    check(!/as target · |as source · /i.test(text), "A3.8 the single-sample scope is cleared on arrival");
+  });
+
+  /* A3.8, the other branch: a plain round trip through another tab
+     (no drill-in) still restores the saved scroll position. */
+  await scenario("A3.8 round trip", async (page) => {
+    await openTab(page, "Samples");
+    const tabButton = (label) =>
+      page.evaluate(
+        (label) =>
+          [...document.querySelectorAll("button")]
+            .find((b) => b.textContent.trim() === label)
+            .click(),
+        label,
+      );
+    await page.evaluate(() => window.scrollTo(0, 600));
+    await page.waitForTimeout(400);
+    await tabButton("Overview");
+    await page.waitForTimeout(800);
+    await page.evaluate(() => {
+      window.__scrollTo = [];
+      const scrollTo = window.scrollTo.bind(window);
+      window.scrollTo = (...args) => {
+        window.__scrollTo.push(args);
+        return scrollTo(...args);
+      };
+    });
+    await tabButton("Samples");
+    await page.waitForTimeout(1000);
+    const back = await page.evaluate(() => window.__scrollTo.map((a) => a[0]?.top));
+    check(
+      back.length === 1 && back[0] > 0,
+      "A3.8 Samples → Overview → Samples restores the saved scroll position",
+      JSON.stringify(back),
+    );
+  });
 } finally {
   await browser.close();
   stopServer();
