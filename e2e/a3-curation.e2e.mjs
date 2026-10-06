@@ -362,6 +362,84 @@ try {
     s = await overviewStats(page);
     check(s.fp === demoEvents.length && s.suppress === 0, "(e) Overview: all FP, nothing to suppress", `fp=${s.fp} suppress=${s.suppress}`);
   });
+  /* A session saved by the previous version keeps the automatic values
+     its click order produced; on load they are recomputed with the rule
+     (manual values untouched). */
+  await scenario(
+    "(a)-(e) old session",
+    async (page) => {
+      const event = (id, source, target, verdict) => ({
+        id,
+        source,
+        target,
+        contamination_rate: 0.1,
+        probability: 0.9,
+        introduced_species: [],
+        verdict,
+        notes: "",
+      });
+      await importSession(page, {
+        schema_version: 2,
+        events: [
+          event(0, "S1", "T1", "pending"),
+          event(1, "S2", "T2", "true_positive"),
+          event(2, "S3", "T3", "false_positive"),
+          event(3, "S4", "T3", "false_positive"),
+          event(4, "S5", "T4", "false_positive"),
+        ],
+        sample_curation: {
+          T1: { verdict: "correct", verdictAuto: true }, // F then P
+          // T2: a bulk TP never reached it
+          T3: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true }, // bulk FP over TP
+          T4: { verdict: "contaminated", action: "suppress" }, // by hand: kept
+        },
+      });
+      const sc = await storedCuration(page);
+      check(
+        sc.T1 === undefined &&
+          isAutoContaminated(sc.T2) &&
+          sc.T3?.verdict === "correct" && sc.T3.verdictAuto === true && sc.T3.action == null &&
+          sc.T4?.verdict === "contaminated" && !sc.T4.verdictAuto && sc.T4.action === "suppress",
+        "an imported session's automatic values are recomputed, manual ones kept",
+        JSON.stringify(sc),
+      );
+      // Same through a reload: write stale values straight into the
+      // stored session, as an older version would have left them.
+      await page.evaluate(
+        () =>
+          new Promise((resolve, reject) => {
+            const req = indexedDB.open("crocodeel-interpreter");
+            req.onerror = () => reject(req.error);
+            req.onsuccess = () => {
+              const store = req.result.transaction("kv", "readwrite").objectStore("kv");
+              const get = store.get("main");
+              get.onsuccess = () => {
+                const main = get.result;
+                main.sampleCuration = {
+                  T1: { verdict: "correct", verdictAuto: true },
+                  T3: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true },
+                };
+                const put = store.put(main, "main");
+                put.onsuccess = () => resolve();
+                put.onerror = () => reject(put.error);
+              };
+            };
+          }),
+      );
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(1500);
+      const restored = await storedCuration(page);
+      check(
+        restored.T1 === undefined &&
+          isAutoContaminated(restored.T2) &&
+          restored.T3?.verdict === "correct" && restored.T3.action == null,
+        "a session restored from the browser's storage is recomputed the same way",
+        JSON.stringify(restored),
+      );
+    },
+    { demo: false },
+  );
+
   /* A3.2 "Don't overwrite …" protects what the curator set by hand,
      not the automatic values: an automatic Suppress must not make a
      bulk Keep skip the sample. Events dialog first. */

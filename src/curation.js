@@ -357,14 +357,19 @@ function isNeverTargetedStamp(entry) {
       2. the Not contaminated + Keep stamps of never-targeted samples are
          dropped: that default is derived now (buildEffectiveSampleCuration),
          and a stamp, stored as a manual value, counted as a Keep decision
-         and blocked the Contaminated → Suppress pairing.
+         and blocked the Contaminated → Suppress pairing;
+      3. the automatic values are recomputed with the current rule, so a
+         session saved by an older version — whose automatic values could
+         depend on the order of the clicks, or lag behind a bulk change —
+         reads like one curated today. Manual values are not touched.
 
     Returns { sampleCuration, touched }; `touched` is true when the events
     carry legacy actions (which the caller strips) or the curation
     changed. */
 export function migrateSampleCuration(rawEvents, sampleCuration) {
   const events = rawEvents || [];
-  const sc = { ...(sampleCuration || {}) };
+  const original = sampleCuration || {};
+  const sc = { ...original };
   let touched = false;
   const legacy = new Map();
   for (const e of events) {
@@ -392,5 +397,15 @@ export function migrateSampleCuration(rawEvents, sampleCuration) {
       touched = true;
     }
   }
-  return { sampleCuration: sc, touched };
+  const synced = syncSampleCuration(sc, events);
+  if (!touched) {
+    const ids = new Set([...Object.keys(original), ...Object.keys(synced)]);
+    for (const id of ids) {
+      if (!sameEntry(original[id] ?? null, synced[id] ?? null)) {
+        touched = true;
+        break;
+      }
+    }
+  }
+  return { sampleCuration: synced, touched };
 }

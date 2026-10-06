@@ -125,8 +125,8 @@ describe("migrateSampleCuration — stamps of never-targeted samples", () => {
     const kept = {
       A: { ...stamp, notes: "checked by hand" },
       B: { verdict: "correct" },
-      Z: { verdict: "correct", action: "keep", verdictAuto: true },
       T: { ...stamp }, // T is targeted: a manual decision, not a stamp
+      U: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true },
     };
     const { sampleCuration, touched } = migrateSampleCuration(events, kept);
     expect(sampleCuration).toEqual(kept);

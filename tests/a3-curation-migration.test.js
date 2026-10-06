@@ -9,7 +9,9 @@ import { migrateSampleCuration } from "../src/curation.js";
    listed every event's action, so a filter on "suppress" dropped the
    sample as soon as one of its events said so). */
 
-const ev = (id, target, action, verdict = "true_positive") => ({
+// Pending unless a test says otherwise, so the automatic verdicts the
+// migration also recomputes stay out of the way of the legacy actions.
+const ev = (id, target, action, verdict = "pending") => ({
   id,
   source: `S${id}`,
   target,
@@ -89,5 +91,42 @@ describe("migrateSampleCuration — legacy per-event actions", () => {
       sampleCuration: {},
       touched: false,
     });
+  });
+});
+
+describe("migrateSampleCuration — automatic values recomputed on load", () => {
+  it("brings automatic values saved by an older version in line with the rule", () => {
+    const events = [
+      { id: 0, source: "A", target: "T1", verdict: "pending" },
+      { id: 1, source: "A", target: "T2", verdict: "true_positive" },
+      { id: 2, source: "B", target: "T3", verdict: "false_positive" },
+      { id: 3, source: "C", target: "T3", verdict: "false_positive" },
+    ];
+    const { sampleCuration, touched } = migrateSampleCuration(events, {
+      // F then P left an automatic verdict on an all-pending target.
+      T1: { verdict: "correct", verdictAuto: true },
+      // A bulk TP never reached T2. (No entry at all.)
+      // A bulk FP over TP events left the automatic Suppress behind.
+      T3: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true },
+    });
+    expect(sampleCuration.T1).toBeUndefined();
+    expect(sampleCuration.T2).toEqual({
+      verdict: "contaminated",
+      verdictAuto: true,
+      action: "suppress",
+      actionAuto: true,
+    });
+    expect(sampleCuration.T3).toEqual({ verdict: "correct", verdictAuto: true });
+    expect(touched).toBe(true);
+  });
+
+  it("leaves manual values and consistent sessions alone", () => {
+    const events = [{ id: 0, source: "A", target: "T", verdict: "true_positive" }];
+    const sc = {
+      T: { verdict: "uncertain", action: "keep", notes: "n" },
+    };
+    const { sampleCuration, touched } = migrateSampleCuration(events, sc);
+    expect(sampleCuration).toEqual(sc);
+    expect(touched).toBe(false);
   });
 });
