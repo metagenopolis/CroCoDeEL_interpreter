@@ -4191,7 +4191,8 @@ const UploadCard = ({
 /* ---------- metadata / plate specialized upload cards ---------- */
 
 /** The extra lines of the metadata and plate-map cards: which header was
-    read as which field, then the parser's warnings (repeated sample ids).
+    read as which field, then the parser's warnings (repeated sample ids,
+    unreadable wells).
     A session saved before these existed has neither. */
 const uploadCardDetails = (columnsLine, warnings) =>
   columnsLine || warnings?.length ? (
@@ -4314,7 +4315,11 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
           ,{" "}
           <code style={{ fontFamily: "ui-monospace, monospace" }}>well</code>
           . Wells use letter-then-number coordinates (A01–H12 for 96-well,
-          A01–P24 for 384-well). Plate format is auto-detected. Loading this
+          A01–P24 for 384-well), or come as two columns,{" "}
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>row</code>{" "}
+          (A–P or 1–16) and{" "}
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>column</code>{" "}
+          (1–24). Plate format is auto-detected. Loading this
           unlocks the Plate map tab and the "Proximity on plate" criterion.
         </>
       }
@@ -20527,7 +20532,8 @@ const HelpTab = ({ onStartTour }) => {
           title="plate_map.tsv"
         >
           <p>
-            Three columns: sample id, plate name, well coordinate. Headers
+            Three columns: sample id, plate name, well coordinate — or,
+            instead of the well, its row and column in two columns. Headers
             are matched like the metadata's: exactly, ignoring case, spaces,
             underscores, hyphens and dots. A sample placed on more than one
             row keeps its first well; the plate map card names the repeated
@@ -20561,8 +20567,23 @@ const HelpTab = ({ onStartTour }) => {
                 name="well"
                 required
                 type="A01..H12 or A01..P24"
-                desc="Well coordinate. Both 96-well and 384-well plates are supported. Letter-then-number, e.g. 'A01', 'B7', 'P24'."
+                desc="Well coordinate. Both 96-well and 384-well plates are supported. Letter-then-number, e.g. 'A01', 'B7', 'P24'. A file without a well column can give row and column instead. Rows whose well cannot be read are skipped, and counted on the plate map card."
                 aliases={["well_position", "position", "well_id", "pos"]}
+              />
+              <HelpCol
+                name="row"
+                recognized
+                type="A..P or 1..16"
+                desc="Instead of well: the well's row, as a letter or its 1-based number. Read only when the file has no well column, together with column."
+                aliases={["well_row"]}
+                example={`sample_id  plate  row  column\n40D89      P3     A    1\n58M        P3     C    3\nNC3        P3     H    6`}
+              />
+              <HelpCol
+                name="column"
+                recognized
+                type="1..24"
+                desc="Instead of well: the well's 1-based column, together with row. The plate map is downloaded back in the well format."
+                aliases={["col", "well_column", "well_col"]}
               />
             </tbody>
           </table>

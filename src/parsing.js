@@ -738,6 +738,9 @@ const PLATE_COLS = {
   sample: ["sample_id", "sample", "id"],
   plate: ["plate", "plate_id", "plate_name"],
   well: ["well", "well_position", "position", "well_id", "pos"],
+  // Without a well column, the well may come as two coordinates.
+  row: ["row", "well_row"],
+  col: ["column", "col", "well_column", "well_col"],
 };
 
 /** "A01" / "A1" / "H12" / "P24" → {row: 0..15, col: 0..23} */
@@ -752,21 +755,42 @@ function parseWell(w) {
   return { row, col };
 }
 
+/** Row "A".."P" (or its 1-based number "1".."16") and 1-based column
+    "1".."24" → {row: 0..15, col: 0..23}, like parseWell; null when either
+    is unreadable or off a 384-well plate. */
+function parseRowCol(r, c) {
+  const rs = String(r ?? "").trim().toUpperCase();
+  // 1-based numbers: "A" is row 1
+  const rowNo = /^[A-P]$/.test(rs) ? rs.charCodeAt(0) - 64 : parseStrictNumber(rs);
+  const colNo = parseStrictNumber(c);
+  if (!Number.isInteger(rowNo) || !Number.isInteger(colNo)) return null;
+  if (rowNo < 1 || rowNo > 16 || colNo < 1 || colNo > 24) return null;
+  return { row: rowNo - 1, col: colNo - 1 };
+}
+
 export function wellLabel(row, col) {
   return String.fromCharCode(65 + row) + String(col + 1).padStart(2, "0");
 }
 
 export function parsePlateMap(text) {
-  const { header, rows } = parseTSV(text);
+  const { header, rows, lineNumbers } = parseTSV(text);
   // Returned as `cols`, like the metadata's, for the upload card.
   const cols = {
     sample: pickColExact(header, PLATE_COLS.sample),
     plate: pickColExact(header, PLATE_COLS.plate),
     well: pickColExact(header, PLATE_COLS.well),
+    row: null,
+    col: null,
   };
-  if (!cols.sample || !cols.well) {
+  // The README and the Help have always offered row + column instead of a
+  // well column; the parser now reads them, when there is no well column.
+  if (!cols.well) {
+    cols.row = pickColExact(header, PLATE_COLS.row);
+    cols.col = pickColExact(header, PLATE_COLS.col);
+  }
+  if (!cols.sample || !(cols.well || (cols.row && cols.col))) {
     throw new Error(
-      "Missing columns: sample_id and well are required (plate optional).",
+      "Missing columns: sample_id and either well or row + column are required (plate optional).",
     );
   }
   const bySample = {};
@@ -775,11 +799,20 @@ export function parsePlateMap(text) {
   // A repeated id keeps its first placed row (see "duplicated ids" above).
   const seen = new Set();
   const dups = [];
-  rows.forEach((r) => {
+  // A row whose well cannot be read is skipped, and counted unless it was
+  // left empty (a sample listed but not plated).
+  const unreadable = [];
+  rows.forEach((r, i) => {
     const id = r[cols.sample];
     if (!id) return;
-    const w = parseWell(r[cols.well]);
-    if (!w) return;
+    const cells = cols.well ? [r[cols.well]] : [r[cols.row], r[cols.col]];
+    const w = cols.well ? parseWell(cells[0]) : parseRowCol(cells[0], cells[1]);
+    if (!w) {
+      if (cells.some((c) => String(c ?? "").trim() !== "")) {
+        unreadable.push({ i, cell: cells.map((c) => String(c ?? "").trim()).join(" / ") });
+      }
+      return;
+    }
     if (seen.has(id)) {
       dups.push(id);
       return;
@@ -796,6 +829,14 @@ export function parsePlateMap(text) {
   const format =
     maxRow > 7 || maxCol > 11 ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 };
   const warnings = [];
+  if (unreadable.length > 0) {
+    const n = unreadable.length;
+    const { i, cell } = unreadable[0];
+    warnings.push(
+      `${n} row${n > 1 ? "s" : ""} with no readable well ${n > 1 ? "were" : "was"} skipped ` +
+        `(first on line ${lineNumbers[i]}: "${cell}").`,
+    );
+  }
   if (dups.length > 0) warnings.push(duplicateIdsWarning(dups));
   return { bySample, format, cols, warnings };
 }
