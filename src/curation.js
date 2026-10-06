@@ -28,7 +28,12 @@
    Everything here is pure, so the rule table is unit-tested once and the
    app applies the very same rule on every path that changes an event
    evaluation: a click, a keyboard shortcut, the gallery, the bulk dialog,
-   both presets, the Network node popover, a reset. */
+   both presets, the Network node popover, a reset.
+
+   The module also holds what the readers share: the default of a sample
+   no event targets (buildEffectiveSampleCuration), the keep / suppress
+   counts (sampleActionCounts) and the migration of stored sessions
+   (migrateSampleCuration). */
 
 /** A stored verdict / action that counts as set. "pending" is how the
     pickers spell "no verdict" and is never stored on purpose, but older
