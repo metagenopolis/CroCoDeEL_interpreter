@@ -6,7 +6,9 @@
      1. an event whose target is missing from the abundance table is "not
         evaluable" in Guided validation — never PROBABLY NOT CONTAMINATED;
      2. the exported events HTML report prints a cascade's upstream rate,
-        not "(NaN%)".
+        not "(NaN%)";
+     3. species ids that CroCoDeEL rewrote as integers ("1" for the table's
+        "001") still land on the contamination line.
 
    Runs on its own (`node e2e/a2-diagnostics.e2e.mjs`, which starts a
    preview server unless BASE_URL is set) or through e2e/run-all.mjs. */
@@ -152,6 +154,36 @@ try {
       );
     }
     check(errors.length === 0, "no JS error across the cascade report", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* ----------------------- 3. integer species ids rewritten by pandas
+     A table whose species ids are all integers ("001".."030") is read by
+     CroCoDeEL as an int64 index, so its events name the species "1".."20".
+     An exact match found none of them: no point on the line, and the
+     "match NOTHING in the abundance table" warning. */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    const ids = Array.from({ length: 30 }, (_, i) => String(i + 1).padStart(3, "0"));
+    const lines = ["species\tSRC\tTGT"];
+    ids.forEach((id, i) => {
+      const src = 10 ** (-4 * (i / 29));
+      lines.push(`${id}\t${src.toPrecision(6)}\t${i < 20 ? (0.1 * src).toPrecision(6) : 0}`);
+    });
+    const written = Array.from({ length: 20 }, (_, i) => String(i + 1)).join(",");
+    await loadFiles(
+      page,
+      tsvFile("contamination_events.tsv", [
+        "source\ttarget\trate\tprobability\tcontamination_specific_species",
+        `SRC\tTGT\t0.1\t0.9\t${written}`,
+      ]),
+      tsvFile("species_abundance.tsv", lines),
+    );
+    await openTab(page, "Validate");
+    const text = await page.locator("body").innerText();
+    check(/\b20 species on line\b/i.test(text), "the 20 introduced species are on the line", (text.match(/\d+ species on line|Only \d+ species on line/i) || ["none"])[0]);
+    check(!/match NOTHING/i.test(text), "no unresolved-species warning");
+    check(errors.length === 0, "no JS error with integer species ids", errors[0] || "");
     await ctx.close();
   }
 } finally {

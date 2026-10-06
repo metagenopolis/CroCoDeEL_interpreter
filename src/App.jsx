@@ -6,7 +6,9 @@ import {
   automaticScore,
   bulkCriteria,
   cascadeExplanations,
+  introducedSpeciesSet,
   matchesBulkCriteria,
+  matchSpeciesName,
 } from "./diagnostics.js";
 import {
   FolderOpen,
@@ -1170,7 +1172,9 @@ export function buildScatter(ab, event) {
             : `Target sample "${target}" not found in abundance table`,
     };
   }
-  const introducedSet = new Set(introduced);
+  // Through matchSpeciesName, so that ids CroCoDeEL rewrote as integers
+  // ("1" for the table's "001") still land on the line.
+  const introducedSet = introducedSpeciesSet(ab, introduced);
   const points = [];
   // Species richness = number of species observed (relative abundance > 0)
   // in each sample. Counted independently of the both-zero skip below.
@@ -1506,7 +1510,7 @@ function detectCascades(events, abundance, metadata) {
     if (aboveInfo == null || aboveInfo.count <= 3) return { ...e, cascade: null };
     const upstream = incoming[e.source] || [];
     if (upstream.length === 0) return { ...e, cascade: null };
-    const explained = cascadeExplanations(scatter, upstream);
+    const explained = cascadeExplanations(scatter, upstream, abundance);
     if (explained.length === 0) return { ...e, cascade: null };
     return {
       ...e,
@@ -17455,12 +17459,15 @@ const ValidateTab = ({
                     style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
                   >
                     {sel.introduced.slice(0, 80).map((s, i) => {
-                      const active = pickedSpecies.includes(s);
+                      // Pin the table's name: the plotted point is "001" when
+                      // CroCoDeEL wrote "1" (see matchSpeciesName).
+                      const sp = matchSpeciesName(ab, s) ?? s;
+                      const active = pickedSpecies.includes(sp);
                       return (
                         <button
                           key={i}
                           type="button"
-                          onClick={() => togglePickedSpecies(s)}
+                          onClick={() => togglePickedSpecies(sp)}
                           title={
                             active
                               ? "Click to unpin this species in the plot"
@@ -18104,12 +18111,15 @@ const ValidateTab = ({
                   style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
                 >
                   {sel.introduced.slice(0, 80).map((s, i) => {
-                    const active = pickedSpecies.includes(s);
+                    // Pin the table's name: the plotted point is "001" when
+                    // CroCoDeEL wrote "1" (see matchSpeciesName).
+                    const sp = matchSpeciesName(ab, s) ?? s;
+                    const active = pickedSpecies.includes(sp);
                     return (
                       <button
                         key={i}
                         type="button"
-                        onClick={() => togglePickedSpecies(s)}
+                        onClick={() => togglePickedSpecies(sp)}
                         title={
                           active
                             ? "Click to unpin this species in the plot"
@@ -20586,6 +20596,14 @@ const HelpTab = ({ onStartTour }) => {
             Format: first column lists species names, every other column is a
             sample. The parser normalizes each sample column to relative
             abundances summing to 1.
+          </p>
+          <p>
+            The events file must name species exactly as this table does,
+            with one exception CroCoDeEL itself causes: when every species
+            name is an integer (say <code>001</code>), it reads them as
+            numbers and writes <code>1</code> in its events. Such a name is
+            matched to the table's <code>001</code> when no other species
+            of the table is the same integer.
           </p>
         </HelpSection>
 
@@ -25165,13 +25183,14 @@ const defaultFilter = () => ({
       );
     }
     if (ab && rawEvents.length > 0) {
-      const known = new Set(ab.species);
       let withSpecies = 0;
       let unresolved = 0;
       for (const e of rawEvents) {
         if (!e.introduced?.length) continue;
         withSpecies++;
-        if (!e.introduced.some((sp) => known.has(sp))) unresolved++;
+        // Same matcher as the scatter: integer ids CroCoDeEL rewrote
+        // ("1" for "001") resolve, so they no longer trip this warning.
+        if (!e.introduced.some((sp) => matchSpeciesName(ab, sp) != null)) unresolved++;
       }
       if (withSpecies > 0 && unresolved / withSpecies > 0.5) {
         const sample = rawEvents.find((e) => e.introduced?.length)?.introduced[0];

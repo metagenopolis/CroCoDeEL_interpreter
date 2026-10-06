@@ -272,11 +272,11 @@ export function matchesBulkCriteria(criteria, picks) {
     the upstream source and event id, the number of species explained, and
     the upstream event's own rate (`upstream_rate`). The report used to read
     a `rate` that no entry had and printed "(NaN%)" for every cascade. */
-export function cascadeExplanations(scatter, upstream) {
+export function cascadeExplanations(scatter, upstream, ab) {
   const explained = [];
   if (!scatter || scatter.logC == null) return explained;
   for (const up of upstream) {
-    const upIntroduced = new Set(up.introduced);
+    const upIntroduced = introducedSpeciesSet(ab, up.introduced);
     let count = 0;
     for (const p of scatter.points) {
       if (p.onLine || p.x <= 0 || p.y <= 0) continue;
@@ -295,4 +295,65 @@ export function cascadeExplanations(scatter, upstream) {
     }
   }
   return explained;
+}
+
+/* ---- Species names CroCoDeEL rewrote as integers ----
+
+   CroCoDeEL reads the abundance table with pandas (ab_table_utils.read:
+   `read_csv(index_col=0)`, then `index.astype(str)`). When EVERY species
+   name parses as an integer the index becomes int64, so the names it
+   writes in contamination_events.tsv are the integers' str(): "001" comes
+   back as "1", "+5" as "5", "-007" as "-7". The interpreter reads the
+   table as text, so an exact match finds none of them and no introduced
+   species lands on the line. Every place that matches an event's species
+   against the table goes through matchSpeciesName. */
+
+/** pandas' rendering of an integer-like species name ("007" → "7",
+    "+5" → "5", "-007" → "-7", " 12" → "12"), or null if the name is not
+    an integer. */
+export function canonicalIntegerName(name) {
+  const m = /^\s*([+-]?)(\d+)\s*$/.exec(String(name ?? ""));
+  if (!m) return null;
+  const digits = m[2].replace(/^0+(?=\d)/, "");
+  return m[1] === "-" && digits !== "0" ? `-${digits}` : digits;
+}
+
+// Per species list: the exact names, and canonical integer form → table
+// name (null when two table species share the form: never guess).
+// Keyed on the `species` array, which a filtered copy of the table shares.
+const speciesIndexes = new WeakMap();
+function speciesIndex(ab) {
+  let index = speciesIndexes.get(ab.species);
+  if (!index) {
+    const integers = new Map();
+    for (const sp of ab.species) {
+      const c = canonicalIntegerName(sp);
+      if (c != null) integers.set(c, integers.has(c) ? null : sp);
+    }
+    index = { exact: new Set(ab.species), integers };
+    speciesIndexes.set(ab.species, index);
+  }
+  return index;
+}
+
+/** The abundance table's name for a species named in the events file: the
+    name itself when the table has it; otherwise, for an integer-like name,
+    the one table species with the same canonical integer form; else null. */
+export function matchSpeciesName(ab, name) {
+  if (!ab?.species || name == null) return null;
+  const index = speciesIndex(ab);
+  if (index.exact.has(name)) return name;
+  const c = canonicalIntegerName(name);
+  return c == null ? null : index.integers.get(c) ?? null;
+}
+
+/** The table species an introduced-species list names (matchSpeciesName);
+    names matching nothing are left out. */
+export function introducedSpeciesSet(ab, introduced) {
+  const out = new Set();
+  for (const name of introduced || []) {
+    const sp = matchSpeciesName(ab, name);
+    if (sp != null) out.add(sp);
+  }
+  return out;
 }
