@@ -24414,6 +24414,13 @@ function AppMain({ initial }) {
   const [sampleCuration, setSampleCuration] = useState(
     initialMigration.sampleCuration,
   );
+  // Latest committed events, for callbacks that must stay stable across
+  // renders (setVerdict) yet need the current events to derive side
+  // effects. Synced after commit, so every event handler sees it fresh.
+  const rawEventsRef = useRef(rawEvents);
+  React.useLayoutEffect(() => {
+    rawEventsRef.current = rawEvents;
+  }, [rawEvents]);
   const [runMetadata, setRunMetadata] = useState(initial?.runMetadata || null);
   const [ab, setAb] = useState(initial?.ab || null);
   const [metadata, setMetadata] = useState(initial?.metadata || null);
@@ -25531,33 +25538,27 @@ const defaultFilter = () => ({
   // large datasets.
   const setVerdict = React.useCallback(
     (id, verdict) => {
-      let target = null;
-      let oldVerdict = null;
-      let stillHasTPOnTarget = false;
-      let allTargetEventsResolved = false;
-      setRawEvents((prev) => {
-        const next = prev.map((e) => {
-          if (e.id === id) {
-            target = e.target;
-            oldVerdict = e.verdict;
-            return { ...e, verdict };
-          }
-          return e;
-        });
-        if (target) {
-          const sampleEvents = next.filter((e) => e.target === target);
-          stillHasTPOnTarget = sampleEvents.some(
-            (e) => e.id !== id && e.verdict === "true_positive",
-          );
-          allTargetEventsResolved =
-            sampleEvents.length > 0 &&
-            sampleEvents.every(
-              (e) => e.verdict && e.verdict !== "pending",
-            );
-        }
-        return next;
-      });
+      // Read the event from the last committed state, not from inside
+      // the setRawEvents updater: React may defer that updater to the
+      // next render, and the sample sync below would then see no target
+      // and silently skip.
+      const prevEvents = rawEventsRef.current;
+      const ev = prevEvents.find((e) => e.id === id);
+      setRawEvents((prev) =>
+        prev.map((e) => (e.id === id ? { ...e, verdict } : e)),
+      );
+      const target = ev?.target;
       if (!target) return;
+      const oldVerdict = ev.verdict;
+      const sampleEvents = prevEvents
+        .filter((e) => e.target === target)
+        .map((e) => (e.id === id ? { ...e, verdict } : e));
+      const stillHasTPOnTarget = sampleEvents.some(
+        (e) => e.id !== id && e.verdict === "true_positive",
+      );
+      const allTargetEventsResolved =
+        sampleEvents.length > 0 &&
+        sampleEvents.every((e) => e.verdict && e.verdict !== "pending");
       // Auto-sync the target sample's verdict from the new event
       // verdict — but only when the sample's current verdict was
       // either unset or previously auto-derived by this same path.
@@ -25936,13 +25937,14 @@ const defaultFilter = () => ({
       confirmLabel: `Mark ${matches.length} as TP`,
       onConfirm: () => {
         const matchIds = new Set(matches.map((e) => e.id));
-        const matchedTargets = [];
+        // Taken from `matches`, not collected inside the updater below,
+        // which React may run only at the next render.
+        const matchedTargets = matches.map((e) => e.target).filter(Boolean);
         setRawEvents((prev) =>
           prev.map((e) => {
             if (!matchIds.has(e.id)) return e;
             const autoNote = `Auto-classified as TP: contamination flowing into negative control "${e.target}".`;
             const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
-            if (e.target) matchedTargets.push(e.target);
             return { ...e, verdict: "true_positive", notes: newNote };
           }),
         );
@@ -26008,11 +26010,15 @@ const defaultFilter = () => ({
           : `\n\nNo comment provided — existing notes are kept untouched.`),
       confirmLabel: `Apply to ${ids.length}`,
       onConfirm: () => {
-        let matchedTargets = [];
+        // Collected here, not inside the setRawEvents updater: React may
+        // defer that updater to the next render, which would leave this
+        // list empty when the sample side-effects below read it.
+        const matchedTargets = rawEvents
+          .filter((e) => idSet.has(e.id) && e.target)
+          .map((e) => e.target);
         setRawEvents((prev) =>
           prev.map((e) => {
             if (!idSet.has(e.id)) return e;
-            if (e.target) matchedTargets.push(e.target);
             const next = { ...e, verdict };
             if (comment) {
               const tag = `[bulk ${stamp}] ${comment}`;

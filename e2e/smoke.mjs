@@ -339,6 +339,129 @@ try {
     check(errors.length === 0, "no JS error across the graph export", errors[0] || "");
     await ctx.close();
   }
+
+  /* ------------- 7. regression: sample side effects of event verdicts
+     The target samples were collected inside a setRawEvents updater, which
+     React may run only at the next render: the sample verdict / action was
+     then silently skipped. Bulk apply never reached a single sample, and
+     one TP click in four or so did not flag its target. */
+  {
+    const tsvRows = (path) =>
+      readFileSync(path, "utf8")
+        .split("\n")
+        .filter((l) => l && !l.startsWith("#"))
+        .slice(1)
+        .map((l) => l.split("\t"));
+    const demoEvents = tsvRows("public/demo/contamination_events.tsv");
+    const targets = new Set(demoEvents.map((c) => c[1]));
+    const controls = new Set(
+      tsvRows("public/demo/metadata.tsv")
+        .filter((c) => c[3] === "control")
+        .map((c) => c[0]),
+    );
+    const ncTargets = [...targets].filter((t) => controls.has(t));
+
+    const overview = async (page) => {
+      await page.getByRole("button", { name: /^Overview$/ }).first().click();
+      await page.waitForTimeout(800);
+      const text = await page.locator("body").innerText();
+      const stat = (re) => Number(text.match(re)?.[1] ?? NaN);
+      return {
+        tp: stat(/Validated \(TP\)\s*(\d+)/i),
+        keep: stat(/Samples to keep\s*(\d+)/i),
+        suppress: stat(/Samples to suppress\s*(\d+)/i),
+      };
+    };
+    const openBulkDialog = async (page) => {
+      await page.getByRole("button", { name: /^Events$/ }).first().click();
+      await page.waitForTimeout(1200);
+      await page.locator('button[aria-label="Bulk apply evaluation"]').first().click();
+      await page.getByText(/Action on samples targeted/i).waitFor({ timeout: 20000 });
+      return page
+        .locator("div")
+        .filter({ has: page.getByText(/Action on samples targeted/i) })
+        .filter({ has: page.getByRole("button", { name: /^Apply to \d+ events?$/ }) })
+        .last();
+    };
+
+    // 7a. bulk apply: TP + target Contaminated + target Keep
+    {
+      const { ctx, page, errors } = await newPage();
+      await loadDemo(page);
+      const dialog = await openBulkDialog(page);
+      await dialog.getByRole("button", { name: /^True positive$/ }).first().click();
+      await dialog.getByRole("button", { name: /^Contaminated$/ }).first().click();
+      await dialog.getByRole("button", { name: /^Keep$/ }).first().click();
+      await dialog.getByRole("button", { name: /^Apply to \d+ events?$/ }).click();
+      await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
+      await page.waitForTimeout(1000);
+      const s = await overview(page);
+      check(s.tp === demoEvents.length, "bulk apply marks every matched event TP", `TP=${s.tp}`);
+      check(
+        s.keep === targets.size && s.suppress === 0,
+        "bulk apply sets Keep on every target sample",
+        `keep=${s.keep} suppress=${s.suppress}, expected keep=${targets.size}`,
+      );
+      await page.getByRole("button", { name: /^Samples$/ }).first().click();
+      await page.waitForTimeout(1200);
+      const flagged = await page.evaluate(
+        () =>
+          [...document.querySelectorAll('button[title="Verdict: Contaminated"]')].filter(
+            (b) => getComputedStyle(b).backgroundColor !== "rgb(255, 255, 255)",
+          ).length,
+      );
+      check(
+        flagged === targets.size,
+        "bulk apply marks every target sample Contaminated",
+        `${flagged} of ${targets.size}`,
+      );
+      check(errors.length === 0, "no JS error across the bulk apply", errors[0] || "");
+      await ctx.close();
+    }
+
+    // 7b. one TP click per event: each target gets Contaminated → Suppress
+    {
+      const { ctx, page, errors } = await newPage();
+      await loadDemo(page);
+      await page.getByRole("button", { name: /^Events$/ }).first().click();
+      await page.waitForTimeout(1200);
+      const buttons = page.locator('button[title="mark as true positive"]');
+      const n = await buttons.count();
+      for (let i = 0; i < n; i++) {
+        await buttons.nth(i).click();
+        await page.waitForTimeout(150);
+      }
+      const s = await overview(page);
+      check(s.tp === demoEvents.length, "every event is marked TP one click at a time", `TP=${s.tp}`);
+      check(
+        s.suppress === targets.size,
+        "each TP click flags its target sample for suppression",
+        `suppress=${s.suppress}, expected ${targets.size}`,
+      );
+      check(errors.length === 0, "no JS error across the TP clicks", errors[0] || "");
+      await ctx.close();
+    }
+
+    // 7c. preset: events toward a negative control → TP + NC Contaminated
+    {
+      const { ctx, page, errors } = await newPage();
+      await loadDemo(page);
+      await openBulkDialog(page);
+      await page
+        .getByRole("button", { name: /Mark all events targeting a negative control as TP/i })
+        .click();
+      await page.getByRole("button", { name: /^Mark \d+ as TP$/ }).click();
+      await page.waitForTimeout(1000);
+      const s = await overview(page);
+      check(
+        ncTargets.length > 0 && s.suppress === ncTargets.length,
+        "the negative-control preset flags the NC targets Contaminated",
+        `suppress=${s.suppress}, expected ${ncTargets.length}`,
+      );
+      check(errors.length === 0, "no JS error across the NC preset", errors[0] || "");
+      await ctx.close();
+    }
+  }
 } finally {
   await browser.close();
   stopServer();
