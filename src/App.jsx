@@ -20191,6 +20191,8 @@ const HelpTab = ({ onStartTour }) => {
               key: value | …
             </code>{" "}
             format — these are parsed and shown in the Overview tab.
+            Blank lines (even of spaces or tabs) are ignored, and a row
+            without a source or a target is skipped and counted.
           </p>
           <table className="w-full text-left mt-3">
             <thead>

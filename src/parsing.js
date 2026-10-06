@@ -46,12 +46,23 @@ export function parseTSV(text) {
   const lineNumbers = [];
   for (let n = 0; n < allLines.length; n++) {
     const line = allLines[n];
-    if (line.length === 0) continue;
+    // Blank lines carry no record, and neither do lines of spaces or tabs
+    // only — what a spreadsheet leaves of a cleared row, which used to
+    // become an event with an empty source or a sample named "  ".
+    if (!/\S/.test(line)) continue;
     if (header === null) {
       if (line.startsWith("#")) {
         headerComments.push(line.replace(/^#\s*/, ""));
       } else {
         header = line.split("\t").map(unquoteCell);
+        // Trailing tabs on the header line (cleared trailing columns) made
+        // phantom "" columns: an empty sample in the abundance table, a ""
+        // key in every metadata row. Drop the empty trailing header cells;
+        // the row cells under them are then ignored like any cell past
+        // the last column.
+        while (header.length > 0 && header[header.length - 1].trim() === "") {
+          header.pop();
+        }
       }
       continue;
     }
@@ -249,7 +260,15 @@ export function parseEvents(text) {
   const invalid = [];
   const rateOutOfRange = [];
   const probOutOfRange = [];
-  const events = rows.map((r, i) => {
+  // A row without a source or a target is not an event (a stray note, a
+  // half-cleared row): skip it, counted, before reading its numbers.
+  const skipped = [];
+  const events = [];
+  rows.forEach((r, i) => {
+    if (!String(r[cols.source] ?? "").trim() || !String(r[cols.target] ?? "").trim()) {
+      skipped.push(i);
+      return;
+    }
     const rate = eventNumber(r, [cols.rate]);
     // Probability resolution: prefer the column pickCol actually resolved in
     // this file's header (which matches case-insensitively), then fall back
@@ -265,8 +284,18 @@ export function parseEvents(text) {
     if (prob.value !== null && !(prob.value >= 0 && prob.value <= 1)) {
       probOutOfRange.push({ i, value: prob.value });
     }
-    return normalizeEvent(r, cols, i, rate.value, prob.value);
+    events.push(normalizeEvent(r, cols, events.length, rate.value, prob.value));
   });
+  if (events.length === 0) {
+    throw new Error("No events: no row has both a source and a target.");
+  }
+  if (skipped.length > 0) {
+    const n = skipped.length;
+    warnings.push(
+      `${n} row${n > 1 ? "s" : ""} with an empty source or target ${n > 1 ? "were" : "was"} ` +
+        `skipped (first on line ${lineNumbers[skipped[0]]}).`,
+    );
+  }
   if (invalid.length > 0) {
     const { i, key } = invalid[0];
     const cell = String(rows[i][key]).trim();
@@ -289,7 +318,7 @@ export function parseEvents(text) {
     const { i, value } = list[0];
     warnings.push(
       `${list.length} event${list.length > 1 ? "s have" : " has"} a ${what} outside ${range}` +
-        ` — first on line ${lineNumbers[i]} (${events[i].source} → ${events[i].target}): ${value}.`,
+        ` — first on line ${lineNumbers[i]} (${rows[i][cols.source]} → ${rows[i][cols.target]}): ${value}.`,
     );
   };
   rangeWarning(rateOutOfRange, "rate", "(0, 1]");
