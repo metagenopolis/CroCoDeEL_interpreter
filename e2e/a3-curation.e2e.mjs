@@ -188,6 +188,24 @@ function sampleRow(page, id) {
     .filter({ has: page.getByText(id, { exact: true }) });
 }
 
+/** Import a session JSON through the files bar. */
+async function importSession(page, session) {
+  await page
+    .locator('input[accept*="json"]')
+    .first()
+    .setInputFiles({
+      name: "session.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(session)),
+    });
+  await page.waitForTimeout(1500);
+}
+
+/** True when the button exists and is drawn active (filled). */
+const isFilled = async (locator) =>
+  (await locator.count()) === 1 &&
+  locator.evaluate((b) => getComputedStyle(b).backgroundColor !== "rgb(255, 255, 255)");
+
 /** The "N of M samples" of the Export tab's curated abundance card. */
 async function curatedCard(page) {
   await openTab(page, "Export");
@@ -499,15 +517,7 @@ try {
         schema_version: 1,
         events: [legacyEvent(0, "S1", "keep"), legacyEvent(1, "S2", "suppress")],
       };
-      await page
-        .locator('input[accept*="json"]')
-        .first()
-        .setInputFiles({
-          name: "legacy_session.json",
-          mimeType: "application/json",
-          buffer: Buffer.from(JSON.stringify(session)),
-        });
-      await page.waitForTimeout(1500);
+      await importSession(page, session);
       const sc = await storedCuration(page);
       check(
         sc.T1?.action === "suppress",
@@ -516,6 +526,78 @@ try {
       );
       const s = await overviewStats(page);
       check(s.suppress === 1, "A3.7 Overview: one sample to suppress", `suppress=${s.suppress}`);
+    },
+    { demo: false },
+  );
+  /* A3.5 A never-targeted sample is Not contaminated + Keep by default:
+     derived, automatic, the same in every tab whether or not the Samples
+     tab was visited, and not a Keep decision. 63D250 is a source only. */
+  await scenario("A3.5", async (page) => {
+    let s = await overviewStats(page);
+    check(s.keep === 0, "A3.5 Overview: 0 samples to keep after loading", `keep=${s.keep}`);
+    await openTab(page, "Samples");
+    const row = sampleRow(page, "63D250");
+    check(
+      (await isFilled(row.locator('button[aria-label="Set verdict to Not contaminated"]'))) &&
+        (await isFilled(row.locator('button[aria-label="Keep 63D250"]'))),
+      "A3.5 the Samples tab shows never-targeted 63D250 Not contaminated / Keep",
+    );
+    check(
+      (await row.locator("[data-auto-mark]").count()) === 2,
+      "A3.5 …both tagged automatic",
+    );
+    let sc = await storedCuration(page);
+    check(Object.keys(sc).length === 0, "A3.5 visiting Samples stores nothing", `${Object.keys(sc).length} entries`);
+    s = await overviewStats(page);
+    check(s.keep === 0, "A3.5 Overview: still 0 to keep after visiting Samples", `keep=${s.keep}`);
+    await openTab(page, "Export");
+    const text = await page.locator("body").innerText();
+    check(/To keep\s*0\b/i.test(text), "A3.5 Export: 0 to keep", text.match(/To keep\s*\d+/i)?.[0] || "");
+    // The default does not block the Contaminated → Suppress pairing.
+    await setSampleVerdictInTable(page, "63D250", "Contaminated");
+    sc = await storedCuration(page);
+    check(
+      sc["63D250"]?.verdict === "contaminated" && sc["63D250"].action === "suppress",
+      "A3.5 marking 63D250 Contaminated pairs it with Suppress",
+      show(sc["63D250"]),
+    );
+    // Network colours read the same view: 63D250 is no longer grey.
+    s = await overviewStats(page);
+    check(s.suppress === 1 && s.keep === 0, "A3.5 Overview: 1 to suppress, 0 to keep", `suppress=${s.suppress} keep=${s.keep}`);
+  });
+
+  /* A3.5 A session saved while the Samples tab stamped never-targeted
+     samples as Not contaminated + Keep (manual) loses those stamps. */
+  await scenario(
+    "A3.5 old session",
+    async (page) => {
+      const event = (id, source, target) => ({
+        id,
+        source,
+        target,
+        contamination_rate: 0.1,
+        probability: 0.9,
+        introduced_species: [],
+        verdict: "pending",
+        notes: "",
+      });
+      await importSession(page, {
+        schema_version: 2,
+        events: [event(0, "S1", "T1"), event(1, "S2", "T1")],
+        sample_curation: {
+          S1: { verdict: "correct", action: "keep" }, // stamp
+          S2: { verdict: "correct", action: "keep", notes: "checked" }, // annotated: kept
+          T1: { verdict: "correct", action: "keep" }, // targeted: a decision
+        },
+      });
+      const sc = await storedCuration(page);
+      check(
+        sc.S1 === undefined && sc.S2?.notes === "checked" && sc.T1?.action === "keep",
+        "A3.5 an old stamp is dropped; annotated and targeted entries are kept",
+        JSON.stringify(sc),
+      );
+      const s = await overviewStats(page);
+      check(s.keep === 2, "A3.5 Overview: the two remaining Keep decisions", `keep=${s.keep}`);
     },
     { demo: false },
   );

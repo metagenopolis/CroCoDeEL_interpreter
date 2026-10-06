@@ -287,7 +287,7 @@ export function neverTargetedSamples(events, extraSampleIds) {
     verdict (and the default Keep only goes with Not contaminated), an
     action the curator sets replaces the default action. Nothing of this
     is stored. */
-export function effectiveSampleCuration(curation, neverTargeted) {
+export function buildEffectiveSampleCuration(curation, neverTargeted) {
   const base = curation || {};
   let out = null;
   for (const id of neverTargeted || []) {
@@ -338,11 +338,30 @@ export function sampleActionCounts(curation, ids) {
 // Only keep / suppress were ever offered; anything else is dropped.
 const LEGACY_ACTION_SEVERITY = { keep: 1, suppress: 2 };
 
+/** The Not contaminated + Keep the Samples tab used to write, as if by
+    hand, on every never-targeted sample it displayed: exactly those two
+    values, no notes, no automatic flag. */
+function isNeverTargetedStamp(entry) {
+  if (!entry || entry.verdict !== "correct" || entry.action !== "keep")
+    return false;
+  return Object.keys(entry).every(
+    (k) => k === "verdict" || k === "action" || (k === "notes" && !entry.notes),
+  );
+}
+
 /** Bring a stored session's sample curation in line with the current
-    model, once, when it is loaded: legacy per-event actions move to
-    their target sample (most severe wins; a sample that already has an
-    action keeps it). Returns { sampleCuration, touched }; `touched` is
-    true when the events carry legacy actions, which the caller strips. */
+    model, once, when it is loaded:
+
+      1. legacy per-event actions move to their target sample (most
+         severe wins; a sample that already has an action keeps it);
+      2. the Not contaminated + Keep stamps of never-targeted samples are
+         dropped: that default is derived now (buildEffectiveSampleCuration),
+         and a stamp, stored as a manual value, counted as a Keep decision
+         and blocked the Contaminated → Suppress pairing.
+
+    Returns { sampleCuration, touched }; `touched` is true when the events
+    carry legacy actions (which the caller strips) or the curation
+    changed. */
 export function migrateSampleCuration(rawEvents, sampleCuration) {
   const events = rawEvents || [];
   const sc = { ...(sampleCuration || {}) };
@@ -364,6 +383,14 @@ export function migrateSampleCuration(rawEvents, sampleCuration) {
     const cur = sc[target] || {};
     if (cur.action != null) continue;
     sc[target] = { ...cur, action };
+  }
+  const targeted = new Set();
+  for (const e of events) if (e?.target) targeted.add(e.target);
+  for (const id of Object.keys(sc)) {
+    if (!targeted.has(id) && isNeverTargetedStamp(sc[id])) {
+      delete sc[id];
+      touched = true;
+    }
   }
   return { sampleCuration: sc, touched };
 }
