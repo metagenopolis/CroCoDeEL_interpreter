@@ -502,6 +502,17 @@ export function parseAbundance(text) {
     );
   }
   const speciesNames = rows.map((r) => r[speciesCol]).filter(Boolean);
+  // A header with nothing under it used to load as a table of empty
+  // samples, with a warning blaming the decimal separator.
+  if (speciesNames.length === 0) {
+    const n = samples.length;
+    throw new Error(
+      "The abundance table has no species rows: " +
+        (rows.length === 0
+          ? `only its header line (${n} sample column${n > 1 ? "s" : ""}) was found.`
+          : `none of its ${rows.length} rows has a species name in the first column.`),
+    );
+  }
   const dupSpecies = findDuplicates(speciesNames);
   if (dupSpecies.length > 0) {
     throw new Error(

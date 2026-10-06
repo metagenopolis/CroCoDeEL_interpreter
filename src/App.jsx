@@ -20354,7 +20354,8 @@ const HelpTab = ({ onStartTour }) => {
             sample. The parser normalizes each sample column to relative
             abundances summing to 1. Each sample column and each species row
             must appear once: a table repeating one is refused, with the
-            repeated names.
+            repeated names. A table with a header but no species rows is
+            refused too.
           </p>
           <p>
             Empty and NA cells read as 0. A cell that is not a number (for
