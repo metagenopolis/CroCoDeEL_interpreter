@@ -214,11 +214,11 @@ const browser = await launchBrowser();
    reported as a failed check and the others still run. E2E_ONLY=<regex>
    runs only the scenarios whose name matches. */
 const ONLY = process.env.E2E_ONLY ? new RegExp(process.env.E2E_ONLY) : null;
-async function scenario(name, run) {
+async function scenario(name, run, { demo = true } = {}) {
   if (ONLY && !ONLY.test(name)) return;
   const { ctx, page, errors } = await newPage(browser);
   try {
-    await loadDemo(page);
+    if (demo) await loadDemo(page);
     await run(page);
   } catch (e) {
     check(false, `${name} runs to the end`, String(e).split("\n")[0]);
@@ -478,6 +478,47 @@ try {
       show(sc["63D40"]),
     );
   });
+  /* A3.7 A legacy session (actions stored on the events) whose events
+     disagree about one target migrates to Suppress, as the legacy app
+     read it. */
+  await scenario(
+    "A3.7",
+    async (page) => {
+      const legacyEvent = (id, source, action) => ({
+        id,
+        source,
+        target: "T1",
+        contamination_rate: 0.1,
+        probability: 0.9,
+        introduced_species: [],
+        verdict: "true_positive",
+        action,
+        notes: "",
+      });
+      const session = {
+        schema_version: 1,
+        events: [legacyEvent(0, "S1", "keep"), legacyEvent(1, "S2", "suppress")],
+      };
+      await page
+        .locator('input[accept*="json"]')
+        .first()
+        .setInputFiles({
+          name: "legacy_session.json",
+          mimeType: "application/json",
+          buffer: Buffer.from(JSON.stringify(session)),
+        });
+      await page.waitForTimeout(1500);
+      const sc = await storedCuration(page);
+      check(
+        sc.T1?.action === "suppress",
+        "A3.7 keep + suppress on one target migrates to Suppress",
+        show(sc.T1),
+      );
+      const s = await overviewStats(page);
+      check(s.suppress === 1, "A3.7 Overview: one sample to suppress", `suppress=${s.suppress}`);
+    },
+    { demo: false },
+  );
 } finally {
   await browser.close();
   stopServer();

@@ -8,6 +8,7 @@ import {
   withManualVerdict,
   withManualAction,
   applyTargetSideEffects,
+  migrateSampleCuration,
 } from "./curation.js";
 import {
   FolderOpen,
@@ -24484,20 +24485,10 @@ function AppMain({ initial }) {
   // Migration: pre-refactor sessions stored the action on the event
   // (`e.action`). We migrate those into sampleCuration[e.target] on the
   // first load that detects them, then strip the field from the events.
-  const migrateLegacyAction = (rawEv, existingSC) => {
-    const sc = { ...(existingSC || {}) };
-    let touched = false;
-    for (const e of rawEv || []) {
-      if (e.action && e.target) {
-        const cur = sc[e.target] || {};
-        if (cur.action == null) {
-          sc[e.target] = { ...cur, action: e.action };
-          touched = true;
-        }
-      }
-    }
-    return { sampleCuration: sc, touched };
-  };
+  // When a target's events disagree, the most severe action wins, as in
+  // the legacy app (see migrateSampleCuration in src/curation.js).
+  const migrateLegacyAction = (rawEv, existingSC) =>
+    migrateSampleCuration(rawEv, existingSC);
   const initialMigration = migrateLegacyAction(
     initial?.rawEvents,
     initial?.sampleCuration,

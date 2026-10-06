@@ -329,40 +329,23 @@ export function sampleActionCounts(curation, ids) {
   return { keep, suppress };
 }
 
-// Legacy sessions stored the action on each event. A target whose events
-// disagree resolves to the most severe action, as the legacy app did: its
-// curation colouring painted a node with "the most-severe action targeting
-// it" (suppress > keep), and its events TSV listed every event's action, so
-// filtering that column for "suppress" dropped the sample as soon as one of
-// its events said so.
+// Legacy sessions (before the sample-level model) stored the action on
+// each event. A target whose events disagree resolves to the most severe
+// action, as the legacy app did: its Network curation colouring painted a
+// node with "the most-severe action targeting it" (suppress > keep), and
+// its events TSV listed every event's action, so filtering that column on
+// "suppress" dropped the sample as soon as one of its events said so.
+// Only keep / suppress were ever offered; anything else is dropped.
 const LEGACY_ACTION_SEVERITY = { keep: 1, suppress: 2 };
 
-/** The automatic Not contaminated + Keep the Samples tab used to write, as
-    if by hand, on every never-targeted sample it displayed. */
-function isNeverTargetedStamp(entry) {
-  if (!entry || entry.verdict !== "correct" || entry.action !== "keep")
-    return false;
-  return Object.keys(entry).every(
-    (k) => k === "verdict" || k === "action" || (k === "notes" && !entry.notes),
-  );
-}
-
 /** Bring a stored session's sample curation in line with the current
-    model, once, when it is loaded:
-
-      1. legacy per-event actions move to their target sample (most severe
-         wins; a sample that already has an action keeps it);
-      2. the old Not contaminated + Keep stamps of never-targeted samples
-         are dropped — those values are derived now, and a stamp, being
-         "manual", would block the rule;
-      3. the automatic values are recomputed with the current rule.
-
-    Returns { sampleCuration, touched }; `touched` is true when the events
-    carry legacy actions to strip or the curation changed. */
+    model, once, when it is loaded: legacy per-event actions move to
+    their target sample (most severe wins; a sample that already has an
+    action keeps it). Returns { sampleCuration, touched }; `touched` is
+    true when the events carry legacy actions, which the caller strips. */
 export function migrateSampleCuration(rawEvents, sampleCuration) {
   const events = rawEvents || [];
-  const original = sampleCuration || {};
-  const sc = { ...original };
+  const sc = { ...(sampleCuration || {}) };
   let touched = false;
   const legacy = new Map();
   for (const e of events) {
@@ -382,18 +365,5 @@ export function migrateSampleCuration(rawEvents, sampleCuration) {
     if (cur.action != null) continue;
     sc[target] = { ...cur, action };
   }
-  const targeted = new Set();
-  for (const e of events) if (e?.target) targeted.add(e.target);
-  for (const id of Object.keys(sc)) {
-    if (!targeted.has(id) && isNeverTargetedStamp(sc[id])) delete sc[id];
-  }
-  const synced = syncSampleCuration(sc, events);
-  const ids = new Set([...Object.keys(original), ...Object.keys(synced)]);
-  for (const id of ids) {
-    if (!sameEntry(original[id] ?? null, synced[id] ?? null)) {
-      touched = true;
-      break;
-    }
-  }
-  return { sampleCuration: synced, touched };
+  return { sampleCuration: sc, touched };
 }
