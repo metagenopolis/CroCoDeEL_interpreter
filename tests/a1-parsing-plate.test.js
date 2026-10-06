@@ -55,7 +55,45 @@ describe("parsePlateMap — row + column instead of a well", () => {
       tsv([["sample_id", "well", "row", "column"], ["S1", "B02", "A", "1"]]),
     );
     expect(pm.bySample.S1).toEqual({ plate: "P1", row: 1, col: 1 });
+    expect(pm.cols).toMatchObject({ well: "well", row: "row", col: "column" });
+  });
+
+  it("reads row + column for a row whose well cell is empty", () => {
+    const pm = parsePlateMap(
+      tsv([
+        ["sample_id", "plate", "well", "row", "column"],
+        ["S1", "P1", "", "A", "1"],
+        ["S2", "P1", "", "B", "2"],
+        ["S3", "P1", "C03", "", ""],
+      ]),
+    );
+    expect(pm.bySample).toEqual({
+      S1: { plate: "P1", row: 0, col: 0 },
+      S2: { plate: "P1", row: 1, col: 1 },
+      S3: { plate: "P1", row: 2, col: 2 },
+    });
+    expect(pm.warnings).toEqual([]);
+    expect(plateColumnsLine(pm)).toBe("sample_id · plate · well · row · column");
+  });
+
+  it("takes row and column only as a pair", () => {
+    const pm = parsePlateMap(tsv([["sample_id", "well", "row"], ["S1", "A01", "x"]]));
     expect(pm.cols).toMatchObject({ well: "well", row: null, col: null });
+  });
+
+  it("refuses a plate map that places no sample, and says why", () => {
+    expect(() =>
+      parsePlateMap(tsv([["sample_id", "plate", "well", "row", "column"], ["S1", "P1", "", "", ""], ["S2", "P1", "", "", ""]])),
+    ).toThrow("No sample could be placed: none of its 2 rows gives a readable well — the well cells are empty.");
+    expect(() => parsePlateMap(tsv([["sample_id", "well"], ["S1", "Z99"], ["S2", "A00"]]))).toThrow(
+      'No sample could be placed: none of its 2 rows gives a readable well (first on line 2: "Z99").',
+    );
+    expect(() => parsePlateMap("sample_id\tplate\twell\n")).toThrow(
+      "The plate map has no sample rows: only its header line was found.",
+    );
+    expect(() => parsePlateMap(tsv([["sample_id", "well"], ["", "A01"]]))).toThrow(
+      "The plate map has no sample rows: its only row has no sample id.",
+    );
   });
 
   it("skips coordinates off the plate, and says how many and where", () => {

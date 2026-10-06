@@ -20617,14 +20617,14 @@ const HelpTab = ({ onStartTour }) => {
                 name="well"
                 required
                 type="A01..H12 or A01..P24"
-                desc="Well coordinate. Both 96-well and 384-well plates are supported. Letter-then-number, e.g. 'A01', 'B7', 'P24'. A file without a well column can give row and column instead. Rows whose well cannot be read are skipped, and counted on the plate map card."
+                desc="Well coordinate. Both 96-well and 384-well plates are supported. Letter-then-number, e.g. 'A01', 'B7', 'P24'. A file can give row and column instead, in place of the well column or for the rows whose well cell is empty. Rows whose well cannot be read are skipped, and counted on the plate map card; a file that places no sample at all is refused."
                 aliases={["well_position", "position", "well_id", "pos"]}
               />
               <HelpCol
                 name="row"
                 recognized
                 type="A..P or 1..16"
-                desc="Instead of well: the well's row, as a letter or its 1-based number. Read only when the file has no well column, together with column."
+                desc="Instead of well: the well's row, as a letter or its 1-based number. Read together with column, for a file without a well column or a row whose well cell is empty; a filled well cell wins."
                 aliases={["well_row"]}
                 example={`sample_id  plate  row  column\n40D89      P3     A    1\n58M        P3     C    3\nNC3        P3     H    6`}
               />

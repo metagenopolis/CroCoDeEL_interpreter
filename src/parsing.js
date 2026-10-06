@@ -1088,16 +1088,18 @@ export function parsePlateMap(text) {
     sample: pickColExact(header, PLATE_COLS.sample),
     plate: pickColExact(header, PLATE_COLS.plate),
     well: pickColExact(header, PLATE_COLS.well),
-    row: null,
-    col: null,
+    row: pickColExact(header, PLATE_COLS.row),
+    col: pickColExact(header, PLATE_COLS.col),
   };
   // The README and the Help have always offered row + column instead of a
-  // well column; the parser now reads them, when there is no well column.
-  if (!cols.well) {
-    cols.row = pickColExact(header, PLATE_COLS.row);
-    cols.col = pickColExact(header, PLATE_COLS.col);
+  // well column. They count as a pair, and a well column wins: they are
+  // read for a row whose well cell is empty, or when there is no well
+  // column at all.
+  if (!(cols.row && cols.col)) {
+    cols.row = null;
+    cols.col = null;
   }
-  if (!cols.sample || !(cols.well || (cols.row && cols.col))) {
+  if (!cols.sample || !(cols.well || cols.row)) {
     const names = ["sample", "well", "row", "col", "plate"].map((f) => PLATE_COLS[f].join(", "));
     throw new Error(
       "Missing columns: sample_id and either well or row + column are required (plate " +
@@ -1116,8 +1118,9 @@ export function parsePlateMap(text) {
   rows.forEach((r, i) => {
     const id = r[cols.sample];
     if (!id) return;
-    const cells = cols.well ? [r[cols.well]] : [r[cols.row], r[cols.col]];
-    const w = cols.well ? parseWell(cells[0]) : parseRowCol(cells[0], cells[1]);
+    const byWell = cols.well && (String(r[cols.well] ?? "").trim() !== "" || !cols.row);
+    const cells = byWell ? [r[cols.well]] : [r[cols.row], r[cols.col]];
+    const w = byWell ? parseWell(cells[0]) : parseRowCol(cells[0], cells[1]);
     if (!w) {
       if (cells.some((c) => String(c ?? "").trim() !== "")) {
         unreadable.push({ i, cell: cells.map((c) => String(c ?? "").trim()).join(" / ") });
@@ -1137,6 +1140,23 @@ export function parsePlateMap(text) {
     maxRow = Math.max(maxRow, w.row);
     maxCol = Math.max(maxCol, w.col);
   });
+  // A plate map that places no sample would load as an empty plate.
+  if (seen.size === 0) {
+    const listed = rows.filter((r) => r[cols.sample]).length;
+    const first = unreadable[0];
+    const none = (n, has, hasNo) => (n === 1 ? `its only row ${hasNo}` : `none of its ${n} rows ${has}`);
+    throw new Error(
+      listed === 0
+        ? "The plate map has no sample rows: " +
+            (rows.length === 0
+              ? "only its header line was found."
+              : `${none(rows.length, "has a sample id", "has no sample id")}.`)
+        : `No sample could be placed: ${none(listed, "gives a readable well", "gives no readable well")}` +
+            (first
+              ? ` (${listed > 1 ? "first " : ""}on line ${lineNumbers[first.i]}: "${clip(first.cell)}").`
+              : ` — ${listed > 1 ? "the well cells are" : "its well cell is"} empty.`),
+    );
+  }
   const format =
     maxRow > 7 || maxCol > 11 ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 };
   const warnings = [];
@@ -1145,7 +1165,7 @@ export function parsePlateMap(text) {
     const { i, cell } = unreadable[0];
     warnings.push(
       `${n} row${n > 1 ? "s" : ""} with no readable well ${n > 1 ? "were" : "was"} skipped ` +
-        `(first on line ${lineNumbers[i]}: "${cell}").`,
+        `(first on line ${lineNumbers[i]}: "${clip(cell)}").`,
     );
   }
   if (dups.length > 0) warnings.push(duplicateIdsWarning(dups));
