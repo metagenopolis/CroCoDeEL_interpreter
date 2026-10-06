@@ -1405,13 +1405,16 @@ export function missingAbundantFromSource(ab, source, target, rate) {
 
   // Adaptive empirical LOD for the target — the smallest non-zero
   // abundance observed in this specific sample. Falls back to a
-  // conservative 1e-5 if the target has zero or one species.
+  // conservative 1e-5 if the target has zero or one species: a lone
+  // species normalises to exactly 1, an "LOD" of one read under which
+  // every source species is expected to be missed — so 29 misses out of
+  // 30 used to pass as Poisson noise (p ≈ 0.996).
   const targetValues = [];
   ab.species.forEach((sp) => {
     const v = ab.matrix[sp][tgtKey] || 0;
     if (v > 0) targetValues.push(v);
   });
-  const targetLOD = targetValues.length > 0 ? Math.min(...targetValues) : 1e-5;
+  const targetLOD = targetValues.length >= 2 ? Math.min(...targetValues) : 1e-5;
 
   // Poisson-binomial detection test — we model the target as a count
   // process with depth N ≈ 1 / target_LOD (since the LOD is roughly the
