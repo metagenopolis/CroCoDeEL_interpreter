@@ -4,11 +4,14 @@
    expected outcome is known exactly:
 
      1. an event whose target is missing from the abundance table is "not
-        evaluable" in Guided validation — never PROBABLY NOT CONTAMINATED.
+        evaluable" in Guided validation — never PROBABLY NOT CONTAMINATED;
+     2. the exported events HTML report prints a cascade's upstream rate,
+        not "(NaN%)".
 
    Runs on its own (`node e2e/a2-diagnostics.e2e.mjs`, which starts a
    preview server unless BASE_URL is set) or through e2e/run-all.mjs. */
 
+import { readFileSync } from "node:fs";
 import {
   startServer,
   stopServer,
@@ -38,6 +41,22 @@ function abundanceLines() {
   return lines;
 }
 const ON_LINE = Array.from({ length: 20 }, (_, i) => `sp_${i}`).join(",");
+
+/** A cascade C → A → B. A received six marker species from C (rate 0.2)
+    and passed them on to B far below its own rate (0.05), so they sit
+    above A → B's line, where only C → A can explain them. */
+function cascadeLines() {
+  const lines = ["species\tC\tA\tB"];
+  for (let i = 0; i < 20; i++) {
+    const a = 10 ** (-3 * (i / 19));
+    lines.push(`s_${i}\t0\t${a.toPrecision(6)}\t${(0.05 * a).toPrecision(6)}`);
+  }
+  for (let i = 0; i < 6; i++) {
+    const c = 10 ** (-1 - i / 3);
+    lines.push(`m_${i}\t${c.toPrecision(6)}\t${(0.2 * c).toPrecision(6)}\t${(1e-4 * c).toPrecision(6)}`);
+  }
+  return lines;
+}
 
 /** Load an events file and an abundance file through the upload cards. */
 async function loadFiles(page, events, abundance) {
@@ -95,6 +114,44 @@ try {
       "the next, resolvable event gets a grade",
     );
     check(errors.length === 0, "no JS error on a missing-sample event", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* ------------------------ 2. cascade rate in the exported HTML report
+     The report prints each explaining upstream event as "C → A (rate%)",
+     reading a rate the cascade entries never carried: "(NaN%)". */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    const markers = Array.from({ length: 6 }, (_, i) => `m_${i}`).join(",");
+    const shared = Array.from({ length: 20 }, (_, i) => `s_${i}`).join(",");
+    await loadFiles(
+      page,
+      tsvFile("contamination_events.tsv", [
+        "source\ttarget\trate\tprobability\tcontamination_specific_species",
+        `C\tA\t0.2\t0.9\t${markers}`,
+        `A\tB\t0.05\t0.8\t${shared}`,
+      ]),
+      tsvFile("species_abundance.tsv", cascadeLines()),
+    );
+    await openTab(page, "Overview");
+    const overview = await page.locator("body").innerText();
+    check(/Cascades detected\s*1\b/i.test(overview), "the crafted cascade is detected");
+    await openTab(page, "Export");
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+      page.getByRole("button", { name: /Download events HTML/i }).first().click(),
+    ]);
+    check(!!download, "the events HTML report downloads");
+    if (download) {
+      const html = readFileSync(await download.path(), "utf8");
+      check(/Cascade detected/.test(html), "the report has the cascade section");
+      check(!/NaN%/.test(html), "the report contains no NaN%", (html.match(/.{0,60}NaN%/) || [""])[0]);
+      check(
+        /C<\/strong>|C → A/.test(html) && /\(20\.00%\) explains 6 species/.test(html),
+        "the upstream event C → A is printed with its 20.00 % rate",
+      );
+    }
+    check(errors.length === 0, "no JS error across the cascade report", errors[0] || "");
     await ctx.close();
   }
 } finally {

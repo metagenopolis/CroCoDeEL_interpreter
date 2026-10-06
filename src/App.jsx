@@ -5,6 +5,7 @@ import LZString from "lz-string";
 import {
   automaticScore,
   bulkCriteria,
+  cascadeExplanations,
   matchesBulkCriteria,
 } from "./diagnostics.js";
 import {
@@ -1505,25 +1506,7 @@ function detectCascades(events, abundance, metadata) {
     if (aboveInfo == null || aboveInfo.count <= 3) return { ...e, cascade: null };
     const upstream = incoming[e.source] || [];
     if (upstream.length === 0) return { ...e, cascade: null };
-    const explained = [];
-    upstream.forEach((up) => {
-      const upIntroduced = new Set(up.introduced);
-      let count = 0;
-      scatter.points.forEach((p) => {
-        if (p.onLine || p.x <= 0 || p.y <= 0 || scatter.logC == null) return;
-        const threshold = Math.log10(p.x) - scatter.logC;
-        if (Math.log10(p.y) > threshold + 0.3 && upIntroduced.has(p.species)) {
-          count++;
-        }
-      });
-      if (count >= 2) {
-        explained.push({
-          upstream_source: up.source,
-          upstream_event_id: up.id,
-          species_explained: count,
-        });
-      }
-    });
+    const explained = cascadeExplanations(scatter, upstream);
     if (explained.length === 0) return { ...e, cascade: null };
     return {
       ...e,
@@ -27308,7 +27291,7 @@ const defaultFilter = () => ({
             ${e.cascade.explained
               .map(
                 (c) =>
-                  `<li><strong>${escapeHTML(c.upstream_source)} → ${escapeHTML(e.source)}</strong> (${(c.rate * 100).toFixed(2)}%) explains ${c.species_explained} species</li>`,
+                  `<li><strong>${escapeHTML(c.upstream_source)} → ${escapeHTML(e.source)}</strong>${Number.isFinite(c.upstream_rate) ? ` (${(c.upstream_rate * 100).toFixed(2)}%)` : ""} explains ${c.species_explained} species</li>`,
               )
               .join("")}
           </ul>`

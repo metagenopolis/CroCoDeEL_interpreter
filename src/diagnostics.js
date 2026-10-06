@@ -259,3 +259,40 @@ export function matchesBulkCriteria(criteria, picks) {
   }
   return true;
 }
+
+/** The upstream events that explain the points above an event's line.
+
+    For A → B, `upstream` are the events C → A. Points far above A → B's
+    line (≥ 0.3 decade, i.e. B holds well under rate × A of them) cannot
+    come from A's contamination of B — unless they are species C introduced
+    into A, which then reached B through A. An upstream event explaining at
+    least two such points is kept.
+
+    Each entry carries what the cascade banner and the HTML report print:
+    the upstream source and event id, the number of species explained, and
+    the upstream event's own rate (`upstream_rate`). The report used to read
+    a `rate` that no entry had and printed "(NaN%)" for every cascade. */
+export function cascadeExplanations(scatter, upstream) {
+  const explained = [];
+  if (!scatter || scatter.logC == null) return explained;
+  for (const up of upstream) {
+    const upIntroduced = new Set(up.introduced);
+    let count = 0;
+    for (const p of scatter.points) {
+      if (p.onLine || p.x <= 0 || p.y <= 0) continue;
+      const threshold = Math.log10(p.x) - scatter.logC;
+      if (Math.log10(p.y) > threshold + 0.3 && upIntroduced.has(p.species)) {
+        count++;
+      }
+    }
+    if (count >= 2) {
+      explained.push({
+        upstream_source: up.source,
+        upstream_event_id: up.id,
+        upstream_rate: up.rate,
+        species_explained: count,
+      });
+    }
+  }
+  return explained;
+}
