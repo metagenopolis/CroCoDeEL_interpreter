@@ -83,6 +83,65 @@ describe("parsePlateMap — row + column instead of a well", () => {
   });
 });
 
+describe("parsePlateMap — one sample per well, on its own plate", () => {
+  it("reads the usual plate-number headers as the plate", () => {
+    for (const h of ["plate_number", "Plate No", "plate_barcode"]) {
+      const pm = parsePlateMap(tsv([["sample_id", h, "well"], ["S1", "1", "A01"], ["S2", "2", "A01"]]));
+      expect(pm.cols.plate, h).toBe(h);
+      expect(pm.bySample.S2, h).toEqual({ plate: "2", row: 0, col: 0 });
+      expect(pm.warnings, h).toEqual([]);
+    }
+  });
+
+  it("says when samples share a well because the plate column was not recognised", () => {
+    // Two plates, collapsed onto one: S1 and S3 end up in one well.
+    const pm = parsePlateMap(
+      tsv([["sample_id", "extraction_plate", "well"], ["S1", "1", "A01"], ["S2", "2", "A02"], ["S3", "2", "A01"]]),
+    );
+    expect(pm.cols.plate).toBeNull();
+    expect(pm.warnings).toEqual([
+      '1 well holds more than one sample (first: A01 on plate P1: "S1", "S3"). A well holds one ' +
+        "sample: check the well and plate columns.",
+      'No plate column was recognised, so every sample was put on one plate (P1): if ' +
+        '"extraction_plate" names the plate, rename it plate and upload the file again.',
+    ]);
+  });
+
+  it("names a plate-like header even when no two samples collide", () => {
+    // Two plates using different halves: nothing collides, yet samples of
+    // different plates now look adjacent.
+    const pm = parsePlateMap(tsv([["sample_id", "dna_plate", "well"], ["S1", "1", "D01"], ["S2", "2", "E01"]]));
+    expect(pm.warnings).toEqual([
+      'No plate column was recognised, so every sample was put on one plate (P1): if "dna_plate" ' +
+        "names the plate, rename it plate and upload the file again.",
+    ]);
+  });
+
+  it("counts the shared wells of a file that does have a plate column", () => {
+    const pm = parsePlateMap(
+      tsv([
+        ["sample_id", "plate", "well"],
+        ["S1", "P1", "A01"],
+        ["S2", "P1", "A01"],
+        ["S3", "P2", "A01"],
+        ["S4", "P2", "B05"],
+        ["S5", "P2", "b5"],
+        ["S6", "P2", "B05"],
+        ["S7", "P2", "B05"],
+      ]),
+    );
+    expect(pm.warnings).toEqual([
+      '2 wells hold more than one sample (first: A01 on plate P1: "S1", "S2"). A well holds one ' +
+        "sample: check the well and plate columns.",
+    ]);
+  });
+
+  it("does not warn about a single plate given without a plate column", () => {
+    const pm = parsePlateMap(tsv([["sample_id", "well"], ["S1", "A01"], ["S2", "A02"]]));
+    expect(pm.warnings).toEqual([]);
+  });
+});
+
 describe("plateMapToTSV", () => {
   it("still writes the well format, which parses back to the same placement", () => {
     const pm = parsePlateMap(

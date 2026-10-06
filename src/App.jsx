@@ -20585,7 +20585,9 @@ const HelpTab = ({ onStartTour }) => {
             are matched like the metadata's: exactly, ignoring case, spaces,
             underscores, hyphens and dots. A sample placed on more than one
             row keeps its first well; the plate map card names the repeated
-            ids.
+            ids. It also says when two samples share a well, and when no
+            plate column was recognized: every sample is then on one plate,
+            so samples of different plates would look adjacent.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -20606,10 +20608,10 @@ const HelpTab = ({ onStartTour }) => {
               />
               <HelpCol
                 name="plate"
-                required
+                recognized
                 type="string"
-                desc="Plate name or identifier."
-                aliases={["plate_id", "plate_name"]}
+                desc="Plate name or identifier. Without it every sample is placed on one plate, P1."
+                aliases={["plate_id", "plate_name", "plate_number", "plate_no", "plate_barcode"]}
               />
               <HelpCol
                 name="well"

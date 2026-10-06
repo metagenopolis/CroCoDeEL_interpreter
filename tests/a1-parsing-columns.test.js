@@ -154,7 +154,8 @@ describe("parsePlateMap — exact header matching and the resolved mapping", () 
     expect(() => parsePlateMap(tsv([["sample_id", "plate", "position_on_plate"], ["S1", "P1", "A01"]]))).toThrow(
       "Missing columns: sample_id and either well or row + column are required (plate optional). " +
         "Accepted names: sample_id, sample, id; well, well_position, position, well_id, pos; row, " +
-        "well_row; column, col, well_column, well_col; plate, plate_id, plate_name. Headers are " +
+        "well_row; column, col, well_column, well_col; plate, plate_id, plate_name, plate_number, " +
+        "plate_no, plate_barcode. Headers are " +
         "matched exactly, ignoring case, spaces, _ - and . — this file has: sample_id, plate, " +
         "position_on_plate.",
     );

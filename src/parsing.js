@@ -1042,7 +1042,10 @@ export function metadataToTSV(stored) {
    Matched like the metadata (pickColExact); canonical name first. */
 const PLATE_COLS = {
   sample: ["sample_id", "sample", "id"],
-  plate: ["plate", "plate_id", "plate_name"],
+  // The usual plate headers that the substring pass used to catch: without
+  // a plate column every sample lands on one plate, and samples of two
+  // plates then look adjacent, or share a well.
+  plate: ["plate", "plate_id", "plate_name", "plate_number", "plate_no", "plate_barcode"],
   well: ["well", "well_position", "position", "well_id", "pos"],
   // Without a well column, the well may come as two coordinates.
   row: ["row", "well_row"],
@@ -1146,6 +1149,41 @@ export function parsePlateMap(text) {
     );
   }
   if (dups.length > 0) warnings.push(duplicateIdsWarning(dups));
+
+  // A well holds one sample. Two in one well is a broken placement — most
+  // often a plate column that was not recognised, which puts every sample
+  // on one plate — and the "Proximity on plate" criterion would read them
+  // as distance 0.
+  const byWell = new Map();
+  for (const [id, p] of Object.entries(bySample)) {
+    const key = `${p.plate}\t${p.row}\t${p.col}`;
+    if (!byWell.has(key)) byWell.set(key, []);
+    byWell.get(key).push(id);
+  }
+  const shared = [...byWell.values()].filter((ids) => ids.length > 1);
+  if (shared.length > 0) {
+    const n = shared.length;
+    const ids = shared[0];
+    const p = bySample[ids[0]];
+    const named = ids.slice(0, 3).map((id) => `"${id}"`).join(", ") + (ids.length > 3 ? ", …" : "");
+    warnings.push(
+      `${n} well${n > 1 ? "s hold" : " holds"} more than one sample (first: ` +
+        `${wellLabel(p.row, p.col)} on plate ${p.plate}: ${named}). A well holds one sample: ` +
+        "check the well and plate columns.",
+    );
+  }
+  if (!cols.plate) {
+    const used = new Set(Object.values(cols).filter(Boolean));
+    const plateLike = header.find((h) => !used.has(h) && headerKey(h).includes("plate"));
+    if (plateLike || shared.length > 0) {
+      warnings.push(
+        "No plate column was recognised, so every sample was put on one plate (P1)" +
+          (plateLike
+            ? `: if "${clip(plateLike, 40)}" names the plate, rename it plate and upload the file again.`
+            : "."),
+      );
+    }
+  }
   return { bySample, format, cols, warnings };
 }
 
