@@ -830,8 +830,17 @@ export function parseMetadata(text) {
   };
 }
 
-/** Serialize metadata back to TSV using whatever extra columns were present
-    in the original upload. */
+/** Serialize metadata back to a TSV that parseMetadata reads to the same
+    samples, subjects, groups and flags.
+
+    Each recognised field is written under its canonical name (sample_id,
+    subject_id, …) with the values of the column it was read from, then
+    every other column of the upload as it was. The previous writer put
+    empty sample_id / subject_id columns in front of the original ones, so
+    a file that said SampleID / patient came back with an empty subject_id,
+    and reloading it lost every relatedness. Values keep their spelling
+    ("yes" stays "yes"); the canonical columns come first, so a reload
+    picks them over any other column matching the same name. */
 export function metadataToTSV(metadata) {
   if (!metadata) return "";
   const sampleIds = Object.keys(metadata.bySample);
@@ -842,19 +851,58 @@ export function metadataToTSV(metadata) {
     const extras = metadata.bySample[id].extra || {};
     Object.keys(extras).forEach((k) => allKeys.add(k));
   });
-  // Ensure sample_id and subject_id are first if present
-  const ordered = ["sample_id", "subject_id"];
-  Array.from(allKeys).forEach((k) => {
-    if (!ordered.includes(k)) ordered.push(k);
+  // A session saved without the mapping: find it again from the headers.
+  const cols = metadata.cols || {};
+  const header = [...allKeys];
+  const colOf = (k) =>
+    metadata.cols ? cols[k] || null : pickColExact(header, METADATA_COLS[k]);
+  // The value parseMetadata derived, for a row without the original cell.
+  const boolText = (b) => (b === true ? "true" : b === false ? "false" : "");
+  const parsedValue = {
+    sample: (m, id) => id,
+    sampleName: (m) => m.sampleName,
+    subject: (m) => m.subject,
+    timepoint: (m) => m.timepoint,
+    biome: (m) => m.biome,
+    lowBiomass: (m) => boolText(m.lowBiomassExplicit),
+    lowSequencingDepth: (m) => boolText(m.lowSequencingDepthExplicit),
+    groupId: (m) => m.groupId,
+  };
+  const valueOf = (k, id) => {
+    const m = metadata.bySample[id];
+    const col = colOf(k);
+    if (k !== "sample" && col && m.extra && col in m.extra) return m.extra[col] ?? "";
+    return parsedValue[k](m, id) ?? "";
+  };
+  // sample_id and subject_id always (parseMetadata requires both), the
+  // other fields when the upload had them.
+  const fields = Object.keys(METADATA_COLS).filter(
+    (k) =>
+      k === "sample" ||
+      k === "subject" ||
+      colOf(k) ||
+      sampleIds.some((id) => valueOf(k, id) !== ""),
+  );
+  const names = fields.map((k) => METADATA_COLS[k][0]);
+  // The other columns, as they were; one whose name is now taken by a
+  // canonical column gets a ".1"-style suffix rather than shadowing it.
+  const mapped = new Set(fields.map(colOf).filter(Boolean));
+  const extras = header.filter((k) => !mapped.has(k));
+  const taken = new Set(names);
+  const extraNames = extras.map((k) => {
+    let name = k;
+    for (let n = 1; taken.has(name); n++) name = `${k}.${n}`;
+    taken.add(name);
+    return name;
   });
-  const lines = [ordered.join("\t")];
+  const lines = [[...names, ...extraNames].map(tsvCell).join("\t")];
   sampleIds.forEach((id) => {
-    const extras = metadata.bySample[id].extra || {};
-    const cells = ordered.map((k) => {
-      if (k === "sample_id") return extras.sample_id || id;
-      return extras[k] ?? "";
-    });
-    lines.push(cells.join("\t"));
+    const extra = metadata.bySample[id].extra || {};
+    const cells = [
+      ...fields.map((k) => valueOf(k, id)),
+      ...extras.map((k) => extra[k] ?? ""),
+    ];
+    lines.push(cells.map(tsvCell).join("\t"));
   });
   return lines.join("\n");
 }

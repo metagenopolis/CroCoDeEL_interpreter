@@ -20398,7 +20398,11 @@ const HelpTab = ({ onStartTour }) => {
             stay context columns, so they cannot make two different
             subjects look related. Once loaded, the metadata card lists the
             header read for each field. A sample_id found on more than one
-            row keeps its first row; the card names the repeated ids.
+            row keeps its first row; the card names the repeated ids. Its
+            Download button writes the table back under the canonical names
+            (a <code style={{ fontFamily: "ui-monospace, monospace" }}>patient</code>{" "}
+            column becomes subject_id), other columns unchanged, so the file
+            reloads with the same subjects, groups and flags.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
