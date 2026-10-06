@@ -182,6 +182,52 @@ function looksLikeDecimalComma(cell) {
   return Number.isFinite(parseStrictNumber(s.slice(0, i) + "." + s.slice(i + 1)));
 }
 
+/* ---------- duplicated ids ----------
+   One rule for the three tables keyed by sample: a repeated id is always
+   reported, never resolved in silence.
+   - Abundance table: refused, for sample columns and species rows alike.
+     parseTSV keys a row by header name, so a repeated sample column made
+     two samples share one profile; a repeated species row lost one row's
+     counts while the column total still held them, which the
+     normalisation then spread over every other species. No row is the
+     right one to keep.
+   - Metadata and plate map: the first row of an id is used, the later ones
+     are ignored, and a warning names them. These used to keep the last
+     row without a word. First, as pandas' drop_duplicates, dplyr's
+     distinct() and a spreadsheet's "remove duplicates" do by default, and
+     as lookupBySample (App.jsx) already does for ids that differ only by
+     case or blanks. */
+
+/** The values found more than once in `names`, each listed once, in the
+    order of their first repeat. */
+function findDuplicates(names) {
+  const seen = new Set();
+  const dups = new Set();
+  for (const n of names) {
+    if (seen.has(n)) dups.add(n);
+    else seen.add(n);
+  }
+  return [...dups];
+}
+
+/** `2 sample ids appear on more than one row ("S1", "S2")`, naming at most
+    three. `what` is singular, `where` ends the clause. */
+function describeDuplicates(dups, what, where) {
+  const n = dups.length;
+  const shown = dups.slice(0, 3).map((d) => `"${d}"`).join(", ");
+  const more = n > 3 ? ` and ${n - 3} more` : "";
+  return `${n} ${what}${n > 1 ? "s appear" : " appears"} ${where} (${shown}${more})`;
+}
+
+/** The warning of the metadata and the plate map, from the ids of the rows
+    they ignored (an id ignored twice is named once). */
+function duplicateIdsWarning(ignoredIds) {
+  return (
+    describeDuplicates([...new Set(ignoredIds)], "sample id", "on more than one row") +
+    ": the first row of each is used, the later ones are ignored."
+  );
+}
+
 /* ---------- contamination_events.tsv ---------- */
 const EVENT_COLS = {
   source: ["source", "contamination_source", "source_sample"],
@@ -361,39 +407,25 @@ export function parseEvents(text) {
 
 /* ---------- species_abundance.tsv ---------- */
 
-/** Report the first repeated entry in a list, or null. Duplicates are a
-    silent-corruption hazard here: parseTSV keys rows by header name, so a
-    repeated sample column makes two samples share one profile, and a
-    repeated species row makes the last one win while the lost row's counts
-    still leave the column total alone — which the renormalisation below
-    then spreads over every OTHER species. */
-function firstDuplicate(names) {
-  const seen = new Set();
-  for (const n of names) {
-    if (seen.has(n)) return n;
-    seen.add(n);
-  }
-  return null;
-}
-
 export function parseAbundance(text) {
   const { header, rows } = parseTSV(text);
   if (header.length < 2) return null;
   const speciesCol = header[0];
   const samples = header.slice(1);
 
-  const dupSample = firstDuplicate(samples);
-  if (dupSample) {
+  // Duplicates are refused here (see "duplicated ids" above).
+  const dupSamples = findDuplicates(samples);
+  if (dupSamples.length > 0) {
     throw new Error(
-      `Duplicate sample column "${dupSample}" in the abundance table. ` +
+      `${describeDuplicates(dupSamples, "sample column", "more than once in the abundance table")}. ` +
         `Each sample must appear exactly once — merge or rename the columns and reload.`,
     );
   }
   const speciesNames = rows.map((r) => r[speciesCol]).filter(Boolean);
-  const dupSpecies = firstDuplicate(speciesNames);
-  if (dupSpecies) {
+  const dupSpecies = findDuplicates(speciesNames);
+  if (dupSpecies.length > 0) {
     throw new Error(
-      `Duplicate species row "${dupSpecies}" in the abundance table. ` +
+      `${describeDuplicates(dupSpecies, "species row", "more than once in the abundance table")}. ` +
         `Each species must appear exactly once — aggregate the rows and reload.`,
     );
   }
@@ -622,9 +654,17 @@ export function parseMetadata(text) {
   if (!cols.sample) throw new Error("sample_id column not found");
   if (!cols.subject) throw new Error("subject_id column not found");
   const bySample = {};
+  // A repeated id keeps its first row (see "duplicated ids" above).
+  const seen = new Set();
+  const dups = [];
   rows.forEach((r) => {
     const id = r[cols.sample];
     if (!id) return;
+    if (seen.has(id)) {
+      dups.push(id);
+      return;
+    }
+    seen.add(id);
     const biomeVal = cols.biome ? r[cols.biome] || "" : "";
     // Control detection: solely from the biome column. Any biome value
     // matching "control", "blank" or "negative" (case-insensitive) flags
@@ -647,9 +687,13 @@ export function parseMetadata(text) {
     };
   });
 
+  const warnings = [];
+  if (dups.length > 0) warnings.push(duplicateIdsWarning(dups));
+
   return {
     cols,
     bySample,
+    warnings,
     nSamples: Object.keys(bySample).length,
     hasSampleNameCol: !!cols.sampleName,
     hasBiomeCol: !!cols.biome,
@@ -728,11 +772,19 @@ export function parsePlateMap(text) {
   const bySample = {};
   let maxRow = 7;
   let maxCol = 11;
+  // A repeated id keeps its first placed row (see "duplicated ids" above).
+  const seen = new Set();
+  const dups = [];
   rows.forEach((r) => {
     const id = r[cols.sample];
     if (!id) return;
     const w = parseWell(r[cols.well]);
     if (!w) return;
+    if (seen.has(id)) {
+      dups.push(id);
+      return;
+    }
+    seen.add(id);
     bySample[id] = {
       plate: cols.plate ? r[cols.plate] || "P1" : "P1",
       row: w.row,
@@ -743,7 +795,9 @@ export function parsePlateMap(text) {
   });
   const format =
     maxRow > 7 || maxCol > 11 ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 };
-  return { bySample, format, cols };
+  const warnings = [];
+  if (dups.length > 0) warnings.push(duplicateIdsWarning(dups));
+  return { bySample, format, cols, warnings };
 }
 
 export function plateMapToTSV(plateMap) {

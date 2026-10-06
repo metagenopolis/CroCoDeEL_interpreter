@@ -4189,6 +4189,22 @@ const UploadCard = ({
 };
 
 /* ---------- metadata / plate specialized upload cards ---------- */
+
+/** The extra lines of the metadata and plate-map cards: which header was
+    read as which field, then the parser's warnings (repeated sample ids).
+    A session saved before these existed has neither. */
+const uploadCardDetails = (columnsLine, warnings) =>
+  columnsLine || warnings?.length ? (
+    <>
+      {columnsLine && <div>Columns: {columnsLine}</div>}
+      {warnings?.map((w) => (
+        <div key={w} style={{ color: "#d97a3c", fontWeight: 600 }}>
+          ⚠ {w}
+        </div>
+      ))}
+    </>
+  ) : null;
+
 const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) => {
   const inputRef = useRef(null);
   const onFile = async (file) => {
@@ -4249,7 +4265,7 @@ const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) =>
           patient, etc.).
         </>
       }
-      details={columnsLine ? `Columns: ${columnsLine}` : null}
+      details={uploadCardDetails(columnsLine, metadata?.warnings)}
       onDownload={
         metadata
           ? () => downloadText(metadataToTSV(metadata), "metadata.tsv")
@@ -4302,7 +4318,7 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
           unlocks the Plate map tab and the "Proximity on plate" criterion.
         </>
       }
-      details={columnsLine ? `Columns: ${columnsLine}` : null}
+      details={uploadCardDetails(columnsLine, plateMap?.warnings)}
       onDownload={
         plateMap
           ? () => downloadText(plateMapToTSV(plateMap), "plate_map.tsv")
@@ -20304,7 +20320,9 @@ const HelpTab = ({ onStartTour }) => {
           <p>
             Format: first column lists species names, every other column is a
             sample. The parser normalizes each sample column to relative
-            abundances summing to 1.
+            abundances summing to 1. Each sample column and each species row
+            must appear once: a table repeating one is refused, with the
+            repeated names.
           </p>
           <p>
             Empty and NA cells read as 0. A cell that is not a number (for
@@ -20346,7 +20364,8 @@ const HelpTab = ({ onStartTour }) => {
             <code style={{ fontFamily: "ui-monospace, monospace" }}>host_age</code>{" "}
             stay context columns, so they cannot make two different
             subjects look related. Once loaded, the metadata card lists the
-            header read for each field.
+            header read for each field. A sample_id found on more than one
+            row keeps its first row; the card names the repeated ids.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -20510,7 +20529,9 @@ const HelpTab = ({ onStartTour }) => {
           <p>
             Three columns: sample id, plate name, well coordinate. Headers
             are matched like the metadata's: exactly, ignoring case, spaces,
-            underscores, hyphens and dots.
+            underscores, hyphens and dots. A sample placed on more than one
+            row keeps its first well; the plate map card names the repeated
+            ids.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
