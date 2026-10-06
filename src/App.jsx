@@ -21604,7 +21604,10 @@ const HelpTab = ({ onStartTour }) => {
             Automatic values carry an <em>auto</em> tag in the Samples
             tab. Clicking a sample-level verdict or action makes it
             yours; choosing <em>Pending</em>, or clearing your action,
-            hands the sample back to the automatic rule.
+            hands the sample back to the automatic rule. A session saved
+            by an earlier version has its automatic values recomputed
+            with these rules when it is reopened or imported; the values
+            you set by hand are kept as they are.
           </p>
           <h4
             className="mt-3 text-[14px]"
