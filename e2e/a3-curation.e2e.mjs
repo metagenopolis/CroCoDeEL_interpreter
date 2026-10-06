@@ -12,7 +12,8 @@
    included. User-visible counts come from the tabs themselves.
 
    Usage:  npm run build && node e2e/a3-curation.e2e.mjs
-           (or through e2e/run-all.mjs; BASE_URL skips the server) */
+           (or through e2e/run-all.mjs; BASE_URL skips the server,
+           E2E_ONLY=<regex> runs only the matching scenarios) */
 
 import { readFileSync } from "node:fs";
 import {
@@ -218,11 +219,7 @@ async function curatedCard(page) {
 /** Click a verdict button in the Samples-tab row of `id`. */
 async function setSampleVerdictInTable(page, id, label) {
   await openTab(page, "Samples");
-  const row = page
-    .locator("tr")
-    .filter({ has: page.locator(`button[aria-label="Set verdict to ${label}"]`) })
-    .filter({ has: page.getByText(id, { exact: true }) });
-  await row.locator(`button[aria-label="Set verdict to ${label}"]`).click();
+  await sampleRow(page, id).locator(`button[aria-label="Set verdict to ${label}"]`).click();
   await page.waitForTimeout(200);
 }
 
