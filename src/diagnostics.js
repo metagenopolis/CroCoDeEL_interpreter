@@ -208,5 +208,20 @@ export function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) 
   // point, which used to cap otherwise-perfect events at 5/6.
   const total = reasons.filter((r) => r.ok !== null).length;
   const good = reasons.filter((r) => r.ok === true).length;
-  return { good, total, reasons };
+  return { good, total, reasons, grade: scoreGrade(good, total) };
+}
+
+/** The headline outcome of automaticScore, from its pass / evaluated
+    counts. Every consumer switches on this rather than re-deriving the
+    thresholds, so the Validate panel and the HTML report cannot disagree.
+
+    "not_evaluable" — nothing could be scored: no abundance table, or the
+    source or target is missing from it (the normal case after a CroCoDeEL
+    `-s2` run with only one of the two tables loaded). It is neither a pass
+    nor a fail and must never be shown as PROBABLY NOT CONTAMINATED. */
+export function scoreGrade(good, total) {
+  if (!(total > 0)) return "not_evaluable";
+  if (good === total) return "contaminated";
+  if (good >= Math.ceil(total * 0.6)) return "possibly_not";
+  return "probably_not";
 }

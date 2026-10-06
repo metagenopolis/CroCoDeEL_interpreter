@@ -1272,7 +1272,11 @@ function spearmanRho(scatter) {
 }
 
 export function lineDiagnostics(scatter) {
-  if (!scatter) return null;
+  // An error scatter (source or target missing from the abundance table —
+  // routine after a CroCoDeEL `-s2` run with one table loaded) has no
+  // diagnostics at all. Its empty point list used to read as "0 species on
+  // the line", a FAIL that graded the event PROBABLY NOT CONTAMINATED.
+  if (!scatter || scatter.error) return null;
   const spearman = spearmanRho(scatter);
   const pts = scatter.points.filter((p) => p.onLine && p.x > 0 && p.y > 0);
   const n = pts.length;
@@ -1305,7 +1309,7 @@ export function lineDiagnostics(scatter) {
 }
 
 export function pointsAboveLine(scatter) {
-  if (!scatter || scatter.logC == null) return null;
+  if (!scatter || scatter.error || scatter.logC == null) return null;
   let above = 0;
   let maxDist = 0;
   let farAbove = 0; // points ≥ 0.5 decade above the line
@@ -17571,14 +17575,17 @@ const ValidateTab = ({
                       <HelpCircle className="w-3 h-3" />
                     </button>
                   </div>
-                  {autoScore.total > 0 && (
+                  {/* The grade comes from automaticScore — never re-derived
+                      here — so "not evaluable" (a sample missing from the
+                      abundance table) cannot fall through to a fail. */}
+                  {autoScore.grade !== "not_evaluable" && (
                     <div
                       className="text-[11px] mt-0.5"
                       style={{
                         color:
-                          autoScore.good === autoScore.total
+                          autoScore.grade === "contaminated"
                             ? EVAL_TP_COLOR
-                            : autoScore.good >= Math.ceil(autoScore.total * 0.6)
+                            : autoScore.grade === "possibly_not"
                               ? "#d97a3c"
                               : EVAL_FP_COLOR,
                         fontWeight: 700,
@@ -17586,23 +17593,35 @@ const ValidateTab = ({
                         letterSpacing: "0.02em",
                       }}
                     >
-                      {autoScore.good === autoScore.total
+                      {autoScore.grade === "contaminated"
                         ? "CONTAMINATED — CroCoDeEL is probably right"
-                        : autoScore.good >= Math.ceil(autoScore.total * 0.6)
+                        : autoScore.grade === "possibly_not"
                           ? "POSSIBLY NOT CONTAMINATED — use CroCoDeEL's call with prudence"
                           : "PROBABLY NOT CONTAMINATED — review carefully before validating"}
                     </div>
                   )}
+                  {autoScore.grade === "not_evaluable" && scatter?.error && (
+                    <div
+                      className="text-[11px] mt-0.5"
+                      style={{
+                        color: "var(--ink-muted)",
+                        fontWeight: 700,
+                        fontFamily: '"Raleway", sans-serif',
+                        letterSpacing: "0.02em",
+                      }}
+                    >
+                      NOT EVALUABLE — sample missing from the abundance table
+                    </div>
+                  )}
                 </div>
-                {autoScore.total > 0 && (
+                {autoScore.grade !== "not_evaluable" && (
                   <div
                     className="tabular shrink-0"
                     style={{
                       color:
-                        autoScore.good === autoScore.total
+                        autoScore.grade === "contaminated"
                           ? EVAL_TP_COLOR
-                          : autoScore.good >=
-                              Math.ceil(autoScore.total * 0.6)
+                          : autoScore.grade === "possibly_not"
                             ? "#d97a3c"
                             : EVAL_FP_COLOR,
                       fontFamily: '"Raleway", sans-serif',
@@ -17635,7 +17654,9 @@ const ValidateTab = ({
               )}
               {autoScore.reasons.length === 0 && (
                 <div className="text-[12px]" style={{ color: "var(--ink-muted)" }}>
-                  Open the abundance table to compute.
+                  {scatter?.error
+                    ? `${scatter.error}, so none of the checks below can be computed for this pair — it is neither a pass nor a fail. Expected after a CroCoDeEL -s2 run when only one of its two abundance tables is loaded.`
+                    : "Open the abundance table to compute."}
                 </div>
               )}
               {(() => {
@@ -17701,6 +17722,12 @@ const ValidateTab = ({
                 // `null` (not evaluated, or evaluated-inconclusive) renders
                 // the neutral grey state Criterion already handles.
                 const passFor = (key) => reasonFor(key)?.ok ?? null;
+                // A pair whose source or target is missing from the loaded
+                // table is "not evaluable" — the table is there, the
+                // sample is not.
+                const naValue = scatter?.error
+                  ? "not evaluable — sample missing from the abundance table"
+                  : "abundance table required";
                 return (
               <div className="mt-4">
                 <Criterion
@@ -17711,7 +17738,7 @@ const ValidateTab = ({
                   value={
                     diag?.r2 != null
                       ? `R² = ${diag.r2.toFixed(3)}`
-                      : "abundance table required"
+                      : naValue
                   }
                   summary={summaryFor("r2")}
                 />
@@ -17721,7 +17748,7 @@ const ValidateTab = ({
                   wiki="More than 10 species expected. Below this threshold the alignment may be statistical noise."
                   pass={passFor("n")}
                   value={
-                    diag?.n != null ? `${diag.n} species` : "abundance table required"
+                    diag?.n != null ? `${diag.n} species` : naValue
                   }
                   summary={summaryFor("n")}
                 />
@@ -17733,7 +17760,7 @@ const ValidateTab = ({
                   value={
                     diag?.decadeRange != null
                       ? `${diag.decadeRange.toFixed(1)} decades`
-                      : "abundance table required"
+                      : naValue
                   }
                   summary={summaryFor("decade")}
                 />
@@ -17811,7 +17838,7 @@ const ValidateTab = ({
                                 : missing.pValue.toExponential(1)
                             }, expected ≈ ${missing.expectedMissing.toFixed(1)})`
                           : `${missing.count} / ${missing.evaluated} missing`
-                      : "abundance table required"
+                      : naValue
                   }
                   summary={summaryFor("missing")}
                 />
@@ -17829,7 +17856,7 @@ const ValidateTab = ({
                           : sel?.cascade
                             ? `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)} — cascade explains)`
                             : `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)})`
-                      : "abundance table required"
+                      : naValue
                   }
                   summary={summaryFor("above")}
                 />
@@ -17839,7 +17866,7 @@ const ValidateTab = ({
                   wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
                   pass={passFor("biosim")}
                   value={(() => {
-                    if (diag?.spearman == null) return "abundance table required";
+                    if (diag?.spearman == null) return naValue;
                     const rhoText = `ρ = ${diag.spearman.toFixed(2)}`;
                     const high = diag.spearman >= 0.7;
                     const isRelated =
@@ -21379,6 +21406,15 @@ const HelpTab = ({ onStartTour }) => {
             (cyan), fails (salmon) or is inconclusive (neutral). The
             Guided validation panel summarises the score and lists
             the individual reasons.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            An event whose source or target is not in the loaded
+            abundance table — the normal situation after a CroCoDeEL{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>-s2</code>{" "}
+            run when only one of its two tables is loaded — cannot be
+            scored at all. It is shown as <em>not evaluable</em>, in the
+            panel as in the HTML report: neither a pass nor a fail, and
+            the bulk dialog's pass / fail filters match it with neither.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -27096,7 +27132,11 @@ const defaultFilter = () => ({
     /** Render the diagnostic checks for an event as a small list, plus
         a side table with the underlying numerical values. */
     const renderDiagChecks = (event, sc) => {
-      if (!sc || sc.error) return "<em style='color:#797870'>abundance table required</em>";
+      if (!sc) return "<em style='color:#797870'>abundance table required</em>";
+      // The table is loaded but this pair is not in it: not evaluable,
+      // which is neither a pass nor a fail.
+      if (sc.error)
+        return `<div class="aggregate skip">Not evaluable — ${escapeHTML(sc.error)}. No criterion can be computed for this pair.</div>`;
       const di = lineDiagnostics(sc);
       const ab2 = pointsAboveLine(sc);
       const mi = missingAbundantFromSource(ab, event.source, event.target, event.rate);
@@ -27154,13 +27194,13 @@ const defaultFilter = () => ({
                 .join("")}
             </ul>
             ${
-              score.total > 0
-                ? `<div class="aggregate ${score.good === score.total ? "all-pass" : score.good >= Math.ceil(score.total * 0.6) ? "warn" : "fail"}">
+              score.grade !== "not_evaluable"
+                ? `<div class="aggregate ${score.grade === "contaminated" ? "all-pass" : score.grade === "possibly_not" ? "warn" : "fail"}">
               ${score.good} / ${score.total} —
               ${
-                score.good === score.total
+                score.grade === "contaminated"
                   ? "CONTAMINATED — CroCoDeEL is probably right"
-                  : score.good >= Math.ceil(score.total * 0.6)
+                  : score.grade === "possibly_not"
                     ? "POSSIBLY NOT CONTAMINATED — use CroCoDeEL's call with prudence"
                     : "PROBABLY NOT CONTAMINATED — review carefully"
               }
