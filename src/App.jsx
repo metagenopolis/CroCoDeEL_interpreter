@@ -3,6 +3,13 @@ import * as d3 from "d3";
 import { Range, getTrackBackground } from "react-range";
 import LZString from "lz-string";
 import {
+  autoVerdictFromCounts,
+  syncSampleCuration,
+  withManualVerdict,
+  withManualAction,
+  applyTargetSideEffects,
+} from "./curation.js";
+import {
   FolderOpen,
   AlertCircle,
   CheckCircle2,
@@ -4104,7 +4111,7 @@ const NodeBulkPopover = ({
       </div>
       <div className="flex gap-1.5 mb-3 flex-wrap">
         {[
-          { id: null, lbl: "(no change)", bg: "var(--bg-card)" },
+          { id: null, lbl: "Automatic", bg: "var(--bg-card)" },
           { id: "pending", lbl: "Pending", bg: SAMPLE_VERDICT_TONE.pending.bg },
           {
             id: "contaminated",
@@ -4144,9 +4151,11 @@ const NodeBulkPopover = ({
                 cursor: "pointer",
               }}
               title={
-                opt.id
-                  ? `Set ${sampleId}'s sample-level verdict to ${opt.lbl}`
-                  : "Don't touch the sample-level verdict"
+                opt.id === "pending"
+                  ? `Remove the verdict you set by hand on ${sampleId}: it then follows its events automatically`
+                  : opt.id
+                    ? `Set ${sampleId}'s sample-level verdict to ${opt.lbl} as your own decision`
+                    : `Same as clicking each event: ${sampleId}'s verdict is recomputed from every event that targets it (a verdict you set by hand is kept)`
               }
             >
               {opt.lbl}
@@ -4165,7 +4174,7 @@ const NodeBulkPopover = ({
           </div>
           <div className="flex gap-1.5 mb-3 flex-wrap">
             {[
-              { id: null, lbl: "(no change)", bg: "var(--bg-card)" },
+              { id: null, lbl: "Automatic", bg: "var(--bg-card)" },
               { id: "keep", lbl: "Keep", bg: "#e0b13a" },
               { id: "suppress", lbl: "Suppress", bg: "#ed6e6c" },
             ].map((opt) => {
@@ -4196,8 +4205,8 @@ const NodeBulkPopover = ({
                   }}
                   title={
                     opt.id
-                      ? `Set ${sampleId}'s sample-level action to ${opt.lbl}`
-                      : "Don't touch the sample-level action"
+                      ? `Set ${sampleId}'s sample-level action to ${opt.lbl} as your own decision`
+                      : "Suppress while the sample is Contaminated, unless you set an action by hand"
                   }
                 >
                   {opt.lbl}
@@ -10038,36 +10047,6 @@ const NetworkTab = ({
    Read-only mirrors live in the events table, the network curation
    colour scheme, and the Validate-tab toolbar's keep/suppress chips. */
 
-/** Auto-derive a verdict suggestion for a sample from the evaluations
-    of the events touching it. The intuition is "a sample is contaminated
-    if at least one TP event reaches it as a target"; conversely, a
-    sample with only FP-targeted events is most likely correct. Mixed or
-    pending evidence yields "uncertain" (or no suggestion when nothing
-    has been evaluated yet). Sources without targets default to no
-    suggestion since the sample isn't itself a contamination victim. */
-const suggestSampleVerdict = (sampleId, events) => {
-  let tpAsTarget = 0;
-  let fpAsTarget = 0;
-  let uncertainAsTarget = 0;
-  let pendingAsTarget = 0;
-  let asTarget = 0;
-  for (const e of events) {
-    if (e.target !== sampleId) continue;
-    asTarget++;
-    if (e.verdict === "true_positive") tpAsTarget++;
-    else if (e.verdict === "false_positive") fpAsTarget++;
-    else if (e.verdict === "uncertain") uncertainAsTarget++;
-    else pendingAsTarget++;
-  }
-  if (asTarget === 0) return null; // sample only seen as source
-  if (tpAsTarget > 0) return "contaminated";
-  if (uncertainAsTarget > 0) return "uncertain";
-  if (pendingAsTarget > 0 && fpAsTarget === 0) return null; // not enough info yet
-  if (fpAsTarget > 0 && pendingAsTarget === 0 && uncertainAsTarget === 0)
-    return "correct";
-  return "uncertain";
-};
-
 const SAMPLE_VERDICT_TONE = {
   contaminated: { bg: "#ed6e6c", label: "Contaminated" },
   correct: { bg: "#00a3a6", label: "Not contaminated" },
@@ -11760,7 +11739,9 @@ const SamplesTab = ({
         }
         bumpEval(evalCounts, e);
       }
-      const suggested = suggestSampleVerdict(id, eventsForSamples);
+      // The verdict the events call for, by the same rule that fills
+      // in the automatic sample verdicts (src/curation.js).
+      const suggested = autoVerdictFromCounts(evalCountsAsTarget);
       const flags = flagSample(id, metadata);
       const placement = plateMap?.bySample?.[id] || null;
       return {
@@ -15837,11 +15818,11 @@ const BulkApplyByCriteriaDialog = ({
   // dialog stamps a sample-level verdict / action. Empty = keep
   // existing sample notes untouched.
   const [sampleComment, setSampleComment] = useState("");
-  // Optional sample-level side-effects: also set a verdict and / or
-  // an action on the TARGET sample of each matched event. Empty
-  // strings = leave the target's existing curation untouched. The
-  // skip-existing checkboxes layer on top so the curator can
-  // safeguard already-decided targets without changing the picker.
+  // Sample-level side-effects on the TARGET sample of each matched
+  // event. Empty strings = automatic: the targets follow the same rule
+  // as a click on each event. Any other value is written as the
+  // curator's own decision; the skip-existing checkboxes layer on top
+  // so targets the curator already decided by hand stay as they are.
   const [targetVerdict, setTargetVerdict] = useState("");
   const [targetAction, setTargetAction] = useState(""); // "" | "keep" | "suppress" | "clear"
   const [skipTargetVerdict, setSkipTargetVerdict] = useState(true);
@@ -16624,10 +16605,11 @@ const BulkApplyByCriteriaDialog = ({
           })}
         </div>
 
-        {/* Sample-level side-effects — also set a verdict and / or an
-            action on the TARGET sample of every matched event.
-            Both default to "(no change)" so the dialog stays a pure
-            event-evaluation tool unless the curator opts in. */}
+        {/* Sample-level side-effects on the TARGET sample of every
+            matched event. Both default to "Automatic": the targets
+            follow the rule of src/curation.js, exactly as when clicking
+            each event. An explicit value is written as the curator's
+            own decision. */}
         <div
           style={{
             fontSize: 11,
@@ -16643,7 +16625,7 @@ const BulkApplyByCriteriaDialog = ({
         </div>
         <div className="flex flex-wrap gap-1 mb-1">
           {[
-            { id: "", label: "(no change)" },
+            { id: "", label: "Automatic" },
             { id: "pending", label: "Pending" },
             { id: "contaminated", label: "Contaminated" },
             { id: "correct", label: "Not contaminated" },
@@ -16668,9 +16650,11 @@ const BulkApplyByCriteriaDialog = ({
                   cursor: "pointer",
                 }}
                 title={
-                  opt.id
-                    ? `Set the target sample's verdict to "${opt.label}" for every matched event`
-                    : "Don't touch the target sample's verdict"
+                  opt.id === "pending"
+                    ? "Remove the verdict you set by hand on each target sample: it then follows its events automatically"
+                    : opt.id
+                      ? `Set each target sample's verdict to "${opt.label}" as your own decision`
+                      : "Same as clicking each event: each target sample's verdict is recomputed from every event that targets it. A verdict you set by hand is kept."
                 }
               >
                 {opt.label}
@@ -16678,9 +16662,22 @@ const BulkApplyByCriteriaDialog = ({
             );
           })}
         </div>
+        <div
+          className="text-[11px] mb-2"
+          style={{ color: "var(--ink-muted)", lineHeight: 1.5 }}
+        >
+          <strong>Automatic</strong> is the same as clicking each event:
+          a target's verdict is recomputed from every event that targets
+          it (any TP → Contaminated, else any Uncertain → Uncertain, else
+          any FP → Not contaminated) and Contaminated comes with
+          Suppress. Verdicts and actions you set by hand are never
+          changed. Pick a value to write it on every target as your own
+          decision instead.
+        </div>
         <label
           className="flex items-center gap-2 mb-3 text-[11px] cursor-pointer"
           style={{ color: "var(--ink)", userSelect: "none" }}
+          title="Automatic verdicts (derived from the events) do not count as already set: they are replaced."
         >
           <input
             type="checkbox"
@@ -16688,7 +16685,8 @@ const BulkApplyByCriteriaDialog = ({
             onChange={(e) => setSkipTargetVerdict(e.target.checked)}
             style={{ accentColor: "#00a3a6" }}
           />
-          Don't overwrite target samples that already have a verdict.
+          Don't overwrite target samples that already have a verdict set
+          by hand.
         </label>
 
         {actionEnabled && (
@@ -16708,7 +16706,7 @@ const BulkApplyByCriteriaDialog = ({
             </div>
             <div className="flex flex-wrap gap-1 mb-1">
               {[
-                { id: "", label: "(no change)" },
+                { id: "", label: "Automatic" },
                 { id: "clear", label: "(clear)" },
                 { id: "keep", label: "Keep" },
                 { id: "suppress", label: "Suppress" },
@@ -16736,10 +16734,10 @@ const BulkApplyByCriteriaDialog = ({
                     }}
                     title={
                       opt.id === ""
-                        ? "Don't touch the target sample's action"
+                        ? "Same as clicking each event: Suppress while the target is Contaminated, nothing otherwise. An action you set by hand is kept."
                         : opt.id === "clear"
-                          ? "Clear any action on the target sample"
-                          : `Set the target sample's action to ${opt.label}`
+                          ? "Remove the action you set by hand on the target sample: it then follows its verdict automatically"
+                          : `Set each target sample's action to ${opt.label} as your own decision`
                     }
                   >
                     {opt.label}
@@ -16750,6 +16748,7 @@ const BulkApplyByCriteriaDialog = ({
             <label
               className="flex items-center gap-2 mb-4 text-[11px] cursor-pointer"
               style={{ color: "var(--ink)", userSelect: "none" }}
+              title="Automatic actions (Suppress paired with Contaminated) do not count as already set: they are replaced."
             >
               <input
                 type="checkbox"
@@ -16757,7 +16756,8 @@ const BulkApplyByCriteriaDialog = ({
                 onChange={(e) => setSkipTargetAction(e.target.checked)}
                 style={{ accentColor: "#00a3a6" }}
               />
-              Don't overwrite target samples that already have an action.
+              Don't overwrite target samples that already have an action
+              set by hand.
             </label>
           </>
         )}
@@ -21485,45 +21485,48 @@ const HelpTab = ({ onStartTour }) => {
             Auto-sync: how the sample verdict tracks event verdicts
           </h4>
           <p>
-            When the curator changes an event's evaluation, the
-            target sample's verdict updates automatically — but only
-            when the sample verdict is unset or was itself auto-derived.
-            Any manual sample-level decision becomes sticky and is
-            never overwritten by the auto-sync. Rules, in order of
-            precedence:
+            Whenever an event's evaluation changes — a click, a keyboard
+            shortcut, a gallery card, the Bulk-apply dialog (target
+            verdict <em>Automatic</em>), the two presets, the Network
+            node popover — the target sample's <em>automatic</em>{" "}
+            verdict is recomputed from <strong>every</strong> event that
+            targets it, so the result never depends on the order of the
+            clicks. A verdict you set by hand is never changed. Rules, in
+            order of precedence:
           </p>
           <ul className="list-disc pl-5 space-y-1.5 mt-2">
             <li>
-              <strong>Any event targeting the sample is TP</strong> →
-              sample auto-stamped <em>Contaminated</em>. Positive
-              evidence always wins, even if other events targeting the
-              same sample are FP / Uncertain.
+              <strong>Any event targeting the sample is TP</strong> →{" "}
+              <em>Contaminated</em>. Positive evidence always wins, even
+              if other events targeting the same sample are FP /
+              Uncertain.
             </li>
             <li>
-              <strong>Every event targeting the sample has a verdict
-              (none pending) and none are TP</strong> → sample auto-
-              stamped <em>Not contaminated</em>. By elimination,
-              nothing reaching the sample is real contamination.
+              <strong>Otherwise, any of them is Uncertain</strong> →{" "}
+              <em>Uncertain</em> — even when the others are FP: one open
+              question is enough to keep the sample undecided.
             </li>
             <li>
-              <strong>Mixed state — some still pending, no TP yet</strong>{" "}
-              → the sample reflects the curator's most recent call on
-              this event: FP → <em>Not contaminated</em>, Uncertain →
-              <em> Uncertain</em>. Resetting an event to Pending leaves
-              the sample alone.
+              <strong>Otherwise, any of them is FP</strong> →{" "}
+              <em>Not contaminated</em>.
             </li>
             <li>
-              <strong>Unwind</strong> — if the curator flips the last
-              remaining TP backing an auto-Contaminated sample, the
-              sample reverts to <em>Pending</em> (provided the rules
-              above don't already pick another verdict for it).
+              <strong>All of them still pending</strong> → no automatic
+              verdict (Pending). An automatic verdict set earlier goes
+              away — e.g. after marking an event FP and then back to
+              Pending, or rejecting the last TP.
             </li>
           </ul>
           <p style={{ marginTop: 6 }}>
-            All four rules ignore the sample if its verdict was set
-            by hand — once the curator clicks a sample-level chip
-            directly, the auto-derivation flag is cleared and future
-            event flips don't second-guess the call.
+            <strong>Action pairing.</strong> A Contaminated sample with no
+            action gets <em>Suppress</em> automatically; once its verdict
+            is no longer Contaminated, that automatic Suppress goes away.
+            An action you set by hand stays whatever the verdict.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            Clicking a sample-level verdict or action makes it yours;
+            choosing <em>Pending</em>, or clearing your action, hands the
+            sample back to the automatic rule.
           </p>
           <h4
             className="mt-3 text-[14px]"
@@ -22008,11 +22011,12 @@ const HelpTab = ({ onStartTour }) => {
               </code>
               , every PENDING event whose source and target share
               that id (longitudinal pair) is flipped to false positive
-              with an explanatory auto-note. Target sample verdicts
-              are left untouched on purpose — a sample may still be
-              genuinely contaminated by another event, so its sample-
-              level verdict stays under your control (or the auto-sync
-              rules described in <em>Event vs sample curation</em>).
+              with an explanatory auto-note. Each target sample then
+              follows the automatic rule described in{" "}
+              <em>Event vs sample curation</em>, as if you had clicked
+              the events one by one: it stays Contaminated while another
+              event targeting it is TP. Verdicts and actions you set by
+              hand are not touched.
             </li>
             <li>
               <strong>
@@ -22021,8 +22025,11 @@ const HelpTab = ({ onStartTour }) => {
               </strong>{" "}
               — every PENDING event flowing into a sample tagged as a
               negative control (biome contains "control" / "blank" /
-              "negative") is flipped to true positive and the NC
-              sample is flagged as <em>Contaminated</em>.
+              "negative") is flipped to true positive, which makes the
+              NC sample <em>Contaminated</em> + <em>Suppress</em> through
+              the automatic rule. Both values stay automatic: rejecting
+              those events later takes them back, and a verdict or an
+              action you set on the NC by hand is never changed.
             </li>
             <li>
               <strong>Reset all evaluations</strong> — wipes every
@@ -22046,14 +22053,19 @@ const HelpTab = ({ onStartTour }) => {
                   matched event's notes.
                 </li>
                 <li>
-                  An optional <em>Verdict on samples targeted by the
-                  matched events</em> with its own "don't overwrite
-                  previous verdict" safety toggle (default ON).
+                  A <em>Verdict on samples targeted by the matched
+                  events</em>. The default, <em>Automatic</em>, is the
+                  same as clicking each event: each target follows the
+                  rule above. Any other choice is written on every target
+                  as your own decision, with a "don't overwrite" safety
+                  toggle (default ON) that protects verdicts you set by
+                  hand — automatic ones are always updated.
                 </li>
                 <li>
-                  An optional <em>Action on samples targeted by the
-                  matched events</em> with its own "don't overwrite
-                  previous action" safety toggle (default ON).
+                  An <em>Action on samples targeted by the matched
+                  events</em>, likewise <em>Automatic</em> by default
+                  (Suppress while Contaminated), with its own "don't
+                  overwrite" toggle for actions you set by hand.
                 </li>
                 <li>
                   An optional <em>Comment on target sample</em>{" "}
@@ -22257,10 +22269,11 @@ const HelpTab = ({ onStartTour }) => {
                 real?"</em>. Verdict lives on the sample
                 (Contaminated / Not contaminated / Uncertain / Pending) and
                 answers <em>"is this sample as a whole compromised?"</em>.
-                A sample can be marked Contaminated even when its
-                events are still pending, and a TP event doesn't
-                automatically mark its target as Contaminated — see
-                the "Event vs sample curation" section above.
+                A TP event makes its target Contaminated
+                automatically, but that is only the default: you can
+                mark a sample yourself (even while its events are still
+                pending), and your call is never overridden — see the
+                "Event vs sample curation" section above.
               </p>
             </div>
             <div>
@@ -25531,6 +25544,22 @@ const defaultFilter = () => ({
 
   const selected =
     events.find((e) => e.id === selId) || events[0] || null;
+  // Event evaluations and the automatic sample values derived from them
+  // (src/curation.js) change together: every path that changes an
+  // evaluation goes through here. `update` maps the event list to its
+  // next state; `syncSamples(sampleCuration, nextEvents)` returns the
+  // matching sample curation. The post-update events are computed HERE,
+  // from the last committed list, never collected inside the
+  // setRawEvents updater: React may run that updater only at the next
+  // render, and the sample side would then see the old evaluations.
+  const commitEvents = React.useCallback((update, syncSamples) => {
+    const nextEvents = update(rawEventsRef.current);
+    // Two writes from one handler must build on each other before React
+    // commits; the layout effect above re-syncs the ref afterwards.
+    rawEventsRef.current = nextEvents;
+    setRawEvents(update);
+    setSampleCuration((prev) => syncSamples(prev, nextEvents));
+  }, []);
   // Stable refs across renders so memoised consumers (GalleryCard,
   // table rows) don't see a fresh function on every parent render.
   // Without useCallback the wrapper would prevent React.memo from
@@ -25538,115 +25567,18 @@ const defaultFilter = () => ({
   // large datasets.
   const setVerdict = React.useCallback(
     (id, verdict) => {
-      // Read the event from the last committed state, not from inside
-      // the setRawEvents updater: React may defer that updater to the
-      // next render, and the sample sync below would then see no target
-      // and silently skip.
-      const prevEvents = rawEventsRef.current;
-      const ev = prevEvents.find((e) => e.id === id);
-      setRawEvents((prev) =>
-        prev.map((e) => (e.id === id ? { ...e, verdict } : e)),
+      // The target sample's automatic verdict / action are recomputed
+      // from ALL the events that target it (syncSampleCuration), so the
+      // result never depends on the order of the clicks; a verdict or an
+      // action the curator set by hand is never changed.
+      const target = rawEventsRef.current.find((e) => e.id === id)?.target;
+      commitEvents(
+        (list) => list.map((e) => (e.id === id ? { ...e, verdict } : e)),
+        (sc, nextEvents) =>
+          target ? syncSampleCuration(sc, nextEvents, [target]) : sc,
       );
-      const target = ev?.target;
-      if (!target) return;
-      const oldVerdict = ev.verdict;
-      const sampleEvents = prevEvents
-        .filter((e) => e.target === target)
-        .map((e) => (e.id === id ? { ...e, verdict } : e));
-      const stillHasTPOnTarget = sampleEvents.some(
-        (e) => e.id !== id && e.verdict === "true_positive",
-      );
-      const allTargetEventsResolved =
-        sampleEvents.length > 0 &&
-        sampleEvents.every((e) => e.verdict && e.verdict !== "pending");
-      // Auto-sync the target sample's verdict from the new event
-      // verdict — but only when the sample's current verdict was
-      // either unset or previously auto-derived by this same path.
-      // Manual sample-level decisions are never overwritten.
-      //
-      // Rules (in order):
-      //   1. ANY event targeting S is TP → S = contaminated. Positive
-      //      evidence wins, regardless of what we just changed.
-      //   2. Every event targeting S has a verdict (none pending) AND
-      //      none are TP → S = correct. Definitive: nothing reaching
-      //      this sample is a real contamination.
-      //   3. Mixed state (some still pending, no TP) → reflect the
-      //      curator's most recent call on this event: FP → correct,
-      //      Uncertain → uncertain. Pending → no change.
-      const hasTP = verdict === "true_positive" || stillHasTPOnTarget;
-      let sampleVerdict = null;
-      if (hasTP) sampleVerdict = "contaminated";
-      else if (allTargetEventsResolved) sampleVerdict = "correct";
-      else if (verdict === "false_positive") sampleVerdict = "correct";
-      else if (verdict === "uncertain") sampleVerdict = "uncertain";
-      if (sampleVerdict) {
-        setSampleCuration((prev) => {
-          const cur = prev[target] || {};
-          if (cur.verdict && !cur.verdictAuto) return prev;
-          const nextEntry = {
-            ...cur,
-            verdict: sampleVerdict,
-            verdictAuto: true,
-          };
-          // Auto-pair Contaminated → Suppress when no explicit action
-          // exists. Mirror the manual setSampleVerdict path so the
-          // pairing fires whether the curator marks the sample by
-          // hand or arrives at it via an event TP. Conversely, when
-          // the auto-sync moves the sample away from contaminated,
-          // drop the auto-suppress so a stale action doesn't linger.
-          if (sampleVerdict === "contaminated" && nextEntry.action == null) {
-            nextEntry.action = "suppress";
-            nextEntry.actionAuto = true;
-          } else if (
-            sampleVerdict !== "contaminated" &&
-            nextEntry.actionAuto
-          ) {
-            delete nextEntry.action;
-            delete nextEntry.actionAuto;
-          }
-          return { ...prev, [target]: nextEntry };
-        });
-      }
-      // Symmetric unwind: if the event was TP and just stopped being
-      // TP, and the target sample's "contaminated" tag was auto-set
-      // by an earlier TP click, and no other event targeting this
-      // sample is still TP, drop the auto verdict back to pending.
-      // Without this, clicking FP on the last remaining TP would
-      // leave the sample stuck on "contaminated" with nothing
-      // backing it.
-      if (
-        oldVerdict === "true_positive" &&
-        verdict !== "true_positive" &&
-        !stillHasTPOnTarget
-      ) {
-        setSampleCuration((prev) => {
-          const cur = prev[target];
-          if (!cur || cur.verdict !== "contaminated" || !cur.verdictAuto)
-            return prev;
-          const nextEntry = { ...cur };
-          delete nextEntry.verdict;
-          delete nextEntry.verdictAuto;
-          // Drop the auto-suppress that the contaminated tag pulled in
-          // — leaving the explicit action alone if the user picked it
-          // themselves.
-          if (nextEntry.actionAuto) {
-            delete nextEntry.action;
-            delete nextEntry.actionAuto;
-          }
-          const next = { ...prev };
-          if (
-            nextEntry.action == null &&
-            !nextEntry.notes
-          ) {
-            delete next[target];
-          } else {
-            next[target] = nextEntry;
-          }
-          return next;
-        });
-      }
     },
-    [],
+    [commitEvents],
   );
   const setNote = React.useCallback(
     (id, notes) =>
@@ -25658,65 +25590,23 @@ const defaultFilter = () => ({
   // Sample-level setters. The action / verdict / notes for a sample
   // live in `sampleCuration[sampleId]`. Toggling to null / empty value
   // drops the corresponding key so an unset sample serializes empty.
+  // A verdict or an action set here is the curator's own (no *Auto
+  // flag) and the event-driven rule never changes it; clearing it
+  // ("pending" / null) hands the sample back to that rule, which reads
+  // the current events — taken from the ref here, outside the updater.
   const setSampleVerdict = React.useCallback((sampleId, verdict) => {
     if (!sampleId) return;
-    setSampleCuration((prev) => {
-      const cur = prev[sampleId] || {};
-      const nextEntry = { ...cur };
-      if (verdict == null || verdict === "pending") {
-        delete nextEntry.verdict;
-      } else {
-        nextEntry.verdict = verdict;
-      }
-      // Any explicit user action clears the auto-derived flag. Future
-      // event-verdict flips will no longer try to unwind this sample's
-      // verdict — it was set by hand.
-      delete nextEntry.verdictAuto;
-      // Auto-pair Contaminated → Suppress when the user hasn't picked
-      // an action yet. Tag with actionAuto so we can roll it back if
-      // the verdict later moves away from contaminated. Mirrors the
-      // verdictAuto convention used elsewhere.
-      if (verdict === "contaminated" && nextEntry.action == null) {
-        nextEntry.action = "suppress";
-        nextEntry.actionAuto = true;
-      } else if (verdict !== "contaminated" && nextEntry.actionAuto) {
-        delete nextEntry.action;
-        delete nextEntry.actionAuto;
-      }
-      const next = { ...prev };
-      if (
-        nextEntry.verdict == null &&
-        nextEntry.action == null &&
-        !nextEntry.notes
-      ) {
-        delete next[sampleId];
-      } else {
-        next[sampleId] = nextEntry;
-      }
-      return next;
-    });
+    const events = rawEventsRef.current;
+    setSampleCuration((prev) =>
+      withManualVerdict(prev, sampleId, verdict, events),
+    );
   }, []);
   const setSampleAction = React.useCallback((sampleId, action) => {
     if (!sampleId) return;
-    setSampleCuration((prev) => {
-      const cur = prev[sampleId] || {};
-      const nextEntry = { ...cur };
-      if (action == null) delete nextEntry.action;
-      else nextEntry.action = action;
-      // Explicit user action — never auto-unwind it later.
-      delete nextEntry.actionAuto;
-      const next = { ...prev };
-      if (
-        nextEntry.verdict == null &&
-        nextEntry.action == null &&
-        !nextEntry.notes
-      ) {
-        delete next[sampleId];
-      } else {
-        next[sampleId] = nextEntry;
-      }
-      return next;
-    });
+    const events = rawEventsRef.current;
+    setSampleCuration((prev) =>
+      withManualAction(prev, sampleId, action, events),
+    );
   }, []);
   const setSampleNote = React.useCallback((sampleId, notes) => {
     if (!sampleId) return;
@@ -25800,22 +25690,28 @@ const defaultFilter = () => ({
       auto-loaded events. The caller chooses the verdict (TP / FP /
       Uncertain) and the note text. */
   const addManualEvent = (data) => {
-    setRawEvents((prev) => {
-      const nextManualNum = prev.filter((e) =>
-        typeof e.id === "string" && e.id.startsWith("manual-"),
-      ).length + 1;
-      const newEvent = {
-        id: `manual-${nextManualNum}`,
-        source: data.source,
-        target: data.target,
-        rate: data.rate,
-        score: data.score,
-        introduced: data.introduced || [],
-        verdict: data.verdict || "true_positive",
-        notes: data.notes || "Manually added by user",
-      };
-      return [...prev, newEvent];
-    });
+    // The new event is one more piece of evidence on its target: the
+    // target's automatic verdict / action follow it, like after a click.
+    commitEvents(
+      (list) => {
+        const nextManualNum = list.filter((e) =>
+          typeof e.id === "string" && e.id.startsWith("manual-"),
+        ).length + 1;
+        const newEvent = {
+          id: `manual-${nextManualNum}`,
+          source: data.source,
+          target: data.target,
+          rate: data.rate,
+          score: data.score,
+          introduced: data.introduced || [],
+          verdict: data.verdict || "true_positive",
+          notes: data.notes || "Manually added by user",
+        };
+        return [...list, newEvent];
+      },
+      (sc, nextEvents) =>
+        data.target ? syncSampleCuration(sc, nextEvents, [data.target]) : sc,
+    );
     // Action lives on the target sample now — apply it after the event
     // is staged so the next render reflects both pieces consistently.
     if (
@@ -25885,19 +25781,22 @@ const defaultFilter = () => ({
       title: `Mark ${matches.length} same-subject event${matches.length > 1 ? "s" : ""} as false positive?`,
       body:
         "These are longitudinal pairs (source and target share a subject_id) — biologically expected to share microbes, so CroCoDeEL flags are typically false positives.\n\n" +
-        "Each event is marked FP. Target sample verdicts are left untouched — a sample may still be genuinely contaminated by something else, so its sample-level verdict stays under your control.",
+        "Each event is marked FP and its target sample follows the automatic rule, as if you had clicked each event: it stays Contaminated while another event targeting it is TP, becomes Uncertain if one is uncertain, and Not contaminated otherwise. A verdict or an action you set on a sample yourself is never changed.",
       confirmLabel: `Mark ${matches.length} as FP`,
       onConfirm: () => {
         const matchIds = new Set(matches.map((e) => e.id));
-        setRawEvents((prev) =>
-          prev.map((e) => {
-            if (!matchIds.has(e.id)) return e;
-            const r = areRelated(metadata, e.source, e.target);
-            const subj = r?.value || "?";
-            const autoNote = `Auto-classified as FP: longitudinal pair (same subject_id=${subj}).`;
-            const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
-            return { ...e, verdict: "false_positive", notes: newNote };
-          }),
+        const targets = matches.map((e) => e.target).filter(Boolean);
+        commitEvents(
+          (list) =>
+            list.map((e) => {
+              if (!matchIds.has(e.id)) return e;
+              const r = areRelated(metadata, e.source, e.target);
+              const subj = r?.value || "?";
+              const autoNote = `Auto-classified as FP: longitudinal pair (same subject_id=${subj}).`;
+              const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
+              return { ...e, verdict: "false_positive", notes: newNote };
+            }),
+          (sc, nextEvents) => syncSampleCuration(sc, nextEvents, targets),
         );
       },
     });
@@ -25933,29 +25832,23 @@ const defaultFilter = () => ({
       title: `Mark ${matches.length} event${matches.length > 1 ? "s" : ""} toward NC as true positive?`,
       body:
         "These events flow into a sample tagged as a negative control. A clean NC should not carry biological signal, so any contamination reaching it is almost certainly real (well-to-well leakage, carry-over, or reagent contamination).\n\n" +
-        "Each event is marked TP and its TARGET sample (the negative control) is flagged as Contaminated (skipping any target sample that already carries a verdict). Already-validated events are not affected.",
+        "Each event is marked TP. Its TARGET sample (the negative control) then follows the automatic rule, as if you had clicked each event: a TP event makes it Contaminated, paired with Suppress. Both stay automatic — rejecting those events later takes them back — and a verdict or an action you set on the sample yourself is never changed. Already-validated events are not affected.",
       confirmLabel: `Mark ${matches.length} as TP`,
       onConfirm: () => {
         const matchIds = new Set(matches.map((e) => e.id));
         // Taken from `matches`, not collected inside the updater below,
         // which React may run only at the next render.
         const matchedTargets = matches.map((e) => e.target).filter(Boolean);
-        setRawEvents((prev) =>
-          prev.map((e) => {
-            if (!matchIds.has(e.id)) return e;
-            const autoNote = `Auto-classified as TP: contamination flowing into negative control "${e.target}".`;
-            const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
-            return { ...e, verdict: "true_positive", notes: newNote };
-          }),
+        commitEvents(
+          (list) =>
+            list.map((e) => {
+              if (!matchIds.has(e.id)) return e;
+              const autoNote = `Auto-classified as TP: contamination flowing into negative control "${e.target}".`;
+              const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
+              return { ...e, verdict: "true_positive", notes: newNote };
+            }),
+          (sc, nextEvents) => syncSampleCuration(sc, nextEvents, matchedTargets),
         );
-        // Side-effect: stamp the target NC samples as Contaminated,
-        // but never overwrite an existing sample-level verdict.
-        const uniqueTargets = Array.from(new Set(matchedTargets));
-        for (const t of uniqueTargets) {
-          const cur = sampleCuration[t] || {};
-          if (cur.verdict && cur.verdict !== "pending") continue;
-          setSampleVerdict(t, "contaminated");
-        }
       },
     });
   };
@@ -25969,13 +25862,19 @@ const defaultFilter = () => ({
       preserved untouched; otherwise the comment is prepended to each
       event's notes so prior context is never destroyed.
 
-      The optional `sampleSideEffects` argument lets the dialog ALSO
-      stamp a verdict and / or an action on the TARGET sample of each
-      matched event — handy for sweeping rules like "every event with
+      Each matched event's TARGET sample follows: by default its
+      automatic verdict / action are recomputed from every event that
+      targets it, exactly as when clicking each event (src/curation.js).
+      The optional `sampleSideEffects` lets the dialog ALSO write a
+      verdict and / or an action on those targets as the curator's own
+      decision — handy for sweeping rules like "every event with
       probability ≥ 0.95 → mark TP and mark its target as contaminated
-      + suppress". `targetVerdict` is null → leave alone, otherwise
-      one of pending/contaminated/correct/uncertain. `targetAction` is
-      undefined → leave alone, null → clear, else "keep"/"suppress". */
+      + keep". `targetVerdict` null → automatic, otherwise one of
+      pending (= remove the curator's verdict) / contaminated / correct
+      / uncertain. `targetAction` undefined → automatic, null → remove
+      the curator's action, else "keep" / "suppress". The skip toggles
+      protect the values the curator set by hand; automatic values do
+      not count as already set. */
   const bulkApplyToEvents = (ids, verdict, comment, sampleSideEffects) => {
     if (!ids || ids.length === 0) return;
     const idSet = new Set(ids);
@@ -25987,68 +25886,59 @@ const defaultFilter = () => ({
     const skipExistingTV = !!sse.skipExistingTargetVerdict;
     const skipExistingTA = !!sse.skipExistingTargetAction;
     const sampleComment = (sse.sampleComment || "").trim();
-    const sideEffectBits = [];
-    if (tv)
-      sideEffectBits.push(
-        `target verdict → ${tv}${skipExistingTV ? " (skip already-set)" : ""}`,
-      );
-    if (taProvided)
-      sideEffectBits.push(
-        `target action → ${ta == null ? "(clear)" : ta}${skipExistingTA ? " (skip already-set)" : ""}`,
-      );
-    if (sampleComment) sideEffectBits.push("note prepended to target sample");
+    const yoursKept = " (except on samples where you set one yourself)";
+    const sideEffectBits = [
+      tv
+        ? `verdict → ${tv} as your own decision${skipExistingTV ? yoursKept : ""}`
+        : "verdict → automatic, recomputed from every event targeting it (as when clicking each event)",
+      taProvided
+        ? `action → ${ta == null ? "remove the one you set" : `${ta} as your own decision`}${skipExistingTA ? yoursKept : ""}`
+        : "action → automatic (Suppress while Contaminated, unless you chose an action)",
+    ];
+    if (sampleComment) sideEffectBits.push("note prepended to the target sample");
     setBulkConfirm({
       kind: "confirm",
       title: `Apply "${verdict.replace("_", " ")}" to ${ids.length} event${ids.length > 1 ? "s" : ""}?`,
       body:
         `Existing evaluations on the matched events will be overwritten.` +
-        (sideEffectBits.length
-          ? `\n\nSample-level side-effects on each event's TARGET sample: ${sideEffectBits.join(", ")}.`
-          : "") +
+        `\n\nEach event's TARGET sample: ${sideEffectBits.join("; ")}.` +
+        (tv && taProvided
+          ? ""
+          : " The automatic rule never changes a verdict or an action you set by hand.") +
         (comment
           ? `\n\nThe comment will be prepended to each event's notes (existing notes are preserved).`
           : `\n\nNo comment provided — existing notes are kept untouched.`),
       confirmLabel: `Apply to ${ids.length}`,
       onConfirm: () => {
-        // Collected here, not inside the setRawEvents updater: React may
-        // defer that updater to the next render, which would leave this
-        // list empty when the sample side-effects below read it.
-        const matchedTargets = rawEvents
+        // Collected here, from the current events, not inside the
+        // setRawEvents updater: React may defer that updater to the next
+        // render, which would leave this list empty.
+        const matchedTargets = rawEventsRef.current
           .filter((e) => idSet.has(e.id) && e.target)
           .map((e) => e.target);
-        setRawEvents((prev) =>
-          prev.map((e) => {
-            if (!idSet.has(e.id)) return e;
-            const next = { ...e, verdict };
-            if (comment) {
-              const tag = `[bulk ${stamp}] ${comment}`;
-              next.notes = e.notes ? `${tag}\n\n${e.notes}` : tag;
-            }
-            return next;
-          }),
+        const note = sampleComment ? `[bulk ${stamp}] ${sampleComment}` : "";
+        commitEvents(
+          (list) =>
+            list.map((e) => {
+              if (!idSet.has(e.id)) return e;
+              const next = { ...e, verdict };
+              if (comment) {
+                const tag = `[bulk ${stamp}] ${comment}`;
+                next.notes = e.notes ? `${tag}\n\n${e.notes}` : tag;
+              }
+              return next;
+            }),
+          // Explicit choices first (as the curator's own values, honouring
+          // the skip toggles), then the automatic rule on every target.
+          (sc, nextEvents) =>
+            applyTargetSideEffects(sc, nextEvents, matchedTargets, {
+              targetVerdict: tv,
+              targetAction: ta,
+              skipExistingTargetVerdict: skipExistingTV,
+              skipExistingTargetAction: skipExistingTA,
+              note,
+            }),
         );
-        if (tv || taProvided || sampleComment) {
-          // Dedupe target ids before pushing to setSampleVerdict /
-          // setSampleAction so a sample touched by multiple matched
-          // events isn't written N times in a row. Skip-existing
-          // toggles are honoured field by field — checked against the
-          // sampleCuration snapshot at confirm time.
-          const uniqueTargets = Array.from(new Set(matchedTargets));
-          for (const t of uniqueTargets) {
-            const cur = sampleCuration[t] || {};
-            const hasVerdict = cur.verdict && cur.verdict !== "pending";
-            const hasAction = !!cur.action;
-            if (tv && !(skipExistingTV && hasVerdict))
-              setSampleVerdict(t, tv);
-            if (taProvided && !(skipExistingTA && hasAction))
-              setSampleAction(t, ta);
-            if (sampleComment) {
-              const tag = `[bulk ${stamp}] ${sampleComment}`;
-              const newNote = cur.notes ? `${tag}\n\n${cur.notes}` : tag;
-              setSampleNote(t, newNote);
-            }
-          }
-        }
       },
     });
   };
@@ -26083,10 +25973,12 @@ const defaultFilter = () => ({
       confirmLabel: "Reset everything",
       destructive: true,
       onConfirm: () => {
-        setRawEvents((prev) =>
-          prev.map((e) => ({ ...e, verdict: "pending", notes: "" })),
+        // Every event back to pending: the rule leaves no automatic
+        // value anywhere, and the reset wipes the manual ones too.
+        commitEvents(
+          (list) => list.map((e) => ({ ...e, verdict: "pending", notes: "" })),
+          () => ({}),
         );
-        setSampleCuration({});
       },
     });
   };
