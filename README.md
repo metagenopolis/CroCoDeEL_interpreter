@@ -14,7 +14,7 @@ Loadable in one click from the **Datasets** tab. Several ship with curated `meta
 
 ## Input formats
 
-All files are TSV. Column names are matched against several aliases (case-insensitive); the in-app **Help** tab carries the full table.
+All files are TSV. Column names are matched against several aliases (case-insensitive); the in-app **Help** tab carries the full table. Numbers use `.` as decimal separator and the whole cell must be a number: a file saved with a decimal comma (`0,87`) is refused (events) or reported (abundance) rather than misread. An empty cell or `NA` / `N/A` / `NaN` / `null` / `None` / `-` means no value.
 
 - `contamination_events.tsv` &mdash; **required.** CroCoDeEL output: `source`, `target`, `rate`, `probability`, `contamination_specific_species`. Header lines starting with `#` are parsed as run metadata.
 - `species_abundance.tsv` &mdash; **required for the scatterplots and diagnostic checks.** Wide format: first column = species id, remaining columns = sample ids.

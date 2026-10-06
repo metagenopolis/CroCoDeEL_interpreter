@@ -33,29 +33,35 @@ export function tsvCell(v) {
   return String(v ?? "").replace(/[\t\r\n]+/g, " ");
 }
 
+/** Split a TSV text into its header cells, its rows (objects keyed by
+    header cell) and the `#` lines before the header. `lineNumbers[i]` is
+    the 1-based file line of `rows[i]`, so a message can point the user at
+    the cell to fix. */
 export function parseTSV(text) {
-  const allLines = text.replace(/\r/g, "").split("\n").filter((l) => l.length > 0);
+  const allLines = text.replace(/\r/g, "").split("\n");
   // Separate hash-prefixed header lines (e.g. CroCoDeEL run params) from data
   const headerComments = [];
-  let firstDataIdx = 0;
-  for (let i = 0; i < allLines.length; i++) {
-    if (allLines[i].startsWith("#")) {
-      headerComments.push(allLines[i].replace(/^#\s*/, ""));
-      firstDataIdx = i + 1;
-    } else {
-      break;
+  let header = null;
+  const rows = [];
+  const lineNumbers = [];
+  for (let n = 0; n < allLines.length; n++) {
+    const line = allLines[n];
+    if (line.length === 0) continue;
+    if (header === null) {
+      if (line.startsWith("#")) {
+        headerComments.push(line.replace(/^#\s*/, ""));
+      } else {
+        header = line.split("\t").map(unquoteCell);
+      }
+      continue;
     }
-  }
-  const lines = allLines.slice(firstDataIdx);
-  if (lines.length === 0) return { header: [], rows: [], headerComments };
-  const header = lines[0].split("\t").map(unquoteCell);
-  const rows = lines.slice(1).map((line) => {
     const cells = line.split("\t");
     const obj = {};
     header.forEach((h, i) => (obj[h] = unquoteCell(cells[i] ?? "")));
-    return obj;
-  });
-  return { header, rows, headerComments };
+    rows.push(obj);
+    lineNumbers.push(n + 1);
+  }
+  return { header: header || [], rows, headerComments, lineNumbers };
 }
 
 /** Parse a CroCoDeEL-style "key: value | key: value | ..." metadata header. */
@@ -85,6 +91,56 @@ function pickCol(header, candidates) {
     if (i >= 0) return header[i];
   }
   return null;
+}
+
+/* ---------- numeric cells ----------
+   parseFloat reads the longest numeric PREFIX of a cell, so a table saved
+   by a French-locale spreadsheet loaded without a word: "7,41E-01" read as
+   7, "0,87" as 0, "1,23E-05" as 1. Every number of the input files is read
+   here instead, and the whole cell has to be a number. */
+
+/** Cells that mean "no value", compared trimmed and lower-cased. */
+const NA_TOKENS = new Set(["", "na", "n/a", "nan", "null", "none", "-", "#n/a"]);
+
+/** Read one numeric cell strictly. Returns the number; `null` when the
+    cell is empty or an NA token (NA, N/A, NaN, null, None, -, #N/A, in any
+    case); `NaN` when it holds anything else — "0,87", "12 %", "0x1F",
+    "Infinity".
+
+    Number() does the reading, not a regex per cell: an abundance table is
+    millions of cells. Number() already trims and refuses trailing text,
+    but it also accepts what a decimal number is not, which the guards
+    below reject: "" and blanks (read as 0), the 0x / 0o / 0b integer
+    literals, and ±Infinity, spelled out or overflowing from an exponent. */
+export function parseStrictNumber(cell) {
+  if (cell == null) return null;
+  const s = typeof cell === "string" ? cell : String(cell);
+  const v = Number(s);
+  if (Number.isFinite(v)) {
+    const c0 = s.charCodeAt(0);
+    // 1-9 first: only a decimal number gets past Number() from there.
+    if (c0 >= 49 && c0 <= 57) return v;
+    if (c0 === 48) {
+      // "0x1F", "0o17", "0b101" (the prefix letter lower-cased by | 32)
+      const x = s.charCodeAt(1) | 32;
+      return x === 120 || x === 111 || x === 98 ? NaN : v;
+    }
+    // A sign or a dot cannot start a non-decimal literal: "-0x1F" is NaN.
+    if (c0 === 43 || c0 === 45 || c0 === 46) return v;
+    // Blank, or blanks around a number: judge the trimmed cell.
+    const t = s.trim();
+    return t === "" ? null : parseStrictNumber(t);
+  }
+  return NA_TOKENS.has(s.trim().toLowerCase()) ? null : NaN;
+}
+
+/** True when a cell refused by parseStrictNumber reads as a number once its
+    one comma becomes a dot: "0,87", "7,41E-01", "-1,5". */
+function looksLikeDecimalComma(cell) {
+  const s = String(cell ?? "").trim();
+  const i = s.indexOf(",");
+  if (i < 0 || s.indexOf(",", i + 1) >= 0) return false;
+  return Number.isFinite(parseStrictNumber(s.slice(0, i) + "." + s.slice(i + 1)));
 }
 
 /* ---------- contamination_events.tsv ---------- */
@@ -125,27 +181,28 @@ export function splitSpeciesList(cell) {
     .filter((x) => x.length > 0);
 }
 
-function normalizeEvent(raw, cols, idx) {
-  const species = splitSpeciesList(raw[cols.species]);
-  // Probability resolution: prefer the column pickCol actually resolved in
-  // this file's header (which matches case-insensitively), then fall back
-  // to the literal aliases for files that carry several score columns and
-  // leave the canonical one empty on some rows.
-  let probValue = "";
-  for (const key of [cols.score, ...EVENT_COLS.score]) {
+/** The rate or the probability of one events row, read strictly from the
+    first of `keys` whose cell holds a value: `value` is null when none
+    does (empty or NA everywhere), NaN when that cell is not a number, and
+    `key` names the column it came from. */
+function eventNumber(raw, keys) {
+  for (const key of keys) {
     if (!key) continue;
-    const v = raw[key];
-    if (v != null && String(v).trim() !== "") {
-      probValue = v;
-      break;
-    }
+    const value = parseStrictNumber(raw[key]);
+    if (value !== null) return { value, key };
   }
+  return { value: null, key: null };
+}
+
+function normalizeEvent(raw, cols, idx, rate, score) {
+  const species = splitSpeciesList(raw[cols.species]);
   return {
     id: idx,
     source: raw[cols.source] || "",
     target: raw[cols.target] || "",
-    rate: parseFloat(raw[cols.rate]) || 0,
-    score: parseFloat(probValue) || 0,
+    // A missing rate or probability reads as 0, as it always has.
+    rate: rate ?? 0,
+    score: score ?? 0,
     introduced: species,
     verdict: "pending",
     notes: "",
@@ -153,7 +210,7 @@ function normalizeEvent(raw, cols, idx) {
 }
 
 export function parseEvents(text) {
-  const { header, rows, headerComments } = parseTSV(text);
+  const { header, rows, headerComments, lineNumbers } = parseTSV(text);
   if (rows.length === 0) throw new Error("Empty file or no rows");
   const cols = {
     source: pickCol(header, EVENT_COLS.source),
@@ -184,8 +241,62 @@ export function parseEvents(text) {
         "Scatterplots will show no highlighted species.",
     );
   }
+
+  // Rates and probabilities are read strictly (see parseStrictNumber). One
+  // that is present but is not a number fails the whole file, as it fails
+  // CroCoDeEL: read leniently, a file whose decimal separator is a comma
+  // loaded with every rate at 7 or 0 and no warning at all.
+  const invalid = [];
+  const rateOutOfRange = [];
+  const probOutOfRange = [];
+  const events = rows.map((r, i) => {
+    const rate = eventNumber(r, [cols.rate]);
+    // Probability resolution: prefer the column pickCol actually resolved in
+    // this file's header (which matches case-insensitively), then fall back
+    // to the literal aliases for files that carry several score columns and
+    // leave the canonical one empty (or NA) on some rows.
+    const prob = eventNumber(r, [cols.score, ...EVENT_COLS.score]);
+    for (const n of [rate, prob]) {
+      if (Number.isNaN(n.value)) invalid.push({ i, key: n.key });
+    }
+    if (rate.value !== null && !(rate.value > 0 && rate.value <= 1)) {
+      rateOutOfRange.push({ i, value: rate.value });
+    }
+    if (prob.value !== null && !(prob.value >= 0 && prob.value <= 1)) {
+      probOutOfRange.push({ i, value: prob.value });
+    }
+    return normalizeEvent(r, cols, i, rate.value, prob.value);
+  });
+  if (invalid.length > 0) {
+    const { i, key } = invalid[0];
+    const cell = String(rows[i][key]).trim();
+    const more = invalid.length - 1;
+    throw new Error(
+      `Row ${i + 1} (line ${lineNumbers[i]}), column "${key}": "${cell}" is not a number` +
+        (looksLikeDecimalComma(cell)
+          ? " — looks like a decimal comma — re-export the file with '.' as decimal separator"
+          : "") +
+        "." +
+        (more > 0
+          ? ` ${more} more rate / probability cell${more > 1 ? "s are" : " is"} not a number either.`
+          : ""),
+    );
+  }
+  // Out of range is suspicious rather than unreadable: keep the value as
+  // read, and say how many and where the first one is.
+  const rangeWarning = (list, what, range) => {
+    if (list.length === 0) return;
+    const { i, value } = list[0];
+    warnings.push(
+      `${list.length} event${list.length > 1 ? "s have" : " has"} a ${what} outside ${range}` +
+        ` — first on line ${lineNumbers[i]} (${events[i].source} → ${events[i].target}): ${value}.`,
+    );
+  };
+  rangeWarning(rateOutOfRange, "rate", "(0, 1]");
+  rangeWarning(probOutOfRange, "probability", "[0, 1]");
+
   return {
-    events: rows.map((r, i) => normalizeEvent(r, cols, i)),
+    events,
     runMetadata: parseRunMetadata(headerComments),
     warnings,
   };
@@ -230,20 +341,42 @@ export function parseAbundance(text) {
     );
   }
 
+  // Cells are read strictly (see parseStrictNumber). Empty and NA cells are
+  // a legitimate absence and read as 0 silently. A cell that is not a
+  // number, or is negative, also reads as 0 but is counted, with the first
+  // one kept as an example for the warning.
   const matrix = {};
   let nonNumericCells = 0;
+  let commaCells = 0;
+  let negativeCells = 0;
+  let firstNonNumeric = null;
+  let firstComma = null;
+  let firstNegative = null;
   rows.forEach((r) => {
     const sp = r[speciesCol];
     if (!sp) return;
     const row = {};
-    samples.forEach((s) => {
+    for (let j = 0; j < samples.length; j++) {
+      const s = samples[j];
       const raw = r[s];
-      const v = parseFloat(raw);
-      if (!Number.isFinite(v) && raw != null && String(raw).trim() !== "") {
+      let v = parseStrictNumber(raw);
+      if (v === null) {
+        v = 0;
+      } else if (Number.isNaN(v)) {
         nonNumericCells++;
+        if (!firstNonNumeric) firstNonNumeric = { cell: raw, sp, s };
+        if (looksLikeDecimalComma(raw)) {
+          commaCells++;
+          if (!firstComma) firstComma = raw;
+        }
+        v = 0;
+      } else if (v < 0) {
+        negativeCells++;
+        if (!firstNegative) firstNegative = { cell: raw, sp, s };
+        v = 0;
       }
-      row[s] = Number.isFinite(v) ? v : 0;
-    });
+      row[s] = v;
+    }
     matrix[sp] = row;
   });
 
@@ -288,9 +421,9 @@ export function parseAbundance(text) {
 
   // Non-numeric cells are coerced to 0 by design (NA / empty are legitimate
   // in these tables). But a table whose decimal separator is a comma parses
-  // "successfully" into an all-zero matrix with the right species and sample
-  // counts and blank plots everywhere, so surface the tally instead of
-  // failing silently.
+  // "successfully" into a near-empty matrix with the right species and
+  // sample counts and blank plots everywhere, so surface the tally instead
+  // of failing silently — and say when the cells look like decimal commas.
   const warnings = [];
   if (emptySamples === samples.length) {
     warnings.push(
@@ -303,9 +436,30 @@ export function parseAbundance(text) {
       `${emptySamples} of ${samples.length} sample columns sum to 0 and were left empty.`,
     );
   }
+  const where = (f) => `"${String(f.cell).trim()}" for ${f.sp} in ${f.s}`;
   if (nonNumericCells > 0) {
+    const n = nonNumericCells;
+    let comma = "";
+    if (commaCells > 0) {
+      const who =
+        commaCells === n
+          ? n > 1 ? "they look" : "it looks"
+          : `${commaCells.toLocaleString()} of them ${commaCells > 1 ? "look" : "looks"}`;
+      comma =
+        ` — ${who} like a decimal comma (e.g. "${String(firstComma).trim()}"):` +
+        ` re-export the table with '.' as decimal separator`;
+    }
     warnings.push(
-      `${nonNumericCells.toLocaleString()} non-empty cells were not numeric and were read as 0.`,
+      `${n.toLocaleString()} non-empty cell${n > 1 ? "s were" : " was"} not numeric and ` +
+        `${n > 1 ? "were" : "was"} read as 0 (first: ${where(firstNonNumeric)})${comma}.`,
+    );
+  }
+  if (negativeCells > 0) {
+    const n = negativeCells;
+    warnings.push(
+      `${n.toLocaleString()} cell${n > 1 ? "s hold" : " holds"} a negative value and ` +
+        `${n > 1 ? "were" : "was"} read as 0 (first: ${where(firstNegative)}) — ` +
+        `an abundance cannot be negative.`,
     );
   }
 

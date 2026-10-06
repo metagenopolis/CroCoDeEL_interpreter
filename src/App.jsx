@@ -20158,6 +20158,17 @@ const HelpTab = ({ onStartTour }) => {
               case-insensitively and many aliases are accepted — see each
               file's section below for details.
             </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              Numbers use a dot as decimal separator (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>0.87</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>1.2e-05</code>
+              ), and the whole cell must be a number: a spreadsheet saved
+              with a decimal comma (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>0,87</code>
+              ) is refused or reported instead of being silently misread.
+              An empty cell, or NA / N/A / NaN / null / None / -, means "no
+              value".
+            </p>
             <p style={{ color: "var(--ink-muted)" }}>
               Files are parsed entirely in your browser. Nothing is sent
               to any server.
@@ -20223,14 +20234,14 @@ const HelpTab = ({ onStartTour }) => {
                 name="rate"
                 required
                 type="float [0..1]"
-                desc="Estimated proportion of the contaminated sample that originates from the source."
+                desc="Estimated proportion of the contaminated sample that originates from the source. A value that is not a number (e.g. 0,41 written with a decimal comma) refuses the whole file, naming the row; an empty or NA cell reads as 0; values outside (0, 1] are reported."
                 aliases={["contamination_rate"]}
               />
               <HelpCol
                 name="probability"
                 required
                 type="float [0..1]"
-                desc="CroCoDeEL Random-Forest probability that the event is real. Older CroCoDeEL outputs may write this value into a column named `score` instead — both are accepted; the first non-empty value is used."
+                desc="CroCoDeEL Random-Forest probability that the event is real. Older CroCoDeEL outputs may write this value into a column named `score` instead — both are accepted; the first value that is neither empty nor NA is used. Read as strictly as the rate; values outside [0, 1] are reported."
                 aliases={["score", "rf_score", "proba"]}
               />
               <HelpCol
@@ -20269,6 +20280,14 @@ const HelpTab = ({ onStartTour }) => {
             Format: first column lists species names, every other column is a
             sample. The parser normalizes each sample column to relative
             abundances summing to 1.
+          </p>
+          <p>
+            Empty and NA cells read as 0. A cell that is not a number (for
+            instance <code style={{ fontFamily: "ui-monospace, monospace" }}>0,87</code>{" "}
+            from a spreadsheet using a decimal comma) or that is negative also
+            reads as 0, and the number of such cells is reported in the{" "}
+            <em>Check the input files</em> banner, with the first one as an
+            example.
           </p>
         </HelpSection>
 
