@@ -104,6 +104,39 @@ describe("parseMetadata — exact header matching", () => {
   });
 });
 
+describe("parseMetadata — subject headers and the refusal message", () => {
+  it("reads the usual subject id headers, which the substring pass used to catch", () => {
+    for (const h of ["individual_id", "IndividualID", "participant_id", "Participant ID", "participant", "host_id"]) {
+      const m = parseMetadata(tsv([["sample_id", h], ["S1", "i1"], ["S2", "i1"], ["S3", "i2"]]));
+      expect(m.cols.subject, h).toBe(h);
+      expect(areRelated(m, "S1", "S2"), h).toMatchObject({ related: true, kind: "subject" });
+      expect(areRelated(m, "S1", "S3"), h).toEqual({ related: false });
+    }
+  });
+
+  it("names the accepted headers and the file's own when the subject is missing", () => {
+    const err = () => parseMetadata(tsv([["sample_id", "patient_number", "host"], ["S1", "1", "Homo sapiens"]]));
+    expect(err).toThrow(
+      "subject_id column not found: expected subject_id, subject, host_subject_id, patient_id, " +
+        "patient, individual_id, individual, participant_id, participant or host_id. Headers are " +
+        "matched exactly, ignoring case, spaces, _ - and . — this file has: sample_id, " +
+        "patient_number, host.",
+    );
+  });
+
+  it("does the same for the sample id, and keeps a long header list short", () => {
+    const header = ["SampleName", "subject_id", ...Array.from({ length: 14 }, (_, i) => `extra_column_${i}`)];
+    let message = "";
+    try {
+      parseMetadata(tsv([header, header.map(() => "x")]));
+    } catch (e) {
+      message = e.message;
+    }
+    expect(message).toMatch(/^sample_id column not found: expected sample_id, sample or id\. /);
+    expect(message).toMatch(/this file has: SampleName, subject_id, extra_column_0, .*, extra_column_9, … \(16 in all\)\.$/);
+  });
+});
+
 describe("parsePlateMap — exact header matching and the resolved mapping", () => {
   it("returns the columns it read, matched up to case and separators", () => {
     const pm = parsePlateMap(
@@ -115,6 +148,16 @@ describe("parsePlateMap — exact header matching and the resolved mapping", () 
       well: "Well Position",
     });
     expect(pm.bySample.S1).toEqual({ plate: "P1", row: 0, col: 0 });
+  });
+
+  it("names the accepted headers and the file's own when the well is missing", () => {
+    expect(() => parsePlateMap(tsv([["sample_id", "plate", "position_on_plate"], ["S1", "P1", "A01"]]))).toThrow(
+      "Missing columns: sample_id and either well or row + column are required (plate optional). " +
+        "Accepted names: sample_id, sample, id; well, well_position, position, well_id, pos; row, " +
+        "well_row; column, col, well_column, well_col; plate, plate_id, plate_name. Headers are " +
+        "matched exactly, ignoring case, spaces, _ - and . — this file has: sample_id, plate, " +
+        "position_on_plate.",
+    );
   });
 
   it("does not read a header that merely contains `well` or `plate`", () => {

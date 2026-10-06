@@ -20396,7 +20396,9 @@ const HelpTab = ({ onStartTour }) => {
             or{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}>host_age</code>{" "}
             stay context columns, so they cannot make two different
-            subjects look related. Once loaded, the metadata card lists the
+            subjects look related. A file without a recognized sample_id
+            or subject_id column is refused, with the accepted names and
+            the file's own headers. Once loaded, the metadata card lists the
             header read for each field. A sample_id found on more than one
             row keeps its first row; the card names the repeated ids. Its
             Download button writes the table back under the canonical names
@@ -20453,7 +20455,17 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Person / individual the sample belongs to. Two samples sharing a subject_id trigger the 'same subject' criterion (longitudinal pair, often a false-positive risk). A column named host is not read as the subject: in MIxS / NCBI BioSample metadata it holds the host organism (e.g. Homo sapiens); the subject there is host_subject_id."
-                aliases={["subject", "host_subject_id", "patient_id", "patient", "individual"]}
+                aliases={[
+                  "subject",
+                  "host_subject_id",
+                  "patient_id",
+                  "patient",
+                  "individual_id",
+                  "individual",
+                  "participant_id",
+                  "participant",
+                  "host_id",
+                ]}
                 example={`sample_id  subject_id\n58D7       58\n58D28      58\n60D38      60\nNC3        NC3\n58M        M58`}
               />
               <HelpCol

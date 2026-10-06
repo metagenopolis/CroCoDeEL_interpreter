@@ -132,6 +132,24 @@ function pickColExact(header, candidates) {
   return null;
 }
 
+/** A cell or a header quoted in a message, cut to `max` characters. */
+function clip(s, max = 60) {
+  const t = String(s ?? "");
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/** The end of an error about a column pickColExact did not find: the
+    matching rule, and the headers the file does have — without them the
+    message cannot tell "Subject" from "subject_name". */
+function headerHint(header) {
+  const shown = header.slice(0, 12).map((h) => clip(h, 40)).join(", ");
+  const more = header.length > 12 ? `, … (${header.length} in all)` : "";
+  return (
+    "Headers are matched exactly, ignoring case, spaces, _ - and . " +
+    `— this file has: ${shown || "no header"}${more}.`
+  );
+}
+
 /* ---------- numeric cells ----------
    parseFloat reads the longest numeric PREFIX of a cell, so a table saved
    by a French-locale spreadsheet loaded without a word: "7,41E-01" read as
@@ -710,7 +728,11 @@ const METADATA_COLS = {
     "host_subject_id",
     "patient_id",
     "patient",
+    "individual_id",
     "individual",
+    "participant_id",
+    "participant",
+    "host_id",
   ],
   timepoint: [
     "timepoint",
@@ -819,8 +841,14 @@ export function parseMetadata(text) {
   // and shown on the upload card, so a curator can see which column was
   // taken for the subject and the group.
   const cols = metadataCols(header);
-  if (!cols.sample) throw new Error("sample_id column not found");
-  if (!cols.subject) throw new Error("subject_id column not found");
+  for (const field of ["sample", "subject"]) {
+    if (cols[field]) continue;
+    const names = METADATA_COLS[field];
+    const expected = `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+    throw new Error(
+      `${names[0]} column not found: expected ${expected}. ${headerHint(header)}`,
+    );
+  }
   const bySample = {};
   // A repeated id keeps its first row (see "duplicated ids" above).
   const seen = new Set();
@@ -1067,8 +1095,10 @@ export function parsePlateMap(text) {
     cols.col = pickColExact(header, PLATE_COLS.col);
   }
   if (!cols.sample || !(cols.well || (cols.row && cols.col))) {
+    const names = ["sample", "well", "row", "col", "plate"].map((f) => PLATE_COLS[f].join(", "));
     throw new Error(
-      "Missing columns: sample_id and either well or row + column are required (plate optional).",
+      "Missing columns: sample_id and either well or row + column are required (plate " +
+        `optional). Accepted names: ${names.join("; ")}. ${headerHint(header)}`,
     );
   }
   const bySample = {};
