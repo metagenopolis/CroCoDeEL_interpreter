@@ -245,6 +245,29 @@ const EVENT_COLS = {
   ],
 };
 
+/* The curation columns of the interpreter's own curated-events export, so
+   that reloading that file restores the evaluations instead of resetting
+   every event to pending. Matched by pickColExact, never by substring:
+   "action" is a substring of "extraction_batch" and of
+   "contamination_fraction". */
+const EVENT_CURATION_COLS = {
+  verdict: ["verdict", "evaluation"],
+  notes: ["notes", "note", "comment", "comments"],
+  action: ["action"],
+};
+
+/** Event verdicts by spelling: lower case, blanks / hyphens / underscores
+    reduced to one "_" ("True positive", "TRUE-POSITIVE", "tp"). */
+const VERDICT_SPELLINGS = new Map([
+  ["true_positive", "true_positive"],
+  ["tp", "true_positive"],
+  ["false_positive", "false_positive"],
+  ["fp", "false_positive"],
+  ["uncertain", "uncertain"],
+  ["u", "uncertain"],
+  ["pending", "pending"],
+]);
+
 /** Split the introduced-species cell into taxon names.
 
     The separator is `,`. `;` used to be accepted as an alternative, but it
@@ -309,6 +332,11 @@ export function parseEvents(text) {
       "Could not find source/target columns. Expected headers like 'source' and 'target' (or 'contaminated_sample').",
     );
   }
+  const cur = {
+    verdict: pickColExact(header, EVENT_CURATION_COLS.verdict),
+    notes: pickColExact(header, EVENT_CURATION_COLS.notes),
+    action: pickColExact(header, EVENT_CURATION_COLS.action),
+  };
   // A missing rate column is not fatal — source/target alone still make a
   // browsable event list — but every rate silently becomes 0, which means
   // no contamination line is drawn and several diagnostics quietly go
@@ -337,6 +365,8 @@ export function parseEvents(text) {
   // A row without a source or a target is not an event (a stray note, a
   // half-cleared row): skip it, counted, before reading its numbers.
   const skipped = [];
+  const badVerdicts = [];
+  const badActions = [];
   const events = [];
   rows.forEach((r, i) => {
     if (!String(r[cols.source] ?? "").trim() || !String(r[cols.target] ?? "").trim()) {
@@ -358,7 +388,28 @@ export function parseEvents(text) {
     if (prob.value !== null && !(prob.value >= 0 && prob.value <= 1)) {
       probOutOfRange.push({ i, value: prob.value });
     }
-    events.push(normalizeEvent(r, cols, events.length, rate.value, prob.value));
+    const ev = normalizeEvent(r, cols, events.length, rate.value, prob.value);
+    // Curation read back from the file (see EVENT_CURATION_COLS). The
+    // action belongs to the target sample, not to the event: it is kept as
+    // `fileAction` for the caller to offer, never applied here — and not
+    // as `action`, which AppMain's legacy-session migration would move
+    // onto the sample.
+    if (cur.verdict) {
+      const cell = String(r[cur.verdict] ?? "").trim();
+      const verdict = cell
+        ? VERDICT_SPELLINGS.get(cell.toLowerCase().replace(/[\s_-]+/g, "_"))
+        : "pending";
+      if (verdict) ev.verdict = verdict;
+      else badVerdicts.push({ i, cell });
+    }
+    if (cur.notes) ev.notes = String(r[cur.notes] ?? "").trim();
+    if (cur.action) {
+      const cell = String(r[cur.action] ?? "").trim();
+      const action = cell.toLowerCase();
+      if (action === "keep" || action === "suppress") ev.fileAction = action;
+      else if (cell) badActions.push({ i, cell });
+    }
+    events.push(ev);
   });
   if (events.length === 0) {
     throw new Error("No events: no row has both a source and a target.");
@@ -368,6 +419,22 @@ export function parseEvents(text) {
     warnings.push(
       `${n} row${n > 1 ? "s" : ""} with an empty source or target ${n > 1 ? "were" : "was"} ` +
         `skipped (first on line ${lineNumbers[skipped[0]]}).`,
+    );
+  }
+  if (badVerdicts.length > 0) {
+    const n = badVerdicts.length;
+    const { i, cell } = badVerdicts[0];
+    warnings.push(
+      `${n} row${n > 1 ? "s have" : " has"} an unrecognised verdict and ${n > 1 ? "were" : "was"} ` +
+        `read as pending (first on line ${lineNumbers[i]}: "${cell}").`,
+    );
+  }
+  if (badActions.length > 0) {
+    const n = badActions.length;
+    const { i, cell } = badActions[0];
+    warnings.push(
+      `${n} row${n > 1 ? "s have" : " has"} an unrecognised action, ignored: expected keep or ` +
+        `suppress (first on line ${lineNumbers[i]}: "${cell}").`,
     );
   }
   if (invalid.length > 0) {
@@ -398,10 +465,23 @@ export function parseEvents(text) {
   rangeWarning(rateOutOfRange, "rate", "(0, 1]");
   rangeWarning(probOutOfRange, "probability", "[0, 1]");
 
+  // What the file carried, for the caller to tell the user: events with a
+  // verdict other than pending, with notes, with a keep / suppress action.
+  // Null when the file has none of these columns (a CroCoDeEL output).
+  const curation =
+    cur.verdict || cur.notes || cur.action
+      ? {
+          verdicts: events.filter((e) => e.verdict !== "pending").length,
+          notes: events.filter((e) => e.notes).length,
+          actions: events.filter((e) => e.fileAction).length,
+        }
+      : null;
+
   return {
     events,
     runMetadata: parseRunMetadata(headerComments),
     warnings,
+    curation,
   };
 }
 

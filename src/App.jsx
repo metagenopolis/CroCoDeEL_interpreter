@@ -20297,8 +20297,35 @@ const HelpTab = ({ onStartTour }) => {
                 desc="Species detected in the contaminated sample that are most likely introduced from the source. Listed in the events table."
                 aliases={["introduced_species", "species_specifically_introduced", "species"]}
               />
+              <HelpCol
+                name="verdict"
+                recognized
+                type="TP / FP / U / pending"
+                desc="Not in CroCoDeEL's output: written by the curated events TSV of the Export tab, so that reloading that file restores every evaluation instead of resetting them to pending. Accepts true_positive, false_positive, uncertain, pending, TP, FP, U and 'true positive' / 'false positive', in any case; anything else reads as pending and is counted."
+                aliases={["evaluation"]}
+              />
+              <HelpCol
+                name="notes"
+                recognized
+                type="string"
+                desc="Curator notes, restored with the verdicts when the curated events TSV is reloaded."
+                aliases={["note", "comment", "comments"]}
+              />
+              <HelpCol
+                name="action"
+                recognized
+                type="keep / suppress"
+                desc="The target sample's action in the curated events TSV. Read, but not applied to the samples automatically: sample actions are set on the Samples tab."
+              />
             </tbody>
           </table>
+          <p>
+            These three columns are matched exactly (ignoring case,
+            spaces, underscores, hyphens and dots), never as part of a
+            longer header: an{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>extraction_batch</code>{" "}
+            column is not an action.
+          </p>
         </HelpSection>
 
         {/* ---------- species_abundance.tsv ---------- */}
