@@ -16689,7 +16689,7 @@ const BulkApplyByCriteriaDialog = ({
             textTransform: "uppercase",
           }}
         >
-          Verdict on samples targeted by the matched events (optional)
+          Verdict on samples targeted by the matched events
         </div>
         <div className="flex flex-wrap gap-1 mb-1">
           {[
@@ -16770,7 +16770,7 @@ const BulkApplyByCriteriaDialog = ({
                 textTransform: "uppercase",
               }}
             >
-              Action on samples targeted by the matched events (optional)
+              Action on samples targeted by the matched events
             </div>
             <div className="flex flex-wrap gap-1 mb-1">
               {[
@@ -25998,12 +25998,20 @@ const defaultFilter = () => ({
     const sampleComment = (sse.sampleComment || "").trim();
     const yoursKept = " (except on samples where you set one yourself)";
     const sideEffectBits = [
-      tv
-        ? `verdict → ${tv} as your own decision${skipExistingTV ? yoursKept : ""}`
-        : "verdict → automatic, recomputed from every event targeting it (as when clicking each event)",
-      taProvided
-        ? `action → ${ta == null ? "remove the one you set" : `${ta} as your own decision`}${skipExistingTA ? yoursKept : ""}`
-        : "action → automatic (Suppress while Contaminated, unless you chose an action)",
+      tv === "pending"
+        ? skipExistingTV
+          ? 'verdict → unchanged (Pending removes verdicts set by hand, which "don\'t overwrite" protects)'
+          : "verdict → remove the one you set by hand, so it follows its events"
+        : tv
+          ? `verdict → ${tv} as your own decision${skipExistingTV ? yoursKept : ""}`
+          : "verdict → automatic, recomputed from every event targeting it (as when clicking each event)",
+      !taProvided
+        ? "action → automatic (Suppress while Contaminated, unless you chose an action)"
+        : ta != null
+          ? `action → ${ta} as your own decision${skipExistingTA ? yoursKept : ""}`
+          : skipExistingTA
+            ? 'action → unchanged ((clear) removes actions set by hand, which "don\'t overwrite" protects)'
+            : "action → remove the one you set by hand, so it follows the verdict",
     ];
     if (sampleComment) sideEffectBits.push("note prepended to the target sample");
     setBulkConfirm({
