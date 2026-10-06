@@ -13592,6 +13592,11 @@ const BulkSampleApplyDialog = ({
                   fontFamily: '"Raleway", sans-serif',
                   cursor: "pointer",
                 }}
+                title={
+                  opt.id === "pending"
+                    ? "Remove the verdict you set by hand: each sample then follows its events automatically"
+                    : undefined
+                }
               >
                 {opt.label}
               </button>
@@ -13649,6 +13654,11 @@ const BulkSampleApplyDialog = ({
                       fontFamily: '"Raleway", sans-serif',
                       cursor: "pointer",
                     }}
+                    title={
+                      opt.id === "clear"
+                        ? "Remove the action you set by hand: a Contaminated sample gets its automatic Suppress back"
+                        : undefined
+                    }
                   >
                     {opt.label}
                   </button>
@@ -26449,7 +26459,7 @@ const defaultFilter = () => ({
       matrix, and only when an abundance table is loaded. */
   const curatedAbundanceStats = useMemo(() => {
     if (!ab) return null;
-    const cur = buildCuratedAbundance(ab, sampleCuration, {
+    const cur = buildCuratedAbundance(ab, effectiveSampleCuration, {
       dropEmptySpecies: true,
     });
     return {
@@ -26459,11 +26469,11 @@ const defaultFilter = () => ({
       totalSpecies: ab.species.length,
       droppedSpecies: cur.droppedSpecies.length,
     };
-  }, [ab, sampleCuration]);
+  }, [ab, effectiveSampleCuration]);
 
   const exportCuratedAbundance = (opts = {}) => {
     if (!ab) return;
-    const cur = buildCuratedAbundance(ab, sampleCuration, opts);
+    const cur = buildCuratedAbundance(ab, effectiveSampleCuration, opts);
     const head = [
       `# curated abundance table — ${cur.samples.length} of ${ab.samples.length} samples kept`,
     ];
