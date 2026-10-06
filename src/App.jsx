@@ -10823,13 +10823,42 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
 
 /** Verdict picker — 4 icon-only chip buttons (pending / contaminated
     / correct / uncertain) wired to setSampleVerdict. Tooltip carries
-    the textual label so the row width stays compact. Memoised. */
+    the textual label so the row width stays compact. An automatic
+    verdict (derived from the events) is drawn lighter, with a dashed
+    rim, and marked "auto"; clicking it makes it the curator's own,
+    Pending hands the sample back to the rule. Memoised. */
 const SAMPLE_VERDICT_ICON = {
   pending: Circle,
   contaminated: ThumbsDown,
   correct: ThumbsUp,
   uncertain: HelpCircle,
 };
+/** Fill / border of a Samples-tab chip: solid for a value the curator
+    set, lighter with a dashed rim for an automatic one. */
+const sampleChipColors = (color, active, auto) => ({
+  background: active ? (auto ? `${color}b3` : color) : "var(--bg-card)",
+  color: active ? "#fff" : color,
+  border: `1px ${active && auto ? "dashed" : "solid"} ${active ? color : "var(--border)"}`,
+});
+/** The small "auto" tag next to an automatic sample verdict / action. */
+const SampleAutoMark = ({ title }) => (
+  <span
+    data-auto-mark=""
+    title={title}
+    style={{
+      alignSelf: "center",
+      fontSize: 9,
+      fontWeight: 700,
+      letterSpacing: "0.06em",
+      textTransform: "uppercase",
+      color: "var(--ink-muted)",
+      fontFamily: '"Raleway", sans-serif',
+      cursor: "help",
+    }}
+  >
+    auto
+  </span>
+);
 const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSampleVerdict }) {
   return (
   <div className="flex gap-1">
@@ -10854,9 +10883,7 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
             height: 24,
             padding: 0,
             borderRadius: 12,
-            background: active ? opt.k.bg : "var(--bg-card)",
-            color: active ? "#fff" : opt.k.bg,
-            border: `1px solid ${active ? opt.k.bg : "var(--border)"}`,
+            ...sampleChipColors(opt.k.bg, active, row.verdictAuto),
             cursor: "pointer",
           }}
           title={`Verdict: ${opt.k.label}`}
@@ -10866,16 +10893,24 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
         </button>
       );
     })}
+    {row.verdictAuto && (
+      <SampleAutoMark title="Automatic verdict: derived from the events that target this sample. Click a verdict to set it yourself; Pending hands the sample back to the automatic rule." />
+    )}
   </div>
   );
 });
 
-/** Action picker — keep / suppress icon-only chips. Only shown when
-    the sample's verdict is "contaminated"; otherwise we render a faint
-    dash so the column keeps its width without offering a decision the
-    curator hasn't motivated yet. Memoised. */
+/** Action picker — keep / suppress icon-only chips. Offered once the
+    sample is Contaminated, and shown whenever an action is set, whatever
+    the verdict: a Suppress drops the sample from the curated abundance
+    table even when it is not marked Contaminated, so it must stay in
+    sight — flagged as unusual — and clearable. Otherwise a faint dash
+    keeps the column's width without offering a decision the curator
+    hasn't motivated yet. Clicking the curator's own action clears it;
+    an automatic one (the Suppress paired with Contaminated) has nothing
+    to clear, so the click makes it the curator's own. Memoised. */
 const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAction }) {
-  if (row.verdict !== "contaminated") {
+  if (row.verdict !== "contaminated" && !row.action) {
     return (
       <span
         style={{
@@ -10888,6 +10923,8 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
       </span>
     );
   }
+  const suppressedNotContaminated =
+    row.action === "suppress" && row.verdict !== "contaminated";
   return (
   <div className="flex gap-1">
     {[
@@ -10895,14 +10932,17 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
       { id: "suppress", color: "#ed6e6c", Icon: Trash2, label: "Suppress" },
     ].map((opt) => {
       const active = row.action === opt.id;
+      const auto = active && row.actionAuto;
+      const clears = active && !auto;
+      const label = clears
+        ? `Clear ${opt.label.toLowerCase()} on ${row.id}`
+        : `${opt.label} ${row.id}`;
       const Icon = opt.Icon;
       return (
         <button
           key={opt.id}
           type="button"
-          onClick={() =>
-            setSampleAction(row.id, active ? null : opt.id)
-          }
+          onClick={() => setSampleAction(row.id, clears ? null : opt.id)}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -10911,26 +10951,33 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
             height: 24,
             padding: 0,
             borderRadius: 12,
-            background: active ? opt.color : "var(--bg-card)",
-            color: active ? "#fff" : opt.color,
-            border: `1px solid ${active ? opt.color : "var(--border)"}`,
+            ...sampleChipColors(opt.color, active, auto),
             cursor: "pointer",
           }}
           title={
-            active
-              ? `Clear ${opt.label.toLowerCase()} on ${row.id}`
-              : `${opt.label} ${row.id}`
+            auto
+              ? `${opt.label} (automatic) — click to make it your own decision`
+              : label
           }
-          aria-label={
-            active
-              ? `Clear ${opt.label.toLowerCase()} on ${row.id}`
-              : `${opt.label} ${row.id}`
-          }
+          aria-label={label}
         >
           <Icon className="w-3.5 h-3.5" />
         </button>
       );
     })}
+    {row.actionAuto && (
+      <SampleAutoMark title="Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick the other one to change it." />
+    )}
+    {suppressedNotContaminated && (
+      <span
+        role="img"
+        aria-label="Suppressed but not marked Contaminated"
+        title="Suppressed although not marked Contaminated: this sample is still dropped from the curated abundance table. Clear the action, or change the verdict, if that is not what you meant."
+        style={{ display: "inline-flex", alignSelf: "center", color: "#d97a3c" }}
+      >
+        <AlertCircle className="w-4 h-4" />
+      </span>
+    )}
   </div>
   );
 });
@@ -21290,9 +21337,13 @@ const HelpTab = ({ onStartTour }) => {
                 this sample is the source, and likewise for the target
                 column. A Verdict picker (Pending / Contaminated /
                 Not contaminated / Uncertain) is always visible; the
-                keep / suppress <em>Action</em> chips only appear once
-                the sample is marked <em>Contaminated</em> (Keep /
-                Suppress is meaningless before that call).
+                keep / suppress <em>Action</em> chips appear once the
+                sample is marked <em>Contaminated</em>, and whenever an
+                action is set: a Suppress on a sample that is not
+                Contaminated still drops it from the curated abundance
+                table, so it stays in sight with a warning sign, ready
+                to be cleared. Automatic values are drawn lighter with a
+                dashed rim and tagged <em>auto</em>.
               </p>
               <p style={{ marginTop: 6 }}>
                 <strong>Collapsible cells.</strong> The Context cell
@@ -21552,12 +21603,16 @@ const HelpTab = ({ onStartTour }) => {
             <strong>Action pairing.</strong> A Contaminated sample with no
             action gets <em>Suppress</em> automatically; once its verdict
             is no longer Contaminated, that automatic Suppress goes away.
-            An action you set by hand stays whatever the verdict.
+            An action you set by hand stays whatever the verdict (a
+            Suppress on a sample that is not Contaminated is flagged in
+            the Samples tab: the sample is still dropped from the curated
+            abundance table).
           </p>
           <p style={{ marginTop: 6 }}>
-            Clicking a sample-level verdict or action makes it yours;
-            choosing <em>Pending</em>, or clearing your action, hands the
-            sample back to the automatic rule.
+            Automatic values carry an <em>auto</em> tag in the Samples
+            tab. Clicking a sample-level verdict or action makes it
+            yours; choosing <em>Pending</em>, or clearing your action,
+            hands the sample back to the automatic rule.
           </p>
           <h4
             className="mt-3 text-[14px]"

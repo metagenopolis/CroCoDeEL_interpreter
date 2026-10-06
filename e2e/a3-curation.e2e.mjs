@@ -180,6 +180,22 @@ async function openSampleBulkDialog(page) {
     .last();
 }
 
+/** The Samples-tab row of sample `id`. */
+function sampleRow(page, id) {
+  return page
+    .locator("tr")
+    .filter({ has: page.locator('button[aria-label="Set verdict to Pending"]') })
+    .filter({ has: page.getByText(id, { exact: true }) });
+}
+
+/** The "N of M samples" of the Export tab's curated abundance card. */
+async function curatedCard(page) {
+  await openTab(page, "Export");
+  const text = await page.locator("body").innerText();
+  const m = text.match(/Curated abundance table — (\d+) of (\d+) samples/);
+  return m ? { kept: Number(m[1]), total: Number(m[2]) } : null;
+}
+
 /** Click a verdict button in the Samples-tab row of `id`. */
 async function setSampleVerdictInTable(page, id, label) {
   await openTab(page, "Samples");
@@ -193,13 +209,29 @@ async function setSampleVerdictInTable(page, id, label) {
 
 await startServer();
 const browser = await launchBrowser();
+
+/* One fresh page with the demo per scenario. A scenario that throws is
+   reported as a failed check and the others still run. E2E_ONLY=<regex>
+   runs only the scenarios whose name matches. */
+const ONLY = process.env.E2E_ONLY ? new RegExp(process.env.E2E_ONLY) : null;
+async function scenario(name, run) {
+  if (ONLY && !ONLY.test(name)) return;
+  const { ctx, page, errors } = await newPage(browser);
+  try {
+    await loadDemo(page);
+    await run(page);
+  } catch (e) {
+    check(false, `${name} runs to the end`, String(e).split("\n")[0]);
+  }
+  check(errors.length === 0, `${name} no JS error`, errors[0] || "");
+  await ctx.close();
+}
+
 try {
   /* (a) Bulk TP with the dialog's defaults now reaches every target, and
      rejecting one event of a target that still has TP events changes
      nothing — it used to be what created the suppression. */
-  {
-    const { ctx, page, errors } = await newPage(browser);
-    await loadDemo(page);
+  await scenario("(a)", async (page) => {
     await bulkEvaluate(page, "True positive");
     let sc = await storedCuration(page);
     const synced = [...targets].filter((t) => isAutoContaminated(sc[t]));
@@ -218,14 +250,10 @@ try {
     );
     const s = await overviewStats(page);
     check(s.suppress === targets.size, "(a) Overview counts every target to suppress", `suppress=${s.suppress}`);
-    check(errors.length === 0, "(a) no JS error", errors[0] || "");
-    await ctx.close();
-  }
+  });
 
   /* (b) An automatic Not contaminated must not survive the NC preset. */
-  {
-    const { ctx, page, errors } = await newPage(browser);
-    await loadDemo(page);
+  await scenario("(b)", async (page) => {
     await openTab(page, "Events");
     await clickEvent(page, "82D361", "NC3", "fp");
     let sc = await storedCuration(page);
@@ -243,15 +271,11 @@ try {
     );
     const s = await overviewStats(page);
     check(s.suppress === 1, "(b) Overview: one sample to suppress", `suppress=${s.suppress}`);
-    check(errors.length === 0, "(b) no JS error", errors[0] || "");
-    await ctx.close();
-  }
+  });
 
   /* (c) What the NC preset sets is automatic: rejecting the events takes
      it back. */
-  {
-    const { ctx, page, errors } = await newPage(browser);
-    await loadDemo(page);
+  await scenario("(c)", async (page) => {
     await negativeControlPreset(page);
     let sc = await storedCuration(page);
     check(isAutoContaminated(sc.NC3), "(c) the NC preset makes NC3 Contaminated + Suppress (automatic)", show(sc.NC3));
@@ -265,14 +289,10 @@ try {
     );
     const s = await overviewStats(page);
     check(s.suppress === 0, "(c) Overview: nothing left to suppress", `suppress=${s.suppress}`);
-    check(errors.length === 0, "(c) no JS error", errors[0] || "");
-    await ctx.close();
-  }
+  });
 
   /* (d) Back to pending leaves no automatic verdict behind. */
-  {
-    const { ctx, page, errors } = await newPage(browser);
-    await loadDemo(page);
+  await scenario("(d)", async (page) => {
     await openTab(page, "Events");
     await clickEvent(page, "63D250", "63D9", "fp");
     await clickEvent(page, "63D250", "63D9", "fp"); // toggles back to pending
@@ -301,14 +321,10 @@ try {
       "(d) FP + Uncertain on 63D9 → Uncertain, in either order",
       `${show(fpThenU)} / ${show(uThenFp)}`,
     );
-    check(errors.length === 0, "(d) no JS error", errors[0] || "");
-    await ctx.close();
-  }
+  });
 
   /* (e) A bulk FP over TP events removes the automatic suppressions. */
-  {
-    const { ctx, page, errors } = await newPage(browser);
-    await loadDemo(page);
+  await scenario("(e)", async (page) => {
     await openTab(page, "Events");
     const buttons = page.locator('button[title="mark as true positive"]');
     const n = await buttons.count();
@@ -326,15 +342,11 @@ try {
     check(correct.length === targets.size, "(e) …and makes every target Not contaminated", `${correct.length} of ${targets.size}`);
     s = await overviewStats(page);
     check(s.fp === demoEvents.length && s.suppress === 0, "(e) Overview: all FP, nothing to suppress", `fp=${s.fp} suppress=${s.suppress}`);
-    check(errors.length === 0, "(e) no JS error", errors[0] || "");
-    await ctx.close();
-  }
+  });
   /* A3.2 "Don't overwrite …" protects what the curator set by hand,
      not the automatic values: an automatic Suppress must not make a
      bulk Keep skip the sample. Events dialog first. */
-  {
-    const { ctx, page, errors } = await newPage(browser);
-    await loadDemo(page);
+  await scenario("A3.2 events dialog", async (page) => {
     await openTab(page, "Events");
     await clickEvent(page, "63D250", "63D9", "tp"); // 63D9: automatic Contaminated + Suppress
     const dialog = await openBulkDialog(page);
@@ -349,14 +361,10 @@ try {
       "A3.2 bulk Keep (don't overwrite on) replaces 63D9's automatic Suppress",
       show(sc["63D9"]),
     );
-    check(errors.length === 0, "A3.2 no JS error (events dialog)", errors[0] || "");
-    await ctx.close();
-  }
+  });
 
   /* A3.2, the Samples tab's own bulk dialog. */
-  {
-    const { ctx, page, errors } = await newPage(browser);
-    await loadDemo(page);
+  await scenario("A3.2 Samples dialog", async (page) => {
     await openTab(page, "Events");
     await clickEvent(page, "63D250", "63D9", "tp"); // automatic Contaminated + Suppress
     await clickEvent(page, "63D29", "63D40", "tp");
@@ -380,15 +388,11 @@ try {
       "A3.2 Samples bulk dialog leaves 63D40's verdict set by hand alone",
       show(sc["63D40"]),
     );
-    check(errors.length === 0, "A3.2 no JS error (Samples dialog)", errors[0] || "");
-    await ctx.close();
-  }
+  });
   /* A3.3 The Network node popover writes the sample verdict / action
      with the events, on confirmation: cancelling leaves the sample as it
      was. */
-  {
-    const { ctx, page, errors } = await newPage(browser);
-    await loadDemo(page);
+  await scenario("A3.3", async (page) => {
     let pop = await openNodePopover(page, "NC3");
     await pop.getByRole("button", { name: /^Apply$/ }).click(); // TP defaults
     await page.getByRole("button", { name: /^Apply to \d+$/ }).waitFor({ timeout: 10000 });
@@ -415,9 +419,65 @@ try {
       "A3.3 …and confirming applies the events and NC3's verdict / action",
       `NC3=${show(sc.NC3)} tp=${s.tp}`,
     );
-    check(errors.length === 0, "A3.3 no JS error", errors[0] || "");
-    await ctx.close();
-  }
+  });
+  /* A3.4 A Suppress set by hand that survives "Not contaminated" stays
+     visible in the Samples tab (flagged), and can be cleared. */
+  await scenario("A3.4", async (page) => {
+    let pop = await openNodePopover(page, "63D9");
+    await pop.getByRole("button", { name: /^Apply$/ }).click(); // TP + Contaminated + Suppress
+    await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(500);
+    pop = await openNodePopover(page, "63D9");
+    await pop.getByRole("button", { name: /^FP$/ }).click(); // Not contaminated, action untouched
+    await pop.locator("label").filter({ hasText: /previous evaluations/i }).locator("input").uncheck();
+    await pop.getByRole("button", { name: /^Apply$/ }).click();
+    await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(500);
+    let sc = await storedCuration(page);
+    check(
+      sc["63D9"]?.verdict === "correct" && sc["63D9"].action === "suppress" && !sc["63D9"].actionAuto,
+      "A3.4 the repro leaves 63D9 Not contaminated with its manual Suppress",
+      show(sc["63D9"]),
+    );
+    await openTab(page, "Samples");
+    const row = sampleRow(page, "63D9");
+    const clear = row.locator('button[aria-label="Clear suppress on 63D9"]');
+    const flag = row.locator('[aria-label="Suppressed but not marked Contaminated"]');
+    check((await clear.count()) === 1, "A3.4 the Samples row shows 63D9's Suppress");
+    check((await flag.count()) === 1, "A3.4 …flagged: suppressed but not Contaminated");
+    let card = await curatedCard(page);
+    check(card?.kept === card?.total - 1, "A3.4 Export drops 63D9 as the row shows", JSON.stringify(card));
+    await openTab(page, "Samples");
+    await clear.click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(
+      sc["63D9"]?.verdict === "correct" && sc["63D9"].action == null,
+      "A3.4 clearing it from the row removes the Suppress",
+      show(sc["63D9"]),
+    );
+    check((await flag.count()) === 0, "A3.4 …and the flag");
+    card = await curatedCard(page);
+    check(card?.kept === card?.total, "A3.4 Export keeps every sample again", JSON.stringify(card));
+
+    // Automatic values are marked; clicking one makes it the curator's.
+    await openTab(page, "Events");
+    await clickEvent(page, "63D29", "63D40", "tp");
+    await openTab(page, "Samples");
+    const row40 = sampleRow(page, "63D40");
+    check(
+      (await row40.locator("[data-auto-mark]").count()) === 2,
+      "A3.4 63D40's automatic verdict and Suppress are tagged auto",
+    );
+    await row40.locator('button[aria-label="Suppress 63D40"]').click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(
+      sc["63D40"]?.action === "suppress" && !sc["63D40"].actionAuto && sc["63D40"].verdictAuto === true,
+      "A3.4 clicking the automatic Suppress makes it a manual one",
+      show(sc["63D40"]),
+    );
+  });
 } finally {
   await browser.close();
   stopServer();
