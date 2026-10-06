@@ -1,13 +1,19 @@
 /* ============================================================================
    Pure diagnostic helpers shared by the Guided validation panel, the bulk
-   dialog and the HTML report.
+   dialog, the gallery and the HTML report:
+     - automaticScore and its grade, and the bulk dialog's view of it;
+     - cascade explanations;
+     - matching the events file's names to the abundance table (samples,
+       and species ids CroCoDeEL rewrote as integers);
+     - CroCoDeEL's low-abundance filter, applied to a parsed table.
 
    They live outside App.jsx so they can be exported to the unit tests:
    App.jsx exports React components, and every non-component export there
    costs Fast Refresh its granularity (react-refresh/only-export-components).
-   Nothing in this module touches React, the DOM or App.jsx — inputs are the
-   plain objects the domain functions in App.jsx produce (scatter,
-   lineDiagnostics, pointsAboveLine, missingAbundantFromSource, areRelated).
+   Nothing in this module touches React, the DOM or App.jsx — inputs are
+   parsed tables (parseAbundance) and the plain objects the domain functions
+   in App.jsx produce (scatter, lineDiagnostics, pointsAboveLine,
+   missingAbundantFromSource, areRelated).
    ============================================================================ */
 
 export function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
@@ -201,8 +207,8 @@ export function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) 
   // Derive both counts from `reasons` rather than maintaining a `good++`
   // alongside a hard-coded `total = 6`. Criteria are only pushed when
   // their input exists, so `total` is now the number of criteria actually
-  // evaluated — 0 when no abundance table is loaded (the callers guard on
-  // `total > 0` and suppress the banner) instead of a red "0 / 6 —
+  // evaluated — 0 when nothing could be scored (grade "not_evaluable": the
+  // callers suppress the banner or say why) instead of a red "0 / 6 —
   // PROBABLY NOT CONTAMINATED" printed above "Open the abundance table to
   // compute." And an `ok: null` abstention no longer silently consumes a
   // point, which used to cap otherwise-perfect events at 5/6.
@@ -385,16 +391,24 @@ export function resolveSample(ab, name) {
   return index.loose.get(String(name).toLowerCase().trim()) || null;
 }
 
+// Per matrix: the species count of every sample (see below).
+const speciesCounts = new WeakMap();
+
 /** Number of species observed (relative abundance > 0) in each sample,
-    keyed by the table's own sample names. */
+    keyed by the table's own sample names. Computed once per table — the
+    scatter reads it for every event — so treat the result as read-only. */
 export function speciesCountsBySample(ab) {
-  const counts = {};
-  for (const sample of ab.samples) {
-    let n = 0;
-    for (const sp of ab.species) {
-      if ((ab.matrix[sp]?.[sample] || 0) > 0) n++;
+  let counts = speciesCounts.get(ab.matrix);
+  if (!counts) {
+    counts = {};
+    for (const sample of ab.samples) {
+      let n = 0;
+      for (const sp of ab.species) {
+        if ((ab.matrix[sp]?.[sample] || 0) > 0) n++;
+      }
+      counts[sample] = n;
     }
-    counts[sample] = n;
+    speciesCounts.set(ab.matrix, counts);
   }
   return counts;
 }
@@ -408,4 +422,101 @@ export function introducedPercent(ab, counts, event) {
   const key = resolveSample(ab, event.target);
   const total = key == null ? 0 : counts[key];
   return total > 0 ? (event.introduced.length / total) * 100 : null;
+}
+
+/* ---- CroCoDeEL's low-abundance filter (--filter-low-ab) ---- */
+
+/** The --filter-low-ab factor a CroCoDeEL run declares in its header
+    (`filtering_ab_thr_factor: 20.0`), or null when the run did not filter:
+    no header, "None", or a factor ≤ 0 (which zeroes nothing). */
+export function lowAbundanceFilterFactor(runMetadata) {
+  const raw = runMetadata?.filtering_ab_thr_factor;
+  if (raw == null || String(raw).trim() === "") return null;
+  const factor = Number(raw);
+  return Number.isFinite(factor) && factor > 0 ? factor : null;
+}
+
+// A value within this relative distance of the threshold counts as ON it
+// (and is zeroed, as upstream's `<=` does). See applyLowAbundanceFilter.
+const LOW_AB_TIE_TOLERANCE = 1e-12;
+
+/** CroCoDeEL's low-abundance filter, applied to a parsed abundance table.
+
+    Upstream (ab_table_utils.filter_low_ab, then normalize) sets to 0, in
+    each sample, every value ≤ factor × the sample's smallest positive
+    value, then rescales each sample to sum to 1 — before anything is
+    fitted. The diagnostics must see the table the run saw: otherwise the
+    line, the points above it and the missing-species test are judged on
+    species CroCoDeEL had discarded.
+
+    The parsed table already holds per-sample fractions v / S. Because the
+    threshold is relative to the sample's own minimum m, the division moves
+    values and threshold together — v / S ≤ f × m / S ⇔ v ≤ f × m — and the
+    rescaled survivors are the same, (v / S) / Σ(kept v / S) = v / Σ kept v.
+    Only rounding differs: a raw tie (20 reads against a minimum of 1, at
+    20×) can land one ulp above the threshold once divided by S, so the
+    comparison treats a relative 1e-12 as a tie — far above that rounding,
+    far below any real gap between two abundances.
+
+    Returns a new table sharing `samples` and `species` with `ab`; its
+    matrix holds only the non-zero cells (every reader already does
+    `matrix[sp][s] || 0`, as for a table restored from storage). `logRange`
+    covers both tables, so toggling the filter does not rescale the plots.
+    `unfiltered` is the table as loaded, for plain sample statistics such
+    as richness; `lowAbFilter` is the factor. A sample with no value above
+    its threshold comes out empty (upstream divides 0 by 0 there). */
+export function applyLowAbundanceFilter(ab, factor) {
+  if (!ab || !(factor > 0)) return ab;
+  const { samples, species, matrix } = ab;
+  // Per sample: smallest positive value → threshold.
+  const threshold = {};
+  for (const s of samples) threshold[s] = Infinity;
+  for (const sp of species) {
+    const row = matrix[sp];
+    for (const s in row) {
+      const v = row[s];
+      if (v > 0 && v < threshold[s]) threshold[s] = v;
+    }
+  }
+  for (const s of samples) threshold[s] *= factor * (1 + LOW_AB_TIE_TOLERANCE);
+  // Keep what lies above it, and total it per sample… Rows have no
+  // prototype: most lookups into this sparse matrix miss, and a miss on a
+  // plain object also searches Object.prototype — the scatter of every
+  // event at load ran 75 % slower on the filtered table than on the dense
+  // one before this.
+  const total = {};
+  for (const s of samples) total[s] = 0;
+  const filtered = {};
+  for (const sp of species) {
+    const row = matrix[sp];
+    const kept = Object.create(null);
+    for (const s in row) {
+      const v = row[s];
+      if (v > threshold[s]) {
+        kept[s] = v;
+        total[s] += v;
+      }
+    }
+    filtered[sp] = kept;
+  }
+  // …then rescale each sample to sum to 1.
+  let minVal = Infinity;
+  let maxVal = -Infinity;
+  for (const sp of species) {
+    const kept = filtered[sp];
+    for (const s in kept) {
+      const v = kept[s] / total[s];
+      kept[s] = v;
+      if (v < minVal) minVal = v;
+      if (v > maxVal) maxVal = v;
+    }
+  }
+  const range = ab.logRange || { min: -8, max: 0 };
+  const logRange = Number.isFinite(minVal)
+    ? {
+        min: Math.min(range.min, Math.floor(Math.log10(minVal))),
+        max: Math.max(range.max, Math.min(0, Math.ceil(Math.log10(maxVal)))),
+      }
+    : range;
+  return { ...ab, matrix: filtered, logRange, unfiltered: ab, lowAbFilter: factor };
 }

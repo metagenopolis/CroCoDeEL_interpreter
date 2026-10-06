@@ -10,7 +10,11 @@
      3. species ids that CroCoDeEL rewrote as integers ("1" for the table's
         "001") still land on the contamination line;
      4. a target written in another case than the table's column ("tgt"
-        for "TGT") gets its introduced % — in the export as on screen.
+        for "TGT") gets its introduced % in the exported events TSV;
+     5. a run whose header declares `filtering_ab_thr_factor: 20.0` shows
+        the low-abundance filter and its toggle, the diagnostics follow
+        the filter, switching it off changes them, and the choice survives
+        a reload; a run with "None" shows no toggle.
 
    Runs on its own (`node e2e/a2-diagnostics.e2e.mjs`, which starts a
    preview server unless BASE_URL is set) or through e2e/run-all.mjs. */
@@ -21,6 +25,7 @@ import {
   stopServer,
   launchBrowser,
   newPage,
+  loadDemo,
   openTab,
   tsvInput,
   check,
@@ -223,6 +228,86 @@ try {
       );
     }
     check(errors.length === 0, "no JS error on a case-different target", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* ------------------------------ 5. CroCoDeEL's low-abundance filter
+     The run header declares --filter-low-ab 20. CroCoDeEL zeroed, in each
+     sample, every abundance ≤ 20 × the sample's smallest one before
+     fitting: in TGT that removes the lower half of the contamination
+     line, so 10 of the 20 introduced species remain on it. The
+     interpreter used to fit all 20. */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    await loadFiles(
+      page,
+      tsvFile("contamination_events.tsv", [
+        "# crocodeel version: 1.2.1 | species_ab_table: species_abundance.tsv | filtering_ab_thr_factor: 20.0 | probability_cutoff: 0.5 | rate_cutoff: 0.0",
+        "source\ttarget\trate\tprobability\tcontamination_specific_species",
+        `SRC\tTGT\t0.1\t0.9\t${ON_LINE}`,
+      ]),
+      tsvFile("species_abundance.tsv", abundanceLines()),
+    );
+    const toggle = page.getByRole("checkbox", {
+      name: /low-abundance filter to the diagnostics/i,
+    });
+    await openTab(page, "Overview");
+    let text = await page.locator("body").innerText();
+    check(
+      /Low-abundance filter 20×\s*— applied to diagnostics, as in CroCoDeEL/i.test(text),
+      "the run parameters show the filter as applied",
+    );
+    check((await toggle.count()) === 1 && (await toggle.isChecked()), "the toggle is on by default");
+
+    await openTab(page, "Validate");
+    text = await page.locator("body").innerText();
+    check(/Only 10 species on line/i.test(text), "the diagnostics use the filtered table (10 species on the line)", (text.match(/(Only )?\d+ species on line/i) || ["none"])[0]);
+    check(/After CroCoDeEL's low-abundance filter \(20×\)/i.test(text), "Guided validation says the filter is applied");
+
+    await openTab(page, "Export");
+    const [report] = await Promise.all([
+      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+      page.getByRole("button", { name: /Download events HTML/i }).first().click(),
+    ]);
+    const html = report ? readFileSync(await report.path(), "utf8") : "";
+    check(
+      /Low-abundance filter<\/div><div class="v">20× — applied to the diagnostics/.test(html) &&
+        /Only 10 species on line/.test(html),
+      "the HTML report states the filter and uses it",
+    );
+
+    await openTab(page, "Overview");
+    // Guarded so that a build without the toggle reports the checks
+    // below as failures instead of timing out here.
+    if (await toggle.count()) await toggle.uncheck();
+    await page.waitForTimeout(600);
+    text = await page.locator("body").innerText();
+    check(/Low-abundance filter 20×\s*— not applied/i.test(text), "switching it off is shown");
+    await openTab(page, "Validate");
+    text = await page.locator("body").innerText();
+    check(/\b20 species on line/i.test(text) && !/Only 10 species on line/i.test(text), "switching it off changes the diagnostics (20 species on the line)", (text.match(/(Only )?\d+ species on line/i) || ["none"])[0]);
+
+    // Saved with the session: the auto-save is debounced by a second.
+    await page.waitForTimeout(2500);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(2500);
+    await openTab(page, "Overview");
+    check(
+      (await toggle.count()) === 1 && !(await toggle.isChecked()),
+      "the choice survives a reload",
+    );
+    check(errors.length === 0, "no JS error around the low-abundance filter", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* ---------------- 5b. a run without the filter shows no such toggle */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    await loadDemo(page); // its header says filtering_ab_thr_factor: None
+    await openTab(page, "Overview");
+    const text = await page.locator("body").innerText();
+    check(!/Low-abundance filter/i.test(text), "a run with filtering_ab_thr_factor None shows no filter toggle");
+    check(errors.length === 0, "no JS error on the demo", errors[0] || "");
     await ctx.close();
   }
 } finally {

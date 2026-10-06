@@ -3,11 +3,13 @@ import * as d3 from "d3";
 import { Range, getTrackBackground } from "react-range";
 import LZString from "lz-string";
 import {
+  applyLowAbundanceFilter,
   automaticScore,
   bulkCriteria,
   cascadeExplanations,
-  introducedSpeciesSet,
   introducedPercent,
+  introducedSpeciesSet,
+  lowAbundanceFilterFactor,
   matchesBulkCriteria,
   matchSpeciesName,
   resolveSample,
@@ -1171,26 +1173,26 @@ export function buildScatter(ab, event) {
   // ("1" for the table's "001") still land on the line.
   const introducedSet = introducedSpeciesSet(ab, introduced);
   const points = [];
-  // Species richness = number of species observed (relative abundance > 0)
-  // in each sample. Counted independently of the both-zero skip below.
-  let sourceRichness = 0;
-  let targetRichness = 0;
   ab.species.forEach((sp) => {
     const xs = ab.matrix[sp][tgtKey] || 0;
     const ys = ab.matrix[sp][srcKey] || 0;
-    if (xs > 0) targetRichness++;
-    if (ys > 0) sourceRichness++;
     if (xs === 0 && ys === 0) return;
     points.push({ species: sp, x: xs, y: ys, onLine: introducedSet.has(sp) });
   });
+  // Species richness = number of species observed (relative abundance > 0)
+  // in each sample, both-zero species included. A property of the sample,
+  // so it is counted on the table as loaded even when `ab` is the
+  // low-abundance-filtered copy the diagnostics use — the same number as
+  // the Samples tab. Cached per table.
+  const richness = speciesCountsBySample(ab.unfiltered || ab);
   const logC = rate > 0 ? Math.log10(rate) : null;
   return {
     points,
     logC,
     source,
     target,
-    sourceRichness,
-    targetRichness,
+    sourceRichness: richness[srcKey] ?? 0,
+    targetRichness: richness[tgtKey] ?? 0,
     logRange: ab.logRange || null,
   };
 }
@@ -5409,7 +5411,9 @@ function shortenPath(v) {
   return v;
 }
 
-const RunMetadataBlock = ({ meta }) => {
+/** `lowAbFilter` — { factor, applied, setApplied } when the run declares a
+    --filter-low-ab factor (see diagAb in AppMain), else null. */
+const RunMetadataBlock = ({ meta, lowAbFilter }) => {
   // Run parameters are useful but not essential after first glance —
   // collapsible, but expanded by default so first-time viewers see them.
   const [open, setOpen] = useState(true);
@@ -5527,11 +5531,45 @@ const RunMetadataBlock = ({ meta }) => {
         ))}
       </dl>
       )}
+      {/* The run filtered low abundances before fitting anything; the
+          diagnostics follow it unless the curator switches it off here
+          (stored in the filter state, so it is saved with the session). */}
+      {open && lowAbFilter && (
+        <div
+          className="mt-3 pt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[12px]"
+          style={{ borderTop: "1px solid var(--border)" }}
+        >
+          <label
+            className="inline-flex items-center gap-1.5"
+            title={`In each sample, CroCoDeEL set to 0 every abundance up to ${lowAbFilter.factor} times the sample's smallest one, then rescaled the rest to sum to 1, before fitting any contamination line. Untick to compute the diagnostics on the abundance table as loaded instead.`}
+            style={{
+              cursor: "pointer",
+              color: "var(--ink)",
+              fontWeight: 600,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={lowAbFilter.applied}
+              onChange={(e) => lowAbFilter.setApplied(e.target.checked)}
+              aria-label="Apply CroCoDeEL's low-abundance filter to the diagnostics"
+              style={{ accentColor: "#00a3a6" }}
+            />
+            Low-abundance filter {lowAbFilter.factor}×
+          </label>
+          <span style={{ color: "var(--ink-muted)" }}>
+            {lowAbFilter.applied
+              ? "— applied to diagnostics, as in CroCoDeEL"
+              : "— not applied: diagnostics use the abundance table as loaded, unlike the CroCoDeEL run"}
+          </span>
+        </div>
+      )}
     </div>
   );
 };
 
-const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOpen, onLoadDemo, demoLoading, actionEnabled, sampleCuration }) => {
+const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, lowAbFilter, onOpen, onLoadDemo, demoLoading, actionEnabled, sampleCuration }) => {
   const topByScore = [...events].sort((a, b) => b.score - a.score).slice(0, 5);
   const topByRate = [...events].sort((a, b) => b.rate - a.rate).slice(0, 5);
   const bottomByScore = [...events].sort((a, b) => a.score - b.score).slice(0, 5);
@@ -5695,7 +5733,9 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
         </div>
       )}
 
-      {runMetadata && <RunMetadataBlock meta={runMetadata} />}
+      {runMetadata && (
+        <RunMetadataBlock meta={runMetadata} lowAbFilter={lowAbFilter} />
+      )}
 
       {!noData && (
         <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-3 mt-8 mb-4">
@@ -9068,9 +9108,11 @@ const ExplorePairs = ({
               {introducedFromLine.length} species fall on the line you placed
               {(() => {
                 if (!ab || !tgt) return null;
+                // Richness on the table as loaded, not the filtered copy.
+                const asLoaded = ab.unfiltered || ab;
                 let n = 0;
                 for (const sp of ab.species) {
-                  if ((ab.matrix[sp]?.[tgt] || 0) > 0) n++;
+                  if ((asLoaded.matrix[sp]?.[tgt] || 0) > 0) n++;
                 }
                 if (n === 0) return null;
                 const pct = (introducedFromLine.length / n) * 100;
@@ -9141,9 +9183,11 @@ const ExplorePairs = ({
         {(() => {
           const targetSpeciesCount = (() => {
             if (!ab || !tgt) return null;
+            // Richness on the table as loaded, not the filtered copy.
+            const asLoaded = ab.unfiltered || ab;
             let n = 0;
             for (const sp of ab.species) {
-              if ((ab.matrix[sp]?.[tgt] || 0) > 0) n++;
+              if ((asLoaded.matrix[sp]?.[tgt] || 0) > 0) n++;
             }
             return n;
           })();
@@ -16931,6 +16975,10 @@ const ValidateTab = ({
   // their dataset.
   const [showSampleInfo, setShowSampleInfo] = useState(false);
   const [showDiagBlurb, setShowDiagBlurb] = useState(false);
+  // Whether the diagnostics below run on the low-abundance-filtered table
+  // (AppMain's diagAb): the run declares a factor and it is not off.
+  const lowAbFactor = lowAbundanceFilterFactor(runMetadata);
+  const lowAbOn = lowAbFactor != null && filter?.lowAbFilter !== false;
   useEffect(() => {
     const handler = (e) => {
       // Don't compete with the bulk-apply dialog's own input handling.
@@ -17586,6 +17634,15 @@ const ValidateTab = ({
                       }}
                     >
                       NOT EVALUABLE — sample missing from the abundance table
+                    </div>
+                  )}
+                  {lowAbOn && autoScore.grade !== "not_evaluable" && (
+                    <div
+                      className="text-[10px] mt-0.5"
+                      style={{ color: "var(--ink-muted)" }}
+                      title="Overview › Run parameters switches it off."
+                    >
+                      After CroCoDeEL's low-abundance filter ({lowAbFactor}×), as in the run
                     </div>
                   )}
                 </div>
@@ -21402,6 +21459,20 @@ const HelpTab = ({ onStartTour }) => {
             panel as in the HTML report: neither a pass nor a fail, and
             the bulk dialog's pass / fail filters match it with neither.
           </p>
+          <p style={{ marginTop: 6 }}>
+            <strong>Low-abundance filter.</strong> A CroCoDeEL run made
+            with{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>--filter-low-ab F</code>{" "}
+            (the run parameters on the Overview show F) set to 0, in each
+            sample, every abundance up to F times the sample's smallest
+            one, and rescaled the rest, before fitting anything. Every
+            criterion, scatterplot and report plot here uses that same
+            filtered table by default; untick{" "}
+            <em>Low-abundance filter F×</em> in the run parameters to
+            compute them on the table as loaded (the choice is saved with
+            the session). Exports, sample richness and the introduced %
+            always use the table as loaded.
+          </p>
           <table className="w-full text-left mt-3">
             <thead>
               <tr style={{ borderBottom: "2px solid #275662" }}>
@@ -24692,6 +24763,10 @@ const defaultFilter = () => ({
     adjacent: "any",
     scopeSamples: null,
     scopeSide: "either",
+    // Apply the run's --filter-low-ab to the diagnostics, as CroCoDeEL
+    // did (only meaningful when the run header declares a factor; see
+    // diagAb). On by default, switchable in Overview › Run parameters.
+    lowAbFilter: true,
   });
   const [filter, setFilter] = useState(() => {
     // Migrate legacy boolean fields (hideRelated / adjacentOnly) to the
@@ -24732,6 +24807,8 @@ const defaultFilter = () => ({
         f.scopeSide === "source" || f.scopeSide === "target"
           ? f.scopeSide
           : "either",
+      // Sessions saved before the toggle existed get it on.
+      lowAbFilter: f.lowAbFilter !== false,
     };
   });
   const [sort, setSort] = useState(
@@ -25040,6 +25117,30 @@ const defaultFilter = () => ({
     [ab],
   );
 
+  /* The table the DIAGNOSTICS run on. A CroCoDeEL run with
+     --filter-low-ab F zeroed, in each sample, every abundance ≤ F × the
+     sample's smallest one and rescaled the rest before fitting anything;
+     its header records F (filtering_ab_thr_factor). The scatter points and
+     line, R², points above the line, the missing-species test, cascades,
+     the automatic grade, the bulk criteria and the gallery / report plots
+     must see that same table — applyLowAbundanceFilter rebuilds it once
+     per (table, factor, toggle).
+
+     Data and plain statistics — exports and downloads, session storage,
+     sample lists, richness, introduced % — keep `ab`, the table as loaded.
+     `ab` itself is never replaced: a consumer that still reads it falls
+     back to the unfiltered diagnostics, never to saving a filtered table.
+     When the run declares no factor (or "None"), diagAb IS ab. */
+  const lowAbFactor = useMemo(
+    () => lowAbundanceFilterFactor(runMetadata),
+    [runMetadata],
+  );
+  const lowAbApplied = lowAbFactor != null && filter.lowAbFilter !== false;
+  const diagAb = useMemo(
+    () => (ab && lowAbApplied ? applyLowAbundanceFilter(ab, lowAbFactor) : ab),
+    [ab, lowAbApplied, lowAbFactor],
+  );
+
   // `detectCascades` is O(events × species) and was the dominant cost
   // on verdict clicks for large datasets — it ran on every rawEvents
   // change even though cascades only depend on the structural shape
@@ -25072,15 +25173,15 @@ const defaultFilter = () => ({
     const sig = sigParts.join("\n");
     let cascadeMap;
     if (
-      cascadeCacheRef.current.ab === ab &&
+      cascadeCacheRef.current.ab === diagAb &&
       cascadeCacheRef.current.metadata === metadata &&
       cascadeCacheRef.current.sig === sig
     ) {
       cascadeMap = cascadeCacheRef.current.byId;
     } else {
-      const cascaded = detectCascades(rawEvents, ab, metadata);
+      const cascaded = detectCascades(rawEvents, diagAb, metadata);
       cascadeMap = new Map(cascaded.map((e) => [e.id, e.cascade || null]));
-      cascadeCacheRef.current = { ab, metadata, sig, byId: cascadeMap };
+      cascadeCacheRef.current = { ab: diagAb, metadata, sig, byId: cascadeMap };
     }
     const prev = eventsAugmentedCacheRef.current;
     const next = new Map();
@@ -25110,7 +25211,7 @@ const defaultFilter = () => ({
     });
     eventsAugmentedCacheRef.current = next;
     return out;
-  }, [rawEvents, ab, metadata, targetSpeciesCounts]);
+  }, [rawEvents, ab, diagAb, metadata, targetSpeciesCounts]);
 
   const allSamples = useMemo(() => {
     if (ab) return ab.samples;
@@ -27118,7 +27219,7 @@ const defaultFilter = () => ({
         return `<div class="aggregate skip">Not evaluable — ${escapeHTML(sc.error)}. No criterion can be computed for this pair.</div>`;
       const di = lineDiagnostics(sc);
       const ab2 = pointsAboveLine(sc);
-      const mi = missingAbundantFromSource(ab, event.source, event.target, event.rate);
+      const mi = missingAbundantFromSource(diagAb, event.source, event.target, event.rate);
       const rel = areRelated(metadata, event.source, event.target);
       const score = automaticScore(di, ab2, mi, event.cascade, rel);
       const valueRows = [];
@@ -27273,7 +27374,7 @@ const defaultFilter = () => ({
         // through both renderers — buildScatter is O(species) and
         // running it twice per event is the dominant export cost on
         // big reports.
-        const sc = ab ? buildScatter(ab, e) : null;
+        const sc = diagAb ? buildScatter(diagAb, e) : null;
         const rel = areRelated(metadata, e.source, e.target);
         const pd = plateDistance(plateMap, e.source, e.target);
         // Print up to 80 introduced species in the per-event detail —
@@ -27636,7 +27737,12 @@ const defaultFilter = () => ({
   <div class="dataset-grid">
     <div class="item"><div class="k">Total events loaded</div><div class="v">${events.length}</div></div>
     <div class="item"><div class="k">Events in report</div><div class="v">${list.length}</div></div>
-    <div class="item"><div class="k">Abundance table</div><div class="v">${ab ? `${ab.species?.length || 0} species · ${ab.samples?.length || 0} samples` : "<em style='font-weight:400;color:#797870;'>not loaded</em>"}</div></div>
+    <div class="item"><div class="k">Abundance table</div><div class="v">${ab ? `${ab.species?.length || 0} species · ${ab.samples?.length || 0} samples` : "<em style='font-weight:400;color:#797870;'>not loaded</em>"}</div></div>${
+      ab && lowAbFactor != null
+        ? `
+    <div class="item"><div class="k">Low-abundance filter</div><div class="v">${lowAbFactor}× — ${lowAbApplied ? "applied to the diagnostics, as in the CroCoDeEL run" : "<em style='font-weight:400;'>not applied: diagnostics on the table as loaded</em>"}</div></div>`
+        : ""
+    }
     <div class="item"><div class="k">Sample metadata</div><div class="v">${
       metadata
         ? `${metadata.nSamples} samples${metadata.hasGroupIdCol ? " · group_id" : ""}${metadata.hasBiomeCol ? " · biome" : ""}${metadata.hasLowBiomassCol ? " · low_biomass" : ""}${metadata.hasLowSequencingDepthCol ? " · low_seq_depth" : ""}`
@@ -27717,9 +27823,9 @@ const defaultFilter = () => ({
   // so verdict / action / cascade flips on the selected event don't
   // re-run buildScatter (and the diag chain that depends on it).
   const scatter = useMemo(
-    () => (selected ? buildScatter(ab, selected) : null),
+    () => (selected ? buildScatter(diagAb, selected) : null),
     [
-      ab,
+      diagAb,
       selected?.source,
       selected?.target,
       selected?.rate,
@@ -27730,10 +27836,10 @@ const defaultFilter = () => ({
   const above = useMemo(() => pointsAboveLine(scatter), [scatter]);
   const missing = useMemo(
     () =>
-      selected && ab
-        ? missingAbundantFromSource(ab, selected.source, selected.target, selected.rate)
+      selected && diagAb
+        ? missingAbundantFromSource(diagAb, selected.source, selected.target, selected.rate)
         : null,
-    [ab, selected],
+    [diagAb, selected],
   );
   const selectedRelatedness = useMemo(
     () =>
@@ -28461,6 +28567,16 @@ const defaultFilter = () => ({
               metadata={metadata}
               plateMap={plateMap}
               runMetadata={runMetadata}
+              lowAbFilter={
+                lowAbFactor != null
+                  ? {
+                      factor: lowAbFactor,
+                      applied: lowAbApplied,
+                      setApplied: (on) =>
+                        setFilter((f) => ({ ...f, lowAbFilter: on })),
+                    }
+                  : null
+              }
               onOpen={(id) => {
                 setSelId(id);
                 setTab("validate");
@@ -28502,7 +28618,8 @@ const defaultFilter = () => ({
               filtered={filtered}
               filter={filter}
               setFilter={setFilter}
-              ab={ab}
+              // Gallery mini-plots and Explore pairs are diagnostics.
+              ab={diagAb}
               metadata={metadata}
               plateMap={plateMap}
               runMetadata={runMetadata}
@@ -28891,7 +29008,8 @@ const defaultFilter = () => ({
       {bulkApplyOpen && bulkApplyToEvents && (
         <BulkApplyByCriteriaDialog
           events={events}
-          ab={ab}
+          // Its criteria and preview plots are the Validate panel's.
+          ab={diagAb}
           metadata={metadata}
           filter={filter}
           onClose={() => setBulkApplyOpen(false)}
@@ -30772,7 +30890,7 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
             <div
               className="flex items-center gap-3 mb-2"
               style={{ opacity: running ? 0.5 : 1 }}
-              title="Equivalent to the --filter-low-ab CLI flag. Drops species with median abundance below the LOD multiplied by this factor. 0 disables the filter."
+              title="Equivalent to the --filter-low-ab CLI flag: in each sample, every abundance up to this factor times the sample's smallest one is set to 0 (and the rest rescaled) before the search. 0 disables the filter."
             >
               <span
                 className="text-[10px] uppercase tracking-[0.05em]"
