@@ -2014,6 +2014,13 @@ const Chevron = ({ size = 16, color = "#00a3a6" }) => (
   </svg>
 );
 
+/* What the keep / suppress counters count, wherever they appear (Overview,
+   Samples, Export, HTML reports — all through sampleActionCounts). */
+const SAMPLES_TO_SUPPRESS_HINT =
+  "Samples whose action is Suppress, set by hand or paired automatically with Contaminated — exactly the samples the curated abundance table drops.";
+const SAMPLES_TO_KEEP_HINT =
+  "Samples whose action is Keep. The automatic Keep of a sample no event targets is a default, not a decision, and is not counted.";
+
 const Stat = ({ label, value, tone = "neutral", hint }) => {
   const styles = {
     neutral: { background: "var(--bg-soft)", color: "var(--ink)" },
@@ -5955,11 +5962,13 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
             label="Samples to keep"
             value={keepCount}
             tone={keepCount > 0 ? "keep" : "neutral"}
+            hint={SAMPLES_TO_KEEP_HINT}
           />
           <Stat
             label="Samples to suppress"
             value={suppressCount}
             tone={suppressCount > 0 ? "suppress" : "neutral"}
+            hint={SAMPLES_TO_SUPPRESS_HINT}
           />
           {events.length > 0 && (
             <Stat
@@ -12305,11 +12314,13 @@ const SamplesTab = ({
               label="To keep"
               value={totals.keep}
               tone={totals.keep > 0 ? "keep" : "neutral"}
+              hint={`${SAMPLES_TO_KEEP_HINT} Counted over the samples listed below.`}
             />
             <Stat
               label="To suppress"
               value={totals.suppress}
               tone={totals.suppress > 0 ? "suppress" : "neutral"}
+              hint={`${SAMPLES_TO_SUPPRESS_HINT} Counted over the samples listed below.`}
             />
           </>
         )}
@@ -21607,6 +21618,15 @@ const HelpTab = ({ onStartTour }) => {
             the Network's curation scheme.
           </p>
           <p style={{ marginTop: 6 }}>
+            The <em>to suppress</em> / <em>to keep</em> counters
+            (Overview, Samples, Export, HTML reports) all count samples
+            the same way, whatever the events filter: to suppress is
+            every sample whose action is Suppress, automatic or not —
+            exactly the samples the curated abundance table drops; to
+            keep counts Keep decisions, so the default Keep of a sample
+            no event targets is not included.
+          </p>
+          <p style={{ marginTop: 6 }}>
             The Bulk-apply by criteria dialog (Validate sidebar) lets
             you stamp evaluation, target verdict and target action in a
             single sweep — each layer with its own "don't overwrite"
@@ -23022,10 +23042,11 @@ const ExportTab = ({
   // Species rows left at zero once the suppressed samples are gone can be
   // dropped or kept; both are defensible, so the curator decides.
   const [dropEmptySpecies, setDropEmptySpecies] = useState(true);
-  // Compute counts from the filtered subset so the stat row reflects what
-  // will actually go into the export. Action lives on samples now —
-  // tally distinct target-sample actions across the events that pass
-  // the filter so the cards match the actual downstream effect.
+  // Compute the evaluation counts from the filtered subset so the stat
+  // row reflects what will actually go into the events export. The
+  // keep / suppress counts are per sample, over ALL samples, like the
+  // Overview and the curated abundance card below: "to suppress" is
+  // exactly the set of columns that export drops (sampleActionCounts).
   const counts = useMemo(() => {
     const c = {
       total: filteredEvents.length,
@@ -23033,21 +23054,13 @@ const ExportTab = ({
       fp: 0,
       uncertain: 0,
       pending: 0,
-      suppress: 0,
-      keep: 0,
+      ...sampleActionCounts(sampleCuration),
     };
-    const seen = new Set();
     filteredEvents.forEach((e) => {
       if (e.verdict === "true_positive") c.tp++;
       else if (e.verdict === "false_positive") c.fp++;
       else if (e.verdict === "uncertain") c.uncertain++;
       else c.pending++;
-      if (e.target && !seen.has(e.target)) {
-        seen.add(e.target);
-        const a = sampleCuration?.[e.target]?.action;
-        if (a === "suppress") c.suppress++;
-        else if (a === "keep") c.keep++;
-      }
     });
     return c;
   }, [filteredEvents, sampleCuration]);
@@ -23106,6 +23119,7 @@ const ExportTab = ({
             label="To suppress"
             value={counts.suppress}
             tone={counts.suppress > 0 ? "suppress" : "neutral"}
+            hint={SAMPLES_TO_SUPPRESS_HINT}
           />
         )}
         {actionEnabled && (
@@ -23113,6 +23127,7 @@ const ExportTab = ({
             label="To keep"
             value={counts.keep}
             tone={counts.keep > 0 ? "keep" : "neutral"}
+            hint={SAMPLES_TO_KEEP_HINT}
           />
         )}
       </div>
@@ -26857,8 +26872,8 @@ const defaultFilter = () => ({
     <div class="stat correct"><div class="label">Not contaminated</div><div class="value">${summary.correct}</div></div>
     <div class="stat unc"><div class="label">Uncertain</div><div class="value">${summary.uncertain}</div></div>
     <div class="stat"><div class="label">Pending</div><div class="value">${summary.pending}</div></div>
-    <div class="stat keep"><div class="label">Keep</div><div class="value">${summary.keep}</div></div>
-    <div class="stat suppress"><div class="label">Suppress</div><div class="value">${summary.suppress}</div></div>
+    <div class="stat keep" title="${escapeHTML(SAMPLES_TO_KEEP_HINT)}"><div class="label">Keep</div><div class="value">${summary.keep}</div></div>
+    <div class="stat suppress" title="${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)}"><div class="label">Suppress</div><div class="value">${summary.suppress}</div></div>
   </div>
 
   <h2>Samples</h2>
@@ -27029,9 +27044,9 @@ const defaultFilter = () => ({
     const reportFilter = opts && opts.filter ? opts.filter : null;
     // Recompute the verdict tally over the filtered subset so the
     // header in the report matches what's actually rendered below.
-    // The suppress / keep counts are tallied across distinct target
-    // samples (action lives on the sample, not the event).
-    const seenTargets = new Set();
+    // The suppress / keep counts are per sample, over ALL samples, as
+    // in the Overview and Export tabs (sampleActionCounts): "to
+    // suppress" is what the curated abundance export drops.
     const counts = list.reduce(
       (acc, e) => {
         acc.total++;
@@ -27039,18 +27054,16 @@ const defaultFilter = () => ({
         else if (e.verdict === "false_positive") acc.fp++;
         else if (e.verdict === "uncertain") acc.uncertain++;
         else acc.pending++;
-        // Action lives on samples — count distinct target-sample
-        // actions across the events in this report so the suppress /
-        // keep cards reflect the actual downstream effect.
-        if (e.target && !seenTargets.has(e.target)) {
-          seenTargets.add(e.target);
-          const a = sampleCuration?.[e.target]?.action;
-          if (a === "suppress") acc.suppress++;
-          else if (a === "keep") acc.keep++;
-        }
         return acc;
       },
-      { total: 0, tp: 0, fp: 0, uncertain: 0, pending: 0, suppress: 0, keep: 0 },
+      {
+        total: 0,
+        tp: 0,
+        fp: 0,
+        uncertain: 0,
+        pending: 0,
+        ...sampleActionCounts(effectiveSampleCuration),
+      },
     );
     const escapeHTML = (s) =>
       String(s == null ? "" : s)
@@ -27758,8 +27771,8 @@ const defaultFilter = () => ({
     <div class="stat fp"><div class="label">False positive</div><div class="value">${counts.fp}</div></div>
     <div class="stat unc"><div class="label">Uncertain</div><div class="value">${counts.uncertain}</div></div>
     <div class="stat"><div class="label">Pending</div><div class="value">${counts.pending}</div></div>
-    <div class="stat suppress"><div class="label">To suppress</div><div class="value">${counts.suppress}</div></div>
-    <div class="stat keep"><div class="label">To keep</div><div class="value">${counts.keep}</div></div>
+    <div class="stat suppress" title="${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)}"><div class="label">To suppress</div><div class="value">${counts.suppress}</div></div>
+    <div class="stat keep" title="${escapeHTML(SAMPLES_TO_KEEP_HINT)}"><div class="label">To keep</div><div class="value">${counts.keep}</div></div>
   </div>
   ${
     filterSummary

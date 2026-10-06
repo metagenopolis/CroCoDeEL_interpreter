@@ -14,6 +14,7 @@
    Usage:  npm run build && node e2e/a3-curation.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server) */
 
+import { readFileSync } from "node:fs";
 import {
   startServer,
   stopServer,
@@ -601,6 +602,59 @@ try {
     },
     { demo: false },
   );
+  /* A3.6 Keep / suppress counts agree everywhere, and "to suppress" is
+     what the curated abundance export drops — whatever the event filter
+     of the Export tab. */
+  await scenario("A3.6", async (page) => {
+    await openTab(page, "Events");
+    await clickEvent(page, "63D250", "63D9", "tp"); // 63D9: automatic Suppress
+    await setSampleVerdictInTable(page, "63D250", "Contaminated");
+    await sampleRow(page, "63D250").locator('button[aria-label="Suppress 63D250"]').click(); // by hand
+    await page.waitForTimeout(300);
+    const s = await overviewStats(page);
+    const card = await curatedCard(page);
+    const exportText = await page.locator("body").innerText();
+    const exportStat = (re) => Number(exportText.match(re)?.[1] ?? NaN);
+    const exp = {
+      suppress: exportStat(/To suppress\s*(\d+)/i),
+      keep: exportStat(/To keep\s*(\d+)/i),
+    };
+    check(s.suppress === 2 && s.keep === 0, "A3.6 Overview: 2 to suppress, 0 to keep", `suppress=${s.suppress} keep=${s.keep}`);
+    check(exp.suppress === 2 && exp.keep === 0, "A3.6 Export: 2 to suppress, 0 to keep", JSON.stringify(exp));
+    check(card && card.total - card.kept === 2, "A3.6 the curated abundance card drops those 2", JSON.stringify(card));
+    // A filter on the Export tab narrows the events, not the samples.
+    await page.getByPlaceholder("sample id or name…").first().fill("63D29");
+    await page.waitForTimeout(600);
+    const filtered = await page.locator("body").innerText();
+    check(
+      Number(filtered.match(/To suppress\s*(\d+)/i)?.[1]) === 2,
+      "A3.6 …and still 2 with an events filter on",
+      filtered.match(/To suppress\s*\d+/i)?.[0] || "",
+    );
+    await page.getByPlaceholder("sample id or name…").first().fill("");
+    await page.waitForTimeout(400);
+    const report = async (label) => {
+      const [download] = await Promise.all([
+        page.waitForEvent("download", { timeout: 30000 }),
+        page.getByRole("button", { name: label }).first().click(),
+      ]);
+      return readFileSync(await download.path(), "utf8");
+    };
+    const eventsHtml = await report(/Download events HTML/i);
+    const value = (html, label) =>
+      Number(html.match(new RegExp(`>${label}</div><div class="value">(\\d+)<`))?.[1] ?? NaN);
+    check(
+      value(eventsHtml, "To suppress") === 2 && value(eventsHtml, "To keep") === 0,
+      "A3.6 events HTML report: 2 to suppress, 0 to keep",
+      `${value(eventsHtml, "To suppress")} / ${value(eventsHtml, "To keep")}`,
+    );
+    const samplesHtml = await report(/Download samples HTML/i);
+    check(
+      value(samplesHtml, "Suppress") === 2 && value(samplesHtml, "Keep") === 0,
+      "A3.6 samples HTML report: 2 suppress, 0 keep",
+      `${value(samplesHtml, "Suppress")} / ${value(samplesHtml, "Keep")}`,
+    );
+  });
 } finally {
   await browser.close();
   stopServer();
