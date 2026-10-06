@@ -1327,13 +1327,22 @@ export function pointsAboveLine(scatter) {
 /** Exact upper-tail probability P(X ≥ k) for a Poisson-binomial sum
     X = Σ Bernoulli(p_i), by dynamic programming over the p_i.
 
-    Only one tail is ever materialised. Computing P(X ≥ k) directly as
-    1 − P(X ≤ k−1) needs k terms; the complement Y = n − X (a Poisson-
-    binomial on the 1 − p_i) gives P(X ≥ k) = P(Y ≤ n − k) and needs
-    n − k + 1 terms. We take whichever is shorter, so the cost is
-    O(n × min(k, n−k+1)) — at most n²/2, a few milliseconds for the few
-    thousand species these tables carry, and far less in the usual case
-    where the miss count is small.
+    The tail is always built as a sum of non-negative terms, never as a
+    difference. It used to be `1 − P(X ≤ k−1)` whenever k was the short
+    side, which cancels catastrophically once the tail drops under ~1e-16:
+    a true 2.5e-20 came back as 8.9e-16, and the Validate panel printed it.
+
+    Only one tail is ever materialised, on whichever side is shorter:
+    - k small: track P(X = j) for j < k (k states) and pour, at every step,
+      the mass that a success moves from k−1 to k into the tail — once
+      there it never leaves, so the tail is accumulated directly;
+    - k large: the complement Y = n − X (a Poisson-binomial on the 1 − p_i)
+      gives P(X ≥ k) = P(Y ≤ n − k), the sum of n − k + 1 states. Y fails
+      with probability p_i itself, used as is: rebuilding it as
+      1 − (1 − p_i) loses every digit of a p_i below ~1e-16.
+    So the cost is O(n × min(k, n−k+1)) — at most n²/2, a few milliseconds
+    for the few thousand species these tables carry, and far less in the
+    usual case where the miss count is small.
 
     Falls back to a continuity-corrected normal tail only if the DP would
     be genuinely large, which real inputs do not reach. */
@@ -1359,25 +1368,24 @@ export function poissonBinomialUpperTail(ps, k) {
     return 0.5 * erfc((k - 0.5 - mean) / (sd * Math.SQRT2));
   }
 
-  // dist[j] = P(exactly j successes), truncated above `limit` — the
-  // dropped mass is precisely the other tail, which we never read.
+  // dist[j] = P(exactly j successes so far), truncated above `limit`.
   const dist = new Float64Array(limit + 1);
   dist[0] = 1;
+  let tail = 0;
   for (let i = 0; i < n; i++) {
+    // Success / failure probabilities of the variable the DP counts.
     const p = useComplement ? 1 - ps[i] : ps[i];
-    const q = 1 - p;
+    const q = useComplement ? ps[i] : 1 - ps[i];
+    // X side: a success from state k−1 is mass entering "≥ k" for good.
+    if (!useComplement) tail += dist[limit] * p;
     const top = Math.min(limit, i + 1);
     for (let j = top; j >= 1; j--) {
       dist[j] = dist[j] * q + dist[j - 1] * p;
     }
     dist[0] *= q;
   }
-
-  let cum = 0;
-  for (let j = 0; j <= limit; j++) cum += dist[j];
-  // useComplement: cum is P(Y ≤ n−k) = P(X ≥ k) directly.
-  // otherwise:     cum is P(X ≤ k−1), so the upper tail is its complement.
-  const tail = useComplement ? cum : 1 - cum;
+  // Y side: P(Y ≤ n − k), the plain sum of the states kept.
+  if (useComplement) for (let j = 0; j <= limit; j++) tail += dist[j];
   return Math.min(1, Math.max(0, tail));
 }
 
