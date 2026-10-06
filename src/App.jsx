@@ -11,6 +11,8 @@ import {
   parsePlateMap,
   plateMapToTSV,
   wellLabel,
+  metadataColumnsLine,
+  plateColumnsLine,
 } from "./parsing.js";
 import {
   FolderOpen,
@@ -4015,6 +4017,7 @@ const UploadCard = ({
   info,
   confirmDialog,
   emptyAction,
+  details,
 }) => {
   const [drag, setDrag] = useState(false);
   const loaded = !!filename;
@@ -4096,6 +4099,14 @@ const UploadCard = ({
             }}
           >
             ✓ {filename}
+          </div>
+        )}
+        {loaded && details && (
+          <div
+            className="text-[11px] mt-0.5"
+            style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+          >
+            {details}
           </div>
         )}
       </div>
@@ -4189,6 +4200,9 @@ const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) =>
       setErr(`Metadata: ${e.message}`);
     }
   };
+  // Which header was read as which field: a column taken for the subject
+  // or the group decides which pairs of samples count as related.
+  const columnsLine = metadataColumnsLine(metadata);
   return (
     <UploadCard
       label="metadata.tsv"
@@ -4227,10 +4241,15 @@ const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) =>
           <code style={{ fontFamily: "ui-monospace, monospace" }}>
             group_id
           </code>
-          . Any other column is shown as a generic key:value pill. See the
-          Help tab for accepted aliases (family_id, cage_id, host, etc.).
+          . Headers must match exactly, ignoring case, spaces, _ - and .
+          (so <code style={{ fontFamily: "ui-monospace, monospace" }}>Subject ID</code>{" "}
+          works, <code style={{ fontFamily: "ui-monospace, monospace" }}>age_group</code>{" "}
+          is not a group). Any other column is shown as a generic key:value
+          pill. See the Help tab for accepted aliases (family_id, cage_id,
+          patient, etc.).
         </>
       }
+      details={columnsLine ? `Columns: ${columnsLine}` : null}
       onDownload={
         metadata
           ? () => downloadText(metadataToTSV(metadata), "metadata.tsv")
@@ -4253,6 +4272,7 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
       setErr(`Plate map: ${e.message}`);
     }
   };
+  const columnsLine = plateColumnsLine(plateMap);
   return (
     <UploadCard
       label="plate_map.tsv"
@@ -4282,6 +4302,7 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
           unlocks the Plate map tab and the "Proximity on plate" criterion.
         </>
       }
+      details={columnsLine ? `Columns: ${columnsLine}` : null}
       onDownload={
         plateMap
           ? () => downloadText(plateMapToTSV(plateMap), "plate_map.tsv")
@@ -20156,7 +20177,9 @@ const HelpTab = ({ onStartTour }) => {
             <p className="mb-2" style={{ color: "var(--ink)", fontWeight: 600 }}>
               All files are TSV (tab-separated). Column names are matched
               case-insensitively and many aliases are accepted — see each
-              file's section below for details.
+              file's section below for details. In the metadata and the
+              plate map a header must match a name exactly, ignoring case,
+              spaces, underscores, hyphens and dots.
             </p>
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
               Numbers use a dot as decimal separator (
@@ -20308,6 +20331,23 @@ const HelpTab = ({ onStartTour }) => {
             features (pills, criteria). Any other column is shown as a generic
             "key: value" pill in the Sample context panel.
           </p>
+          <p>
+            A header is recognized when it matches a column name or one of
+            its aliases exactly, ignoring case, spaces, underscores, hyphens
+            and dots:{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>Subject ID</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>subject-id</code>{" "}
+            and{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>SubjectID</code>{" "}
+            all read as subject_id. A header that merely contains a name is
+            not:{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>age_group</code>{" "}
+            or{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>host_age</code>{" "}
+            stay context columns, so they cannot make two different
+            subjects look related. Once loaded, the metadata card lists the
+            header read for each field.
+          </p>
           <table className="w-full text-left mt-3">
             <thead>
               <tr style={{ borderBottom: "2px solid #275662" }}>
@@ -20337,7 +20377,7 @@ const HelpTab = ({ onStartTour }) => {
                 required
                 type="string"
                 desc="Unique sample identifier — must match samples used in events and abundance files."
-                aliases={["sample", "sampleid", "id"]}
+                aliases={["sample", "id"]}
                 example={`sample_id\n40D89\n58M\n58D7\nNC3\n83D239`}
               />
               <HelpCol
@@ -20345,15 +20385,15 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Optional human-readable label for the sample. When present, surfaces alongside the canonical sample_id wherever a sample is named (events table, scatter cards, Guided validation header, sample-context panel). Purely cosmetic — the sample_id remains the join key."
-                aliases={["name", "display_name", "displayname", "label", "alias"]}
+                aliases={["name", "display_name", "label", "alias"]}
                 example={`sample_id   sample_name\n40D89       Patient40_D89\n58M         Mother_58\n58D7        Infant_58_D7\nNC3         Negative_ctrl_3\n83D239      Patient83_D239`}
               />
               <HelpCol
                 name="subject_id"
                 recognized
                 type="string"
-                desc="Person / individual the sample belongs to. Two samples sharing a subject_id trigger the 'same subject' criterion (longitudinal pair, often a false-positive risk)."
-                aliases={["subject", "subjectid", "patient_id", "patient", "host", "individual"]}
+                desc="Person / individual the sample belongs to. Two samples sharing a subject_id trigger the 'same subject' criterion (longitudinal pair, often a false-positive risk). A column named host is not read as the subject: in MIxS / NCBI BioSample metadata it holds the host organism (e.g. Homo sapiens); the subject there is host_subject_id."
+                aliases={["subject", "host_subject_id", "patient_id", "patient", "individual"]}
                 example={`sample_id  subject_id\n58D7       58\n58D28      58\n60D38      60\nNC3        NC3\n58M        M58`}
               />
               <HelpCol
@@ -20361,7 +20401,7 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Time-of-collection label (e.g. 'D0', 'week2'). Shown as a calendar pill."
-                aliases={["time_point", "time", "day", "week", "visit"]}
+                aliases={["time", "day", "week", "visit"]}
                 example={`sample_id  timepoint\n58D0       D0\n58D7       D7\n58D28      D28\n58D43      D43\n58D382     D382`}
               />
               <HelpCol
@@ -20369,7 +20409,7 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Biological compartment (e.g. 'infant gut', 'maternal gut', 'skin', 'control'). Shown as a beaker pill. Values containing 'control', 'blank' or 'negative' (case-insensitive) automatically tag the sample as a negative control (red shield pill)."
-                aliases={["body_site", "bodysite", "tissue", "sample_site"]}
+                aliases={["body_site", "tissue", "sample_site"]}
                 example={`sample_id  biome\n58D7       infant gut\n58M        maternal gut\nNC3        control\n83D239     infant gut\n40M        maternal gut`}
               />
               <HelpCol
@@ -20377,7 +20417,7 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="bool"
                 desc="True/false flag for low-biomass samples (more vulnerable to contamination, per Lou et al. 2023). Shown as a droplet pill. Accepted values: true/1/yes or false/0/no."
-                aliases={["is_low_biomass", "lowbiomass"]}
+                aliases={["is_low_biomass"]}
                 example={`sample_id  low_biomass\n69D4       true\n72D6       true\nNC3        true\n58D43      false\n58M        false`}
               />
               <HelpCol
@@ -20387,7 +20427,6 @@ const HelpTab = ({ onStartTour }) => {
                 desc="True/false flag for samples with low sequencing depth (sparser abundance profiles, weaker contamination signal). Shown as an activity pill. Accepted values: true/1/yes or false/0/no."
                 aliases={[
                   "is_low_sequencing_depth",
-                  "lowsequencingdepth",
                   "low_seq_depth",
                   "low_depth",
                 ]}
@@ -20397,9 +20436,8 @@ const HelpTab = ({ onStartTour }) => {
                 name="group_id"
                 recognized
                 type="string"
-                desc="Generic group identifier — could be a family, cage, household, etc. Two samples sharing a group_id trigger the 'same group' criterion in Guided validation."
+                desc="Generic group identifier — could be a family, cage, household, etc. Two samples sharing a group_id trigger the 'same group' criterion in Guided validation. A column named just group is not read as group_id: in study metadata it is usually the experimental arm (case / control), whose samples are not related."
                 aliases={[
-                  "group",
                   "related_group_id",
                   "related_group",
                   "family_id",
@@ -20469,7 +20507,11 @@ const HelpTab = ({ onStartTour }) => {
           eyebrow="Optional input"
           title="plate_map.tsv"
         >
-          <p>Three columns: sample id, plate name, well coordinate.</p>
+          <p>
+            Three columns: sample id, plate name, well coordinate. Headers
+            are matched like the metadata's: exactly, ignoring case, spaces,
+            underscores, hyphens and dots.
+          </p>
           <table className="w-full text-left mt-3">
             <thead>
               <tr style={{ borderBottom: "2px solid #275662" }}>
@@ -20492,14 +20534,14 @@ const HelpTab = ({ onStartTour }) => {
                 required
                 type="string"
                 desc="Plate name or identifier."
-                aliases={["plate_id", "plateid"]}
+                aliases={["plate_id", "plate_name"]}
               />
               <HelpCol
                 name="well"
                 required
                 type="A01..H12 or A01..P24"
                 desc="Well coordinate. Both 96-well and 384-well plates are supported. Letter-then-number, e.g. 'A01', 'B7', 'P24'."
-                aliases={["position", "well_id", "pos"]}
+                aliases={["well_position", "position", "well_id", "pos"]}
               />
             </tbody>
           </table>

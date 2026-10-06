@@ -91,6 +91,11 @@ function parseRunMetadata(headerComments) {
   return Object.keys(meta).length > 0 ? meta : null;
 }
 
+/** Pick the events-file column for one field: an exact (case-insensitive)
+    match on one of `candidates` first, then the first header containing
+    one. CroCoDeEL's own headers all match exactly; the substring pass only
+    rescues hand-made ones such as "Source sample". The metadata and the
+    plate map use pickColExact instead. */
 function pickCol(header, candidates) {
   const lc = header.map((h) => h.toLowerCase());
   for (const c of candidates) {
@@ -99,6 +104,29 @@ function pickCol(header, candidates) {
   }
   for (const c of candidates) {
     const i = lc.findIndex((h) => h.includes(c.toLowerCase()));
+    if (i >= 0) return header[i];
+  }
+  return null;
+}
+
+/** A header reduced for matching: lower case, without spaces, underscores,
+    hyphens or dots, so "Subject ID", "subject-id", "SubjectID" and
+    "subject_id" are one header. */
+function headerKey(h) {
+  return String(h ?? "").toLowerCase().replace(/[\s_.-]+/g, "");
+}
+
+/** Pick the column for one field by exact match only, up to case and
+    separators (see headerKey). The metadata and the plate map use this:
+    pickCol's substring pass invented relatedness there — age_group and
+    treatment_group became the group_id (alias "group"), host_age the
+    subject ("host"), birthday the timepoint ("day"), family_history the
+    group ("family") — and two different subjects of the same age band
+    then counted as related. */
+function pickColExact(header, candidates) {
+  const keys = header.map(headerKey);
+  for (const c of candidates) {
+    const i = keys.indexOf(headerKey(c));
     if (i >= 0) return header[i];
   }
   return null;
@@ -495,9 +523,13 @@ export function parseAbundance(text) {
   return { samples, species: speciesKeys, matrix, logRange, warnings };
 }
 
-/* ---------- metadata.tsv ---------- */
+/* ---------- metadata.tsv ----------
+   Headers are matched by pickColExact, so each list only needs the names
+   that differ by more than case and separators ("sampleid", "Sample ID" and
+   "sample-id" all match "sample_id"). The canonical name comes first: it is
+   the one shown on the upload card and written by metadataToTSV. */
 const METADATA_COLS = {
-  sample: ["sample_id", "sample", "sampleid", "id"],
+  sample: ["sample_id", "sample", "id"],
   // Optional human-readable name for the sample. When present, the UI
   // renders it as a muted secondary label next to the canonical
   // sample_id (table rows, scatter plots, guided-validation header,
@@ -506,22 +538,23 @@ const METADATA_COLS = {
     "sample_name",
     "name",
     "display_name",
-    "displayname",
     "label",
     "alias",
   ],
+  // Two samples sharing a subject count as related. Not `host`: in MIxS /
+  // NCBI BioSample metadata that is the host ORGANISM ("Homo sapiens"),
+  // which made every pair of samples "the same subject"; the subject id
+  // there is host_subject_id.
   subject: [
     "subject_id",
     "subject",
-    "subjectid",
+    "host_subject_id",
     "patient_id",
     "patient",
-    "host",
     "individual",
   ],
   timepoint: [
     "timepoint",
-    "time_point",
     "time",
     "day",
     "week",
@@ -530,22 +563,22 @@ const METADATA_COLS = {
   biome: [
     "biome",
     "body_site",
-    "bodysite",
     "tissue",
     "sample_site",
   ],
-  lowBiomass: ["low_biomass", "is_low_biomass", "lowbiomass"],
+  lowBiomass: ["low_biomass", "is_low_biomass"],
   lowSequencingDepth: [
     "low_sequencing_depth",
     "is_low_sequencing_depth",
-    "lowsequencingdepth",
     "low_seq_depth",
     "low_depth",
   ],
+  // Two samples sharing a group count as related too. Not a bare `group`:
+  // in study metadata that is the experimental arm (case / control, diet),
+  // and every pair within an arm became "related".
   groupId: [
     // Canonical name first
     "group_id",
-    "group",
     // Aliases for various study contexts (humans, animal cages, etc.)
     "related_group_id",
     "related_group",
@@ -573,15 +606,18 @@ export function parseMetadata(text) {
   if (header.length < 2) {
     throw new Error("At least 2 columns required (sample_id and subject_id)");
   }
+  // The resolved mapping (field → header, or null) is returned as `cols`
+  // and shown on the upload card, so a curator can see which column was
+  // taken for the subject and the group.
   const cols = {
-    sample: pickCol(header, METADATA_COLS.sample),
-    sampleName: pickCol(header, METADATA_COLS.sampleName),
-    subject: pickCol(header, METADATA_COLS.subject),
-    timepoint: pickCol(header, METADATA_COLS.timepoint),
-    biome: pickCol(header, METADATA_COLS.biome),
-    lowBiomass: pickCol(header, METADATA_COLS.lowBiomass),
-    lowSequencingDepth: pickCol(header, METADATA_COLS.lowSequencingDepth),
-    groupId: pickCol(header, METADATA_COLS.groupId),
+    sample: pickColExact(header, METADATA_COLS.sample),
+    sampleName: pickColExact(header, METADATA_COLS.sampleName),
+    subject: pickColExact(header, METADATA_COLS.subject),
+    timepoint: pickColExact(header, METADATA_COLS.timepoint),
+    biome: pickColExact(header, METADATA_COLS.biome),
+    lowBiomass: pickColExact(header, METADATA_COLS.lowBiomass),
+    lowSequencingDepth: pickColExact(header, METADATA_COLS.lowSequencingDepth),
+    groupId: pickColExact(header, METADATA_COLS.groupId),
   };
   if (!cols.sample) throw new Error("sample_id column not found");
   if (!cols.subject) throw new Error("subject_id column not found");
@@ -652,11 +688,12 @@ export function metadataToTSV(metadata) {
   return lines.join("\n");
 }
 
-/* ---------- plate_map.tsv ---------- */
+/* ---------- plate_map.tsv ----------
+   Matched like the metadata (pickColExact); canonical name first. */
 const PLATE_COLS = {
   sample: ["sample_id", "sample", "id"],
-  plate: ["plate", "plate_id", "plateid"],
-  well: ["well", "position", "well_id", "pos"],
+  plate: ["plate", "plate_id", "plate_name"],
+  well: ["well", "well_position", "position", "well_id", "pos"],
 };
 
 /** "A01" / "A1" / "H12" / "P24" → {row: 0..15, col: 0..23} */
@@ -677,10 +714,11 @@ export function wellLabel(row, col) {
 
 export function parsePlateMap(text) {
   const { header, rows } = parseTSV(text);
+  // Returned as `cols`, like the metadata's, for the upload card.
   const cols = {
-    sample: pickCol(header, PLATE_COLS.sample),
-    plate: pickCol(header, PLATE_COLS.plate),
-    well: pickCol(header, PLATE_COLS.well),
+    sample: pickColExact(header, PLATE_COLS.sample),
+    plate: pickColExact(header, PLATE_COLS.plate),
+    well: pickColExact(header, PLATE_COLS.well),
   };
   if (!cols.sample || !cols.well) {
     throw new Error(
@@ -705,7 +743,7 @@ export function parsePlateMap(text) {
   });
   const format =
     maxRow > 7 || maxCol > 11 ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 };
-  return { bySample, format };
+  return { bySample, format, cols };
 }
 
 export function plateMapToTSV(plateMap) {
@@ -714,4 +752,42 @@ export function plateMapToTSV(plateMap) {
     lines.push(`${sid}\t${p.plate}\t${wellLabel(p.row, p.col)}`);
   });
   return lines.join("\n");
+}
+
+/* ---------- column mapping, for the upload cards ---------- */
+
+/** One entry per recognised field: its canonical name, followed by the
+    header it was read from when that is a different name
+    ("subject_id ← patient"). */
+function mappedFields(cols, aliases) {
+  const out = [];
+  for (const [key, names] of Object.entries(aliases)) {
+    const h = cols[key];
+    if (!h) continue;
+    out.push(headerKey(h) === headerKey(names[0]) ? names[0] : `${names[0]} ← ${h}`);
+  }
+  return out;
+}
+
+/** The metadata's column mapping in one line: each recognised field with
+    the header it was read from, then the columns kept as context only.
+    Null without a mapping (no file, or a session saved without one). */
+export function metadataColumnsLine(metadata) {
+  const cols = metadata?.cols;
+  if (!cols) return null;
+  const parts = mappedFields(cols, METADATA_COLS);
+  const used = new Set(Object.values(cols).filter(Boolean));
+  const first = Object.values(metadata.bySample || {})[0];
+  const other = Object.keys(first?.extra || {}).filter((k) => !used.has(k));
+  if (other.length > 0) {
+    const more = other.length > 4 ? `, +${other.length - 4}` : "";
+    parts.push(`other: ${other.slice(0, 4).join(", ")}${more}`);
+  }
+  return parts.join(" · ");
+}
+
+/** The plate map's column mapping in one line, or null. */
+export function plateColumnsLine(plateMap) {
+  const cols = plateMap?.cols;
+  return cols ? mappedFields(cols, PLATE_COLS).join(" · ") : null;
 }
