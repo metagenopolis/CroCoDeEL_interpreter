@@ -8,7 +8,9 @@
      2. the exported events HTML report prints a cascade's upstream rate,
         not "(NaN%)";
      3. species ids that CroCoDeEL rewrote as integers ("1" for the table's
-        "001") still land on the contamination line.
+        "001") still land on the contamination line;
+     4. a target written in another case than the table's column ("tgt"
+        for "TGT") gets its introduced % — in the export as on screen.
 
    Runs on its own (`node e2e/a2-diagnostics.e2e.mjs`, which starts a
    preview server unless BASE_URL is set) or through e2e/run-all.mjs. */
@@ -184,6 +186,43 @@ try {
     check(/\b20 species on line\b/i.test(text), "the 20 introduced species are on the line", (text.match(/\d+ species on line|Only \d+ species on line/i) || ["none"])[0]);
     check(!/match NOTHING/i.test(text), "no unresolved-species warning");
     check(errors.length === 0, "no JS error with integer species ids", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* ------------- 4. introduced % of a target resolved like the scatter
+     The scatter finds "tgt" in a table whose column is "TGT"; the species
+     count behind the introduced % was looked up by the raw name, so the
+     events TSV carried a blank introduced_pct for it. */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    await loadFiles(
+      page,
+      tsvFile("contamination_events.tsv", [
+        "source\ttarget\trate\tprobability\tcontamination_specific_species",
+        `SRC\ttgt\t0.1\t0.9\t${ON_LINE}`,
+      ]),
+      tsvFile("species_abundance.tsv", abundanceLines()),
+    );
+    await openTab(page, "Export");
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+      page.getByRole("button", { name: /Download events TSV/i }).first().click(),
+    ]);
+    check(!!download, "the events TSV downloads");
+    if (download) {
+      const rows = readFileSync(await download.path(), "utf8")
+        .split("\n")
+        .filter((l) => l && !l.startsWith("#"))
+        .map((l) => l.split("\t"));
+      const col = rows[0].indexOf("introduced_pct");
+      // TGT holds sp_0..sp_19 plus five natives: 20 / 25 species.
+      check(
+        col >= 0 && rows[1]?.[col] === "0.8000",
+        "the target's introduced_pct is filled (20 of 25 species)",
+        `introduced_pct=${JSON.stringify(rows[1]?.[col])}`,
+      );
+    }
+    check(errors.length === 0, "no JS error on a case-different target", errors[0] || "");
     await ctx.close();
   }
 } finally {

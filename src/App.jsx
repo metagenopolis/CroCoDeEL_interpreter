@@ -7,8 +7,11 @@ import {
   bulkCriteria,
   cascadeExplanations,
   introducedSpeciesSet,
+  introducedPercent,
   matchesBulkCriteria,
   matchSpeciesName,
+  resolveSample,
+  speciesCountsBySample,
 } from "./diagnostics.js";
 import {
   FolderOpen,
@@ -1142,16 +1145,8 @@ function downloadText(content, filename) {
    3. DOMAIN LOGIC — scatter, diagnostics, cascade, relatedness, plate distance
    ============================================================================ */
 
-/** Resolve a sample name against the abundance table's known samples.
-    Tries exact, case-insensitive, then trimmed-match. Returns the canonical
-    key into ab.matrix[sp][...], or null if no reasonable match. */
-function resolveSample(ab, name) {
-  if (!ab || !name) return null;
-  if (ab.samples.includes(name)) return name;
-  const lc = String(name).toLowerCase().trim();
-  const hit = ab.samples.find((s) => s.toLowerCase().trim() === lc);
-  return hit || null;
-}
+// resolveSample (sample names of the events file → abundance columns)
+// lives in src/diagnostics.js, next to matchSpeciesName.
 
 export function buildScatter(ab, event) {
   if (!ab) return null;
@@ -25037,19 +25032,13 @@ const defaultFilter = () => ({
 
   /* ---- derived state ---- */
   /** Count of species with non-zero abundance per sample. Used to compute
-      introducedPct (= introduced species / target's total species). */
-  const targetSpeciesCounts = useMemo(() => {
-    if (!ab) return null;
-    const counts = {};
-    for (const sample of ab.samples) {
-      let n = 0;
-      for (const sp of ab.species) {
-        if ((ab.matrix[sp]?.[sample] || 0) > 0) n++;
-      }
-      counts[sample] = n;
-    }
-    return counts;
-  }, [ab]);
+      introducedPct (= introduced species / target's total species), on
+      the table as loaded: a sample's richness is a plain statistic, not a
+      diagnostic. */
+  const targetSpeciesCounts = useMemo(
+    () => (ab ? speciesCountsBySample(ab) : null),
+    [ab],
+  );
 
   // `detectCascades` is O(events × species) and was the dominant cost
   // on verdict clicks for large datasets — it ran on every rawEvents
@@ -25097,13 +25086,10 @@ const defaultFilter = () => ({
     const next = new Map();
     const out = rawEvents.map((e) => {
       const cascade = cascadeMap.get(e.id) || null;
-      let pct = null;
-      if (targetSpeciesCounts) {
-        const total = targetSpeciesCounts[e.target];
-        if (total > 0 && Array.isArray(e.introduced)) {
-          pct = (e.introduced.length / total) * 100;
-        }
-      }
+      // The target is resolved like the scatter resolves it: a raw-name
+      // lookup left "s2 " without a count — a blank introduced_pct in the
+      // export, and an event the introduced-% filter always hid.
+      const pct = introducedPercent(ab, targetSpeciesCounts, e);
       const cached = prev.get(e.id);
       // Reuse the cached augmented object if the underlying raw event
       // and the two derived fields are all unchanged. This preserves

@@ -357,3 +357,55 @@ export function introducedSpeciesSet(ab, introduced) {
   }
   return out;
 }
+
+/* ---- Sample names of the events file ---- */
+
+// Per sample list: the names as given, and their case- and whitespace-
+// insensitive forms (first column wins). Built once per table rather than
+// scanning ab.samples twice per call: this runs for every event whenever
+// the events are derived, i.e. on every verdict click.
+const sampleIndexes = new WeakMap();
+
+/** Resolve a sample name against the abundance table's known samples.
+    Tries exact, then case-insensitive and trimmed match. Returns the
+    canonical key into ab.matrix[sp][...], or null if no reasonable match. */
+export function resolveSample(ab, name) {
+  if (!ab || !name) return null;
+  let index = sampleIndexes.get(ab.samples);
+  if (!index) {
+    const loose = new Map();
+    for (const s of ab.samples) {
+      const k = s.toLowerCase().trim();
+      if (!loose.has(k)) loose.set(k, s);
+    }
+    index = { exact: new Set(ab.samples), loose };
+    sampleIndexes.set(ab.samples, index);
+  }
+  if (index.exact.has(name)) return name;
+  return index.loose.get(String(name).toLowerCase().trim()) || null;
+}
+
+/** Number of species observed (relative abundance > 0) in each sample,
+    keyed by the table's own sample names. */
+export function speciesCountsBySample(ab) {
+  const counts = {};
+  for (const sample of ab.samples) {
+    let n = 0;
+    for (const sp of ab.species) {
+      if ((ab.matrix[sp]?.[sample] || 0) > 0) n++;
+    }
+    counts[sample] = n;
+  }
+  return counts;
+}
+
+/** An event's introduced %: its introduced species as a share of the
+    species observed in its target (`counts` from speciesCountsBySample).
+    The target is found through resolveSample, as the scatter finds it.
+    null when nothing is loaded or the target is not in the table. */
+export function introducedPercent(ab, counts, event) {
+  if (!counts || !Array.isArray(event.introduced)) return null;
+  const key = resolveSample(ab, event.target);
+  const total = key == null ? 0 : counts[key];
+  return total > 0 ? (event.introduced.length / total) * 100 : null;
+}
