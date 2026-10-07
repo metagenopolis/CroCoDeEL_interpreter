@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { poissonBinomialUpperTail } from "../src/App.jsx";
+import { poissonBinomialUpperTail } from "../src/diagnostics.js";
 
 /* A2.5 — the upper tail must keep its RELATIVE precision when it is tiny.
 

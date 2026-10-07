@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseAbundance, areRelated } from "../src/App.jsx";
+import { areRelated } from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
 import {
   automaticScore,
   buildScatter,

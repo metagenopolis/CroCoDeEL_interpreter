@@ -9,7 +9,7 @@ import {
   withManualVerdict,
 } from "../src/curation.js";
 import { parseAbundance, parseEvents, tsvCell } from "../src/parsing.js";
-import { buildCuratedAbundance } from "../src/App.jsx";
+import { buildCuratedAbundance } from "../src/exports.js";
 
 /* Replacing the events file used to wipe every evaluation, note and
    sample decision (setSampleCuration({}), events reset to pending).

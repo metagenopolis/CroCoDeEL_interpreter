@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseAbundance, buildCuratedAbundance } from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
+import { buildCuratedAbundance } from "../src/exports.js";
 import {
   neverTargetedSamples,
   buildEffectiveSampleCuration,

@@ -31,15 +31,6 @@ import {
   spearmanRho,
   speciesCountsBySample,
 } from "./diagnostics.js";
-// Moved to src/diagnostics.js; still exported from here for the modules
-// and tests that import them from App.jsx.
-export {
-  buildScatter,
-  lineDiagnostics,
-  missingAbundantFromSource,
-  pointsAboveLine,
-  poissonBinomialUpperTail,
-} from "./diagnostics.js";
 import {
   autoVerdictFromCounts,
   syncSampleCuration,
@@ -63,6 +54,7 @@ import {
   curatedAbundanceProvenance,
   hasInputValues,
   curationOrigin,
+  escapeHTML,
   samplesReportCuration,
   samplesReportIndex,
 } from "./exports.js";
@@ -75,7 +67,13 @@ import {
 } from "./persistence.js";
 import { idbBackend, indexedDBSupported, readStoredSession } from "./storage.js";
 import { createAutosave } from "./autosave.js";
-import { curationSummary, replaceEvents, replaceReportLines, replacedRunMetadata } from "./carryOver.js";
+import {
+  curationSummary,
+  isManualEvent,
+  replaceEvents,
+  replaceReportLines,
+  replacedRunMetadata,
+} from "./carryOver.js";
 import {
   FolderOpen,
   AlertCircle,
@@ -165,9 +163,7 @@ const RepubliqueFrancaise = ({ height = 46 }) => (
    2. TSV PARSING
    ============================================================================ */
 
-/* The input-file parsers live in src/parsing.js. These four were exported
-   from here before they moved, and still are. */
-export { tsvCell, splitSpeciesList, parseEvents, parseAbundance } from "./parsing.js";
+/* The input-file parsers live in src/parsing.js. */
 
 /* ---------- contamination-rate slider helpers ----------
    Rates span several orders of magnitude (0.01% to 50%+), so all rate
@@ -298,9 +294,7 @@ export function sampleName(metadata, sampleId) {
 /* The export builders live in src/exports.js: eventsToTSV (the loaded
    events written back as CroCoDeEL writes them), the curated events TSV,
    and abundanceToTSV / buildCuratedAbundance (the abundance table with
-   the input's own values, without the suppressed samples). These two were
-   exported from here before they moved, and still are. */
-export { abundanceToTSV, buildCuratedAbundance } from "./exports.js";
+   the input's own values, without the suppressed samples). */
 
 /* ---------- contamination graph export ----------
    The Network tab already treats the events as a directed graph
@@ -26078,9 +26072,7 @@ const defaultFilter = () => ({
         : undefined;
     commitEvents(
       (list) => {
-        const nextManualNum = list.filter((e) =>
-          typeof e.id === "string" && e.id.startsWith("manual-"),
-        ).length + 1;
+        const nextManualNum = list.filter(isManualEvent).length + 1;
         const newEvent = {
           id: `manual-${nextManualNum}`,
           source: data.source,
@@ -27174,13 +27166,6 @@ const defaultFilter = () => ({
       },
     );
 
-    const escapeHTML = (s) =>
-      String(s == null ? "" : s)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-
     const verdictPill = (v) => {
       const norm = String(v || "pending");
       const tone =
@@ -27503,13 +27488,6 @@ const defaultFilter = () => ({
         ...sampleActionTotals,
       },
     );
-    const escapeHTML = (s) =>
-      String(s == null ? "" : s)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-
     // Verdicts arrive as snake_case ("true_positive"); accept both the
     // canonical form and a couple of upper-case shorthands so the pill
     // never silently falls back to "Pending".

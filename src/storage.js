@@ -137,14 +137,6 @@ function settled(tx) {
   });
 }
 
-export function idbGet(key) {
-  return withDB((db) => {
-    const tx = db.transaction(STORE, "readonly");
-    const req = tx.objectStore(STORE).get(key);
-    return settled(tx).then(() => req.result ?? null);
-  });
-}
-
 export function idbSet(key, value) {
   return withDB((db) => {
     const tx = db.transaction(STORE, "readwrite");

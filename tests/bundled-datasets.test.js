@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { parseEvents, parseAbundance, buildScatter } from "../src/App.jsx";
+import { parseEvents, parseAbundance } from "../src/parsing.js";
+import { buildScatter } from "../src/diagnostics.js";
 
 /* Every dataset this repository ships must actually work end to end.
 

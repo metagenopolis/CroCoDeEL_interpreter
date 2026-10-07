@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { parseAbundance, buildScatter, lineDiagnostics } from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
 import {
+  buildScatter,
+  lineDiagnostics,
   applyLowAbundanceFilter,
   lowAbundanceFilterFactor,
 } from "../src/diagnostics.js";

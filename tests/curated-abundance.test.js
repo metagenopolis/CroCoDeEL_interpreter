@@ -1,9 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  parseAbundance,
-  buildCuratedAbundance,
-  abundanceToTSV,
-} from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
+import { buildCuratedAbundance, abundanceToTSV } from "../src/exports.js";
 
 const TSV = [
   "species\tS1\tS2\tS3",

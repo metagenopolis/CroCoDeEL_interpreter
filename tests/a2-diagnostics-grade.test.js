@@ -1,13 +1,14 @@
 import { describe, it, expect } from "vitest";
+import { areRelated } from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
 import {
-  parseAbundance,
   buildScatter,
   lineDiagnostics,
   pointsAboveLine,
   missingAbundantFromSource,
-  areRelated,
-} from "../src/App.jsx";
-import { automaticScore, scoreGrade } from "../src/diagnostics.js";
+  automaticScore,
+  scoreGrade,
+} from "../src/diagnostics.js";
 
 /* A2.2 — an event whose source or target is not in the abundance table
    cannot be scored, and must say so.

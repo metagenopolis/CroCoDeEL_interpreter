@@ -38,8 +38,8 @@
 
 /** A stored verdict / action that counts as set. "pending" is how the
     pickers spell "no verdict" and is never stored on purpose, but older
-    session files may carry it. */
-const isSet = (v) => v != null && v !== "" && v !== "pending";
+    session files may carry it. The one rule of every module. */
+export const isSet = (v) => v != null && v !== "" && v !== "pending";
 
 /** True when the curator set the sample's verdict by hand. */
 export const hasManualVerdict = (entry) =>

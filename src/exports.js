@@ -18,6 +18,16 @@
 import { tsvCell } from "./parsing.js";
 import { resolveSample } from "./diagnostics.js";
 import { isManualEvent } from "./carryOver.js";
+import { isSet } from "./curation.js";
+
+/** Text put into the HTML reports, escaped. */
+export function escapeHTML(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 /* ---------- contamination events ---------- */
 
@@ -510,11 +520,10 @@ export function samplesReportIndex(events, ab) {
 export function samplesReportCuration(curation, names) {
   const entries = names.map((n) => curation?.[n]).filter(Boolean);
   if (entries.length <= 1) return entries[0] || {};
-  const set = (v) => v != null && v !== "" && v !== "pending";
   const pick =
     entries.find((c) => c.action === "suppress") ||
-    entries.find((c) => set(c.verdict) && !c.verdictAuto) ||
-    entries.find((c) => set(c.verdict)) ||
+    entries.find((c) => isSet(c.verdict) && !c.verdictAuto) ||
+    entries.find((c) => isSet(c.verdict)) ||
     entries[0];
   const notes = [...new Set(entries.map((c) => c.notes).filter(Boolean))].join("\n\n");
   return notes ? { ...pick, notes } : pick;

@@ -43,7 +43,7 @@
    the same readers at every boot (checkStoredSession): both repair what
    the earlier versions left in a session, and say so. */
 
-import { migrateSampleCuration, SAMPLE_CURATION_VERSION } from "./curation.js";
+import { isSet, migrateSampleCuration, SAMPLE_CURATION_VERSION } from "./curation.js";
 import { remapMetadata, splitSpeciesList } from "./parsing.js";
 
 export const LAYOUT_VERSION = 2;
@@ -60,7 +60,6 @@ export const RECORD_KEYS = {
 export const LEGACY_MAIN_KEY = "main";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-const isSetVerdict = (v) => v != null && v !== "" && v !== "pending";
 
 /* ---------------------------------------------------------------- events */
 
@@ -77,7 +76,7 @@ export function eventCurationById(events) {
   const notes = {};
   for (const e of events || []) {
     const id = String(e.id);
-    if (isSetVerdict(e.verdict)) verdicts[id] = e.verdict;
+    if (isSet(e.verdict)) verdicts[id] = e.verdict;
     if (e.notes) notes[id] = e.notes;
   }
   return { verdicts, notes };

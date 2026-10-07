@@ -14,94 +14,31 @@
    Deliberately plain `playwright` and a node script rather than
    @playwright/test: no extra config, no extra runner, and the script owns
    its own server so `npm run test:e2e` behaves identically on a laptop and
-   in CI.
+   in CI. The server, the browser and the checks are e2e/harness.mjs's, as
+   in every other suite.
 
    Usage:  npm run build && npm run test:e2e
            BASE_URL=http://host/path/ npm run test:e2e   (skip the server) */
 
-import { chromium } from "playwright";
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { setTimeout as sleep } from "node:timers/promises";
-
-const PORT = Number(process.env.E2E_PORT || 4173);
-const BASE = process.env.BASE_URL || `http://127.0.0.1:${PORT}/CroCoDeEL_interpreter/`;
-const HEADFUL = process.env.E2E_HEADFUL === "1";
-
-const results = [];
-function check(ok, name, detail = "") {
-  results.push({ ok, name, detail });
-  console.log(`${ok ? "  ok  " : " FAIL "} ${name}${detail ? " — " + detail : ""}`);
-}
-
-/* ---------------------------------------------------------------- server */
-let server = null;
-async function startServer() {
-  if (process.env.BASE_URL) return; // caller provides one
-  server = spawn(
-    process.execPath,
-    [
-      "node_modules/vite/bin/vite.js",
-      "preview",
-      "--port",
-      String(PORT),
-      "--strictPort",
-      "--host",
-      "127.0.0.1",
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  server.stdout.on("data", () => {});
-  server.stderr.on("data", (d) => process.stderr.write(d));
-  // Poll rather than parse stdout: the banner format is not a contract.
-  for (let i = 0; i < 60; i++) {
-    try {
-      const res = await fetch(BASE);
-      if (res.ok) return;
-    } catch {
-      // not up yet
-    }
-    await sleep(500);
-  }
-  throw new Error(`vite preview did not answer on ${BASE} within 30 s`);
-}
-function stopServer() {
-  if (server && !server.killed) server.kill("SIGTERM");
-}
+import {
+  startServer,
+  stopServer,
+  launchBrowser,
+  newPage as openPage,
+  loadDemo,
+  tsvInput,
+  check,
+  finish,
+} from "./harness.mjs";
 
 /* ------------------------------------------------------------------ main */
 await startServer();
-const browser = await chromium.launch({ headless: !HEADFUL });
+const browser = await launchBrowser();
 
-/** A fresh context that records every page error and console error. The
-    tutorial is marked seen so it does not sit over the UI. */
-async function newPage() {
-  const ctx = await browser.newContext({ viewport: { width: 1500, height: 1000 } });
-  const page = await ctx.newPage();
-  const errors = [];
-  page.on("pageerror", (e) => errors.push(String(e)));
-  page.on("console", (m) => {
-    if (m.type() === "error") errors.push("[console] " + m.text().slice(0, 300));
-  });
-  await page.addInitScript(() =>
-    localStorage.setItem("crocodeel-tutorial-seen", "1"),
-  );
-  await page.goto(BASE, { waitUntil: "networkidle" });
-  return { ctx, page, errors };
-}
-
-const tsvInput = (page, i) => page.locator('input[accept*=".tsv"]').nth(i);
-
-async function loadDemo(page) {
-  await page.getByRole("button", { name: /load demo/i }).first().click();
-  // The demo pulls four files and parses them; wait for a tab that only
-  // lights up once events are in.
-  await page
-    .getByRole("button", { name: /^Validate$/ })
-    .first()
-    .waitFor({ state: "visible", timeout: 60000 });
-  await page.waitForTimeout(2500);
-}
+/** A fresh context that records every page error and console error
+    (harness.mjs). */
+const newPage = () => openPage(browser);
 
 try {
   /* ---------------------------------------- 1. boot + every tab renders */
@@ -539,11 +476,4 @@ try {
   await browser.close();
   stopServer();
 }
-
-const failed = results.filter((r) => !r.ok);
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-if (failed.length) {
-  console.log("\nFailures:");
-  failed.forEach((f) => console.log(`  - ${f.name}${f.detail ? " — " + f.detail : ""}`));
-  process.exit(1);
-}
+finish();

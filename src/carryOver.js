@@ -45,12 +45,12 @@
 import {
   hasManualAction,
   hasManualVerdict,
+  isSet,
   syncSampleCuration,
   withManualAction,
   withManualVerdict,
 } from "./curation.js";
 
-const isSet = (v) => v != null && v !== "" && v !== "pending";
 const pairKey = (e) => `${e.source}\u0000${e.target}`;
 /** An event the curator added by hand (addManualEvent: ids "manual-N"). */
 export const isManualEvent = (e) => typeof e?.id === "string" && e.id.startsWith("manual-");

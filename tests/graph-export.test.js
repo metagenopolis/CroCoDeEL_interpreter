@@ -1,10 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  buildContaminationGraph,
-  graphToGraphML,
-  graphToCSV,
-  parseAbundance,
-} from "../src/App.jsx";
+import { buildContaminationGraph, graphToGraphML, graphToCSV } from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
 
 const EVENTS = [
   {
