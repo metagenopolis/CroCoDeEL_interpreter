@@ -22,6 +22,14 @@ import {
 
 const root = join(import.meta.dirname, "..", "public");
 
+/** How many doubles apart two positive finite numbers are (0: the same
+    double, 1: neighbours). */
+function doublesApart(a, b) {
+  const bits = (x) => new BigInt64Array(new Float64Array([x]).buffer)[0];
+  const d = bits(a) - bits(b);
+  return Number(d < 0n ? -d : d);
+}
+
 /** The cells of a TSV text: { header, rows: [[name, ...cells]] }. */
 function cells(text) {
   const lines = text.split("\n").filter((l) => l.length > 0);
@@ -123,7 +131,7 @@ describe("abundanceToTSV — the input's own values", () => {
     "datasets/PRJEB83730/species_abundance.tsv",
     "datasets/PRJNA698986_P2/species_abundance.tsv",
   ]) {
-    it(`gives ${file} back: every value up to 15 digits exactly, the others to the last digit`, () => {
+    it(`gives ${file} back: every value up to 15 digits exactly, the others the same double or the next one`, () => {
       const text = readFileSync(join(root, file), "utf8");
       const ab = parseAbundance(text);
       const out = cells(abundanceToTSV(ab));
@@ -133,6 +141,7 @@ describe("abundanceToTSV — the input's own values", () => {
       let exact = 0;
       let long = 0;
       let worst = 0;
+      let worstSteps = 0;
       out.rows.forEach((row, i) => {
         for (let j = 1; j < row.length; j++) {
           const raw = String(input.rows[i][out.header[j]]).trim();
@@ -145,13 +154,19 @@ describe("abundanceToTSV — the input's own values", () => {
           } else {
             long++;
             worst = Math.max(worst, Math.abs(w - v) / v);
+            worstSteps = Math.max(worstSteps, doublesApart(w, v));
           }
         }
       });
       expect(exact).toBeGreaterThan(0);
-      // Two 16- or 17-digit values can make the same fraction: those come
-      // back within a few units of their last digit.
-      expect(worst).toBeLessThan(1e-15);
+      // Two neighbouring doubles can make the same fraction: a 16- or
+      // 17-digit value comes back as the same double or the next one, a
+      // relative difference of about 2e-16 — which, in the text, can be
+      // up to 15 units of the 17th digit (8.5807690018676415e-09 comes
+      // back as 8.58076900186764e-9), not "one unit off in its last
+      // digit" as the Help said.
+      expect(worstSteps).toBeLessThanOrEqual(1);
+      expect(worst).toBeLessThan(2.3e-16);
       expect(exact + long).toBe(ab.samples.length * ab.species.length);
     });
   }

@@ -20879,9 +20879,12 @@ const HelpTab = ({ onStartTour }) => {
                   text file, downloaded from the card. A cell read as 0
                   (empty, NA, not a number, negative) is written as 0. A
                   value written with up to 15 significant digits comes
-                  back exactly; one written with 16 or 17 can come back
-                  one unit off in its last digit, as two such values can
-                  make the same relative abundance. A session saved by an
+                  back exactly. One written with 16 or 17, more digits
+                  than a number holds, comes back as the same number,
+                  sometimes in fewer digits, or — when the number next to
+                  it makes the same relative abundance — as that one: a
+                  relative difference of about 2e-16, which can change its
+                  last one or two digits. A session saved by an
                   earlier version lacks the input's column totals: its
                   table is written as relative abundances under a{" "}
                   <code>species</code> header, and the card says so —

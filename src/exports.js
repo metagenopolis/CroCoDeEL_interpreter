@@ -220,10 +220,17 @@ const significantDigits = (x) => x.toExponential().split("e")[0].replace(".", ""
         and two 15-digit decimals are at least 1e-15 apart.
       - Otherwise the value is one of the doubles a few steps from the
         product that divide back to the very same fraction: the one with
-        the fewest significant digits, then the nearest. Two doubles can
-        divide to one fraction, and nothing then tells them apart: such a
-        value, written with 16 or 17 significant digits, may come back
-        one unit off in its last digit.
+        the fewest significant digits, then the nearest. A value written
+        with 16 or 17 significant digits, more than a double holds, comes
+        back as the same double, perhaps in fewer digits
+        (0.099030000000000007 is the double of 0.09903, and is written
+        so); or, when the double next to it divides to the same fraction
+        and nothing tells the two apart, as that neighbour: a relative
+        difference of about 2e-16, which can change the last one or two
+        digits (8.5807690018676415e-09 comes back as
+        8.58076900186764e-9). Over the bundled tables, 582 of the 10,058
+        values written with 16 or 17 digits come back one double off
+        (relative difference at most 2.02e-16), none further.
     A cell the parser read as 0 (empty, NA, not a number, negative) is 0. */
 export function inputValue(fraction, colSum, integer) {
   if (!(fraction > 0) || !(colSum > 0)) return 0;

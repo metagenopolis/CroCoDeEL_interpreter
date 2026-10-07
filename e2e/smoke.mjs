@@ -264,7 +264,14 @@ try {
       let exact = 0;
       let long = 0;
       let worst = 0;
+      let worstSteps = 0;
       let bad = null;
+      // How many doubles apart two positive numbers are (1: neighbours).
+      const bits = (x) => new BigInt64Array(new Float64Array([x]).buffer)[0];
+      const doublesApart = (a, b) => {
+        const d = bits(a) - bits(b);
+        return Number(d < 0n ? -d : d);
+      };
       for (const r of rows.slice(1)) {
         const src = inRow.get(r[0]);
         for (let j = 1; j < header.length; j++) {
@@ -278,6 +285,7 @@ try {
           } else {
             long++;
             worst = Math.max(worst, Math.abs(w - v) / v);
+            worstSteps = Math.max(worstSteps, doublesApart(w, v));
           }
         }
       }
@@ -286,13 +294,13 @@ try {
         "every remaining column equals the input column: each value up to 15 significant digits exactly",
         bad || `${exact} values`,
       );
-      // Rebuilt from the parser's fractions: two values written with 16 or
-      // 17 digits can make the same fraction, so those agree to the last
-      // digit, not always in it.
+      // Rebuilt from the parser's fractions: when two neighbouring doubles
+      // make the same fraction, a value written with 16 or 17 digits comes
+      // back as the one next to it (relative difference about 2e-16).
       check(
-        worst < 1e-15,
-        "and each value written with 16 or 17 significant digits to its last digit",
-        `${long} values, worst relative difference ${worst.toExponential(1)}`,
+        worstSteps <= 1 && worst < 2.3e-16,
+        "and each value written with 16 or 17 significant digits as the same double or the next one",
+        `${long} values, at most ${worstSteps} double apart, worst relative difference ${worst.toExponential(2)}`,
       );
     }
     // The provenance left the table for a text file of its own.
