@@ -223,17 +223,28 @@ try {
       );
     }
 
-    const [download] = await Promise.all([
-      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
-      page
-        .getByRole("button", { name: /Download curated abundance TSV/i })
-        .first()
-        .click(),
-    ]);
-    check(!!download, "the curated abundance TSV downloads");
+    // One click, two files: the table and its provenance.
+    const files = {};
+    const both = new Promise((resolve) => {
+      const onDownload = async (d) => {
+        files[d.suggestedFilename()] = readFileSync(await d.path(), "utf8");
+        if (Object.keys(files).length === 2) {
+          page.off("download", onDownload);
+          resolve();
+        }
+      };
+      page.on("download", onDownload);
+    });
+    await page
+      .getByRole("button", { name: /Download curated abundance TSV/i })
+      .first()
+      .click();
+    await Promise.race([both, page.waitForTimeout(30000)]);
+    const download = files["species_abundance_curated.tsv"];
+    check(download != null, "the curated abundance TSV downloads");
     let missing = [];
-    if (download) {
-      const text = readFileSync(await download.path(), "utf8");
+    if (download != null) {
+      const text = download;
       const rows = text
         .split("\n")
         .filter((l) => l.length)
@@ -303,17 +314,14 @@ try {
         `${long} values, at most ${worstSteps} double apart, worst relative difference ${worst.toExponential(2)}`,
       );
     }
-    // The provenance left the table for a text file of its own.
-    const [provenance] = await Promise.all([
-      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
-      page.getByRole("button", { name: /Download its provenance/i }).first().click(),
-    ]);
-    const provenanceText = provenance ? readFileSync(await provenance.path(), "utf8") : "";
+    // The provenance left the table for a text file of its own, written
+    // by the same click.
+    const provenanceText = files["species_abundance_curated.provenance.txt"] || "";
     check(
       /^Suppressed samples \(2\)/m.test(provenanceText) &&
         missing.length === 2 &&
         missing.every((s) => provenanceText.split("\n").includes(s)),
-      "the provenance file records the suppressed ids",
+      "the same click writes the provenance file, which records the suppressed ids",
       provenanceText.split("\n").find((l) => l.startsWith("Suppressed")) || "no provenance file",
     );
     check(errors.length === 0, "no JS error across the export flow", errors[0] || "");

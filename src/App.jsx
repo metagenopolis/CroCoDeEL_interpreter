@@ -20874,9 +20874,11 @@ const HelpTab = ({ onStartTour }) => {
                   data only, so CroCoDeEL, pandas{" "}
                   (<code>read_csv(path, sep="\t", index_col=0)</code>)
                   and R (<code>read.delim</code>) read it with their
-                  default options; the provenance — suppressed samples,
-                  species dropped with them, date, study — is a separate
-                  text file, downloaded from the card. A cell read as 0
+                  default options. The same click writes its provenance
+                  next to it, <code>species_abundance_curated.provenance.txt</code>{" "}
+                  — suppressed samples, species dropped with them, date,
+                  study — built from that very table (the browser may ask
+                  before this second download). A cell read as 0
                   (empty, NA, not a number, negative) is written as 0. A
                   value written with up to 15 significant digits comes
                   back exactly. One written with 16 or 17, more digits
@@ -22760,8 +22762,7 @@ const ExportTab = ({
                       values — counts stay counts, nothing is renormalised —
                       under its first header and in its species order, so the
                       table loads in CroCoDeEL, pandas and R just as the input
-                      did. The suppressed ids, the date and the study go to a
-                      separate provenance file.
+                      did.
                     </>
                   ) : (
                     <>
@@ -22774,7 +22775,12 @@ const ExportTab = ({
                       header. Load species_abundance.tsv again to export the
                       input's own values.
                     </>
-                  )}
+                  )}{" "}
+                  Its provenance comes with it, in a second file (
+                  <code>species_abundance_curated.provenance.txt</code>):
+                  the suppressed samples, the species dropped with them,
+                  the date and the study of that very table. Your browser
+                  may ask before the second download.
                 </>
               )
             }
@@ -22784,44 +22790,24 @@ const ExportTab = ({
             onClick={() => onExportCuratedAbundance({ dropEmptySpecies })}
           >
             {hasAb && (
-              <>
-                <label
-                  className="flex items-start gap-2 text-[12px] cursor-pointer"
-                  style={{ color: "var(--ink-muted)" }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={dropEmptySpecies}
-                    onChange={(e) => setDropEmptySpecies(e.target.checked)}
-                    className="mt-0.5"
-                  />
-                  <span>
-                    Drop species observed only in the suppressed samples
-                    {curatedAbundanceStats
-                      ? ` (${curatedAbundanceStats.droppedSpecies})`
-                      : ""}
-                    . Uncheck to keep the species list identical to the input.
-                  </span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onExportCuratedAbundance({ dropEmptySpecies, provenance: true })
-                  }
-                  className="text-[12px] underline mt-2"
-                  style={{
-                    background: "transparent",
-                    border: 0,
-                    padding: 0,
-                    color: "var(--ink-muted)",
-                    cursor: "pointer",
-                    fontFamily: '"Raleway", sans-serif',
-                  }}
-                  title="A text file to keep next to the table: the suppressed samples, the species dropped with them, the date, the study and what the values are."
-                >
-                  Download its provenance (suppressed samples, date) as a text file
-                </button>
-              </>
+              <label
+                className="flex items-start gap-2 text-[12px] cursor-pointer"
+                style={{ color: "var(--ink-muted)" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={dropEmptySpecies}
+                  onChange={(e) => setDropEmptySpecies(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Drop species observed only in the suppressed samples
+                  {curatedAbundanceStats
+                    ? ` (${curatedAbundanceStats.droppedSpecies})`
+                    : ""}
+                  . Uncheck to keep the species list identical to the input.
+                </span>
+              </label>
             )}
           </ExportCard>
         )}
@@ -26077,28 +26063,37 @@ const defaultFilter = () => ({
     };
   }, [ab, effectiveSampleCuration]);
 
-  /** The curated abundance table, or with `provenance` the text file that
-      records how it was made: the suppressed samples, the species that
-      went with them, the date, the study. That used to be "#" lines at
-      the top of the table, which pandas' and R's default readers take for
-      data; the table now holds the data only (abundanceToTSV), with the
-      input's own values. */
+  /** The curated abundance table and the text file that records how it
+      was made — the suppressed samples, the species that went with them,
+      the date, the study — both written from the same
+      buildCuratedAbundance result, on the same click. The provenance used
+      to be "#" lines at the top of the table, which pandas' and R's
+      default readers take for data: the table now holds the data only
+      (abundanceToTSV), with the input's own values. It then came from a
+      link of its own, which a curator could skip, and which described the
+      curation of the moment it was clicked, not the table downloaded
+      before. */
   const exportCuratedAbundance = (opts = {}) => {
     if (!ab) return;
     const cur = buildCuratedAbundance(ab, effectiveSampleCuration, opts);
-    if (opts.provenance) {
-      downloadFile(
-        curatedAbundanceProvenance(ab, cur, {
-          study: analysisTitle,
-          curated: new Date().toISOString(),
-          build: `${__APP_VERSION__.hash} (${__APP_VERSION__.date})`,
-        }),
-        "species_abundance_curated.provenance.txt",
-        "text/plain",
-      );
-      return;
-    }
-    downloadText(abundanceToTSV(cur), "species_abundance_curated.tsv");
+    const table = abundanceToTSV(cur);
+    const provenance = curatedAbundanceProvenance(ab, cur, {
+      study: analysisTitle,
+      curated: new Date().toISOString(),
+      build: `${__APP_VERSION__.hash} (${__APP_VERSION__.date})`,
+    });
+    downloadText(table, "species_abundance_curated.tsv");
+    // Two files, like the graph's CSV pair; the browser may ask before the
+    // second one.
+    setTimeout(
+      () =>
+        downloadFile(
+          provenance,
+          "species_abundance_curated.provenance.txt",
+          "text/plain",
+        ),
+      350,
+    );
   };
 
   /** The contamination graph, annotated with everything the curator

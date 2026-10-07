@@ -13,11 +13,12 @@
      - B2.3  from a count table (integer-like species names first, a
              first header of its own), the curated abundance table is the
              input without the suppressed columns — same header, same
-             species order, same values, no "#" line — and its provenance
-             file names the suppressed samples; the abundance card's
-             Download gives the input back as it was; a session saved
-             before the column sums were kept exports fractions, and the
-             card says so;
+             species order, same values, no "#" line — and the same click
+             writes its provenance file, which names the suppressed
+             samples of that very table (also after the curation
+             changes); the abundance card's Download gives the input back
+             as it was; a session saved before the column sums were kept
+             exports fractions, and the card says so;
      - B2.4  the samples TSV writes every sample's verdict and action as
              the views show them, each with its origin (manual, automatic,
              default) — the Suppress paired with a Contaminated set by
@@ -80,18 +81,58 @@ async function exportFile(page, name) {
 }
 
 /** Click `button` and collect the `n` files it downloads (the graph's
-    CSV pair comes as two downloads), { name: text }. */
+    CSV pair, the curated abundance table and its provenance come as two
+    downloads), { name: text }. */
 async function downloadsVia(page, button, n) {
   const files = {};
+  let listener;
   const seen = new Promise((resolve) => {
-    page.on("download", async (d) => {
+    listener = async (d) => {
       files[d.suggestedFilename()] = readFileSync(await d.path(), "utf8");
       if (Object.keys(files).length === n) resolve();
-    });
+    };
+    page.on("download", listener);
   });
   await button.click();
   await Promise.race([seen, page.waitForTimeout(30000)]);
+  page.off("download", listener);
   return files;
+}
+
+/** The two files of the curated abundance card's one click: { table,
+    provenance } (texts, undefined when missing). */
+async function curatedDownload(page) {
+  await openTab(page, "Export");
+  const files = await downloadsVia(
+    page,
+    page.getByRole("button", { name: /Download curated abundance TSV/i }).first(),
+    2,
+  );
+  return {
+    table: files["species_abundance_curated.tsv"],
+    provenance: files["species_abundance_curated.provenance.txt"],
+  };
+}
+
+/** Does a provenance text describe `table` (a curated abundance TSV
+    text), given the input's samples? Its "This table:" sizes and its
+    list of suppressed samples must be the table's. */
+function describes(provenance, table, inputSamples) {
+  const lines = (provenance || "").split("\n");
+  const rows = (table || "").split("\n").filter(Boolean);
+  const header = (rows[0] || "").split("\t");
+  const dropped = inputSamples.filter((id) => !header.includes(id));
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const at = lines.findIndex((l) => l.startsWith("Suppressed samples ("));
+  const listed = [];
+  for (let i = at + 1; at >= 0 && i < lines.length && lines[i]; i++) listed.push(lines[i]);
+  return (
+    lines.includes(
+      `This table: ${plural(rows.length - 1, "species row")} × ${plural(header.length - 1, "sample")}.`,
+    ) &&
+    lines[at] === `Suppressed samples (${dropped.length}), removed because their action is Suppress:` &&
+    JSON.stringify([...listed].sort()) === JSON.stringify([...dropped].sort())
+  );
 }
 
 /** A TSV / CSV text as objects keyed by header, "#" lines skipped. */
@@ -487,7 +528,8 @@ try {
     await upload(page, 1, "species_abundance.tsv", input);
     await suppressSamples(page, 2);
     const card = await curatedCard(page);
-    const file = await exportFile(page, /Download curated abundance TSV/i);
+    const pair = await curatedDownload(page);
+    const file = pair.table == null ? null : { text: pair.table };
     const rows = (file?.text || "").split("\n").map((l) => l.split("\t"));
     const inRows = input.split("\n").map((l) => l.split("\t"));
     const header = rows[0] || [];
@@ -530,15 +572,15 @@ try {
       /holds the input file's own\s+values/.test(card.text) && !/Written as relative abundances/.test(card.text),
       "B2.3 the card says the values are the input's own",
     );
-    const provenance = await downloadVia(page, page.getByRole("button", { name: /Download its provenance/i }).first());
-    const plines = (provenance?.text || "").split("\n");
+    // The same click wrote the provenance, of that very table.
+    const plines = (pair.provenance || "").split("\n");
     check(
-      provenance?.name === "species_abundance_curated.provenance.txt" &&
-        plines.includes("Suppressed samples (2), removed because their action is Suppress:") &&
+      plines.includes("Suppressed samples (2), removed because their action is Suppress:") &&
         dropped.every((id) => plines.includes(id)) &&
-        /own values/.test(provenance.text),
-      "B2.3 the provenance file names the suppressed samples and the values",
-      plines.slice(0, 3).join(" / "),
+        /own values/.test(pair.provenance) &&
+        describes(pair.provenance, pair.table, inRows[0].slice(1)),
+      "B2.3 the same click writes the provenance file, which names the suppressed samples and the values",
+      plines.slice(0, 3).join(" / ") || "no provenance file",
     );
     // The abundance card's own Download: the input as it was.
     await openTab(page, "Overview");
@@ -547,6 +589,42 @@ try {
       own?.name === "species_abundance.tsv" && own.text === input,
       "B2.3 the abundance card's Download gives the uploaded count table back as it was",
       (own?.text || "").split("\n")[1]?.slice(0, 60) || "",
+    );
+  });
+
+  /* The curated table and its provenance came from two clicks: a
+     provenance downloaded after the curation changed described a table
+     that was never downloaded, and a curator who never clicked the link
+     kept no record of the suppressed samples. */
+  await scenario("B2.3 provenance", async (page) => {
+    const inputSamples = demo("species_abundance.tsv")
+      .split("\n")
+      .find((l) => l && !l.startsWith("#"))
+      .split("\t")
+      .slice(1);
+    await suppressSamples(page, 2);
+    const first = await curatedDownload(page);
+    check(
+      !!first.table && !!first.provenance && describes(first.provenance, first.table, inputSamples),
+      "B2.3 one click writes the curated table and its provenance, which describes that table (2 suppressed)",
+      (first.provenance || "no provenance file").split("\n").find((l) => l.startsWith("This table")) || "",
+    );
+    // A third sample: the next click's two files describe the new table.
+    await openTab(page, "Samples");
+    await page.locator('button[title="Verdict: Contaminated"]').nth(2).click();
+    await page.waitForTimeout(800);
+    const second = await curatedDownload(page);
+    const columns = (t) => (t || "").split("\n")[0].split("\t").length - 1;
+    check(
+      columns(second.table) === columns(first.table) - 1 &&
+        describes(second.provenance, second.table, inputSamples) &&
+        /^Suppressed samples \(3\)/m.test(second.provenance || ""),
+      "B2.3 after a third suppression, the next click's provenance describes the new table (3 suppressed)",
+      `${columns(first.table)} then ${columns(second.table)} columns`,
+    );
+    check(
+      (await page.getByRole("button", { name: /provenance/i }).count()) === 0,
+      "B2.3 no separate provenance button is left to describe another table",
     );
   });
 
@@ -560,8 +638,8 @@ try {
       /Written as relative abundances/.test(card.text),
       "B2.3 the card says an earlier session's table is written as relative abundances",
     );
-    const file = await exportFile(page, /Download curated abundance TSV/i);
-    const rows = (file?.text || "").split("\n").map((l) => l.split("\t"));
+    const pair = await curatedDownload(page);
+    const rows = (pair.table || "").split("\n").map((l) => l.split("\t"));
     const sums = rows[0].slice(1).map((_, j) => rows.slice(1).reduce((t, r) => t + Number(r[j + 1]), 0));
     check(
       rows[0][0] === "species" && sums.every((t) => Math.abs(t - 1) < 1e-9 || t === 0),
