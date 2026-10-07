@@ -27504,28 +27504,38 @@ const defaultFilter = () => ({
       return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
 
+    // The target sample's curation as every view shows it (an event's
+    // target always has one), and an "auto" tag after a value the rule
+    // set rather than the curator — from the events that target the
+    // sample, or the Suppress paired with Contaminated — as the Events
+    // table, the Samples tab and the samples HTML report mark it
+    // (curationOrigin). Printed, so a saved PDF keeps it.
+    const targetCuration = (e) => effectiveSampleCuration?.[e.target] || {};
+    const autoTag = (e, field) =>
+      curationOrigin(targetCuration(e), field, true) === "automatic"
+        ? `<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#797870;">auto</span>`
+        : "";
+
     // Action chip — the curator's "what to do with the contaminated
     // sample" choice. Action lives on the target sample; render the
     // chip whenever an action is recorded for the event's target,
     // regardless of the event's own evaluation.
     const actionPill = (e) => {
-      const eff = sampleCuration?.[e.target]?.action;
+      const eff = targetCuration(e).action;
       if (!eff) return "";
       const tone =
         eff === "suppress"
           ? { bg: "#ed6e6c", label: "Suppress" }
           : { bg: "#00a3a6", label: "Keep" };
-      return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
+      return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>${autoTag(e, "action")}`;
     };
 
-    // Sample-level verdict chip — the curator's call on the target
-    // sample as a whole (contaminated / correct / uncertain /
-    // pending). Cohabits with the event evaluation; we render
-    // whatever lives in sampleCuration for the target, defaulting to
-    // "Pending" with a muted chip when the sample hasn't been
-    // curated yet.
+    // Sample-level verdict chip — the call on the target sample as a
+    // whole (contaminated / correct / uncertain / pending). Cohabits with
+    // the event evaluation; "Pending" with a muted chip when the sample
+    // has no verdict yet.
     const sampleVerdictPill = (e) => {
-      const v = sampleCuration?.[e.target]?.verdict || "pending";
+      const v = targetCuration(e).verdict || "pending";
       const tone =
         v === "contaminated"
           ? { bg: "#ed6e6c", label: "Contaminated" }
@@ -27534,7 +27544,7 @@ const defaultFilter = () => ({
             : v === "uncertain"
               ? { bg: "#d97a3c", label: "Uncertain" }
               : { bg: "#e6e8e8", label: "Pending", textColor: "#5a5550" };
-      return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
+      return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>${autoTag(e, "verdict")}`;
     };
 
     // A one-paragraph summary of the active filter so the reader knows
