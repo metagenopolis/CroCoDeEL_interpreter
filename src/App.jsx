@@ -1374,7 +1374,7 @@ const Scatterplot = ({
           alignItems: "center",
           justifyContent: "center",
           padding: 16,
-          color: "#8a2422",
+          color: "var(--ink-alert)",
           textAlign: "center",
           gap: 8,
         }}
@@ -1384,7 +1384,7 @@ const Scatterplot = ({
         <div style={{ fontSize: 13, fontWeight: 600, overflowWrap: "anywhere" }}>
           {scatter.error}
         </div>
-        <div style={{ fontSize: 11, color: "#8a2422", opacity: 0.8, maxWidth: 380 }}>
+        <div style={{ fontSize: 11, color: "var(--ink-alert)", opacity: 0.8, maxWidth: 380 }}>
           Check that the sample IDs in contamination_events.tsv match the
           column names in species_abundance.tsv. Letter case and spaces
           around an ID are ignored; any other difference is not.
@@ -5380,7 +5380,7 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, lowA
       {!noData && !hasAb && (
         <div
           className="flex items-start gap-3 p-4 mb-8 rounded-sm"
-          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "#8a2422" }}
+          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "var(--ink-alert)" }}
         >
           <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
           <div className="text-[13px] leading-relaxed">
@@ -7107,7 +7107,7 @@ const MiniScatter = React.memo(function MiniScatter({
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          color: "#8a2422",
+          color: "var(--ink-alert)",
           fontSize: 10,
           textAlign: "center",
           padding: 8,
@@ -8755,7 +8755,7 @@ const ExplorePairs = ({
             style={{
               background: "var(--bg-alert)",
               border: "1px solid #ed6e6c",
-              color: "#8a2422",
+              color: "var(--ink-alert)",
             }}
           >
             {scatter.error}
@@ -8985,7 +8985,7 @@ const ScatterTab = (props) => {
         </SectionTitle>
         <div
           className="p-6 rounded-sm"
-          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "#8a2422" }}
+          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "var(--ink-alert)" }}
         >
           <strong>Scatterplots require the abundance table.</strong> Drop{" "}
           <code>species_abundance.tsv</code> above to enable this view.
@@ -13926,7 +13926,7 @@ const PlateThumbnail = ({
       {plate.nAdjacent > 0 && (
         <div
           className="mt-1 text-[10px]"
-          style={{ color: "#8a2422", fontWeight: 600 }}
+          style={{ color: "var(--ink-alert)", fontWeight: 600 }}
         >
           {plate.nAdjacent} adjacent-well
         </div>
@@ -17139,7 +17139,7 @@ const ValidateTab = ({
             ) : (
               <div
                 className="p-4 text-[13px] rounded-sm"
-                style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "#8a2422" }}
+                style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "var(--ink-alert)" }}
               >
                 Open <code>species_abundance.tsv</code> to see the plot and
                 enable diagnostic checks.
@@ -18362,7 +18362,7 @@ const HelpCol = ({ name, required, recognized, type, desc, aliases, example }) =
             className="text-[10px] px-1.5 rounded-sm"
             style={{
               background: "rgba(237,110,108,0.2)",
-              color: "#8a2422",
+              color: "var(--ink-alert)",
               fontWeight: 700,
             }}
           >
@@ -22715,7 +22715,7 @@ const DatasetsTab = ({ onLoadDataset, hasCurrentData, pageSize }) => {
           style={{
             background: "var(--bg-alert)",
             border: "1px solid #ed6e6c",
-            color: "#8a2422",
+            color: "var(--ink-alert)",
           }}
         >
           <strong>Could not load datasets manifest.</strong> {error}
@@ -23891,8 +23891,8 @@ const StorageBanner = ({ status, onDownload }) => {
       className="px-3 py-1 text-[11px] rounded-sm"
       style={{
         background: primary ? "#8a2422" : "var(--bg-card)",
-        color: primary ? "#fff" : "#8a2422",
-        border: "1px solid #8a2422",
+        color: primary ? "#fff" : "var(--ink-alert)",
+        border: `1px solid ${primary ? "#8a2422" : "var(--ink-alert)"}`,
         fontWeight: 700,
         fontFamily: '"Raleway", sans-serif',
         cursor: "pointer",
@@ -23910,7 +23910,7 @@ const StorageBanner = ({ status, onDownload }) => {
         style={{
           background: "var(--bg-alert)",
           border: "1px solid #ed6e6c",
-          color: "#8a2422",
+          color: "var(--ink-alert)",
         }}
       >
         <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -24021,8 +24021,11 @@ class TabErrorBoundary extends React.Component {
         className="px-3 py-1.5 text-[12px] rounded-sm"
         style={{
           background: primary ? "#275662" : "var(--bg-card)",
-          color: primary ? "#fff" : "#275662",
-          border: "1px solid #275662",
+          // var(--ink): the deep teal in the light theme, a light ink in
+          // the dark one, where #275662 on the card read 2:1 and the two
+          // ways to save the curation looked disabled.
+          color: primary ? "#fff" : "var(--ink)",
+          border: `1px solid ${primary ? "#275662" : "var(--ink)"}`,
           fontWeight: 700,
           fontFamily: '"Raleway", sans-serif',
           cursor: "pointer",
@@ -28910,7 +28913,7 @@ const defaultFilter = () => ({
               style={{
                 background: "var(--bg-alert)",
                 border: "1px solid #ed6e6c",
-                color: "#8a2422",
+                color: "var(--ink-alert)",
               }}
             >
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -31903,7 +31906,7 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
             style={{
               background: "var(--bg-alert)",
               border: "1px solid #ed6e6c",
-              color: "#8a2422",
+              color: "var(--ink-alert)",
               fontSize: 13,
               lineHeight: 1.55,
             }}

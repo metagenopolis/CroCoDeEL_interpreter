@@ -10,7 +10,9 @@
      - F.2  the Reset question counts the curation as the other questions
             that would lose it do: automatic sample values are not
             decisions;
-     - F.3  without storage the header says nothing is auto-saved.
+     - F.3  without storage the header says nothing is auto-saved;
+     - F.4  in the dark theme, the Not saved banner, the load errors and
+            the buttons of a tab that crashed are readable.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -37,13 +39,59 @@ const helpSection = (page, title) =>
     return (section?.innerText || "").replace(/\s+/g, " ");
   }, title);
 
+/** The WCAG contrast ratio of the text of `locator` on the background it
+    is drawn on (the first box, from itself up, with an opaque one). */
+const contrast = (locator) =>
+  locator.evaluate((el) => {
+    const rgb = (c) => (c.match(/[\d.]+/g) || []).map(Number);
+    const lum = ([r, g, b]) => {
+      const f = (v) => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+    };
+    let bg = null;
+    for (let p = el; p && !bg; p = p.parentElement) {
+      const c = rgb(getComputedStyle(p).backgroundColor);
+      if (c.length === 3 || (c.length === 4 && c[3] === 1)) bg = c.slice(0, 3);
+    }
+    const fg = rgb(getComputedStyle(el).color).slice(0, 3);
+    const [hi, lo] = [lum(fg), lum(bg || [255, 255, 255])].sort((x, y) => y - x);
+    return Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100;
+  });
+
+/** Change the stored record `key` in IndexedDB with `edit`, the body of a
+    function of the record `r` that returns the new one. */
+const editRecord = (page, key, edit) =>
+  page.evaluate(
+    ([key, edit]) =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open("crocodeel-interpreter");
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction("kv", "readwrite");
+          const store = tx.objectStore("kv");
+          const get = store.get(key);
+          get.onsuccess = () => store.put(new Function("r", edit)(get.result), key);
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onabort = () => reject(tx.error);
+        };
+      }),
+    [key, edit],
+  );
+
 await startServer();
 const browser = await launchBrowser();
 
 /* One fresh page per scenario. A scenario that throws is reported as a
    failed check and the others still run. */
 const ONLY = process.env.E2E_ONLY ? new RegExp(process.env.E2E_ONLY) : null;
-async function scenario(name, run, { contextOptions } = {}) {
+async function scenario(name, run, { contextOptions, expectedErrors = null } = {}) {
   if (ONLY && !ONLY.test(name)) return;
   const { ctx, page, errors } = await newPage(browser, contextOptions);
   try {
@@ -51,7 +99,9 @@ async function scenario(name, run, { contextOptions } = {}) {
   } catch (e) {
     check(false, `${name} runs to the end`, String(e).split("\n")[0]);
   }
-  check(errors.length === 0, `${name} no JS error`, errors[0] || "");
+  // A scenario that breaks a tab on purpose names the errors it expects.
+  const unexpected = errors.filter((e) => !expectedErrors || !expectedErrors.test(e));
+  check(unexpected.length === 0, `${name} no JS error`, unexpected[0] || "");
   await ctx.close();
 }
 
@@ -197,6 +247,67 @@ try {
       check(errors.filter((e) => !/IndexedDB/.test(e)).length === 0, "F.3 without IndexedDB, no JS error", errors[0] || "");
     },
   );
+
+  /* F.4 — the warnings that the work is not saved, and the way out of a
+     tab that crashed, readable in the dark theme: the red banner's text
+     was #8a2422 on #321614 (1.9:1), the crash screen's Go to Export and
+     Download session #275662 on the card (2.0:1). WCAG asks 4.5:1. */
+  await scenario(
+    "F.4 dark theme alerts",
+    async (_page, ctx) => {
+      const page = await ctx.newPage();
+      const errors = trackErrors(page);
+      await page.addInitScript(() => {
+        localStorage.setItem("crocodeel-tutorial-seen", "1");
+        localStorage.setItem("crocodeel-theme", "dark");
+        Object.defineProperty(window, "indexedDB", { get: () => undefined, configurable: true });
+      });
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      await page.waitForTimeout(800);
+      const banner = page.locator('[data-save-banner="unavailable"]');
+      const ratios = [
+        await contrast(banner.locator("strong").first()),
+        await contrast(banner.getByText(/IndexedDB is missing/)),
+      ];
+      // A load error shows in the same colours (the metadata card refuses
+      // a file without a sample column).
+      await page.getByRole("button", { name: /load demo/i }).first().click();
+      await page.getByRole("button", { name: /^Validate$/ }).first().waitFor({ timeout: 60000 });
+      await page
+        .locator('input[accept*=".tsv"]')
+        .nth(2)
+        .setInputFiles({ name: "metadata.tsv", mimeType: "text/tab-separated-values", buffer: Buffer.from("foo\tbar\nS1\tx\n") });
+      await page.waitForTimeout(1000);
+      const err = page.locator('[role="alert"]').filter({ hasText: "Metadata:" });
+      ratios.push((await err.count()) ? await contrast(err.getByText(/Metadata:/)) : 0);
+      check(
+        ratios.every((r) => r >= 4.5),
+        "F.4 dark theme: the Not saved banner and the load error are readable (≥ 4.5:1)",
+        ratios.join(", "),
+      );
+      check(errors.filter((e) => !/IndexedDB/.test(e)).length === 0, "F.4 without IndexedDB, no JS error", errors[0] || "");
+    },
+  );
+  await scenario("F.4 dark theme tab crash", async (page) => {
+    await page.evaluate(() => localStorage.setItem("crocodeel-theme", "dark"));
+    await loadDemo(page);
+    await page.waitForTimeout(1200);
+    // One stored well entry damaged: the Plate tab cannot render it.
+    await editRecord(page, "plate", "r.bySample[Object.keys(r.bySample)[0]] = null; return r;");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    await openTab(page, "Plate");
+    const fallback = page.locator('[data-tab-error="Plate"]');
+    const ratios = [];
+    for (const name of ["Try again", "Go to Export", "Download session"]) {
+      ratios.push(await contrast(fallback.getByRole("button", { name })));
+    }
+    check(
+      ratios.every((r) => r >= 4.5),
+      "F.4 dark theme: the crashed tab's Try again, Go to Export and Download session are readable (≥ 4.5:1)",
+      ratios.join(", "),
+    );
+  }, { expectedErrors: /Cannot read properties of null|the Plate tab failed|The above error occurred/ });
 
   /* F.1 — the events TSV's column is "verdict": the Export card and the
      guided tour told to filter on an "evaluation" column. */

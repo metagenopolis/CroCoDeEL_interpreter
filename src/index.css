@@ -29,6 +29,9 @@ html[data-theme="light"] {
   --bg-alert: #fdeceb;
   --bg-alert-soft: #fdf2f1;
   --bg-info: #eef8f8;
+  /* Text of an alert (on --bg-alert, or on a card): the deep red of the
+     light theme read 1.9:1 on the dark theme's alert background. */
+  --ink-alert: #8a2422;
 }
 
 html[data-theme="dark"] {
@@ -46,6 +49,7 @@ html[data-theme="dark"] {
   --bg-alert: #321614;
   --bg-alert-soft: #261411;
   --bg-info: #0f2426;
+  --ink-alert: #f4b4b1;
   background: #0f1518;
   color: var(--ink);
 }
