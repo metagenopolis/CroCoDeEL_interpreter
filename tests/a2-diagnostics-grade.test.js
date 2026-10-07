@@ -1,13 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  parseAbundance,
-  buildScatter,
-  lineDiagnostics,
-  pointsAboveLine,
-  missingAbundantFromSource,
-  areRelated,
-} from "../src/App.jsx";
-import { automaticScore, scoreGrade } from "../src/diagnostics.js";
+import { parseAbundance, areRelated } from "../src/App.jsx";
+import { automaticScore, eventScore, scoreGrade } from "../src/diagnostics.js";
 
 /* A2.2 — an event whose source or target is not in the abundance table
    cannot be scored, and must say so.
@@ -34,14 +27,16 @@ const metadata = {
   },
 };
 
-/** The chain the Validate panel runs on the selected event (AppMain). */
+/** What the Validate panel evaluates for the selected event: AppMain's
+    memos run eventScore (they used to be copied here, step by step, so a
+    change of AppMain's chain left this test green). */
 function validateScore(ab, event, meta = null) {
-  const sc = buildScatter(ab, event);
-  const di = lineDiagnostics(sc);
-  const above = pointsAboveLine(sc);
-  const mi = missingAbundantFromSource(ab, event.source, event.target, event.rate);
-  const rel = areRelated(meta, event.source, event.target);
-  return { sc, di, above, mi, score: automaticScore(di, above, mi, event.cascade, rel) };
+  const { scatter: sc, diag: di, above, missing: mi, score } = eventScore(
+    ab,
+    event,
+    areRelated(meta, event.source, event.target),
+  );
+  return { sc, di, above, mi, score };
 }
 
 describe("an event with a sample missing from the abundance table", () => {

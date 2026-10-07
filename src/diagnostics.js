@@ -631,28 +631,37 @@ export function bulkCriteria(score) {
   };
 }
 
+/** One event's evaluation, the chain Guided validation (AppMain's memos
+    for the selected event), the bulk dialog (eventBulkCriteria) and the
+    events HTML report all run, so they cannot drift apart: its scatter on
+    `ab` (the table the diagnostics use: the low-abundance-filtered copy
+    when the run declares a factor), the line diagnostics, the points
+    above the line, the missing-species test and automaticScore.
+    `relatedness` is areRelated(metadata, source, target), null without
+    metadata. `scatter` is the event's buildScatter(ab, event) when the
+    caller already holds it (AppMain keeps it while only the verdict
+    changes). Returns { scatter, diag, above, missing, score }; with no
+    event, every part null and the score of nothing ("not_evaluable"). */
+export function eventScore(ab, event, relatedness, scatter = event ? buildScatter(ab, event) : null) {
+  const diag = lineDiagnostics(scatter);
+  const above = pointsAboveLine(scatter);
+  const missing =
+    event && ab ? missingAbundantFromSource(ab, event.source, event.target, event.rate) : null;
+  const score = automaticScore(diag, above, missing, event?.cascade, relatedness);
+  return { scatter, diag, above, missing, score };
+}
+
 /** The bulk dialog's criteria for one event — its eventCriteria memo is
     this function mapped over the events, so the unit tests run the
-    dialog's own code. The event is evaluated as Guided validation
-    evaluates the selected one (AppMain's memos): its scatter on `ab` (the
-    table the diagnostics use), the line diagnostics, the points above the
-    line, the missing-species test and automaticScore, read through
-    bulkCriteria. `relatedness` is areRelated(metadata, source, target),
-    null without metadata. Returns null when the pair cannot be evaluated —
-    no table, or a sample missing from it — which neither the pass nor the
-    fail pick matches. */
+    dialog's own code: eventScore, the evaluation of Guided validation,
+    read through bulkCriteria. `relatedness` is areRelated(metadata,
+    source, target), null without metadata. Returns null when the pair
+    cannot be evaluated — no table, or a sample missing from it — which
+    neither the pass nor the fail pick matches. */
 export function eventBulkCriteria(ab, event, relatedness) {
   const scatter = buildScatter(ab, event);
   if (!scatter || scatter.error) return null;
-  return bulkCriteria(
-    automaticScore(
-      lineDiagnostics(scatter),
-      pointsAboveLine(scatter),
-      missingAbundantFromSource(ab, event.source, event.target, event.rate),
-      event.cascade,
-      relatedness,
-    ),
-  );
+  return bulkCriteria(eventScore(ab, event, relatedness, scatter).score);
 }
 
 /** Does one event's bulkCriteria record satisfy the dialog's per-criterion

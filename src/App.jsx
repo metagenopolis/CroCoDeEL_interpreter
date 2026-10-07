@@ -17,17 +17,14 @@ import {
 } from "./parsing.js";
 import {
   applyLowAbundanceFilter,
-  automaticScore,
   buildScatter,
   detectCascades,
   eventBulkCriteria,
+  eventScore,
   introducedPercent,
-  lineDiagnostics,
   lowAbundanceFilterFactor,
   matchesBulkCriteria,
   matchSpeciesName,
-  missingAbundantFromSource,
-  pointsAboveLine,
   resolveSample,
   spearmanRho,
   speciesCountsBySample,
@@ -27672,11 +27669,10 @@ const defaultFilter = () => ({
       // which is neither a pass nor a fail.
       if (sc.error)
         return `<div class="aggregate skip">Not evaluable — ${escapeHTML(sc.error)}. No criterion can be computed for this pair.</div>`;
-      const di = lineDiagnostics(sc);
-      const ab2 = pointsAboveLine(sc);
-      const mi = missingAbundantFromSource(diagAb, event.source, event.target, event.rate);
       const rel = areRelated(metadata, event.source, event.target);
-      const score = automaticScore(di, ab2, mi, event.cascade, rel);
+      // Guided validation's evaluation (eventScore), on the scatter
+      // already built for this page.
+      const { diag: di, above: ab2, missing: mi, score } = eventScore(diagAb, event, rel, sc);
       const valueRows = [];
       if (di?.r2 != null) valueRows.push(["R² of line fit", di.r2.toFixed(3)]);
       if (di?.n != null) valueRows.push(["Species on line", di.n]);
@@ -28288,31 +28284,18 @@ const defaultFilter = () => ({
       selected?.introduced,
     ],
   );
-  const diag = useMemo(() => lineDiagnostics(scatter), [scatter]);
-  const above = useMemo(() => pointsAboveLine(scatter), [scatter]);
-  const missing = useMemo(
-    () =>
-      selected && diagAb
-        ? missingAbundantFromSource(diagAb, selected.source, selected.target, selected.rate)
-        : null,
-    [diagAb, selected],
-  );
   const selectedRelatedness = useMemo(
     () =>
       selected ? areRelated(metadata, selected.source, selected.target) : null,
     [metadata, selected],
   );
-  const autoScore = useMemo(
-    () =>
-      automaticScore(
-        diag,
-        above,
-        missing,
-        selected?.cascade,
-        selectedRelatedness,
-      ),
-    [diag, above, missing, selected, selectedRelatedness],
+  // The rest of the evaluation through eventScore (src/diagnostics.js),
+  // the chain the bulk dialog and the HTML report run too.
+  const evaluation = useMemo(
+    () => eventScore(diagAb, selected, selectedRelatedness, scatter),
+    [diagAb, selected, selectedRelatedness, scatter],
   );
+  const { diag, above, missing, score: autoScore } = evaluation;
 
   /* ============================================================
      RENDER
