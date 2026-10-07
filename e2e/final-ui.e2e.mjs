@@ -17,7 +17,11 @@
      - F.6  samples named constructor, toString or __proto__ do not break
             the Network or the Samples tab;
      - F.7  the Samples tab tags a never-targeted sample's values "default",
-            as the exports do, and the tags add no width to its columns.
+            as the exports do, and the tags add no width to its columns;
+     - F.8  the Samples tab and the Events table cut an id only where they
+            have no room left, wrapping it first: ids just over the old
+            caps, the benchmarks' ids and names over 12 characters read
+            whole.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -104,6 +108,114 @@ const editRecord = (page, key, edit) =>
       }),
     [key, edit],
   );
+
+/** The ids (and names) of the Samples tab or of the Events table (source
+    and target of each row), the first `limit` rows: the text, whether it
+    is cut (clipped on its line, or lines hidden under its last one), the
+    text shown (the characters inside its box, … where they stop) and its
+    lines. A table id is [data-table-id]; the name under it, its
+    span.truncate. */
+const tableIds = (page, tab, limit = Infinity) =>
+  page.evaluate(
+    ({ tab, limit }) => {
+      const state = (el) => {
+        if (!el) return null;
+        const box = el.getBoundingClientRect();
+        const cut = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+        let shown = "";
+        if (cut) {
+          const range = document.createRange();
+          const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+          for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            for (let i = 0; i < n.length; i++) {
+              range.setStart(n, i);
+              range.setEnd(n, i + 1);
+              const r = range.getBoundingClientRect();
+              if (r.bottom <= box.bottom + 0.5 && r.right <= box.right + 0.5) shown += n.data[i];
+            }
+          }
+          shown += "…";
+        }
+        const lh = parseFloat(getComputedStyle(el).lineHeight) || 16;
+        return { text: el.textContent, cut, shown: cut ? shown : el.textContent, lines: Math.round(box.height / lh) };
+      };
+      const rows =
+        tab === "Samples"
+          ? [...document.querySelectorAll('tr[id^="samplerow-"]')]
+          : [...document.querySelectorAll("tr[data-event-row]")];
+      return rows.slice(0, limit).flatMap((tr) => {
+        const td = tr.querySelectorAll("td");
+        const cells = tab === "Samples" ? [td[0]] : [td[0], td[2]];
+        return cells.map((cell) => {
+          // (Before the ids wrapped, the id was the cell's first
+          // span.truncate and the name its second.)
+          const wrapped = cell.querySelector("[data-table-id]");
+          const lines = [...cell.querySelectorAll("span.truncate")];
+          return {
+            id: state(wrapped || lines[0]),
+            name: state(wrapped ? lines[0] : lines[1]),
+          };
+        });
+      });
+    },
+    { tab, limit },
+  );
+
+/** How far the page scrolls sideways (≤ 0: it does not). */
+const pageScroll = (page) => page.evaluate(() => document.scrollingElement.scrollWidth - window.innerWidth);
+
+/** Load a dataset bundled in the Datasets tab (its card's short title). */
+async function loadDataset(page, title) {
+  await openTab(page, "Datasets");
+  await page.getByText(title, { exact: true }).first().waitFor({ timeout: 30000 });
+  await page.evaluate((title) => {
+    const el = [...document.querySelectorAll("div")].find(
+      (e) => e.children.length === 0 && e.textContent.trim() === title,
+    );
+    let card = el;
+    while (card && !card.querySelector("button")) card = card.parentElement;
+    [...card.querySelectorAll("button")].find((b) => /Load this dataset/.test(b.textContent)).click();
+  }, title);
+  await page.waitForFunction(
+    () => !document.querySelector('[role="status"]') && /Validated \(TP\)/i.test(document.body.innerText),
+    null,
+    { timeout: 180000 },
+  );
+  await page.waitForTimeout(1500);
+}
+
+/** `text` (a demo TSV) with the sample ids of `columns` renamed. */
+function renamed(text, columns, rename) {
+  return text
+    .split("\n")
+    .map((line, i) => {
+      if (!line || line.startsWith("#") || i === 0 || /^source\t/.test(line)) return line;
+      const cells = line.split("\t");
+      for (const c of columns) cells[c] = rename(cells[c]);
+      return cells.join("\t");
+    })
+    .join("\n");
+}
+function renamedAbundance(rename) {
+  const [header, ...rows] = demo("species_abundance.tsv").split("\n");
+  const cells = header.split("\t");
+  return [[cells[0], ...cells.slice(1).map(rename)].join("\t"), ...rows].join("\n");
+}
+
+/** Summary of a list of tableIds states: how many are cut, and whether
+    two different texts read the same. */
+const summary = (states) => {
+  const list = states.filter(Boolean);
+  const cut = list.filter((x) => x.cut);
+  const texts = new Set(list.map((x) => x.text));
+  const shown = new Set(list.map((x) => x.shown));
+  return {
+    n: list.length,
+    cut: cut.length,
+    apart: shown.size === texts.size,
+    detail: `${cut.length} of ${list.length} cut ("${cut[0]?.text ?? ""}" → "${cut[0]?.shown ?? ""}"), ${shown.size} texts for ${texts.size}`,
+  };
+};
 
 await startServer();
 const browser = await launchBrowser();
@@ -472,6 +584,88 @@ try {
       );
     },
     { contextOptions: { viewport: { width: 1024, height: 900 } } },
+  );
+
+  /* F.8 — an id is cut only where its table has no room left. The
+     tables shared their width between their columns in proportion to
+     their content, so ids over a fixed cap were cut to 12 characters
+     though the table had room, and distinct samples read the same: on
+     the bundled MetaPhlAn4 benchmark at 1024 px every Samples-tab id
+     read "conta_source_case_001_0.…" (39 texts for 100 ids), and at
+     1500 px the Events table cut all of them (49 texts for 84 ids). */
+  await scenario(
+    "F.8 benchmark ids",
+    async (page) => {
+      await loadDataset(page, "PRJNA763023+PRJDB4176 — MetaPhlAn4 (raw + filter 20×)");
+      await openTab(page, "Samples");
+      let ids = summary((await tableIds(page, "Samples", 100)).map((c) => c.id));
+      let scroll = await pageScroll(page);
+      check(
+        ids.n === 100 && ids.cut === 0 && ids.apart && scroll <= 0,
+        "F.8 MetaPhlAn4, Samples tab at 1024 px: every id whole, no two the same, no page scroll",
+        `${ids.detail}; page ${scroll} px`,
+      );
+      await page.setViewportSize({ width: 1500, height: 1000 });
+      await openTab(page, "Events");
+      ids = summary((await tableIds(page, "Events", 100)).map((c) => c.id));
+      scroll = await pageScroll(page);
+      check(
+        ids.n === 200 && ids.cut === 0 && ids.apart && scroll <= 0,
+        "F.8 MetaPhlAn4, Events table at 1500 px: every id whole (wrapped), no two the same, no page scroll",
+        `${ids.detail}; page ${scroll} px`,
+      );
+    },
+    { contextOptions: { viewport: { width: 1024, height: 900 } } },
+  );
+
+  /* F.8 — ids just over the old caps, and names over 12 characters: the
+     demo with every id prefixed "COHORT2024_STOOL_EXTRACTION_" (31 to 34
+     characters) had 78 of 91 ids cut by 8 px in the Samples tab at 1280
+     px (23 texts for 91 ids); with a 22-character sample_name, every name
+     was cut, in both tables, though the table had room. */
+  await scenario(
+    "F.8 ids and names just over the caps",
+    async (page) => {
+      const prefixed = (id) => `COHORT2024_STOOL_EXTRACTION_${id}`;
+      await upload(page, 0, "contamination_events.tsv", renamed(demo("contamination_events.tsv"), [0, 1], prefixed));
+      await upload(page, 1, "species_abundance.tsv", renamedAbundance(prefixed));
+      await upload(page, 2, "metadata.tsv", renamed(demo("metadata.tsv"), [0], prefixed));
+      await upload(page, 3, "plate_map.tsv", renamed(demo("plate_map.tsv"), [0], prefixed));
+      for (const tab of ["Samples", "Events"]) {
+        await openTab(page, tab);
+        const ids = summary((await tableIds(page, tab)).map((c) => c.id));
+        const scroll = await pageScroll(page);
+        check(
+          ids.n === (tab === "Samples" ? 91 : 48) && ids.cut === 0 && ids.apart && scroll <= 0,
+          `F.8 31- to 34-character ids, ${tab} at 1280 px: every id whole, no two the same, no page scroll`,
+          `${ids.detail}; page ${scroll} px`,
+        );
+      }
+      // Names of 21 to 22 characters, short ids, at 1500 px.
+      await page.setViewportSize({ width: 1500, height: 1000 });
+      const md = demo("metadata.tsv").split("\n");
+      const named = [
+        `${md[0]}\tsample_name`,
+        ...md
+          .slice(1)
+          .filter(Boolean)
+          .map((line) => `${line}\t${`Patient_${line.split("\t")[0]}_stool_DNA`.slice(0, 22)}`),
+      ].join("\n");
+      await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+      await upload(page, 1, "species_abundance.tsv", demo("species_abundance.tsv"));
+      await upload(page, 2, "metadata.tsv", named);
+      await upload(page, 3, "plate_map.tsv", demo("plate_map.tsv"));
+      for (const tab of ["Samples", "Events"]) {
+        await openTab(page, tab);
+        const names = summary((await tableIds(page, tab)).map((c) => c.name));
+        check(
+          names.n === (tab === "Samples" ? 91 : 48) && names.cut === 0,
+          `F.8 22-character names, ${tab} at 1500 px: every name whole`,
+          names.detail,
+        );
+      }
+    },
+    { contextOptions: { viewport: { width: 1280, height: 900 } } },
   );
 
   /* F.1 — the events TSV's column is "verdict": the Export card and the

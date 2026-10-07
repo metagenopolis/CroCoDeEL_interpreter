@@ -627,13 +627,21 @@ export function plateDistance(plateMap, source, target) {
    Events table at a 1500 px window) or ran over its neighbours. Wherever
    an id may not fit, it is cut with an ellipsis and the whole id is its
    tooltip. The page still holds the whole id: selecting it (double- or
-   triple-click) and copying gives all of it. */
+   triple-click) and copying gives all of it. The two tables that list
+   ids, the Samples tab and the Events table, wrap a long id instead of
+   cutting it (SampleId, idColumnWidth). */
 
 /* The width of `text` in `font` (a CSS font shorthand), measured on a
-   canvas; null where there is none (jsdom). */
+   canvas; null where there is none (jsdom). Measures are kept until a web
+   font finishes loading (fontEpoch): before that the canvas measured the
+   fallback font. */
 let textCanvas; // undefined until first used, null without a canvas
 let textCanvasFont = ""; // the font last set on it
+const textWidths = new Map(); // `${font}\u0000${text}` → px
 function textWidth(text, font) {
+  const key = `${font}\u0000${text}`;
+  const known = textWidths.get(key);
+  if (known !== undefined) return known;
   if (textCanvas === undefined) {
     try {
       textCanvas = document.createElement("canvas").getContext("2d") || null;
@@ -646,8 +654,31 @@ function textWidth(text, font) {
     textCanvas.font = font;
     textCanvasFont = font;
   }
-  return textCanvas.measureText(text).width;
+  const px = textCanvas.measureText(text).width;
+  if (textWidths.size > 50000) textWidths.clear();
+  textWidths.set(key, px);
+  return px;
 }
+
+/* Bumped each time the page's web fonts finish loading: what the canvas
+   measured before is dropped, and the components that size a column from
+   it (useFontEpoch) render again. A table drawn at startup — a session
+   reopened on the Events tab — was measured in the fallback font. */
+let fontEpoch = 0;
+const fontEpochListeners = new Set();
+if (typeof document !== "undefined" && document.fonts?.addEventListener) {
+  document.fonts.addEventListener("loadingdone", () => {
+    textWidths.clear();
+    fontEpoch += 1;
+    fontEpochListeners.forEach((listener) => listener());
+  });
+}
+function subscribeFontEpoch(listener) {
+  fontEpochListeners.add(listener);
+  return () => fontEpochListeners.delete(listener);
+}
+const useFontEpoch = () =>
+  React.useSyncExternalStore(subscribeFontEpoch, () => fontEpoch, () => 0);
 
 /** The width of `text` in `font`, counted in that font's `ch` (the width
     of its "0", the unit of SampleId's floor), or its number of characters
@@ -661,66 +692,171 @@ function widthInCh(text, font) {
 /** The Events table's id font — the app's body font (AppMain), semibold,
     13 px — to measure its ids in. */
 const EVENTS_ID_FONT = '600 13px "Avenir Next", "Nunito Sans", system-ui, -apple-system, sans-serif';
+/** The Samples tab's id font (SampleIdCell). */
+const SAMPLES_ID_FONT = "600 13px ui-monospace, monospace";
+/** The font of a sample's name under its id, in both tables. */
+const SAMPLE_NAME_FONT = '400 11px "Avenir Next", "Nunito Sans", system-ui, -apple-system, sans-serif';
+/** The widest a sample's name is drawn under its id before it is cut. */
+const SAMPLE_NAME_MAX_PX = 220;
 
-/** How wide an id may be and still never be cut by SampleId, in `ch`: a
-    table widens for it, as it did for every id before long ids were cut.
-    The Samples tab shows one id a row, in a monospace font: up to 32
-    characters (the bundled PRJEB6337 study's ids reach 29,
-    "ERS475274_ERS475275_ERS475276"). The Events table shows two, source
-    and target, beside seven to nine other columns: up to 25ch, about 23
-    characters in capitals and digits ("COHORT2024_STOOL_58D256" is
-    24.3ch) or 29 in lower case (the benchmarks' 28-character
-    "conta_target_case_010_0.5_10" is 23.6ch). At a 1500 px window two
-    such ids still fit beside the context column without scrolling the
-    page; two 29-character ids in capitals do not
-    (the base build scrolled it by 47 px on PRJEB6337, by 48 px on the
-    Meteor benchmark's 41-character ids). A sample's name, under its id,
-    is never cut up to 12 characters. */
-const WHOLE_ID_CH = { alone: 32, pair: 25, name: 12 };
-
-/** A longer id is cut to what its table has left, but never below this
-    many characters (`ch`). */
+/** An id or a name is never narrowed below this many characters (`ch`).
+    A shorter one is never cut nor wrapped. */
 const ID_FLOOR_CH = 12;
+/** An id of up to this many characters is never cut in a table: it wraps
+    onto as many lines as its column needs (the bundled studies' longest,
+    the benchmarks', have 52). */
+const ID_WHOLE_MAX_CHARS = 64;
+/** The lines a longer id (a LIMS export's 150 characters) keeps before it
+    is cut. */
+const ID_MAX_LINES = 4;
 
-/** One sample id, cut to the width it is given. The one-track grid around
-    it is what lets a table column or a flex row narrow it: an auto-layout
-    table never makes a column narrower than the min-content width of its
-    cells, which for one line of text is the whole text. An id at most
-    `whole` ch wide (WHOLE_ID_CH; measured in `font` when given, else
-    counted in characters) keeps that: its track starts at its own width
-    (max-content), so it is never cut. A longer id's track, minmax(12ch,
-    1fr), adds 12 characters to the min-content width and its full width
-    to the max-content one, so it is cut only as far as the row has to,
-    never below 12 characters.
+/** `text` split where a line may break: after "_", "-", "/", ":" and
+    "|", and before a "." followed by a letter (".metaphlan4"), not inside
+    "0.5". The pieces go between <wbr>s, so an id wraps at its own
+    separators ("conta_target_case_005_" / "0.5_1.metaphlan4"); a piece
+    longer than the line still breaks anywhere (overflow-wrap). No regex
+    lookbehind: Safari before 16.4 refuses the whole script. */
+function idPieces(text) {
+  const pieces = [];
+  let start = 0;
+  for (let i = 1; i < text.length; i++) {
+    const before = text[i - 1];
+    const breakAfter = before === "_" || before === "-" || before === "/" || before === ":" || before === "|";
+    const breakBefore = text[i] === "." && /[A-Za-z]/.test(text[i + 1] || "");
+    if (breakAfter || breakBefore) {
+      pieces.push(text.slice(start, i));
+      start = i;
+    }
+  }
+  pieces.push(text.slice(start));
+  return pieces;
+}
 
-    The first version left whole only ids of up to 12 characters. An auto
-    table shares its width between its columns' min-content and
-    max-content widths in proportion, so a 13-to-40-character id was cut
-    though the table had room for it, the room going to columns that wrap:
-    "COHORT2024_STOOL_58D28" read "COHORT2024_ST…" on every row of the
-    Samples tab, and the PRJEB6337 study's 29-character ids were cut where
-    the base build showed them whole. `className` and `style` go on the
-    grid, so its `ch` is the id's. */
-const SampleId = ({ id, title, whole = WHOLE_ID_CH.pair, font, className = "", style }) => {
+/** One sample id in a table: the Samples tab and the Events table. An id
+    of up to ID_FLOOR_CH characters (measured in `font` when given, else
+    counted) is one line that never shrinks. A longer one wraps at its
+    separators when its column is narrower than it — never narrower than
+    ID_FLOOR_CH characters. Up to ID_WHOLE_MAX_CHARS characters it is
+    never cut, so two ids never read the same; a longer one is cut after
+    ID_MAX_LINES lines, with an ellipsis, its tooltip and the page keeping
+    it whole. Its column is as wide as its longest id whenever the table
+    has room (idColumnWidth), so it wraps only where the table would
+    otherwise run past the page.
+
+    It used to be cut on one line to the width an auto-layout table gave
+    its column. Such a table shares its width between its columns in
+    proportion to their content, the columns that wrap (Events as source /
+    target, Context, Target action) taking most of it, so ids were cut
+    though the table had room for them: at 1024 px the MetaPhlAn4
+    benchmark's 38-character ids read "conta_source_case_001_0.…" on every
+    row of the Samples tab (39 different texts for 100 ids), and at 1500 px
+    the Events table cut all of them (49 texts for 84 ids), "…_0.5_1" and
+    "…_0.5_1_before_conta" reading the same. */
+const SampleId = React.memo(function SampleId({ id, font, className = "", style }) {
   const text = String(id ?? "");
   const width = font ? widthInCh(text, font) : text.length;
+  if (width <= ID_FLOOR_CH) {
+    return (
+      <span
+        data-table-id=""
+        className={`block whitespace-nowrap ${className}`}
+        style={style}
+        title={text}
+      >
+        {text}
+      </span>
+    );
+  }
+  const clamp =
+    text.length > ID_WHOLE_MAX_CHARS
+      ? { display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: ID_MAX_LINES, overflow: "hidden" }
+      : { display: "block" };
+  return (
+    <span
+      data-table-id=""
+      className={className}
+      title={text}
+      style={{
+        ...clamp,
+        overflowWrap: "anywhere",
+        minWidth: `${ID_FLOOR_CH}ch`,
+        // May use half of its cell's right padding before it wraps: on the
+        // PRJEB6337 study at 1500 px the Samples tab has 0.2 px less than
+        // its 29-character ids, which wrapped for it.
+        marginRight: -6,
+        ...style,
+      }}
+    >
+      {idPieces(text).map((piece, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <wbr />}
+          {piece}
+        </React.Fragment>
+      ))}
+    </span>
+  );
+});
+
+/** A sample's metadata name under its id, on one line: whole up to
+    SAMPLE_NAME_MAX_PX, cut with an ellipsis past it or where its column
+    is narrower — never below ID_FLOOR_CH characters (the one-track grid
+    is what lets the column narrow it: an auto-layout table never makes a
+    column narrower than the min-content width of its cells, which for one
+    line of text is the whole text). Its column is as wide as its name
+    whenever the table has room (idColumnWidth). */
+const SampleNameLine = ({ name, className = "", style }) => {
+  const text = String(name ?? "");
   return (
     <span
       className={`grid ${className}`}
       style={{
         gridTemplateColumns:
-          width <= whole
+          text.length <= ID_FLOOR_CH
             ? "minmax(max-content, 1fr)"
-            : `minmax(${Math.min(ID_FLOOR_CH, whole)}ch, 1fr)`,
+            : `minmax(${ID_FLOOR_CH}ch, 1fr)`,
+        maxWidth: SAMPLE_NAME_MAX_PX,
         ...style,
       }}
     >
-      <span className="truncate" title={title === undefined ? text : title || undefined}>
-        {id}
+      <span className="truncate" title={text}>
+        {text}
       </span>
     </span>
   );
 };
+
+/** How a sample's name looks under its id in the Events table. */
+const SAMPLE_NAME_STYLE = { color: "var(--ink-muted)", fontWeight: 400 };
+
+/** The `width` a table's id column gets (px, on its header cell), or
+    undefined when every id and name in it is short enough never to wrap:
+    its widest id (in `idFont`) or name (cut at SAMPLE_NAME_MAX_PX), plus a
+    margin for rounding. A column with a width is "constrained": an
+    auto-layout table widens it to that width before it widens the columns
+    that wrap (Context, Events as source / target, Target action), and
+    narrows it only once those are at their narrowest — so an id wraps
+    only where the table would otherwise run past the page. Without it the
+    table gave its width to the columns in proportion to their content and
+    cut ids it had room for. `pairs` is [[id, name], …]; `padding` is the
+    cells' horizontal padding (px-3 on both sides): a header's width is
+    its border box (Tailwind's border-box sizing). */
+function idColumnWidth(pairs, idFont, padding = 24) {
+  let widest = 0;
+  let long = false;
+  for (const [id, name] of pairs) {
+    const text = String(id ?? "");
+    const px = textWidth(text, idFont);
+    if (px == null) return undefined;
+    widest = Math.max(widest, px);
+    if (widthInCh(text, idFont) > ID_FLOOR_CH) long = true;
+    if (name) {
+      const namePx = textWidth(String(name), SAMPLE_NAME_FONT) ?? 0;
+      widest = Math.max(widest, Math.min(namePx, SAMPLE_NAME_MAX_PX));
+      if (String(name).length > ID_FLOOR_CH) long = true;
+    }
+  }
+  return long ? Math.ceil(widest) + 2 + padding : undefined;
+}
 
 /** A sample id and, after it, its metadata name in brackets, on one line:
     the id keeps its width (minmax(0, max-content)) and the name takes what
@@ -4449,7 +4585,7 @@ const QuickBtn = ({ children, onClick, active, tone, title }) => {
   );
 };
 
-const Th = ({ children, right, onClick, title, divider }) => (
+const Th = ({ children, right, onClick, title, divider, width }) => (
   <th
     onClick={onClick}
     title={title}
@@ -4457,6 +4593,7 @@ const Th = ({ children, right, onClick, title, divider }) => (
       right ? "text-right" : "text-left"
     } ${onClick ? "cursor-pointer select-none" : ""}`}
     style={{
+      width,
       color: "var(--ink)",
       fontWeight: 800,
       fontFamily: '"Raleway", sans-serif',
@@ -6607,6 +6744,18 @@ const EventsTable = ({
   const safePage = Math.min(Math.max(1, page), totalPages);
   const startIdx = (safePage - 1) * PAGE_SIZE;
   const visible = events.slice(startIdx, startIdx + PAGE_SIZE);
+  // Source and target columns as wide as their longest id or name on this
+  // page while the table has room (idColumnWidth); measured again once the
+  // web fonts have loaded.
+  useFontEpoch();
+  const sourceWidth = idColumnWidth(
+    visible.map((e) => [e.source, sampleName(metadata, e.source)]),
+    EVENTS_ID_FONT,
+  );
+  const targetWidth = idColumnWidth(
+    visible.map((e) => [e.target, sampleName(metadata, e.target)]),
+    EVENTS_ID_FONT,
+  );
 
   // On arrival back from another tab (typically Validate via the back
   // chip or browser Back), paginate to the row that was clicked
@@ -6680,6 +6829,7 @@ const EventsTable = ({
               <Th
                 onClick={() => toggleSort("source")}
                 title="Source sample — the contaminant. Click to sort alphabetically."
+                width={sourceWidth}
               >
                 Source <SortIcon col="source" />
               </Th>
@@ -6687,6 +6837,7 @@ const EventsTable = ({
               <Th
                 onClick={() => toggleSort("target")}
                 title="Target sample — the one that received the contamination. Click to sort alphabetically."
+                width={targetWidth}
               >
                 Target <SortIcon col="target" />
               </Th>
@@ -6784,11 +6935,10 @@ const EventsTable = ({
                   >
                     <SampleId id={e.source} font={EVENTS_ID_FONT} />
                     {sampleName(metadata, e.source) && (
-                      <SampleId
-                        id={sampleName(metadata, e.source)}
-                        whole={WHOLE_ID_CH.name}
+                      <SampleNameLine
+                        name={sampleName(metadata, e.source)}
                         className="text-[11px]"
-                        style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
+                        style={SAMPLE_NAME_STYLE}
                       />
                     )}
                     {metadata && (
@@ -6808,11 +6958,10 @@ const EventsTable = ({
                   >
                     <SampleId id={e.target} font={EVENTS_ID_FONT} />
                     {sampleName(metadata, e.target) && (
-                      <SampleId
-                        id={sampleName(metadata, e.target)}
-                        whole={WHOLE_ID_CH.name}
+                      <SampleNameLine
+                        name={sampleName(metadata, e.target)}
                         className="text-[11px]"
-                        style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
+                        style={SAMPLE_NAME_STYLE}
                       />
                     )}
                     {metadata && (
@@ -9841,33 +9990,31 @@ const SampleContextCell = ({
   );
 };
 
+/** How the Samples tab draws a sample's id (SAMPLES_ID_FONT) and name. */
+const SAMPLE_CELL_ID_STYLE = {
+  fontFamily: "ui-monospace, monospace",
+  color: "var(--ink)",
+  fontWeight: 600,
+  fontSize: 13,
+  lineHeight: 1.2,
+};
+const SAMPLE_CELL_NAME_STYLE = {
+  color: "var(--ink-muted)",
+  fontWeight: 400,
+  marginTop: 2,
+};
 /** Sample id + optional sample_name + notes-toggle button rendered in
     the first column. The name is shown right below the id (matching
     the Events table) so it doesn't need a dedicated column. */
 const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
   <>
-    <SampleId
-      id={row.id}
-      whole={WHOLE_ID_CH.alone}
-      style={{
-        fontFamily: "ui-monospace, monospace",
-        color: "var(--ink)",
-        fontWeight: 600,
-        fontSize: 13,
-        lineHeight: 1.2,
-      }}
-    />
+    {/* Monospace: its width in ch is its number of characters. */}
+    <SampleId id={row.id} style={SAMPLE_CELL_ID_STYLE} />
     {row.name && (
-      <SampleId
-        id={row.name}
-        whole={WHOLE_ID_CH.name}
+      <SampleNameLine
+        name={row.name}
         className="text-[11px]"
-        style={{
-          color: "var(--ink-muted)",
-          fontWeight: 400,
-          maxWidth: 220,
-          marginTop: 2,
-        }}
+        style={SAMPLE_CELL_NAME_STYLE}
       />
     )}
     <button
@@ -11716,6 +11863,14 @@ const SamplesTab = ({
     (safePage - 1) * PAGE_SIZE,
     safePage * PAGE_SIZE,
   );
+  // The Sample column as wide as its longest id or name on this page while
+  // the table has room (idColumnWidth); measured again once the web fonts
+  // have loaded.
+  useFontEpoch();
+  const sampleColumnWidth = idColumnWidth(
+    visible.map((r) => [r.id, r.name]),
+    SAMPLES_ID_FONT,
+  );
 
   // Keyboard navigation — same UX as Validate. Arrow up / down step
   // through the sorted list one row at a time; left / right jump to
@@ -12015,6 +12170,7 @@ const SamplesTab = ({
                       zIndex: 10,
                       background: "var(--bg-soft)",
                       minWidth: col.minWidth || undefined,
+                      width: col.id === "sample" ? sampleColumnWidth : undefined,
                       borderLeft: col.divider
                         ? "1px solid var(--border)"
                         : undefined,
@@ -20473,11 +20629,17 @@ const HelpTab = ({ onStartTour }) => {
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
               Sample ids are shown as your files write them. An id too
               long for its place — a 150-character LIMS id, say — is cut
-              with an ellipsis: hover it to read it whole. The tables cut
-              only long ids: the Samples tab widens for an id of up to 32
-              characters, the Events table, two ids a row, for one of up to
-              about 23 (29 in lower case); a longer one is cut to the room
-              its table has left, never below 12 characters. On a{" "}
+              with an ellipsis: hover it to read it whole. The Samples tab
+              and the Events table give their id columns the width of
+              their longest id or name before widening any other column,
+              as long as the table fits the page. Past that an id wraps
+              onto more lines, at its separators (<code>_</code>,{" "}
+              <code>-</code>, <code>/</code>, <code>:</code>, before an
+              extension such as <code>.metaphlan4</code>), never narrower
+              than 12 characters; an id of up to 64 characters is never
+              cut there, so two ids never read the same, and a longer one
+              is cut after four lines. A sample's name stays on one line
+              under its id, cut first. On a{" "}
               <em>source → target</em> line, the source keeps its width as
               long as the target keeps a few characters; a sample's name is
               cut before its id. The Guided validation header puts the

@@ -117,32 +117,31 @@ function longAbundance(rename = longId) {
 /** The sample ids of the Samples tab (`tab` "Samples") or of the Events
     table (source and target of each row), the first `limit` rows: the id,
     whether it is cut, and the text shown (its characters inside the box,
-    an ellipsis where they stop). */
+    an ellipsis where they stop). A long id wraps onto several lines
+    (SampleId, [data-table-id]): it is cut when lines are hidden under its
+    last one. */
 const tableIds = (page, tab, limit = Infinity) =>
   page.evaluate(
     ({ tab, limit }) => {
-      // The characters drawn before the ellipsis: those that end, with
-      // room for an ellipsis after them, inside the box.
+      // The characters drawn inside the box, its lines split by <wbr>s
+      // into several text nodes.
       const shown = (el) => {
-        const probe = document.createElement("span");
-        probe.textContent = "…";
-        probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${getComputedStyle(el).font}`;
-        document.body.append(probe);
-        const right = el.getBoundingClientRect().right - probe.getBoundingClientRect().width;
-        probe.remove();
+        const box = el.getBoundingClientRect();
         const range = document.createRange();
-        const text = el.firstChild;
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
         let out = "";
-        for (let i = 0; i < text.length; i++) {
-          range.setStart(text, i);
-          range.setEnd(text, i + 1);
-          if (range.getBoundingClientRect().right <= right + 0.5) out += text.data[i];
-          else break;
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          for (let i = 0; i < n.length; i++) {
+            range.setStart(n, i);
+            range.setEnd(n, i + 1);
+            const r = range.getBoundingClientRect();
+            if (r.bottom <= box.bottom + 0.5 && r.right <= box.right + 0.5) out += n.data[i];
+          }
         }
         return `${out}…`;
       };
       const state = (el) => {
-        const cut = el.scrollWidth > el.clientWidth + 1;
+        const cut = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
         return { text: el.textContent, cut, shown: cut ? shown(el) : el.textContent };
       };
       const rows =
@@ -151,7 +150,7 @@ const tableIds = (page, tab, limit = Infinity) =>
           : [...document.querySelectorAll("tr[data-event-row]")];
       return rows.slice(0, limit).map((tr) => {
         const td = tr.querySelectorAll("td");
-        const id = (cell) => state(cell.querySelector("span.truncate"));
+        const id = (cell) => state(cell.querySelector("[data-table-id]"));
         return tab === "Samples" ? id(td[0]) : { source: id(td[0]), target: id(td[2]) };
       });
     },
@@ -251,14 +250,20 @@ const pairs = (page, scope = "body", limit = Infinity) =>
     });
   }, { scope, limit });
 
-/** Cut, ellipsis and tooltip of the text element `locator`. */
+/** Cut, ellipsis and tooltip of the text element `locator`: cut on its
+    line (text-overflow), or after its last line (a table's id, clamped to
+    a few lines, -webkit-line-clamp). */
 const cutState = (locator) =>
-  locator.evaluate((el) => ({
-    text: el.textContent,
-    cut: el.scrollWidth > el.clientWidth + 1,
-    ellipsis: getComputedStyle(el).textOverflow === "ellipsis",
-    title: el.closest("[title]")?.getAttribute("title") ?? null,
-  }));
+  locator.evaluate((el) => {
+    const style = getComputedStyle(el);
+    const clamped = style.webkitLineClamp && style.webkitLineClamp !== "none";
+    return {
+      text: el.textContent,
+      cut: el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1,
+      ellipsis: style.textOverflow === "ellipsis" || !!clamped,
+      title: el.closest("[title]")?.getAttribute("title") ?? null,
+    };
+  });
 
 await startServer();
 const browser = await launchBrowser();
@@ -310,11 +315,11 @@ try {
 
     await openTab(page, "Samples");
     await noScroll("Samples");
-    const sampleCell = sampleRow(page, src0).locator("span.truncate", { hasText: src0 }).first();
+    const sampleCell = sampleRow(page, src0).locator("[data-table-id]", { hasText: src0 }).first();
     const sc = await cutState(sampleCell);
     check(
       sc.cut && sc.ellipsis && sc.title === src0 && sc.text === src0,
-      "B3.1 Samples: the id is cut with an ellipsis, whole in its tooltip",
+      "B3.1 Samples: the id is cut with an ellipsis after its lines, whole in its tooltip",
       JSON.stringify({ ...sc, text: sc.text?.length, title: sc.title?.length }),
     );
 
@@ -341,8 +346,8 @@ try {
     await noScroll("Events table");
     const row = page.locator('tr[data-event-row="0"]');
     const ev = [
-      await cutState(row.locator("td").nth(0).locator("span.truncate").first()),
-      await cutState(row.locator("td").nth(2).locator("span.truncate").first()),
+      await cutState(row.locator("td").nth(0).locator("[data-table-id]")),
+      await cutState(row.locator("td").nth(2).locator("[data-table-id]")),
     ];
     check(
       ev.every((c) => c.cut && c.ellipsis) && ev[0].title === src0 && ev[1].title === tgt0,
@@ -519,7 +524,7 @@ try {
     "B3.1 short ids stay whole",
     async (page) => {
       await openTab(page, "Events");
-      const cells = page.locator('tr[data-event-row] td span.truncate');
+      const cells = page.locator("tr[data-event-row] td [data-table-id]");
       const n = await cells.count();
       const cut = await cells.evaluateAll((els) =>
         els.filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent),
@@ -777,7 +782,7 @@ try {
     async (page) => {
       for (const tab of ["Samples", "Events"]) {
         await openTab(page, tab);
-        const cut = await page.locator("td span.truncate").evaluateAll((els) =>
+        const cut = await page.locator("td [data-table-id]").evaluateAll((els) =>
           els
             .filter((el) => /^(\d+[DM]\d*|NC\d+)$/.test(el.textContent))
             .filter((el) => el.scrollWidth > el.clientWidth + 1)
