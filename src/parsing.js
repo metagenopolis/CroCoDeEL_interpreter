@@ -28,9 +28,17 @@ function unquoteCell(s) {
     textareas AND the bulk-apply actions prepend `${tag}\n\n${notes}`
     themselves, so one event could emit three physical lines — enough to
     make `pandas.read_csv(sep='\t')` either raise or invent rows. Every
-    field of every writer goes through here. */
+    field of every writer goes through here.
+
+    A cell that starts with a double quote is quoted the CSV way (wrapped
+    in quotes, inner quotes doubled). Read back, unquoteCell strips one
+    layer of quotes from a cell that starts and ends with one, so a note
+    such as `"Quoted" ... "end"` came back as `Quoted" ... "end`; pandas
+    and R, whose quote character is `"` too, misread such a cell as well.
+    Quoted, all three give back the text as written. */
 export function tsvCell(v) {
-  return String(v ?? "").replace(/[\t\r\n]+/g, " ");
+  const s = String(v ?? "").replace(/[\t\r\n]+/g, " ");
+  return s.charCodeAt(0) === 34 ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /** Split a TSV text into its header cells, its rows (objects keyed by
@@ -84,7 +92,9 @@ function parseRunMetadata(headerComments) {
       const idx = kv.indexOf(":");
       if (idx < 0) return;
       const key = kv.slice(0, idx).trim();
-      const val = kv.slice(idx + 1).trim();
+      // Unquoted like any cell: the curated exports write "# study: …"
+      // through tsvCell, which quotes a title that starts with a quote.
+      const val = unquoteCell(kv.slice(idx + 1).trim());
       if (key) meta[key] = val;
     });
   });

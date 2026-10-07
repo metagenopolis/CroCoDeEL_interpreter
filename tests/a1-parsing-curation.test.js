@@ -200,3 +200,39 @@ describe("parseEvents — files without curation columns", () => {
     expect("fileAction" in events[0]).toBe(false);
   });
 });
+
+describe("tsvCell → parseEvents keeps every note as written", () => {
+  // Written the way exportReport writes them; tabs and line breaks are
+  // flattened to one space, everything else must come back unchanged.
+  const notes = [
+    '"Quoted" first line\twith tab\nsecond line "end"',
+    '"whole note in quotes"',
+    '"starts with a quote only',
+    'ends with a quote only"',
+    'a "quoted" word inside',
+    '"',
+    '""',
+    "plain",
+  ];
+
+  it("quotes a cell that starts with a double quote, the CSV way", () => {
+    expect(tsvCell('"a" b')).toBe('"""a"" b"');
+    expect(tsvCell('a "b"')).toBe('a "b"');
+    expect(tsvCell('"')).toBe('""""');
+    expect(tsvCell("x\t\ny")).toBe("x y");
+  });
+
+  it("round-trips notes with quotes at either end", () => {
+    const text = [
+      ["source", "target", "rate", "probability", "verdict", "notes"].join("\t"),
+      ...notes.map((n, i) => ["A", `T${i}`, "0.1", "0.9", "true_positive", n].map(tsvCell).join("\t")),
+    ].join("\n");
+    const { events } = parseEvents(text);
+    expect(events.map((e) => e.notes)).toEqual(notes.map((n) => n.replace(/[\t\n]+/g, " ")));
+  });
+
+  it("round-trips a study title that starts with a quote, in the # header line", () => {
+    const text = [`# study: ${tsvCell('"Cohort" 2024')}`, "source\ttarget", "A\tB"].join("\n");
+    expect(parseEvents(text).runMetadata).toEqual({ study: '"Cohort" 2024' });
+  });
+});

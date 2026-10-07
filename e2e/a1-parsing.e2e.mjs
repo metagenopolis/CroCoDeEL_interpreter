@@ -11,7 +11,8 @@
        subjects "same group", and the metadata card shows which header
        was read for which field;
      - a plate map given as row + column loads (it used to be refused);
-     - the curated events TSV of the Export tab reloads with its verdicts;
+     - the curated events TSV of the Export tab reloads with its verdicts
+       and notes, a note starting with a quote included;
      - the metadata download reloads to the same relatedness;
      - metadata kept by a session of an earlier version (substring
        mapping) is read again with the current rules, on session import
@@ -316,28 +317,70 @@ try {
     await ctx.close();
   }
 
-  /* ------- 6. the curated events export reloads with its verdicts */
+  /* ------- 6. the curated events export reloads with its curation */
   {
     const { ctx, page, errors } = await newPage(browser);
     await loadDemo(page);
     await openTab(page, "Events");
-    const tp = page.locator('button[title="mark as true positive"]');
-    for (const i of [0, 1, 2]) {
-      await tp.nth(i).click();
+    const mark = (title) => page.locator(`button[title="mark as ${title}"]`);
+    for (const [title, i] of [
+      ["true positive", 0],
+      ["true positive", 1],
+      ["true positive", 2],
+      ["false positive", 3],
+      ["false positive", 4],
+      ["uncertain", 5],
+    ]) {
+      await mark(title).nth(i).click();
       await page.waitForTimeout(300);
     }
-    const marked = (await overviewStats(page)).tp;
-    await openTab(page, "Export");
-    const [download] = await Promise.all([
-      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
-      page.getByRole("button", { name: /Download events TSV/i }).first().click(),
-    ]);
-    check(!!download && marked === 3, "three events marked TP are exported", `TP ${marked}`);
-    if (download) {
-      const text = readFileSync(await download.path(), "utf8");
+    // A note with quotes at both ends, a tab and a line break, as typed in
+    // the Validate panel for the first event.
+    await openTab(page, "Validate");
+    await page
+      .locator('textarea[placeholder^="Notes: related samples"]')
+      .fill('"Quoted" first line\twith tab\nsecond line "end"');
+    await page.waitForTimeout(1500);
+    const marked = await overviewStats(page);
+    const downloadEvents = async () => {
+      await openTab(page, "Export");
+      const [download] = await Promise.all([
+        page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+        page.getByRole("button", { name: /Download events TSV/i }).first().click(),
+      ]);
+      return download ? readFileSync(await download.path(), "utf8") : null;
+    };
+    const text = await downloadEvents();
+    check(
+      !!text && marked.tp === 3 && marked.fp === 2,
+      "the evaluated events are exported",
+      `TP ${marked.tp}, FP ${marked.fp}`,
+    );
+    if (text) {
       await upload(page, 0, "contamination_events_curated.tsv", text);
       const s = await overviewStats(page);
-      check(s.tp === 3, "reloading the curated TSV restores the verdicts", `TP ${s.tp}`);
+      check(s.tp === 3 && s.fp === 2, "reloading the curated TSV restores the verdicts", `TP ${s.tp}, FP ${s.fp}`);
+      // Export again: every verdict and every note comes back as written.
+      const again = await downloadEvents();
+      const curation = (t) =>
+        (t || "")
+          .split("\n")
+          .filter((l) => l && !l.startsWith("#"))
+          .map((l) => l.split("\t"))
+          .map((c) => [c[0], c[1], c[6], c[8]].join(" | "))
+          .sort();
+      const first = curation(text);
+      const second = curation(again);
+      check(
+        first.length === 25 && JSON.stringify(second) === JSON.stringify(first),
+        "a second export after the reload gives the same verdicts and notes",
+        second.find((l, i) => l !== first[i]) || "",
+      );
+      check(
+        first.some((l) => l.endsWith('| """Quoted"" first line with tab second line ""end"""')),
+        "a note starting with a quote is written quoted, so it reloads as typed",
+        first.find((l) => l.includes("Quoted")) || "no such note",
+      );
     }
     check(errors.length === 0, "no JS error across the reload", errors[0] || "");
     await ctx.close();
