@@ -22,6 +22,7 @@
        across a reload; the error screen says what is really stored;
      - clearing the events file keeps the abundance table and the metadata
        across a reload;
+     - a tab that crashes keeps the navigation and Export usable;
      - the fields of the first wave of fixes survive a reload and the
        session JSON round trip.
 
@@ -774,6 +775,36 @@ try {
     { expectedErrors: /Cannot read properties of null|render error|The above error occurred/ },
   );
 
+  /* B1.6 A tab that crashes keeps the navigation and Export usable. */
+  await scenario(
+    "B1.6 tab crash",
+    async (page) => {
+      await mark(page, "true positive", 0);
+      await saved(page);
+      // One stored well entry damaged: the Plate tab cannot render it.
+      await editRecord(page, "plate", "r.bySample[Object.keys(r.bySample)[0]] = null; return r;");
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(1500);
+      await openTab(page, "Plate");
+      const fallback = page.locator('[data-tab-error="Plate"]');
+      check(
+        (await fallback.count()) === 1 && /The Plate tab could not be shown/.test(await fallback.innerText()),
+        "B1.6 the Plate tab shows its error in its place",
+      );
+      check(
+        (await page.getByRole("button", { name: /^Export$/ }).count()) === 1 && !/Something went wrong while rendering/.test(await page.locator("body").innerText()),
+        "B1.6 …the navigation is still there",
+      );
+      await fallback.getByRole("button", { name: "Go to Export" }).click();
+      await page.waitForTimeout(800);
+      const tsv = await exportEventsTSV(page);
+      check(!!tsv && tsv.split("\n").some((l) => l.includes("\ttrue_positive\t")), "B1.6 Export works and downloads the curation");
+      const json = await exportSession(page);
+      check(!!json && JSON.parse(json).events.length === 24, "B1.6 Download session works");
+      check((await overviewStats(page)).tp === 1, "B1.6 the other tabs render");
+    },
+    { expectedErrors: /Cannot read properties of null|the Plate tab failed|The above error occurred/ },
+  );
 
   /* B1.7 The first wave's fields, across a reload and a session JSON
      round trip. */

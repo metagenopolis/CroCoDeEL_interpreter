@@ -21913,6 +21913,12 @@ const HelpTab = ({ onStartTour }) => {
             open the page in a normal window).
           </p>
           <p>
+            <strong style={{ color: "var(--ink)" }}>When a tab fails.</strong>{" "}
+            A tab that hits an error shows it in its place; the other tabs,
+            the files bar and <em>Download session</em> keep working, so
+            your curation can always be saved.
+          </p>
+          <p>
             The tutorial-seen flag (
             <code style={{ fontFamily: "ui-monospace, monospace" }}>
               crocodeel-tutorial-seen
@@ -23421,6 +23427,107 @@ const NoticeBanner = ({ title, lines, onDismiss }) => (
     </div>
   </div>
 );
+
+/** The tabs' names, as their buttons show them. */
+const TAB_NAMES = {
+  overview: "Overview",
+  samples: "Samples",
+  table: "Events",
+  scatter: "Scatter",
+  validate: "Validate",
+  network: "Network",
+  plate: "Plate",
+  export: "Export",
+  datasets: "Datasets",
+  learn: "Learn",
+  help: "Help",
+};
+
+/** Error boundary around one tab's body, keyed by the tab: a tab that
+    throws while rendering shows the error in its place, and the
+    navigation, the files bar and every other tab keep working — Export
+    and Download session included, so the curation can always be saved.
+    A single boundary around the whole app (src/main.jsx) used to replace
+    everything with its error screen. */
+class TabErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error(`[crocodeel] the ${this.props.label} tab failed:`, error, info?.componentStack);
+  }
+
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    const { label, onExport, onDownloadSession } = this.props;
+    const button = (text, onClick, primary) => (
+      <button
+        type="button"
+        onClick={onClick}
+        className="px-3 py-1.5 text-[12px] rounded-sm"
+        style={{
+          background: primary ? "#275662" : "var(--bg-card)",
+          color: primary ? "#fff" : "#275662",
+          border: "1px solid #275662",
+          fontWeight: 700,
+          fontFamily: '"Raleway", sans-serif',
+          cursor: "pointer",
+        }}
+      >
+        {text}
+      </button>
+    );
+    return (
+      <div
+        role="alert"
+        data-tab-error={label}
+        className="p-5 rounded-sm"
+        style={{
+          background: "var(--bg-alert)",
+          border: "1px solid #ed6e6c",
+          borderLeft: "4px solid #ed6e6c",
+          color: "var(--ink)",
+        }}
+      >
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+          The {label} tab could not be shown.
+        </div>
+        <p className="text-[13px]" style={{ lineHeight: 1.6, marginBottom: 8 }}>
+          Your curation is not affected: the other tabs work as usual, and
+          Export or Download session (files bar) saves your work. The error
+          below is what failed; reloading the page may help.
+        </p>
+        <pre
+          className="text-[12px]"
+          style={{
+            fontFamily: "ui-monospace, monospace",
+            background: "var(--bg-card)",
+            border: "1px solid var(--border)",
+            borderRadius: 3,
+            padding: 10,
+            whiteSpace: "pre-wrap",
+            overflowWrap: "anywhere",
+            marginBottom: 12,
+          }}
+        >
+          {String(error?.message || error)}
+        </pre>
+        <div className="flex gap-2 flex-wrap">
+          {button("Try again", () => this.setState({ error: null }), true)}
+          {onExport && button("Go to Export", onExport)}
+          {onDownloadSession && button("Download session", onDownloadSession)}
+        </div>
+      </div>
+    );
+  }
+}
 
 /* ---------- TUTORIAL PANEL ----------
    Side panel that walks the user through the demo dataset. Each step
@@ -28305,7 +28412,23 @@ const defaultFilter = () => ({
           </nav>
 
           {(events.length > 0 || tab === "help" || tab === "overview" || tab === "learn" || tab === "datasets") && (
-            <>
+            // One boundary per tab (keyed by it): a tab that throws shows
+            // its error here, and the navigation, the files bar and the
+            // other tabs — Export included — keep working.
+            <TabErrorBoundary
+              key={tab}
+              label={TAB_NAMES[tab] || tab}
+              onExport={
+                tab !== "export" && events.length > 0
+                  ? () => setTab("export")
+                  : undefined
+              }
+              onDownloadSession={
+                rawEvents.length > 0 || ab || metadata || plateMap
+                  ? exportJSON
+                  : undefined
+              }
+            >
           {tab === "overview" && (
             <Overview
               counts={counts}
@@ -28548,7 +28671,7 @@ const defaultFilter = () => ({
           {tab === "help" && (
             <HelpTab onStartTour={startTutorial} />
           )}
-            </>
+            </TabErrorBoundary>
           )}
         </div>
 

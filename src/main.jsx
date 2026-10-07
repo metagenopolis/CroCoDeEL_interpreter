@@ -5,11 +5,12 @@ import App from './App.jsx'
 import { sessionToJSON } from './persistence.js'
 import { deleteStoredSession, readStoredSessionForRescue } from './storage.js'
 
-/* The whole interpreter is one component tree with no route boundaries, so
-   any render-phase throw used to unmount everything and leave a blank page.
-   This turns that into a recoverable screen that says what this browser
-   has stored — it used to claim the curation was "still stored" even after
-   a failed session import had cleared it — offers it as a session JSON,
+/* The last line of defence: a render-phase throw outside the tabs (each
+   tab has its own boundary in App.jsx, which keeps the navigation and
+   Export usable) used to unmount everything and leave a blank page. This
+   turns that into a recoverable screen that says what this browser has
+   stored — it used to claim the curation was "still stored" even after a
+   failed session import had cleared it — offers it as a session JSON,
    and keeps deleting it an explicit, labelled last resort. */
 class ErrorBoundary extends Component {
   constructor(props) {
