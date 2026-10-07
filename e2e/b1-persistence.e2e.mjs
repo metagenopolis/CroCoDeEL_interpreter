@@ -1264,7 +1264,9 @@ try {
     const firstSample = Object.keys(good.metadata.bySample)[0];
     for (const [what, edit, re] of [
       ["an abundance table that is not one", (j) => (j.abundance.matrix = "oops"), /abundance: "matrix"/],
-      ["an event without a target", (j) => delete j.events[3].target, /event 4 has no source or no target/],
+      // An event without a target is what the previous version's parser
+      // made of a blank line: left out, said (e2e/final-state.e2e.mjs).
+      ["an event whose target is not text", (j) => (j.events[3].target = { id: 1 }), /event 4: its source or its target is neither text nor a number/],
       ["metadata without its samples", (j) => (j.metadata = { nSamples: 3 }), /metadata: "bySample"/],
       // These passed the check, then broke a tab at every visit.
       ["a matrix row the species list does not name", (j) => (j.abundance.matrix.__ghost = null), /abundance: "matrix" has a row for "__ghost"/],
@@ -1327,15 +1329,24 @@ try {
     check((await storedRecords(page)).metadata.bySample[Object.keys(json.metadata.bySample)[0]].sampleName === "1000", "B1.4 …read as text");
   });
 
-  /* B1.4 The error screen says what is really stored, and offers it. */
+  /* B1.4 The error screen says what is really stored, and offers it.
+     A damaged stored record no longer stops the app — the session readers
+     repair it or leave it out (e2e/final-state.e2e.mjs) — so the error is
+     made outside any tab: the app's first history write, on mount,
+     throws. */
   await scenario(
     "B1.4 error screen",
     async (page, ctx) => {
       await mark(page, "true positive", 0);
       await saved(page);
-      // A plate map stored without its format: the plate card cannot
-      // render, outside any tab — the whole app stops.
-      await editRecord(page, "plate", "r.format = null; return r;");
+      await ctx.addInitScript(() => {
+        if (sessionStorage.getItem("e2e-fail-mount")) {
+          history.replaceState = () => {
+            throw new Error("injected: the app failed on mount");
+          };
+        }
+      });
+      await page.evaluate(() => sessionStorage.setItem("e2e-fail-mount", "1"));
       await page.reload({ waitUntil: "networkidle" });
       await page.waitForTimeout(1500);
       const text = await page.locator("[data-stored-session]").innerText().catch(() => "");
@@ -1346,7 +1357,7 @@ try {
       );
       const json = await download(page, page.getByRole("button", { name: "Download the saved session (JSON)" }));
       check(!!json && JSON.parse(json).events.filter((e) => e.verdict === "true_positive").length === 1, "B1.4 …and downloads it as a session JSON");
-      // That file imports in a fresh session (its plate format repaired).
+      // That file imports in a fresh session.
       const p2 = await (await ctx.browser().newContext()).newPage();
       await p2.addInitScript(() => localStorage.setItem("crocodeel-tutorial-seen", "1"));
       await p2.goto(BASE, { waitUntil: "networkidle" });
@@ -1354,20 +1365,30 @@ try {
       check((await overviewStats(p2)).tp === 1, "B1.4 the downloaded session imports, with its TP");
       await p2.context().close();
     },
-    { expectedErrors: /Cannot read properties of null|render error|The above error occurred/ },
+    { expectedErrors: /injected: the app failed on mount|render error|The above error occurred/ },
   );
 
-  /* B1.6 A tab that crashes keeps the navigation and Export usable. */
+  /* B1.6 A tab that crashes keeps the navigation and Export usable. A
+     damaged stored well no longer breaks the Plate tab (the session
+     readers leave it out), so the tab is made to fail on the row labels
+     of its plate grid (Inspect mode), while it renders. */
   await scenario(
     "B1.6 tab crash",
     async (page) => {
       await mark(page, "true positive", 0);
       await saved(page);
-      // One stored well entry damaged: the Plate tab cannot render it.
-      await editRecord(page, "plate", "r.bySample[Object.keys(r.bySample)[0]] = null; return r;");
-      await page.reload({ waitUntil: "networkidle" });
-      await page.waitForTimeout(1500);
+      await page.evaluate(() => {
+        const fromCharCode = String.fromCharCode;
+        String.fromCharCode = function (...codes) {
+          if (window.__failPlateTab) throw new Error("injected: the Plate tab failed to render");
+          return fromCharCode.apply(this, codes);
+        };
+      });
       await openTab(page, "Plate");
+      await page.evaluate(() => (window.__failPlateTab = true));
+      await page.getByRole("button", { name: /^Inspect$/ }).first().click();
+      await page.waitForTimeout(800);
+      await page.evaluate(() => (window.__failPlateTab = false));
       const fallback = page.locator('[data-tab-error="Plate"]');
       check(
         (await fallback.count()) === 1 && /The Plate tab could not be shown/.test(await fallback.innerText()),
@@ -1385,7 +1406,7 @@ try {
       check(!!json && JSON.parse(json).events.length === 24, "B1.6 Download session works");
       check((await overviewStats(page)).tp === 1, "B1.6 the other tabs render");
     },
-    { expectedErrors: /Cannot read properties of null|the Plate tab failed|The above error occurred/ },
+    { expectedErrors: /injected: the Plate tab failed|the Plate tab failed|The above error occurred/ },
   );
 
   /* B1.7 The first wave's fields, across a reload and a session JSON

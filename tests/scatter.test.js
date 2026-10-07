@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseAbundance, buildScatter } from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
+import { buildScatter } from "../src/diagnostics.js";
 
 const ABUNDANCE_TSV = [
   "species\tA\tB\tC",

@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { parseAbundance, buildScatter, pointsAboveLine } from "../src/App.jsx";
-import { cascadeExplanations } from "../src/diagnostics.js";
+import { parseAbundance } from "../src/parsing.js";
+import {
+  buildScatter,
+  pointsAboveLine,
+  cascadeExplanations,
+} from "../src/diagnostics.js";
 
 /* A2.7 — a cascade's explanation names the upstream event's rate.
 

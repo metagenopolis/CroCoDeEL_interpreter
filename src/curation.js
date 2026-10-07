@@ -38,8 +38,8 @@
 
 /** A stored verdict / action that counts as set. "pending" is how the
     pickers spell "no verdict" and is never stored on purpose, but older
-    session files may carry it. */
-const isSet = (v) => v != null && v !== "" && v !== "pending";
+    session files may carry it. The one rule of every module. */
+export const isSet = (v) => v != null && v !== "" && v !== "pending";
 
 /** True when the curator set the sample's verdict by hand. */
 export const hasManualVerdict = (entry) =>
@@ -289,7 +289,12 @@ export function verdictChipState(entry, chip) {
                       decision.
       note            prepended to each target's notes.
 
-    `events` is the event list once the bulk evaluation has landed. */
+    `events` is the event list once the bulk evaluation has landed.
+
+    The map is copied once, on the first target that changes, the way
+    syncSampleCuration does: a copy per changed target (putEntry) made a
+    bulk apply quadratic in the number of targets — 150 ms for the 900
+    targets of the Sylph benchmark, 3 s for 5,000 and 18 s for 10,000. */
 export function applyTargetSideEffects(curation, events, targets, opts = {}) {
   const base = curation || {};
   const {
@@ -300,7 +305,7 @@ export function applyTargetSideEffects(curation, events, targets, opts = {}) {
     note = "",
   } = opts;
   const byTarget = evaluationsByTarget(events);
-  let next = base;
+  let next = null;
   for (const t of new Set(targets || [])) {
     if (!t) continue;
     const cur = base[t];
@@ -322,32 +327,42 @@ export function applyTargetSideEffects(curation, events, targets, opts = {}) {
       else delete entry.action;
     }
     if (note) entry.notes = entry.notes ? `${note}\n\n${entry.notes}` : note;
-    next = putEntry(
-      next,
-      t,
-      syncSampleEntry(entry, autoSampleVerdict(byTarget.get(t))),
-    );
+    const synced = syncSampleEntry(entry, autoSampleVerdict(byTarget.get(t)));
+    if (sameEntry(cur ?? null, synced)) continue;
+    if (!next) next = { ...base };
+    if (synced) next[t] = synced;
+    else delete next[t];
   }
-  return next;
+  return next || base;
 }
 
 /** Samples no event targets: event sources that are never a target, plus
     every id of `extraSampleIds` (the abundance table's columns) that no
     event targets. Sorted. Computed over the FULL event list — a filter
-    must not turn a targeted sample into a "never targeted" one. */
-export function neverTargetedSamples(events, extraSampleIds) {
+    must not turn a targeted sample into a "never targeted" one.
+
+    `tableSample` (when an abundance table is loaded: a name → its column
+    in the table, or null — resolveSample, the matching the curated
+    export makes) makes an event target count for the table sample it
+    names under another spelling (case, whitespace). The table's "S2",
+    targeted by an event written "s2", used to get the default Not
+    contaminated + Keep of a sample no event targets, which the samples
+    TSV and HTML report showed while the curated table dropped "S2" with
+    the event's Suppress. */
+export function neverTargetedSamples(events, extraSampleIds, tableSample = null) {
+  const key = (id) => (tableSample && tableSample(id)) || id;
   const targeted = new Set();
   const universe = new Set();
   for (const e of events || []) {
     if (e?.source) universe.add(e.source);
     if (e?.target) {
       universe.add(e.target);
-      targeted.add(e.target);
+      targeted.add(key(e.target));
     }
   }
   for (const s of extraSampleIds || []) if (s) universe.add(s);
   const out = [];
-  for (const id of universe) if (!targeted.has(id)) out.push(id);
+  for (const id of universe) if (!targeted.has(key(id))) out.push(id);
   return out.sort();
 }
 
@@ -448,15 +463,32 @@ const LEGACY_ACTION_SEVERITY = { keep: 1, suppress: 2 };
     2 is the model of this module. */
 export const SAMPLE_CURATION_VERSION = 2;
 
-/** The Not contaminated + Keep the Samples tab used to write, as if by
-    hand, on every never-targeted sample it displayed: exactly those two
-    values, no notes, no automatic flag. */
-function isNeverTargetedStamp(entry) {
-  if (!entry || entry.verdict !== "correct" || entry.action !== "keep")
-    return false;
-  return Object.keys(entry).every(
-    (k) => k === "verdict" || k === "action" || (k === "notes" && !entry.notes),
-  );
+/** A never-targeted sample's entry of a session saved by an earlier
+    version, without the stamp that version wrote: its Samples tab wrote
+    Not contaminated + Keep, as if by hand, on every sample no event
+    targets that it displayed, and the curator may have changed the
+    entry since — a note, another verdict, a verdict cleared to Pending.
+    The stamp's two values are taken out whatever else the entry holds:
+      - Not contaminated set by hand is the stamp's (a click on it only
+        repeated it): the default gives it back, as an automatic value;
+      - Keep set by hand on a sample that is not Contaminated is the
+        stamp's too: that version showed the action chips on Contaminated
+        samples only, so the curator never saw it, let alone chose it.
+    Notes, any other verdict and a Suppress stay. Returns the entry
+    itself when it holds no stamp, null when nothing is left of it. */
+function withoutNeverTargetedStamp(entry) {
+  if (!entry || typeof entry !== "object") return entry;
+  const next = { ...entry };
+  if (next.verdict === "correct" && !next.verdictAuto) {
+    delete next.verdict;
+    delete next.verdictAuto;
+  }
+  if (next.action === "keep" && !next.actionAuto && next.verdict !== "contaminated") {
+    delete next.action;
+    delete next.actionAuto;
+  }
+  if (sameEntry(entry, next)) return entry;
+  return next.verdict == null && next.action == null && !next.notes ? null : next;
 }
 
 /** Bring a stored session's sample curation in line with the current
@@ -467,11 +499,12 @@ function isNeverTargetedStamp(entry) {
       1. legacy per-event actions move to their target sample (most
          severe wins; a sample that already has an action keeps it);
       2. (earlier versions only) the Not contaminated + Keep stamps of
-         never-targeted samples are dropped: that default is derived now
-         (buildEffectiveSampleCuration), and a stamp, stored as a manual
-         value, counted as a Keep decision and blocked the
-         Contaminated → Suppress pairing. In a current session the same
-         entry is the curator's decision and stays;
+         never-targeted samples are taken out, also from an entry the
+         curator changed since (withoutNeverTargetedStamp): that default
+         is derived now (buildEffectiveSampleCuration), and a stamp,
+         stored as a manual value, counted as a Keep decision and
+         blocked the Contaminated → Suppress pairing. In a current
+         session the same entry is the curator's decision and stays;
       3. the automatic values are recomputed with the current rule, so a
          session saved by an older version — whose automatic values could
          depend on the order of the clicks, or lag behind a bulk change —
@@ -520,10 +553,12 @@ export function migrateSampleCuration(rawEvents, sampleCuration, version) {
     const targeted = new Set();
     for (const e of events) if (e?.target) targeted.add(e.target);
     for (const id of Object.keys(sc)) {
-      if (!targeted.has(id) && isNeverTargetedStamp(sc[id])) {
-        delete sc[id];
-        touched = true;
-      }
+      if (targeted.has(id)) continue;
+      const cleaned = withoutNeverTargetedStamp(sc[id]);
+      if (cleaned === sc[id]) continue;
+      if (cleaned) sc[id] = cleaned;
+      else delete sc[id];
+      touched = true;
     }
   }
   const synced = { ...syncSampleCuration(sc, events) };

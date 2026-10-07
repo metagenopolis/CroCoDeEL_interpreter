@@ -17,6 +17,17 @@
 
 import { tsvCell } from "./parsing.js";
 import { resolveSample } from "./diagnostics.js";
+import { isManualEvent } from "./carryOver.js";
+import { isSet } from "./curation.js";
+
+/** Text put into the HTML reports, escaped. */
+export function escapeHTML(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 /* ---------- contamination events ---------- */
 
@@ -39,6 +50,10 @@ export const CURATED_EVENT_COLUMNS = [
   "verdict",
   "action",
   "notes",
+  // Added after the columns of the first curated layout, so that a reader
+  // of that layout finds them where they were.
+  "sample_verdict",
+  "origin",
 ];
 
 /** A number written the way Python's str() writes a float, which is how
@@ -150,25 +165,41 @@ export function eventsToTSV(rawEvents, runMetadata) {
                       false_positive, uncertain or pending;
       action          the target sample's keep / suppress (from
                       `sampleCuration`, empty when none);
-      notes           the event's notes, on one line.
+      notes           the event's notes, on one line;
+      sample_verdict  the target sample's verdict (from `sampleCuration`:
+                      contaminated, correct — Not contaminated — or
+                      uncertain; empty when none);
+      origin          "manual" for an event the curator added by hand
+                      (Explore new pairs), empty for CroCoDeEL's.
 
     The run's "#" header line and the "# study:" line come first
     (eventsHeaderLines). CroCoDeEL reads the file like its own output and
     ignores the extra columns; this interface reads it back with its
-    verdicts and notes (parseEvents), and still reads the files of the
-    earlier layout. */
+    verdicts, notes, target verdicts and actions and the events added by
+    hand (parseEvents, replaceEvents), and still reads the files of the
+    earlier layout. Without sample_verdict, a target whose verdict the
+    curator set against its events (Not contaminated, Uncertain, with a
+    true positive among them) came back Contaminated + Suppress, and the
+    reloaded curated table lost it; without origin, an event added by
+    hand came back as CroCoDeEL's, and the next rerun's carry-over
+    dropped it. */
 export function curatedEventsToTSV(events, { runMetadata, study, sampleCuration } = {}) {
   const lines = eventsHeaderLines(runMetadata, study);
   lines.push(CURATED_EVENT_COLUMNS.join("\t"));
   for (const e of events || []) {
+    // The verdict and the action belong to the target sample; the event
+    // row repeats them so a tool reading this file alone can filter on
+    // them, and so that a reload gives the target back.
+    const target = sampleCuration?.[e.target];
+    const sampleVerdict = target?.verdict;
     const cells = [
       ...crocodeelCells(e),
       Number.isFinite(e.introducedPct) ? e.introducedPct.toFixed(2) : "",
       e.verdict || "pending",
-      // The action belongs to the target sample; the event row repeats it
-      // so a tool reading this file alone can filter on it.
-      sampleCuration?.[e.target]?.action || "",
+      target?.action || "",
       e.notes || "",
+      sampleVerdict && sampleVerdict !== "pending" ? sampleVerdict : "",
+      isManualEvent(e) ? "manual" : "",
     ];
     lines.push(cells.map(tsvCell).join("\t"));
   }
@@ -450,6 +481,53 @@ export function curatedAbundanceProvenance(ab, cur, opts = {}) {
 }
 
 /* ---------- samples ---------- */
+
+/** The samples of the samples TSV and its HTML report, one row each: the
+    samples of the events and the abundance table's. A name the table
+    holds under another spelling (case, whitespace: resolveSample, the
+    matching the curated export makes) is that table sample, under the
+    table's spelling: the events file's "s2" and the table's "S2" used to
+    be two rows, the second reading Not contaminated + Keep while the
+    curated table dropped the sample. Returns { ids, rowOf, names }: the
+    row ids, sorted; the row of a name; the names of a row (its own
+    first). */
+export function samplesReportIndex(events, ab) {
+  const rowOf = (name) => (ab ? resolveSample(ab, name) : null) || name;
+  const names = new Map();
+  const add = (name) => {
+    if (!name) return;
+    const id = rowOf(name);
+    if (!names.has(id)) names.set(id, new Set([id]));
+    names.get(id).add(name);
+  };
+  for (const e of events || []) {
+    add(e?.source);
+    add(e?.target);
+  }
+  for (const s of ab?.samples || []) add(s);
+  return {
+    ids: [...names.keys()].sort((a, b) => a.localeCompare(b)),
+    rowOf,
+    names: (id) => [...(names.get(id) || [id])],
+  };
+}
+
+/** The curation a row of the samples TSV and report shows (`curation`:
+    the effective one) for a sample written under several `names`: a
+    Suppress wins, as the curated table drops the column whichever name
+    says so; then a verdict, the curator's before the rule's; then
+    whatever entry there is. The notes of every name are kept. */
+export function samplesReportCuration(curation, names) {
+  const entries = names.map((n) => curation?.[n]).filter(Boolean);
+  if (entries.length <= 1) return entries[0] || {};
+  const pick =
+    entries.find((c) => c.action === "suppress") ||
+    entries.find((c) => isSet(c.verdict) && !c.verdictAuto) ||
+    entries.find((c) => isSet(c.verdict)) ||
+    entries[0];
+  const notes = [...new Set(entries.map((c) => c.notes).filter(Boolean))].join("\n\n");
+  return notes ? { ...pick, notes } : pick;
+}
 
 /** The values buildEffectiveSampleCuration gives a sample no event
     targets: Not contaminated, and the Keep that goes with it. */

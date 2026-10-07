@@ -224,10 +224,14 @@ describe("sessionFromPayload — a malformed file is refused whole (B1.4)", () =
     refused((j) => (j.events = "x"), /"events" must be a list/);
     refused((j) => delete j.events, /Missing "events"/);
     refused((j) => (j.events[1] = 3), /event 2 is not an object/);
-    refused((j) => delete j.events[0].target, /event 1 has no source or no target/);
+    // An event without a source or a target, and a species list kept as
+    // one text, are what the previous version's parser left in a session:
+    // repaired, not refused (tests/final-state-session-read.test.js).
+    refused((j) => (j.events[0].target = { id: "T1" }), /event 1: its source or its target is neither text nor a number/);
+    refused((j) => (j.events.forEach((e) => (e.source = ""))), /No event has both a source and a target/);
     refused((j) => (j.events[0].verdict = "maybe"), /unknown verdict "maybe"/);
     refused((j) => (j.events[0].contamination_rate = "0,1"), /contamination_rate is not a number/);
-    refused((j) => (j.events[0].introduced_species = "sp_a"), /introduced_species is not a list/);
+    refused((j) => (j.events[0].introduced_species = { sp_a: 1 }), /introduced_species is not a list/);
     refused((j) => (j.events[0].notes = { a: 1 }), /notes are not text/);
   });
 
@@ -288,7 +292,7 @@ describe("sessionFromPayload — a malformed file is refused whole (B1.4)", () =
 
   it("lists a few problems, not thousands", () => {
     const json = exported();
-    json.events = Array.from({ length: 500 }, () => ({ source: "A" }));
+    json.events = Array.from({ length: 500 }, () => ({ source: "A", target: "B", verdict: "maybe" }));
     const r = read(json);
     expect(r.ok).toBe(false);
     expect(r.errors.length).toBeLessThanOrEqual(7);

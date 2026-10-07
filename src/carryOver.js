@@ -18,7 +18,8 @@
      start fresh  nothing of the current session is kept.
 
    Either way the new file's own curation columns (the curated events TSV:
-   parseEvents reads verdict, notes and the target's action) are used, and
+   parseEvents reads verdict, notes, the target's sample verdict and
+   action, and the origin of the events added by hand) are used, and
    where the file and the session both have a value, THE FILE WINS: a
    curator who loads a curated export into a session is restoring that
    export, and it is the most recent statement they chose to load. An
@@ -27,22 +28,29 @@
 
    Then the automatic sample values are recomputed from every event with
    the shared rule (syncSampleCuration, src/curation.js), and the file's
-   actions applied: a target whose rows all give the same keep / suppress,
-   different from the action the rule (or the curator) leaves it, gets it
-   as the curator's own value. An export reloaded into an empty session
-   thus comes back exactly as it was exported: evaluations, notes, sample
-   actions and so every count and the curated abundance table. What the
-   events TSV does not hold — sample verdicts and notes set by hand, the
-   action of a sample no event targets — only the session JSON keeps. */
+   sample verdicts and actions applied: a target whose rows all give the
+   same verdict (then the same keep / suppress), different from the one
+   the rule (or the curator) leaves it, gets it as the curator's own
+   value. An export reloaded into an empty session thus comes back as it
+   was exported: evaluations, notes, the events added by hand, the
+   targets' verdicts and actions, and so every count and the curated
+   abundance table. Without the targets' verdicts — the file of an
+   earlier version — a target the curator had kept although a true
+   positive targets it (a verdict set against its events, a cleared
+   Suppress) comes back suppressed: the notice names those. What the
+   events TSV does not hold — the notes of the samples, the verdict and
+   the action of a sample no event targets — only the session JSON
+   keeps. */
 
 import {
   hasManualAction,
   hasManualVerdict,
+  isSet,
   syncSampleCuration,
   withManualAction,
+  withManualVerdict,
 } from "./curation.js";
 
-const isSet = (v) => v != null && v !== "" && v !== "pending";
 const pairKey = (e) => `${e.source}\u0000${e.target}`;
 /** An event the curator added by hand (addManualEvent: ids "manual-N"). */
 export const isManualEvent = (e) => typeof e?.id === "string" && e.id.startsWith("manual-");
@@ -95,13 +103,20 @@ function manualPart(entry) {
       fileHasCuration                the file has curation columns
                                      (parseEvents' `curation`), even if
                                      every cell of them is empty
+      fileColumns                    which ones (parseEvents'
+                                     `curationColumns`; null: none)
 
     Returns { events, sampleCuration, report }. `events` are the new
-    file's, in its order and with its ids, `fileAction` removed (it now
-    lives in the sample curation), then — carried over — the events added
-    by hand whose pair the file does not have, renumbered manual-1, …
-    `report` counts what happened, for replaceReportLines (and, computed
-    before the choice, for the question that offers it). */
+    file's, in its order and with its ids, `fileAction`,
+    `fileSampleVerdict` and `fileManual` removed (they now live in the
+    sample curation and in the ids), then — carried over — the events
+    added by hand whose pair the file does not have. The events added by
+    hand — those the file marks so, those matched to one of the session's,
+    those kept — are numbered manual-1, … in that order: matched to a
+    CroCoDeEL event, one used to take that event's id and to become
+    CroCoDeEL's, which the next rerun's carry-over then dropped. `report`
+    counts what happened, for replaceReportLines (and, computed before the
+    choice, for the question that offers it). */
 export function replaceEvents({
   oldEvents,
   oldSampleCuration,
@@ -109,6 +124,7 @@ export function replaceEvents({
   sampleIds,
   carryOver,
   fileHasCuration = false,
+  fileColumns = null,
 }) {
   const report = {
     carryOver: !!carryOver,
@@ -128,12 +144,21 @@ export function replaceEvents({
     replacedNotes: 0,
     keptSampleEntries: 0,
     droppedSampleEntries: 0,
+    fileSampleVerdicts: 0,
+    replacedSampleVerdicts: 0,
+    conflictingSampleVerdicts: 0,
     fileActions: 0,
     replacedActions: 0,
     conflictingActions: 0,
+    fileManual: 0,
+    // Targets the rule suppresses although the file, which has an action
+    // column, gives them none.
+    suppressedWithoutAction: [],
     fileHasCuration: !!fileHasCuration,
     previous: curationSummary(oldEvents, oldSampleCuration),
   };
+  let manualCount = 0;
+  const asManual = (e) => ({ ...e, id: `manual-${++manualCount}` });
 
   // The current events by (source, target), in file order.
   const queues = new Map();
@@ -146,12 +171,20 @@ export function replaceEvents({
   }
 
   const events = (newEvents || []).map((ne) => {
-    const { fileAction: _fileAction, ...base } = ne;
+    const {
+      fileAction: _fileAction,
+      fileSampleVerdict: _fileSampleVerdict,
+      fileManual: _fileManual,
+      ...base
+    } = ne;
     const fileVerdict = isSet(ne.verdict) ? ne.verdict : null;
     const fileNotes = ne.notes || "";
     if (fileVerdict) report.fileVerdicts++;
     if (fileNotes) report.fileNotes++;
-    if (fileVerdict || fileNotes || ne.fileAction) report.fileHasCuration = true;
+    if (ne.fileManual) report.fileManual++;
+    if (fileVerdict || fileNotes || ne.fileAction || ne.fileSampleVerdict || ne.fileManual) {
+      report.fileHasCuration = true;
+    }
     let verdict = fileVerdict || "pending";
     let notes = fileNotes;
     let notesFromFile = !!fileNotes;
@@ -181,7 +214,8 @@ export function replaceEvents({
       report.added++;
     }
     if (notesFromFile) report.notesFromFile++;
-    return { ...base, verdict, notes };
+    const event = { ...base, verdict, notes };
+    return ne.fileManual || isManualEvent(old) ? asManual(event) : event;
   });
   // The current events the new file has no pair for: dropped, except the
   // ones added by hand, kept after the file's events in their order.
@@ -191,7 +225,7 @@ export function replaceEvents({
     if (!unmatched.has(e)) continue;
     if (isManualEvent(e)) {
       report.keptManual++;
-      events.push({ ...e, id: `manual-${report.keptManual}` });
+      events.push(asManual(e));
       continue;
     }
     report.dropped++;
@@ -221,14 +255,33 @@ export function replaceEvents({
   // Every automatic value from the events, with the shared rule.
   sampleCuration = syncSampleCuration(sampleCuration, events);
 
-  // The file's actions: one per target, when all its rows agree.
-  const fileActions = new Map();
-  for (const ne of newEvents || []) {
-    if (!ne.target) continue;
-    const a = ne.fileAction || "";
-    if (!fileActions.has(ne.target)) fileActions.set(ne.target, a);
-    else if (fileActions.get(ne.target) !== a) fileActions.set(ne.target, null);
+  // The file's values of a target sample: one per target, when all its
+  // rows agree ("": none given; null: the rows disagree).
+  const perTarget = (field) => {
+    const values = new Map();
+    for (const ne of newEvents || []) {
+      if (!ne.target) continue;
+      const v = ne[field] || "";
+      if (!values.has(ne.target)) values.set(ne.target, v);
+      else if (values.get(ne.target) !== v) values.set(ne.target, null);
+    }
+    return values;
+  };
+  // Its verdicts first: the action the rule pairs follows the verdict.
+  for (const [target, verdict] of perTarget("fileSampleVerdict")) {
+    if (verdict === null) {
+      report.conflictingSampleVerdicts++;
+      continue;
+    }
+    if (!verdict) continue;
+    const current = sampleCuration[target];
+    if ((current?.verdict || null) === verdict) continue;
+    if (hasManualVerdict(current)) report.replacedSampleVerdicts++;
+    sampleCuration = withManualVerdict(sampleCuration, target, verdict, events);
+    report.fileSampleVerdicts++;
   }
+  // Then its actions.
+  const fileActions = perTarget("fileAction");
   for (const [target, action] of fileActions) {
     if (action === null) {
       report.conflictingActions++;
@@ -244,6 +297,15 @@ export function replaceEvents({
     report.fileActions++;
   }
   if (report.fileActions > 0 || report.conflictingActions > 0) report.fileHasCuration = true;
+  if (fileColumns?.action) {
+    for (const [target, action] of fileActions) {
+      const entry = sampleCuration[target];
+      if (action === "" && entry?.action === "suppress" && entry.actionAuto) {
+        report.suppressedWithoutAction.push(target);
+      }
+    }
+    report.suppressedWithoutAction.sort();
+  }
 
   return { events, sampleCuration, report };
 }
@@ -323,11 +385,14 @@ export function replaceReportLines(report) {
     const restored = [];
     if (r.fileVerdicts) restored.push(plural(r.fileVerdicts, "evaluation"));
     if (r.fileNotes) restored.push(plural(r.fileNotes, "note"));
+    if (r.fileSampleVerdicts) restored.push(plural(r.fileSampleVerdicts, "sample verdict"));
     if (r.fileActions) restored.push(plural(r.fileActions, "sample action"));
+    if (r.fileManual) restored.push(plural(r.fileManual, "event added by hand", "events added by hand"));
     if (restored.length) {
       const replaced = [];
       if (r.replacedVerdicts) replaced.push(plural(r.replacedVerdicts, "evaluation"));
       if (r.replacedNotes) replaced.push(plural(r.replacedNotes, "note"));
+      if (r.replacedSampleVerdicts) replaced.push(plural(r.replacedSampleVerdicts, "sample verdict"));
       if (r.replacedActions) replaced.push(plural(r.replacedActions, "sample action"));
       lines.push(
         `Restored from the file: ${restored.join(", ")}` +
@@ -335,10 +400,24 @@ export function replaceReportLines(report) {
           ".",
       );
     }
-    if (r.conflictingActions > 0) {
+    for (const [n, what] of [
+      [r.conflictingSampleVerdicts, "sample verdicts"],
+      [r.conflictingActions, "actions"],
+    ]) {
+      if (!(n > 0)) continue;
       lines.push(
-        `${plural(r.conflictingActions, "target")} whose rows give different actions ` +
-          `${r.conflictingActions === 1 ? "was" : "were"} left to the automatic rule.`,
+        `${plural(n, "target")} whose rows give different ${what} ` +
+          `${n === 1 ? "was" : "were"} left to the automatic rule.`,
+      );
+    }
+    const unkept = r.suppressedWithoutAction || [];
+    if (unkept.length > 0) {
+      const list = unkept.length > 12 ? `${unkept.slice(0, 12).join(", ")} … (+${unkept.length - 12})` : unkept.join(", ");
+      lines.push(
+        `Now to suppress, although the file gives no action for ${unkept.length === 1 ? "it" : "them"} ` +
+          `(${unkept.length}): ${list} — a true-positive event targets ${unkept.length === 1 ? "it" : "them"}. ` +
+          "A file written by an earlier version leaves the action empty where you had removed a Suppress " +
+          "or set the sample's verdict against its events: set Keep in the Samples tab to keep a sample.",
       );
     }
     if (r.notesFromFile > 0) {
@@ -347,7 +426,7 @@ export function replaceReportLines(report) {
       );
     }
     lines.push(
-      "Sample verdicts and sample notes set by hand, and the action of a sample no event targets, " +
+      "The notes of the samples, and the verdict and action of a sample no event targets, " +
         "are not stored in the events TSV: only the session JSON (Download session) keeps them.",
     );
   }

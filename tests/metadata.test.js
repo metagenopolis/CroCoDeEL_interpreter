@@ -1,12 +1,7 @@
 import { describe, it, expect } from "vitest";
-import {
-  flagSample,
-  sampleName,
-  areRelated,
-  plateDistance,
-  parseAbundance,
-  abundanceToTSV,
-} from "../src/App.jsx";
+import { flagSample, sampleName, areRelated, plateDistance } from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
+import { abundanceToTSV } from "../src/exports.js";
 
 const METADATA = {
   cols: {

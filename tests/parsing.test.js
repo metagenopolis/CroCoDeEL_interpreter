@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseAbundance, parseEvents } from "../src/App.jsx";
+import { parseAbundance, parseEvents } from "../src/parsing.js";
 
 describe("parseAbundance", () => {
   it("normalises every column to a relative-abundance distribution", () => {

@@ -26,11 +26,14 @@ import {
   LEGACY_MAIN_KEY,
   RECORD_KEYS,
   abundanceRecord,
+  checkStoredSession,
   forgetLostTable,
+  newerLegacyMain,
   sessionFromLegacyMain,
   sessionFromRecords,
   sessionWrites,
   uiRecord,
+  upgradedSession,
 } from "./persistence.js";
 
 export const DB_NAME = "crocodeel-interpreter";
@@ -45,6 +48,8 @@ const LEGACY_COMPRESSED_PREFIX = "lz:";
 /** This page's name in the curation record and in the notices it sends
     the other tabs. */
 export const WRITER_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
 /** True when the current browser exposes IndexedDB. Without it the app
     runs in memory, and says the session is not saved. */
@@ -129,14 +134,6 @@ function settled(tx) {
     tx.oncomplete = () => resolve();
     tx.onabort = () =>
       reject(tx.error || new DOMException("The browser aborted the write.", "AbortError"));
-  });
-}
-
-export function idbGet(key) {
-  return withDB((db) => {
-    const tx = db.transaction(STORE, "readonly");
-    const req = tx.objectStore(STORE).get(key);
-    return settled(tx).then(() => req.result ?? null);
   });
 }
 
@@ -258,9 +255,9 @@ function removeLegacyKeys() {
     written and false comes back). The "main" record goes in the same
     transaction (sessionWrites deletes it with every write of the events
     record). The abundance record of the "main" layout already has the
-    current shape and stays; one read from localStorage (`abFromLocal`)
-    is written. */
-function migrateSession(db, session, abFromLocal) {
+    current shape and stays; `table` is written when there is one to
+    write instead (read from localStorage, or repaired by the readers). */
+function migrateSession(db, session, table) {
   const tx = db.transaction(STORE, "readwrite");
   const store = tx.objectStore(STORE);
   let migrated = false;
@@ -270,12 +267,52 @@ function migrateSession(db, session, abFromLocal) {
     migrated = true;
     putAll(store, sessionWrites(session, { ...ALL_DIRTY, ab: false }, null), 1);
     store.put({ ...uiRecord(session), savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
-    if (abFromLocal) store.put(abundanceRecord(abFromLocal, null), RECORD_KEYS.ab);
+    if (table) store.put(abundanceRecord(table, null), RECORD_KEYS.ab);
   };
   return settled(tx).then(() => {
     if (migrated) mirrorRev(1);
     return migrated;
   });
+}
+
+/** Write the session of a "main" record that a tab of an earlier version
+    saved after the migration (persistence.js' newerLegacyMain) over the
+    current records, with the next revision, in one transaction that
+    reads both again: nothing is written when another tab has written the
+    session or that record since (false comes back). "main" is deleted
+    in the same transaction (sessionWrites deletes it with the events
+    record). The curation record names the stored table (`abToken`);
+    `table` is written when the readers repaired it. */
+function remigrateSession(db, session, { rev, savedAt, abToken, table }) {
+  const tx = db.transaction(STORE, "readwrite");
+  const store = tx.objectStore(STORE);
+  let done = false;
+  const cur = store.get(RECORD_KEYS.curation);
+  const main = store.get(LEGACY_MAIN_KEY);
+  // Requests complete in order: the curation has been read by now.
+  main.onsuccess = () => {
+    if ((cur.result?.rev ?? 0) !== rev || main.result?.savedAt !== savedAt) return;
+    putAll(store, sessionWrites(session, { ...ALL_DIRTY, ab: false }, abToken), rev + 1);
+    store.put({ ...uiRecord(session), savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
+    if (table) store.put(abundanceRecord(table, abToken), RECORD_KEYS.ab);
+    done = true;
+  };
+  return settled(tx).then(() => {
+    if (done) mirrorRev(rev + 1);
+    return done;
+  });
+}
+
+/** A session of an earlier layout brought up to date (persistence.js'
+    upgradedSession), or as it is should that fail: AppMain then migrates
+    its curation on mount, as it did before. */
+function upgradedOrAsIs(session) {
+  try {
+    return upgradedSession(session);
+  } catch (e) {
+    console.warn("[crocodeel] could not bring the stored session up to date:", e?.message);
+    return { session, notes: [], changes: null };
+  }
 }
 
 /** Stop naming a lost abundance table (persistence.js' forgetLostTable),
@@ -298,10 +335,18 @@ function repairLostTable(db, rev, token) {
   return settled(tx).then(() => repaired);
 }
 
-/** The stored session, read on boot: { session, rev, abToken, inRecords }
-    — `session` null when nothing is stored, `rev` the revision the next
-    write must find, `abToken` the token of the stored abundance table.
-    A session of an earlier layout is migrated first. `inRecords` is
+/** The stored session, read on boot: { session, rev, abToken, inRecords,
+    upgrade } — `session` null when nothing is stored, `rev` the revision
+    the next write must find, `abToken` the token of the stored abundance
+    table. A session of an earlier layout is migrated first, brought up
+    to date on the way (upgradedSession): `upgrade` ({ notes, changes,
+    olderTabSavedAt }) says, to the tab that wrote it, what the readers
+    repaired and what the curation's update changed (null: this tab
+    migrated nothing). A "main" record that a tab of the earlier version
+    wrote after the migration (newerLegacyMain) is migrated the same way,
+    over the current records: `olderTabSavedAt` is then the time of that
+    tab's last save.
+    `inRecords` is
     false when that migration failed (a full quota aborts it): the
     session is then read from the earlier layout as it is, and the
     current records do not hold it — the autosave must write every one
@@ -316,6 +361,7 @@ function repairLostTable(db, rev, token) {
 export async function readStoredSession() {
   const db = await openDB();
   let records = await readRecords(db);
+  let upgrade = null;
   if (!records.curation) {
     let session = sessionFromLegacyMain(records[LEGACY_MAIN_KEY], records.ab);
     let abFromLocal = null;
@@ -330,19 +376,45 @@ export async function readStoredSession() {
     }
     if (!session) {
       mirrorRev(0, true);
-      return { session: null, rev: 0, abToken: null, inRecords: true };
+      return { session: null, rev: 0, abToken: null, inRecords: true, upgrade: null };
     }
+    // Up to date before it is written, so that every tab reads it so.
+    const up = upgradedOrAsIs(session);
+    const table = fromLocal || up.session.ab !== session.ab ? up.session.ab : null;
     try {
-      await migrateSession(db, session, fromLocal ? abFromLocal : null);
+      if (await migrateSession(db, up.session, table)) {
+        upgrade = { notes: up.notes, changes: up.changes };
+      }
       if (fromLocal) removeLegacyKeys();
     } catch (e) {
       // Read it as it is; the first save writes every current record
       // (and drops the earlier layout's copies: writeSession).
       console.warn("[crocodeel] session migration failed:", e?.message);
       mirrorRev(0, true);
-      return { session, rev: 0, abToken: null, inRecords: false };
+      return { session, rev: 0, abToken: null, inRecords: false, upgrade: null };
     }
     records = await readRecords(db);
+  } else if (newerLegacyMain(records[LEGACY_MAIN_KEY], records.curation)) {
+    // A tab still running the earlier version saved after the migration:
+    // what it saved is the last save of the session. Ignored, it was lost
+    // without a word at the next reload.
+    const main = records[LEGACY_MAIN_KEY];
+    const stored = sessionFromLegacyMain(main, records.ab);
+    const up = upgradedOrAsIs(stored);
+    try {
+      const done = await remigrateSession(db, up.session, {
+        rev: records.curation.rev ?? 0,
+        savedAt: main.savedAt,
+        abToken: isObj(records.ab) ? records.ab.storageToken ?? null : null,
+        table: up.session.ab !== stored.ab ? up.session.ab : null,
+      });
+      if (done) {
+        upgrade = { notes: up.notes, changes: up.changes, olderTabSavedAt: main.savedAt };
+        records = await readRecords(db);
+      }
+    } catch (e) {
+      console.warn("[crocodeel] could not bring in the earlier version's save:", e?.message);
+    }
   }
   const session = sessionFromRecords(records);
   const rev = records.curation?.rev ?? 0;
@@ -357,7 +429,7 @@ export async function readStoredSession() {
   }
   // Known from now on (a deleted localStorage loses the mirror).
   mirrorRev(rev);
-  return { session, rev, abToken, inRecords: true };
+  return { session, rev, abToken, inRecords: true, upgrade };
 }
 
 /** Write the session records (persistence.js' sessionWrites) in one
@@ -414,9 +486,36 @@ export function writeSessionNow({ writes, rev, ab, ui }) {
   }
 }
 
-/** Write the abundance record (persistence.js' abundanceRecord). */
-export function writeAb(record) {
-  return idbSet(RECORD_KEYS.ab, record);
+/** Write the abundance record (persistence.js' abundanceRecord). With
+    `expectedRev` — the autosave writing again a table whose write
+    failed — only if the stored revision is still that one, in the same
+    transaction: resolves { status: "conflict", rev } with nothing
+    written when another tab has written the session since (its curation
+    record names its own table), { status: "ok", named } otherwise.
+    `named` is false when the curation record no longer names the
+    table's token: a tab that opened the session meanwhile found it
+    without its table and stopped naming it (forgetLostTable). */
+export function writeAb(record, expectedRev) {
+  if (expectedRev == null) return idbSet(RECORD_KEYS.ab, record);
+  return withDB((db) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    let conflict = null;
+    let named = false;
+    const get = store.get(RECORD_KEYS.curation);
+    get.onsuccess = () => {
+      const stored = get.result?.rev ?? 0;
+      if (stored !== expectedRev) {
+        conflict = stored;
+        return;
+      }
+      named = (get.result?.abToken ?? null) === (record.storageToken ?? null);
+      store.put(record, RECORD_KEYS.ab);
+    };
+    return settled(tx).then(() =>
+      conflict !== null ? { status: "conflict", rev: conflict } : { status: "ok", named },
+    );
+  });
 }
 
 /** Delete the abundance record: after a failed write, so that an older
@@ -448,17 +547,25 @@ export const idbBackend = {
   openChannel: openSessionChannel,
 };
 
-/** What this browser has stored, read without migrating anything — for
-    the error screen, which offers it as a session JSON. Null when
-    nothing is stored or storage cannot be read. */
+/** What this browser has stored, read without migrating or writing
+    anything — for the error screen, which offers it as a session JSON.
+    It is checked by the readers of the session import
+    (checkStoredSession), so that this file always imports: one written
+    from a session that holds what the import refuses was a dead end.
+    Null when nothing is stored or storage cannot be read. */
 export async function readStoredSessionForRescue() {
   if (!indexedDBSupported()) return null;
   try {
     const db = await openDB();
     const records = await readRecords(db);
-    return records.curation
+    const session = records.curation
       ? sessionFromRecords(records)
       : sessionFromLegacyMain(records[LEGACY_MAIN_KEY], records.ab);
+    try {
+      return checkStoredSession(session).session;
+    } catch {
+      return session;
+    }
   } catch {
     return null;
   }

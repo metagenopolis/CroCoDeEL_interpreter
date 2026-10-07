@@ -1,10 +1,10 @@
 /* Shared pieces for the browser checks.
 
-   e2e/smoke.mjs predates this file and keeps its own copy; the topic
-   suites (e2e/*.e2e.mjs) import from here so each one stays a short list
-   of scenarios. A suite runs on its own (`node e2e/x.e2e.mjs`, which
-   starts a preview server unless BASE_URL is set) or through
-   e2e/run-all.mjs, which starts one server for every file. */
+   Every suite (e2e/smoke.mjs and the topic suites e2e/*.e2e.mjs) imports
+   from here, so each one stays a short list of scenarios. A suite runs on
+   its own (`node e2e/x.e2e.mjs`, which starts a preview server unless
+   BASE_URL is set) or through e2e/run-all.mjs, which starts one server
+   for every file. */
 
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";

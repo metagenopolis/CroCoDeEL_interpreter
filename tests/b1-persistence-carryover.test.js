@@ -9,7 +9,7 @@ import {
   withManualVerdict,
 } from "../src/curation.js";
 import { parseAbundance, parseEvents, tsvCell } from "../src/parsing.js";
-import { buildCuratedAbundance } from "../src/App.jsx";
+import { buildCuratedAbundance } from "../src/exports.js";
 
 /* Replacing the events file used to wipe every evaluation, note and
    sample decision (setSampleCuration({}), events reset to pending).
@@ -122,18 +122,21 @@ describe("replaceEvents — events added by hand", () => {
     ev("manual-3", "G", "H", "false_positive", "checked"),
   ];
 
-  it("carried over: kept after the file's events, renumbered, unless the file has their pair", () => {
+  it("carried over: kept after the file's events, renumbered, and still yours when the file has their pair", () => {
     const { events, sampleCuration, report } = replaceEvents({
       oldEvents: old,
       oldSampleCuration: syncSampleCuration({}, old),
       newEvents: file([["A", "B"], ["E", "F"]]),
       carryOver: true,
     });
+    // E → F, which the new file has, stays an event added by hand: a
+    // later file without it keeps it (it used to become the file's event
+    // 1, and the next rerun's carry-over dropped it).
     expect(events.map((e) => [e.id, e.source, e.target, e.verdict, e.notes])).toEqual([
       [0, "A", "B", "true_positive", ""],
-      [1, "E", "F", "uncertain", "a later run found it"],
-      ["manual-1", "C", "D", "true_positive", "missed by CroCoDeEL"],
-      ["manual-2", "G", "H", "false_positive", "checked"],
+      ["manual-1", "E", "F", "uncertain", "a later run found it"],
+      ["manual-2", "C", "D", "true_positive", "missed by CroCoDeEL"],
+      ["manual-3", "G", "H", "false_positive", "checked"],
     ]);
     // Their targets follow them, with the shared rule.
     expect(sampleCuration.D).toEqual({ verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true });
@@ -376,7 +379,7 @@ describe("replaceReportLines", () => {
       fileHasCuration: true,
     });
     expect(replaceReportLines(report).join(" ")).toMatch(
-      /Sample verdicts and sample notes set by hand, and the action of a sample no event targets, are not stored in the events TSV/,
+      /The notes of the samples, and the verdict and action of a sample no event targets, are not stored in the events TSV/,
     );
   });
 });

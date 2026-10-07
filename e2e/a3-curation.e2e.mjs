@@ -1214,7 +1214,8 @@ try {
   });
 
   /* A3.5 A session saved while the Samples tab stamped never-targeted
-     samples as Not contaminated + Keep (manual) loses those stamps. */
+     samples as Not contaminated + Keep (manual) loses those stamps, also
+     from an entry the curator annotated since: its notes stay. */
   await scenario(
     "A3.5 old session",
     async (page) => {
@@ -1233,18 +1234,20 @@ try {
         events: [event(0, "S1", "T1"), event(1, "S2", "T1")],
         sample_curation: {
           S1: { verdict: "correct", action: "keep" }, // stamp
-          S2: { verdict: "correct", action: "keep", notes: "checked" }, // annotated: kept
+          S2: { verdict: "correct", action: "keep", notes: "checked" }, // annotated: its notes kept
           T1: { verdict: "correct", action: "keep" }, // targeted: a decision
         },
       });
       const sc = await storedCuration(page);
       check(
-        sc.S1 === undefined && sc.S2?.notes === "checked" && sc.T1?.action === "keep",
-        "A3.5 an old stamp is dropped; annotated and targeted entries are kept",
+        sc.S1 === undefined &&
+          JSON.stringify(sc.S2) === JSON.stringify({ notes: "checked" }) &&
+          sc.T1?.action === "keep",
+        "A3.5 an old stamp is dropped, also from an annotated entry (its notes kept); a targeted entry is kept",
         JSON.stringify(sc),
       );
       const s = await overviewStats(page);
-      check(s.keep === 2, "A3.5 Overview: the two remaining Keep decisions", `keep=${s.keep}`);
+      check(s.keep === 1, "A3.5 Overview: the one Keep decision left, the targeted sample's", `keep=${s.keep}`);
     },
     { demo: false },
   );

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseAbundance, missingAbundantFromSource } from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
+import { missingAbundantFromSource } from "../src/diagnostics.js";
 
 /* A2.6 — the target's limit of detection falls back to 1e-5 when its
    column has FEWER THAN TWO non-zero entries, as the Help tab documents.

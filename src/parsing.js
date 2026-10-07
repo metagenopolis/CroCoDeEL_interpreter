@@ -492,7 +492,21 @@ const EVENT_CURATION_COLS = {
   verdict: ["verdict", "evaluation"],
   notes: ["notes", "note", "comment", "comments"],
   action: ["action"],
+  // The target sample's verdict, and whether the curator added the event
+  // by hand ("manual"): written since the curated export kept them.
+  sampleVerdict: ["sample_verdict"],
+  origin: ["origin"],
 };
+
+/** Sample verdicts by spelling, reduced like VERDICT_SPELLINGS; "" is no
+    verdict (pending). */
+const SAMPLE_VERDICT_SPELLINGS = new Map([
+  ["contaminated", "contaminated"],
+  ["correct", "correct"],
+  ["not_contaminated", "correct"],
+  ["uncertain", "uncertain"],
+  ["pending", ""],
+]);
 
 /** Event verdicts by spelling: lower case, blanks / hyphens / underscores
     reduced to one "_" ("True positive", "TRUE-POSITIVE", "tp"). */
@@ -579,6 +593,8 @@ export function parseEvents(text) {
     verdict: pickColExact(header, EVENT_CURATION_COLS.verdict),
     notes: pickColExact(header, EVENT_CURATION_COLS.notes),
     action: pickColExact(header, EVENT_CURATION_COLS.action),
+    sampleVerdict: pickColExact(header, EVENT_CURATION_COLS.sampleVerdict),
+    origin: pickColExact(header, EVENT_CURATION_COLS.origin),
   };
   // A missing rate column is not fatal — source/target alone still make a
   // browsable event list — but every rate silently becomes 0, which means
@@ -610,6 +626,7 @@ export function parseEvents(text) {
   const skipped = [];
   const badVerdicts = [];
   const badActions = [];
+  const badSampleVerdicts = [];
   const events = [];
   rows.forEach((r, i) => {
     if (!String(r[cols.source] ?? "").trim() || !String(r[cols.target] ?? "").trim()) {
@@ -652,6 +669,17 @@ export function parseEvents(text) {
       if (action === "keep" || action === "suppress") ev.fileAction = action;
       else if (cell) badActions.push({ i, cell });
     }
+    // The target's sample verdict and the event's origin, kept like the
+    // action for the caller (`fileSampleVerdict`, `fileManual`).
+    if (cur.sampleVerdict) {
+      const cell = String(r[cur.sampleVerdict] ?? "").trim();
+      const verdict = SAMPLE_VERDICT_SPELLINGS.get(cell.toLowerCase().replace(/[\s_-]+/g, "_"));
+      if (verdict) ev.fileSampleVerdict = verdict;
+      else if (cell && verdict === undefined) badSampleVerdicts.push({ i, cell });
+    }
+    if (cur.origin && String(r[cur.origin] ?? "").trim().toLowerCase() === "manual") {
+      ev.fileManual = true;
+    }
     events.push(ev);
   });
   if (events.length === 0) {
@@ -678,6 +706,14 @@ export function parseEvents(text) {
     warnings.push(
       `${n} row${n > 1 ? "s have" : " has"} an unrecognised action, ignored: expected keep or ` +
         `suppress (first on line ${lineNumbers[i]}: "${clip(cell)}").`,
+    );
+  }
+  if (badSampleVerdicts.length > 0) {
+    const n = badSampleVerdicts.length;
+    const { i, cell } = badSampleVerdicts[0];
+    warnings.push(
+      `${n} row${n > 1 ? "s have" : " has"} an unrecognised sample verdict, ignored: expected ` +
+        `contaminated, correct or uncertain (first on line ${lineNumbers[i]}: "${clip(cell)}").`,
     );
   }
   if (invalid.length > 0) {
@@ -720,12 +756,18 @@ export function parseEvents(text) {
           actions: events.filter((e) => e.fileAction).length,
         }
       : null;
+  // Which curation columns the file has (null: none), for what an empty
+  // cell means: no action given in a file that has the column.
+  const curationColumns = Object.values(cur).some(Boolean)
+    ? Object.fromEntries(Object.entries(cur).map(([k, col]) => [k, !!col]))
+    : null;
 
   return {
     events,
     runMetadata: parseRunMetadata(headerComments),
     warnings,
     curation,
+    curationColumns,
   };
 }
 

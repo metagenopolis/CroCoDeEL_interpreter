@@ -31,15 +31,6 @@ import {
   spearmanRho,
   speciesCountsBySample,
 } from "./diagnostics.js";
-// Moved to src/diagnostics.js; still exported from here for the modules
-// and tests that import them from App.jsx.
-export {
-  buildScatter,
-  lineDiagnostics,
-  missingAbundantFromSource,
-  pointsAboveLine,
-  poissonBinomialUpperTail,
-} from "./diagnostics.js";
 import {
   autoVerdictFromCounts,
   syncSampleCuration,
@@ -63,8 +54,12 @@ import {
   curatedAbundanceProvenance,
   hasInputValues,
   curationOrigin,
+  escapeHTML,
+  samplesReportCuration,
+  samplesReportIndex,
 } from "./exports.js";
 import {
+  checkStoredSession,
   restoreFilter,
   restoreSort,
   sessionFromPayload,
@@ -72,7 +67,13 @@ import {
 } from "./persistence.js";
 import { idbBackend, indexedDBSupported, readStoredSession } from "./storage.js";
 import { createAutosave } from "./autosave.js";
-import { curationSummary, replaceEvents, replaceReportLines, replacedRunMetadata } from "./carryOver.js";
+import {
+  curationSummary,
+  isManualEvent,
+  replaceEvents,
+  replaceReportLines,
+  replacedRunMetadata,
+} from "./carryOver.js";
 import {
   FolderOpen,
   AlertCircle,
@@ -162,9 +163,7 @@ const RepubliqueFrancaise = ({ height = 46 }) => (
    2. TSV PARSING
    ============================================================================ */
 
-/* The input-file parsers live in src/parsing.js. These four were exported
-   from here before they moved, and still are. */
-export { tsvCell, splitSpeciesList, parseEvents, parseAbundance } from "./parsing.js";
+/* The input-file parsers live in src/parsing.js. */
 
 /* ---------- contamination-rate slider helpers ----------
    Rates span several orders of magnitude (0.01% to 50%+), so all rate
@@ -295,9 +294,7 @@ export function sampleName(metadata, sampleId) {
 /* The export builders live in src/exports.js: eventsToTSV (the loaded
    events written back as CroCoDeEL writes them), the curated events TSV,
    and abundanceToTSV / buildCuratedAbundance (the abundance table with
-   the input's own values, without the suppressed samples). These two were
-   exported from here before they moved, and still are. */
-export { abundanceToTSV, buildCuratedAbundance } from "./exports.js";
+   the input's own values, without the suppressed samples). */
 
 /* ---------- contamination graph export ----------
    The Network tab already treats the events as a directed graph
@@ -20538,25 +20535,41 @@ const HelpTab = ({ onStartTour }) => {
                 aliases={["note", "comment", "comments"]}
               />
               <HelpCol
+                name="sample_verdict"
+                recognized
+                type="contaminated / correct / uncertain"
+                desc="The target sample's verdict in the curated events TSV (correct is Not contaminated; empty: none). Restored on the target when all its rows give the same one: as your own value where it differs from the automatic one — a Not contaminated or Uncertain you set although a true positive targets the sample, which then stays in the curated table."
+              />
+              <HelpCol
                 name="action"
                 recognized
                 type="keep / suppress"
                 desc="The target sample's action in the curated events TSV. Restored on the target when all its rows give the same keep / suppress: as your own value where it differs from the automatic one (a Keep on a contaminated sample, a Suppress on one that is not)."
               />
+              <HelpCol
+                name="origin"
+                recognized
+                type="manual / empty"
+                desc="manual for an event you added by hand (Explore new pairs) in the curated events TSV: reloaded, it is yours again, so a later CroCoDeEL file without its pair keeps it."
+              />
             </tbody>
           </table>
           <p>
-            These three columns are matched exactly (ignoring case,
+            These columns are matched exactly (ignoring case,
             spaces, underscores, hyphens and dots), never as part of a
             longer header: an{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}>extraction_batch</code>{" "}
             column is not an action. Reloading the curated events TSV
-            restores the event evaluations, their notes and the targets'
-            keep / suppress actions, so an export reloaded into an empty
-            session gives back the same counts and the same curated
-            abundance table. What the file does not hold — sample verdicts
-            and sample notes set by hand, the action of a sample no event
-            targets — only the session JSON (Download session) keeps. Its{" "}
+            restores the event evaluations, their notes, the events added
+            by hand and the targets' verdicts and keep / suppress actions,
+            so an export reloaded into an empty session gives back the same
+            counts and the same curated abundance table. A curated file of
+            an earlier version holds no target verdicts: a target with a
+            true-positive event and no action in it comes back suppressed,
+            and the banner names those targets. What the file does not
+            hold — the notes of the samples, the verdict and the action of
+            a sample no event targets — only the session JSON (Download
+            session) keeps. Its{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}># study: …</code>{" "}
             line names the study when the session has none yet; it is not a
             run parameter. An events file without CroCoDeEL's run header,
@@ -20574,7 +20587,8 @@ const HelpTab = ({ onStartTour }) => {
             of every event whose source and target are in the new file
             (repeated pairs are matched in file order), the events you
             added by hand (Explore new pairs: no CroCoDeEL file holds them)
-            whose pair the new file does not have, and the sample
+            — still yours when the new file has their pair, so that a later
+            file without it keeps them too — and the sample
             verdicts, actions and notes you set for the samples still
             present (in the new events or the abundance table); the
             automatic sample values are then recomputed from the new events.
@@ -20593,7 +20607,8 @@ const HelpTab = ({ onStartTour }) => {
             under the names above and with CroCoDeEL's own number
             formatting, so CroCoDeEL reads it back too (to plot the curated
             events with <code style={{ fontFamily: "ui-monospace, monospace" }}>plot_conta</code>,
-            say); introduced_pct, verdict, action and notes follow. A
+            say); introduced_pct, verdict, action, notes, sample_verdict
+            and origin follow. A
             curated file exported by an earlier version, whose columns were
             named{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}>contamination_rate</code> and{" "}
@@ -21601,9 +21616,13 @@ const HelpTab = ({ onStartTour }) => {
             <em>Keep</em>, so the curated abundance table still keeps
             it; the Not contaminated + Keep that the Samples tab used to
             write on every sample no event targets is dropped (that
-            default is derived now). A message lists the samples whose
-            suppression changed. A session saved by this version comes
-            back exactly as it was saved.
+            default is derived now), also when you had changed the
+            sample since: its notes and any other verdict are kept, and
+            so is a Keep on a sample you made Contaminated (that version
+            showed the action chips on Contaminated samples only). A
+            message lists the samples whose suppression changed. A
+            session saved by this version comes back exactly as it was
+            saved.
           </p>
           <h4
             className="mt-3 text-[14px]"
@@ -24589,7 +24608,9 @@ function AppMain({ initial, storage }) {
   // the clean-up of an earlier model (stamped defaults, cleared actions)
   // only applies to a session saved before it, never to one curated with
   // this version. (An imported session JSON is migrated the same way, by
-  // sessionFromPayload in src/persistence.js.)
+  // sessionFromPayload in src/persistence.js; a stored session of an
+  // earlier layout already was, before its records were written —
+  // upgradedSession — so this only acts when that write failed.)
   // Once, on the session this component was mounted with (it only
   // seeds the useState initialisers below).
   const initialMigration = useMemo(
@@ -24678,7 +24699,14 @@ function AppMain({ initial, storage }) {
   // string so a verdict click (new events, same targets) does not hand
   // every reader a new map.
   const neverTargetedKey = useMemo(
-    () => neverTargetedSamples(rawEvents, ab?.samples).join("\n"),
+    () =>
+      neverTargetedSamples(
+        rawEvents,
+        ab?.samples,
+        // A table sample that an event targets under another spelling is
+        // targeted.
+        ab ? (id) => resolveSample(ab, id) : null,
+      ).join("\n"),
     [rawEvents, ab],
   );
   const neverTargeted = useMemo(
@@ -25128,16 +25156,23 @@ const defaultFilter = () => ({
   // Dismissable notice over the tabs (NoticeBanner): what loading another
   // events file did to the curation, or a session restored without its
   // abundance table (the table's last save had failed).
-  const [notice, setNotice] = useState(() =>
-    initial?.abLost && !initial?.ab
-      ? {
-          title: "The abundance table was not restored.",
-          lines: [
-            "Its last save to this browser's storage failed, so the session came back without it: load species_abundance.tsv again for the scatterplots and the diagnostics.",
-          ],
-        }
-      : null,
-  );
+  // What reopening the stored session found: its table lost, parts the
+  // readers of src/persistence.js repaired (checkStoredSession), the
+  // save of a tab of the earlier version brought in (readStoredSession).
+  const [notice, setNotice] = useState(() => {
+    const lost =
+      initial?.abLost && !initial?.ab
+        ? "Its last save to this browser's storage failed, so the session came back without it: load species_abundance.tsv again for the scatterplots and the diagnostics."
+        : null;
+    const repaired = Array.isArray(initial?.storageNotes) ? initial.storageNotes : [];
+    if (repaired.length > 0) {
+      return {
+        title: "The session saved in this browser was updated when it was opened.",
+        lines: lost ? [...repaired, `The abundance table was not restored. ${lost}`] : repaired,
+      };
+    }
+    return lost ? { title: "The abundance table was not restored.", lines: [lost] } : null;
+  });
 
   /* Tutorial state — two pieces:
      - welcomeOpen: the first-visit popup that asks "Take the tour or
@@ -26037,9 +26072,7 @@ const defaultFilter = () => ({
         : undefined;
     commitEvents(
       (list) => {
-        const nextManualNum = list.filter((e) =>
-          typeof e.id === "string" && e.id.startsWith("manual-"),
-        ).length + 1;
+        const nextManualNum = list.filter(isManualEvent).length + 1;
         const newEvent = {
           id: `manual-${nextManualNum}`,
           source: data.source,
@@ -26069,7 +26102,9 @@ const defaultFilter = () => ({
   // null | { kind, count, onConfirm }. Opens on what reopening a session
   // saved by an earlier version changed, if anything.
   const [bulkConfirm, setBulkConfirm] = useState(() =>
-    sessionMigrationNotice(initialMigration.changes),
+    sessionMigrationNotice(
+      initialMigration.changes || initial?.migrationChanges || null,
+    ),
   );
   // Global Escape handler — closes the topmost dialog (config /
   // bulk-confirm) so keyboard users aren't trapped behind a backdrop
@@ -26354,6 +26389,7 @@ const defaultFilter = () => ({
       sampleIds: ab?.samples,
       carryOver,
       fileHasCuration: !!parsed.curation,
+      fileColumns: parsed.curationColumns,
     });
     // Seen by any handler that runs before the next commit (commitEvents
     // does the same).
@@ -26419,6 +26455,7 @@ const defaultFilter = () => ({
       sampleIds: ab?.samples,
       carryOver: true,
       fileHasCuration,
+      fileColumns: parsed.curationColumns,
     }).report;
     const { dropped, droppedCurated, keptManual, manual } = preview;
     const carried = [];
@@ -26914,12 +26951,10 @@ const defaultFilter = () => ({
       (pandas silently took the 23 first columns for an index, R refused
       the file), so the study is a column of its own. */
   const exportSamplesReport = () => {
-    const sampleIds = new Set();
-    (events || []).forEach((e) => {
-      if (e.source) sampleIds.add(e.source);
-      if (e.target) sampleIds.add(e.target);
-    });
-    if (ab?.samples) for (const s of ab.samples) sampleIds.add(s);
+    // One row per sample: a name the abundance table holds under another
+    // spelling is that table sample (samplesReportIndex, src/exports.js).
+    const index = samplesReportIndex(events, ab);
+    const sampleIds = new Set(index.ids);
 
     // Pre-compute per-sample aggregates in a single pass over events.
     const agg = new Map();
@@ -26937,11 +26972,11 @@ const defaultFilter = () => ({
     }
     (events || []).forEach((e) => {
       if (e.source) {
-        const a = agg.get(e.source);
+        const a = agg.get(index.rowOf(e.source));
         if (a) a.asSource++;
       }
       if (e.target) {
-        const a = agg.get(e.target);
+        const a = agg.get(index.rowOf(e.target));
         if (a) {
           a.asTarget++;
           if (e.verdict === "true_positive") a.tpAsTarget++;
@@ -27009,7 +27044,7 @@ const defaultFilter = () => ({
         const flags = flagSample(id, metadata);
         const placement = plateMap?.bySample?.[id] || null;
         const a = agg.get(id) || {};
-        const c = effectiveSampleCuration?.[id] || {};
+        const c = samplesReportCuration(effectiveSampleCuration, index.names(id));
         lines.push(
           [
             id,
@@ -27055,12 +27090,9 @@ const defaultFilter = () => ({
       conventions of the events HTML report (palette, page header,
       "save as PDF" footer). */
   const exportSamplesHTMLReport = () => {
-    const sampleIds = new Set();
-    (events || []).forEach((e) => {
-      if (e.source) sampleIds.add(e.source);
-      if (e.target) sampleIds.add(e.target);
-    });
-    if (ab?.samples) for (const s of ab.samples) sampleIds.add(s);
+    // One row per sample, as in the samples TSV.
+    const index = samplesReportIndex(events, ab);
+    const sampleIds = new Set(index.ids);
 
     const agg = new Map();
     for (const id of sampleIds) {
@@ -27077,11 +27109,11 @@ const defaultFilter = () => ({
     }
     (events || []).forEach((e) => {
       if (e.source) {
-        const a = agg.get(e.source);
+        const a = agg.get(index.rowOf(e.source));
         if (a) a.asSource++;
       }
       if (e.target) {
-        const a = agg.get(e.target);
+        const a = agg.get(index.rowOf(e.target));
         if (a) {
           a.asTarget++;
           if (e.verdict === "true_positive") a.tpAsTarget++;
@@ -27112,7 +27144,7 @@ const defaultFilter = () => ({
     const summary = rows.reduce(
       (acc, id) => {
         acc.total++;
-        const c = effectiveSampleCuration?.[id] || {};
+        const c = samplesReportCuration(effectiveSampleCuration, index.names(id));
         const v = c.verdict || "pending";
         if (v === "contaminated") acc.contaminated++;
         else if (v === "correct") acc.correct++;
@@ -27126,16 +27158,13 @@ const defaultFilter = () => ({
         correct: 0,
         uncertain: 0,
         pending: 0,
-        ...sampleActionCounts(effectiveSampleCuration, rows, tableSample),
+        ...sampleActionCounts(
+          effectiveSampleCuration,
+          rows.flatMap((id) => index.names(id)),
+          tableSample,
+        ),
       },
     );
-
-    const escapeHTML = (s) =>
-      String(s == null ? "" : s)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
 
     const verdictPill = (v) => {
       const norm = String(v || "pending");
@@ -27186,7 +27215,7 @@ const defaultFilter = () => ({
         const flags = flagSample(id, metadata);
         const placement = plateMap?.bySample?.[id] || null;
         const a = agg.get(id) || {};
-        const c = effectiveSampleCuration?.[id] || {};
+        const c = samplesReportCuration(effectiveSampleCuration, index.names(id));
         const name = sampleName(metadata, id) || "";
         const facets = [
           flags.subject ? `subj: ${escapeHTML(flags.subject)}` : null,
@@ -27348,7 +27377,13 @@ const defaultFilter = () => ({
       setFilter(s.filter);
       setSort(s.sort);
       setErr(null);
-      setNotice(null);
+      // What the readers repaired in the file — what an earlier version's
+      // parser left in it — is said, not refused.
+      setNotice(
+        read.repairs.length > 0
+          ? { title: "Session imported. The file was repaired while it was read:", lines: read.repairs }
+          : null,
+      );
       // A session saved by an earlier version: say what its migration
       // changed in the curated output.
       const migration = sessionMigrationNotice(read.changes);
@@ -27453,13 +27488,6 @@ const defaultFilter = () => ({
         ...sampleActionTotals,
       },
     );
-    const escapeHTML = (s) =>
-      String(s == null ? "" : s)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-
     // Verdicts arrive as snake_case ("true_positive"); accept both the
     // canonical form and a couple of upper-case shorthands so the pill
     // never silently falls back to "Pending".
@@ -27512,6 +27540,9 @@ const defaultFilter = () => ({
     // Build a one-paragraph summary of the active filter so the reader
     // knows what subset they're looking at. Only mentions fields that
     // diverge from the defaults; returns null when nothing is active.
+    // Every value is escaped: the filter comes back from a stored
+    // session or a session file (restoreFilter keeps only the values
+    // the filter bar offers), and markup in it ran in the report.
     const filterSummary = (() => {
       if (!reportFilter) return null;
       const parts = [];
@@ -27541,17 +27572,17 @@ const defaultFilter = () => ({
           pending: "pending",
         };
         parts.push(
-          `verdict: ${reportFilter.verdicts.map((v) => labels[v] || v).join(", ")}`,
+          `verdict: ${reportFilter.verdicts.map((v) => escapeHTML(labels[v] || v)).join(", ")}`,
         );
       }
       if (reportFilter.subject && reportFilter.subject !== "any") {
-        parts.push(`subject: ${reportFilter.subject}`);
+        parts.push(`subject: ${escapeHTML(reportFilter.subject)}`);
       }
       if (reportFilter.group && reportFilter.group !== "any") {
-        parts.push(`group: ${reportFilter.group}`);
+        parts.push(`group: ${escapeHTML(reportFilter.group)}`);
       }
       if (reportFilter.adjacent && reportFilter.adjacent !== "any") {
-        parts.push(`plate: ${reportFilter.adjacent}`);
+        parts.push(`plate: ${escapeHTML(reportFilter.adjacent)}`);
       }
       return parts.length ? parts.join(" · ") : null;
     })();
@@ -28686,6 +28717,11 @@ const defaultFilter = () => ({
                           setMetadata(null);
                           setPlateMap(null);
                           setSelId(null);
+                          // The study goes with the rest: kept, it was
+                          // hidden with the emptied files bar, and the next
+                          // events file's "# study:" line was ignored for
+                          // it, its curation exported under the old title.
+                          setAnalysisTitle("");
                           setErr(null);
                           setTab("overview");
                         },
@@ -31991,16 +32027,49 @@ export default function App() {
     }
     let cancelled = false;
     readStoredSession()
-      .then(({ session, rev, abToken, inRecords }) => {
-        // Metadata saved by an earlier version is read again with the
-        // current header rules (remapMetadata, src/parsing.js). The
-        // stored copy stays as read (`stored`), so the autosave writes
-        // the new reading once. A session read from an earlier layout
-        // whose migration failed is not in the current records: nothing
-        // counts as stored, so the first save writes every record.
-        const initial = session?.metadata
-          ? { ...session, metadata: remapMetadata(session.metadata) }
-          : session;
+      .then(({ session, rev, abToken, inRecords, upgrade }) => {
+        // The stored session is read by the readers of the session
+        // import (checkStoredSession, src/persistence.js): what an
+        // earlier version or a damaged profile left in it is repaired,
+        // reset or left out, and said — it used to blank the whole app
+        // at every reload. Metadata saved by an earlier version is read
+        // again with the current header rules (remapMetadata,
+        // src/parsing.js). The stored copy stays as read (`stored`), so
+        // the autosave writes the new reading once. A session read from
+        // an earlier layout whose migration failed is not in the current
+        // records: nothing counts as stored, so the first save writes
+        // every record. A session of an earlier layout was brought up to
+        // date before it was written (`upgrade`, src/storage.js): this
+        // tab says what that changed.
+        let checked;
+        try {
+          checked = checkStoredSession(session);
+        } catch (e) {
+          // Should the readers fail, the session opens as it was read,
+          // as it did before them.
+          console.warn("[crocodeel] could not check the stored session:", e?.message);
+          checked = { session, notes: [] };
+        }
+        const read = checked.session;
+        let initial = read?.metadata
+          ? { ...read, metadata: remapMetadata(read.metadata) }
+          : read;
+        const notes = [...(upgrade?.notes || []), ...checked.notes];
+        if (upgrade?.olderTabSavedAt) {
+          const when = new Date(upgrade.olderTabSavedAt);
+          notes.unshift(
+            `A tab still running the earlier version of this interface saved the session after it was upgraded here${
+              Number.isNaN(when.getTime()) ? "" : ` (${when.toLocaleString()})`
+            }: that save is the session now. Close the tabs that still show the earlier version, or reload them: what they save is only brought in when another tab opens.`,
+          );
+        }
+        if (initial && (notes.length > 0 || upgrade?.changes)) {
+          initial = {
+            ...initial,
+            storageNotes: notes,
+            migrationChanges: upgrade?.changes || null,
+          };
+        }
         if (!cancelled)
           setBoot({
             status: "ready",
