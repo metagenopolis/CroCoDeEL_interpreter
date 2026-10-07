@@ -3,6 +3,19 @@ import * as d3 from "d3";
 import { Range, getTrackBackground } from "react-range";
 import LZString from "lz-string";
 import {
+  tsvCell,
+  parseEvents,
+  parseAbundance,
+  parseMetadata,
+  remapMetadata,
+  metadataToTSV,
+  parsePlateMap,
+  plateMapToTSV,
+  wellLabel,
+  metadataColumnsLine,
+  plateColumnsLine,
+} from "./parsing.js";
+import {
   FolderOpen,
   AlertCircle,
   CheckCircle2,
@@ -91,101 +104,9 @@ const RepubliqueFrancaise = ({ height = 46 }) => (
    2. TSV PARSING
    ============================================================================ */
 
-/** Strip a single layer of CSV/TSV-style surrounding double quotes from a
-    cell. Some upstream tools (notably R's write.table and Meteor's MSP
-    profiles) wrap every string cell in `"..."`; without unquoting, the
-    species name `"msp_0001"` parsed from the abundance file would never
-    match the bare `msp_0001` listed in contamination_events.tsv. */
-function unquoteCell(s) {
-  if (typeof s !== "string") return s;
-  if (s.length >= 2 && s.charCodeAt(0) === 34 && s.charCodeAt(s.length - 1) === 34) {
-    return s.slice(1, -1).replace(/""/g, '"');
-  }
-  return s;
-}
-
-/** Flatten a value into a single TSV cell.
-
-    Both curated exports used to strip only `\t` from free-text fields while
-    stripping `[\t\n\r]` from the study title. Curator notes are multi-line
-    textareas AND the bulk-apply actions prepend `${tag}\n\n${notes}`
-    themselves, so one event could emit three physical lines — enough to
-    make `pandas.read_csv(sep='\t')` either raise or invent rows. Every
-    field of every writer goes through here. */
-export function tsvCell(v) {
-  return String(v ?? "").replace(/[\t\r\n]+/g, " ");
-}
-
-function parseTSV(text) {
-  const allLines = text.replace(/\r/g, "").split("\n").filter((l) => l.length > 0);
-  // Separate hash-prefixed header lines (e.g. CroCoDeEL run params) from data
-  const headerComments = [];
-  let firstDataIdx = 0;
-  for (let i = 0; i < allLines.length; i++) {
-    if (allLines[i].startsWith("#")) {
-      headerComments.push(allLines[i].replace(/^#\s*/, ""));
-      firstDataIdx = i + 1;
-    } else {
-      break;
-    }
-  }
-  const lines = allLines.slice(firstDataIdx);
-  if (lines.length === 0) return { header: [], rows: [], headerComments };
-  const header = lines[0].split("\t").map(unquoteCell);
-  const rows = lines.slice(1).map((line) => {
-    const cells = line.split("\t");
-    const obj = {};
-    header.forEach((h, i) => (obj[h] = unquoteCell(cells[i] ?? "")));
-    return obj;
-  });
-  return { header, rows, headerComments };
-}
-
-/** Parse a CroCoDeEL-style "key: value | key: value | ..." metadata header. */
-function parseRunMetadata(headerComments) {
-  if (!headerComments || headerComments.length === 0) return null;
-  const meta = {};
-  headerComments.forEach((line) => {
-    line.split("|").forEach((kv) => {
-      const idx = kv.indexOf(":");
-      if (idx < 0) return;
-      const key = kv.slice(0, idx).trim();
-      const val = kv.slice(idx + 1).trim();
-      if (key) meta[key] = val;
-    });
-  });
-  return Object.keys(meta).length > 0 ? meta : null;
-}
-
-function pickCol(header, candidates) {
-  const lc = header.map((h) => h.toLowerCase());
-  for (const c of candidates) {
-    const i = lc.indexOf(c.toLowerCase());
-    if (i >= 0) return header[i];
-  }
-  for (const c of candidates) {
-    const i = lc.findIndex((h) => h.includes(c.toLowerCase()));
-    if (i >= 0) return header[i];
-  }
-  return null;
-}
-
-/* ---------- contamination_events.tsv ---------- */
-const EVENT_COLS = {
-  source: ["source", "contamination_source", "source_sample"],
-  target: ["target", "contaminated_sample", "target_sample", "contaminated"],
-  rate: ["rate", "contamination_rate", "estimated_rate"],
-  // Canonical column is `probability`. Older CroCoDeEL outputs write the
-  // model's probability into a column named `score` instead — accept it
-  // as a fallback alias. The value is shown as "probability" in the UI.
-  score: ["probability", "score", "rf_score", "proba"],
-  species: [
-    "contamination_specific_species",
-    "introduced_species",
-    "species_specifically_introduced",
-    "species",
-  ],
-};
+/* The input-file parsers live in src/parsing.js. These four were exported
+   from here before they moved, and still are. */
+export { tsvCell, splitSpeciesList, parseEvents, parseAbundance } from "./parsing.js";
 
 /* ---------- contamination-rate slider helpers ----------
    Rates span several orders of magnitude (0.01% to 50%+), so all rate
@@ -209,342 +130,6 @@ const formatRatePct = (rate) => {
   if (pct < 10) return `${pct.toFixed(1)}%`;
   return `${Math.round(pct)}%`;
 };
-
-/** Split the introduced-species cell into taxon names.
-
-    The separator is `,`. `;` used to be accepted as an alternative, but it
-    is ALSO the rank separator inside GTDB/SILVA-style lineages
-    (`d__Bacteria;p__Bacteroidota;...;s__Phocaeicola vulgatus`), and
-    splitting on it shreds every name into fragments that match nothing in
-    the abundance table — silently, since a shredded event simply ends up
-    with zero on-line points. So: split on `,` when the cell has one, and
-    only fall back to `;` for a cell that has neither a comma nor the
-    `x__` rank prefixes that mark a lineage. */
-export function splitSpeciesList(cell) {
-  const s = String(cell ?? "").trim();
-  if (!s) return [];
-  const isLineage = /[a-z]__/i.test(s);
-  const sep = s.includes(",") || isLineage ? /,\s*/ : /;\s*/;
-  return s
-    .split(sep)
-    .map((x) => x.trim())
-    .filter((x) => x.length > 0);
-}
-
-function normalizeEvent(raw, cols, idx) {
-  const species = splitSpeciesList(raw[cols.species]);
-  // Probability resolution: prefer the column pickCol actually resolved in
-  // this file's header (which matches case-insensitively), then fall back
-  // to the literal aliases for files that carry several score columns and
-  // leave the canonical one empty on some rows.
-  let probValue = "";
-  for (const key of [cols.score, ...EVENT_COLS.score]) {
-    if (!key) continue;
-    const v = raw[key];
-    if (v != null && String(v).trim() !== "") {
-      probValue = v;
-      break;
-    }
-  }
-  return {
-    id: idx,
-    source: raw[cols.source] || "",
-    target: raw[cols.target] || "",
-    rate: parseFloat(raw[cols.rate]) || 0,
-    score: parseFloat(probValue) || 0,
-    introduced: species,
-    verdict: "pending",
-    notes: "",
-  };
-}
-
-export function parseEvents(text) {
-  const { header, rows, headerComments } = parseTSV(text);
-  if (rows.length === 0) throw new Error("Empty file or no rows");
-  const cols = {
-    source: pickCol(header, EVENT_COLS.source),
-    target: pickCol(header, EVENT_COLS.target),
-    rate: pickCol(header, EVENT_COLS.rate),
-    score: pickCol(header, EVENT_COLS.score),
-    species: pickCol(header, EVENT_COLS.species),
-  };
-  if (!cols.source || !cols.target) {
-    throw new Error(
-      "Could not find source/target columns. Expected headers like 'source' and 'target' (or 'contaminated_sample').",
-    );
-  }
-  // A missing rate column is not fatal — source/target alone still make a
-  // browsable event list — but every rate silently becomes 0, which means
-  // no contamination line is drawn and several diagnostics quietly go
-  // uninformative. Say so rather than letting the user wonder.
-  const warnings = [];
-  if (!cols.rate) {
-    warnings.push(
-      "No contamination-rate column found (expected 'rate' or 'contamination_rate'). " +
-        "Every rate reads as 0, so no contamination line can be drawn.",
-    );
-  }
-  if (!cols.species) {
-    warnings.push(
-      "No introduced-species column found (expected 'contamination_specific_species'). " +
-        "Scatterplots will show no highlighted species.",
-    );
-  }
-  return {
-    events: rows.map((r, i) => normalizeEvent(r, cols, i)),
-    runMetadata: parseRunMetadata(headerComments),
-    warnings,
-  };
-}
-
-/* ---------- species_abundance.tsv ---------- */
-
-/** Report the first repeated entry in a list, or null. Duplicates are a
-    silent-corruption hazard here: parseTSV keys rows by header name, so a
-    repeated sample column makes two samples share one profile, and a
-    repeated species row makes the last one win while the lost row's counts
-    still leave the column total alone — which the renormalisation below
-    then spreads over every OTHER species. */
-function firstDuplicate(names) {
-  const seen = new Set();
-  for (const n of names) {
-    if (seen.has(n)) return n;
-    seen.add(n);
-  }
-  return null;
-}
-
-export function parseAbundance(text) {
-  const { header, rows } = parseTSV(text);
-  if (header.length < 2) return null;
-  const speciesCol = header[0];
-  const samples = header.slice(1);
-
-  const dupSample = firstDuplicate(samples);
-  if (dupSample) {
-    throw new Error(
-      `Duplicate sample column "${dupSample}" in the abundance table. ` +
-        `Each sample must appear exactly once — merge or rename the columns and reload.`,
-    );
-  }
-  const speciesNames = rows.map((r) => r[speciesCol]).filter(Boolean);
-  const dupSpecies = firstDuplicate(speciesNames);
-  if (dupSpecies) {
-    throw new Error(
-      `Duplicate species row "${dupSpecies}" in the abundance table. ` +
-        `Each species must appear exactly once — aggregate the rows and reload.`,
-    );
-  }
-
-  const matrix = {};
-  let nonNumericCells = 0;
-  rows.forEach((r) => {
-    const sp = r[speciesCol];
-    if (!sp) return;
-    const row = {};
-    samples.forEach((s) => {
-      const raw = r[s];
-      const v = parseFloat(raw);
-      if (!Number.isFinite(v) && raw != null && String(raw).trim() !== "") {
-        nonNumericCells++;
-      }
-      row[s] = Number.isFinite(v) ? v : 0;
-    });
-    matrix[sp] = row;
-  });
-
-  // Hoisted once: this used to rebuild Object.keys(matrix) twice per
-  // sample, which on a 2000 x 1000 table is the bulk of the parse time.
-  const speciesKeys = Object.keys(matrix);
-
-  // normalize to relative abundances per sample, and collect the log10
-  // extremes in the same pass
-  let minVal = Infinity;
-  let maxVal = -Infinity;
-  let emptySamples = 0;
-  samples.forEach((s) => {
-    let total = 0;
-    for (const sp of speciesKeys) total += matrix[sp][s] || 0;
-    if (total > 0) {
-      for (const sp of speciesKeys) {
-        const v = (matrix[sp][s] || 0) / total;
-        matrix[sp][s] = v;
-        if (v > 0) {
-          if (v < minVal) minVal = v;
-          if (v > maxVal) maxVal = v;
-        }
-      }
-    } else {
-      emptySamples++;
-    }
-  });
-
-  // Per-dataset log10 range, computed from non-zero relative abundances.
-  // Used as the axis bounds for every scatterplot in this dataset (gallery
-  // thumbnails AND the big validation/explore plots) so events are
-  // visually comparable and the points aren't squashed into a corner.
-  const logRange =
-    Number.isFinite(minVal) && Number.isFinite(maxVal)
-      ? {
-          min: Math.floor(Math.log10(minVal)),
-          // Clamp upper bound at 0: relative abundances are bounded by 1.
-          max: Math.min(0, Math.ceil(Math.log10(maxVal))),
-        }
-      : { min: -8, max: 0 };
-
-  // Non-numeric cells are coerced to 0 by design (NA / empty are legitimate
-  // in these tables). But a table whose decimal separator is a comma parses
-  // "successfully" into an all-zero matrix with the right species and sample
-  // counts and blank plots everywhere, so surface the tally instead of
-  // failing silently.
-  const warnings = [];
-  if (emptySamples === samples.length) {
-    warnings.push(
-      `Every sample column sums to 0 — no abundance could be read. ` +
-        `Check the decimal separator (a comma is not recognised) and that the ` +
-        `first column holds species names.`,
-    );
-  } else if (emptySamples > 0) {
-    warnings.push(
-      `${emptySamples} of ${samples.length} sample columns sum to 0 and were left empty.`,
-    );
-  }
-  if (nonNumericCells > 0) {
-    warnings.push(
-      `${nonNumericCells.toLocaleString()} non-empty cells were not numeric and were read as 0.`,
-    );
-  }
-
-  return { samples, species: speciesKeys, matrix, logRange, warnings };
-}
-
-/* ---------- metadata.tsv ---------- */
-const METADATA_COLS = {
-  sample: ["sample_id", "sample", "sampleid", "id"],
-  // Optional human-readable name for the sample. When present, the UI
-  // renders it as a muted secondary label next to the canonical
-  // sample_id (table rows, scatter plots, guided-validation header,
-  // network nodes, plate cells).
-  sampleName: [
-    "sample_name",
-    "name",
-    "display_name",
-    "displayname",
-    "label",
-    "alias",
-  ],
-  subject: [
-    "subject_id",
-    "subject",
-    "subjectid",
-    "patient_id",
-    "patient",
-    "host",
-    "individual",
-  ],
-  timepoint: [
-    "timepoint",
-    "time_point",
-    "time",
-    "day",
-    "week",
-    "visit",
-  ],
-  biome: [
-    "biome",
-    "body_site",
-    "bodysite",
-    "tissue",
-    "sample_site",
-  ],
-  lowBiomass: ["low_biomass", "is_low_biomass", "lowbiomass"],
-  lowSequencingDepth: [
-    "low_sequencing_depth",
-    "is_low_sequencing_depth",
-    "lowsequencingdepth",
-    "low_seq_depth",
-    "low_depth",
-  ],
-  groupId: [
-    // Canonical name first
-    "group_id",
-    "group",
-    // Aliases for various study contexts (humans, animal cages, etc.)
-    "related_group_id",
-    "related_group",
-    "family_id",
-    "family",
-    "cage_id",
-    "cage",
-    "household_id",
-    "household",
-  ],
-};
-
-/** Truthy-ish parsing: accepts true/false, 1/0, yes/no, t/f. Returns a
-    boolean or null if the value is empty/unrecognized. */
-function parseBool(v) {
-  if (v === undefined || v === null || v === "") return null;
-  const s = String(v).toLowerCase().trim();
-  if (["1", "true", "t", "yes", "y"].includes(s)) return true;
-  if (["0", "false", "f", "no", "n"].includes(s)) return false;
-  return null;
-}
-
-function parseMetadata(text) {
-  const { header, rows } = parseTSV(text);
-  if (header.length < 2) {
-    throw new Error("At least 2 columns required (sample_id and subject_id)");
-  }
-  const cols = {
-    sample: pickCol(header, METADATA_COLS.sample),
-    sampleName: pickCol(header, METADATA_COLS.sampleName),
-    subject: pickCol(header, METADATA_COLS.subject),
-    timepoint: pickCol(header, METADATA_COLS.timepoint),
-    biome: pickCol(header, METADATA_COLS.biome),
-    lowBiomass: pickCol(header, METADATA_COLS.lowBiomass),
-    lowSequencingDepth: pickCol(header, METADATA_COLS.lowSequencingDepth),
-    groupId: pickCol(header, METADATA_COLS.groupId),
-  };
-  if (!cols.sample) throw new Error("sample_id column not found");
-  if (!cols.subject) throw new Error("subject_id column not found");
-  const bySample = {};
-  rows.forEach((r) => {
-    const id = r[cols.sample];
-    if (!id) return;
-    const biomeVal = cols.biome ? r[cols.biome] || "" : "";
-    // Control detection: solely from the biome column. Any biome value
-    // matching "control", "blank" or "negative" (case-insensitive) flags
-    // the sample as a negative control.
-    const isControl = /control|blank|negative/i.test(biomeVal);
-    bySample[id] = {
-      sampleName: cols.sampleName ? r[cols.sampleName] || "" : "",
-      subject: r[cols.subject] || "",
-      timepoint: cols.timepoint ? r[cols.timepoint] || "" : "",
-      biome: biomeVal,
-      isControl,
-      lowBiomassExplicit: parseBool(
-        cols.lowBiomass ? r[cols.lowBiomass] : null,
-      ),
-      lowSequencingDepthExplicit: parseBool(
-        cols.lowSequencingDepth ? r[cols.lowSequencingDepth] : null,
-      ),
-      groupId: cols.groupId ? r[cols.groupId] || "" : "",
-      extra: { ...r },
-    };
-  });
-
-  return {
-    cols,
-    bySample,
-    nSamples: Object.keys(bySample).length,
-    hasSampleNameCol: !!cols.sampleName,
-    hasBiomeCol: !!cols.biome,
-    hasLowBiomassCol: !!cols.lowBiomass,
-    hasLowSequencingDepthCol: !!cols.lowSequencingDepth,
-    hasGroupIdCol: !!cols.groupId,
-  };
-}
 
 /** Collect every sample-level flag we can derive from explicit metadata
     columns. Returns { isControl, isLowBiomass, isLowSequencingDepth, biome,
@@ -645,70 +230,6 @@ export function sampleName(metadata, sampleId) {
   const n = (meta.sampleName || "").trim();
   if (!n || n === sampleId) return null;
   return n;
-}
-
-/* ---------- plate_map.tsv ---------- */
-const PLATE_COLS = {
-  sample: ["sample_id", "sample", "id"],
-  plate: ["plate", "plate_id", "plateid"],
-  well: ["well", "position", "well_id", "pos"],
-};
-
-/** "A01" / "A1" / "H12" / "P24" → {row: 0..15, col: 0..23} */
-function parseWell(w) {
-  if (!w) return null;
-  const s = String(w).trim().toUpperCase();
-  const m = s.match(/^([A-P])\s*(\d{1,2})$/);
-  if (!m) return null;
-  const row = m[1].charCodeAt(0) - 65;
-  const col = parseInt(m[2], 10) - 1;
-  if (row < 0 || row > 15 || col < 0 || col > 23) return null;
-  return { row, col };
-}
-
-function wellLabel(row, col) {
-  return String.fromCharCode(65 + row) + String(col + 1).padStart(2, "0");
-}
-
-function parsePlateMap(text) {
-  const { header, rows } = parseTSV(text);
-  const cols = {
-    sample: pickCol(header, PLATE_COLS.sample),
-    plate: pickCol(header, PLATE_COLS.plate),
-    well: pickCol(header, PLATE_COLS.well),
-  };
-  if (!cols.sample || !cols.well) {
-    throw new Error(
-      "Missing columns: sample_id and well are required (plate optional).",
-    );
-  }
-  const bySample = {};
-  let maxRow = 7;
-  let maxCol = 11;
-  rows.forEach((r) => {
-    const id = r[cols.sample];
-    if (!id) return;
-    const w = parseWell(r[cols.well]);
-    if (!w) return;
-    bySample[id] = {
-      plate: cols.plate ? r[cols.plate] || "P1" : "P1",
-      row: w.row,
-      col: w.col,
-    };
-    maxRow = Math.max(maxRow, w.row);
-    maxCol = Math.max(maxCol, w.col);
-  });
-  const format =
-    maxRow > 7 || maxCol > 11 ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 };
-  return { bySample, format };
-}
-
-function plateMapToTSV(plateMap) {
-  const lines = ["sample_id\tplate\twell"];
-  Object.entries(plateMap.bySample).forEach(([sid, p]) => {
-    lines.push(`${sid}\t${p.plate}\t${wellLabel(p.row, p.col)}`);
-  });
-  return lines.join("\n");
 }
 
 /** Serialize the loaded events back to a CroCoDeEL-compatible TSV.
@@ -1088,35 +609,6 @@ export function graphToCSV(graph) {
     nodes: table(graph.nodes, ["id", "label"]),
     edges: table(graph.edges, ["source", "target", "weight"]),
   };
-}
-
-/** Serialize metadata back to TSV using whatever extra columns were present
-    in the original upload. */
-function metadataToTSV(metadata) {
-  if (!metadata) return "";
-  const sampleIds = Object.keys(metadata.bySample);
-  if (sampleIds.length === 0) return "";
-  // Collect the union of all extra keys from the original rows
-  const allKeys = new Set();
-  sampleIds.forEach((id) => {
-    const extras = metadata.bySample[id].extra || {};
-    Object.keys(extras).forEach((k) => allKeys.add(k));
-  });
-  // Ensure sample_id and subject_id are first if present
-  const ordered = ["sample_id", "subject_id"];
-  Array.from(allKeys).forEach((k) => {
-    if (!ordered.includes(k)) ordered.push(k);
-  });
-  const lines = [ordered.join("\t")];
-  sampleIds.forEach((id) => {
-    const extras = metadata.bySample[id].extra || {};
-    const cells = ordered.map((k) => {
-      if (k === "sample_id") return extras.sample_id || id;
-      return extras[k] ?? "";
-    });
-    lines.push(cells.join("\t"));
-  });
-  return lines.join("\n");
 }
 
 /** Trigger a browser download for the given text content. */
@@ -4526,6 +4018,7 @@ const UploadCard = ({
   info,
   confirmDialog,
   emptyAction,
+  details,
 }) => {
   const [drag, setDrag] = useState(false);
   const loaded = !!filename;
@@ -4609,6 +4102,14 @@ const UploadCard = ({
             ✓ {filename}
           </div>
         )}
+        {loaded && details && (
+          <div
+            className="text-[11px] mt-0.5"
+            style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+          >
+            {details}
+          </div>
+        )}
       </div>
       <input
         ref={inputRef}
@@ -4689,6 +4190,30 @@ const UploadCard = ({
 };
 
 /* ---------- metadata / plate specialized upload cards ---------- */
+
+/** The extra lines of the metadata and plate-map cards: which header was
+    read as which field, then the parser's warnings (repeated sample ids,
+    unreadable wells). A session saved before these existed has neither,
+    and a hand-edited session file can hold anything there: only a list
+    of strings is shown, rather than letting `.map` throw during render
+    and blank the app. */
+const uploadCardDetails = (columnsLine, warnings) => {
+  const list = Array.isArray(warnings)
+    ? warnings.filter((w) => typeof w === "string" && w)
+    : [];
+  const line = typeof columnsLine === "string" ? columnsLine : null;
+  return line || list.length ? (
+    <>
+      {line && <div>Columns: {line}</div>}
+      {list.map((w, i) => (
+        <div key={i} style={{ color: "#d97a3c", fontWeight: 600 }}>
+          ⚠ {w}
+        </div>
+      ))}
+    </>
+  ) : null;
+};
+
 const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) => {
   const inputRef = useRef(null);
   const onFile = async (file) => {
@@ -4700,6 +4225,9 @@ const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) =>
       setErr(`Metadata: ${e.message}`);
     }
   };
+  // Which header was read as which field: a column taken for the subject
+  // or the group decides which pairs of samples count as related.
+  const columnsLine = metadataColumnsLine(metadata);
   return (
     <UploadCard
       label="metadata.tsv"
@@ -4738,10 +4266,15 @@ const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) =>
           <code style={{ fontFamily: "ui-monospace, monospace" }}>
             group_id
           </code>
-          . Any other column is shown as a generic key:value pill. See the
-          Help tab for accepted aliases (family_id, cage_id, host, etc.).
+          . Headers must match exactly, ignoring case, spaces, _ - and .
+          (so <code style={{ fontFamily: "ui-monospace, monospace" }}>Subject ID</code>{" "}
+          works, <code style={{ fontFamily: "ui-monospace, monospace" }}>age_group</code>{" "}
+          is not a group). Any other column is shown as a generic key:value
+          pill. See the Help tab for accepted aliases (family_id, cage_id,
+          patient, etc.).
         </>
       }
+      details={uploadCardDetails(columnsLine, metadata?.warnings)}
       onDownload={
         metadata
           ? () => downloadText(metadataToTSV(metadata), "metadata.tsv")
@@ -4764,6 +4297,7 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
       setErr(`Plate map: ${e.message}`);
     }
   };
+  const columnsLine = plateColumnsLine(plateMap);
   return (
     <UploadCard
       label="plate_map.tsv"
@@ -4789,10 +4323,15 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
           ,{" "}
           <code style={{ fontFamily: "ui-monospace, monospace" }}>well</code>
           . Wells use letter-then-number coordinates (A01–H12 for 96-well,
-          A01–P24 for 384-well). Plate format is auto-detected. Loading this
+          A01–P24 for 384-well), or come as two columns,{" "}
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>row</code>{" "}
+          (A–P or 1–16) and{" "}
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>column</code>{" "}
+          (1–24). Plate format is auto-detected. Loading this
           unlocks the Plate map tab and the "Proximity on plate" criterion.
         </>
       }
+      details={uploadCardDetails(columnsLine, plateMap?.warnings)}
       onDownload={
         plateMap
           ? () => downloadText(plateMapToTSV(plateMap), "plate_map.tsv")
@@ -13756,7 +13295,8 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
       }
     });
     newMap[sid] = { plate: plateId, row: r, col: c };
-    setPlateMap({ bySample: newMap, format });
+    // Spread: the plate card keeps the upload's column mapping and warnings.
+    setPlateMap({ ...plateMap, bySample: newMap, format });
     setSelectedSample(null);
     // auto-advance the focus to the next empty well
     advanceFocusToNextEmpty({ bySample: newMap }, r, c);
@@ -13775,7 +13315,7 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
     if (!posA || !posB) return;
     newMap[sidA] = posB;
     newMap[sidB] = posA;
-    setPlateMap({ bySample: newMap, format });
+    setPlateMap({ ...plateMap, bySample: newMap, format });
     setSelectedSample(null);
   };
 
@@ -13783,7 +13323,7 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
     const newMap = { ...(plateMap?.bySample || {}) };
     delete newMap[sid];
     setPlateMap(
-      Object.keys(newMap).length ? { bySample: newMap, format } : null,
+      Object.keys(newMap).length ? { ...plateMap, bySample: newMap, format } : null,
     );
   };
 
@@ -20665,9 +20205,23 @@ const HelpTab = ({ onStartTour }) => {
             }}
           >
             <p className="mb-2" style={{ color: "var(--ink)", fontWeight: 600 }}>
-              All files are TSV (tab-separated). Column names are matched
-              case-insensitively and many aliases are accepted — see each
-              file's section below for details.
+              All files are TSV (tab-separated); a comma- or
+              semicolon-separated file is refused, saying so. Column names
+              are matched case-insensitively and many aliases are accepted
+              — see each file's section below for details. In the metadata
+              and the plate map a header must match a name exactly,
+              ignoring case, spaces, underscores, hyphens and dots.
+            </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              Numbers use a dot as decimal separator (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>0.87</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>1.2e-05</code>
+              ), and the whole cell must be a number: a spreadsheet saved
+              with a decimal comma (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>0,87</code>
+              ) is refused or reported instead of being silently misread.
+              An empty cell, or NA / N/A / NaN / null / None / -, means "no
+              value".
             </p>
             <p style={{ color: "var(--ink-muted)" }}>
               Files are parsed entirely in your browser. Nothing is sent
@@ -20691,6 +20245,8 @@ const HelpTab = ({ onStartTour }) => {
               key: value | …
             </code>{" "}
             format — these are parsed and shown in the Overview tab.
+            Blank lines (even of spaces or tabs) are ignored, and a row
+            without a source or a target is skipped.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -20734,14 +20290,14 @@ const HelpTab = ({ onStartTour }) => {
                 name="rate"
                 required
                 type="float [0..1]"
-                desc="Estimated proportion of the contaminated sample that originates from the source."
+                desc="Estimated proportion of the contaminated sample that originates from the source. A value that is not a number (e.g. 0,41 written with a decimal comma) refuses the whole file, naming the row; an empty or NA cell reads as 0. A value outside (0, 1] is kept as read: check that the rates are fractions, not percentages."
                 aliases={["contamination_rate"]}
               />
               <HelpCol
                 name="probability"
                 required
                 type="float [0..1]"
-                desc="CroCoDeEL Random-Forest probability that the event is real. Older CroCoDeEL outputs may write this value into a column named `score` instead — both are accepted; the first non-empty value is used."
+                desc="CroCoDeEL Random-Forest probability that the event is real. Older CroCoDeEL outputs may write this value into a column named `score` instead — both are accepted; the first value that is neither empty nor NA is used. Read as strictly as the rate; a value outside [0, 1] is kept as read."
                 aliases={["score", "rf_score", "proba"]}
               />
               <HelpCol
@@ -20751,8 +20307,39 @@ const HelpTab = ({ onStartTour }) => {
                 desc="Species detected in the contaminated sample that are most likely introduced from the source. Listed in the events table."
                 aliases={["introduced_species", "species_specifically_introduced", "species"]}
               />
+              <HelpCol
+                name="verdict"
+                recognized
+                type="TP / FP / U / pending"
+                desc="Not in CroCoDeEL's output: written by the curated events TSV of the Export tab, so that reloading that file restores the event evaluations instead of resetting them to pending. Accepts true_positive, false_positive, uncertain, pending, TP, FP, U and 'true positive' / 'false positive', in any case; anything else reads as pending."
+                aliases={["evaluation"]}
+              />
+              <HelpCol
+                name="notes"
+                recognized
+                type="string"
+                desc="Curator notes, restored with the verdicts when the curated events TSV is reloaded."
+                aliases={["note", "comment", "comments"]}
+              />
+              <HelpCol
+                name="action"
+                recognized
+                type="keep / suppress"
+                desc="The target sample's action in the curated events TSV. Read, but not applied to the samples automatically: sample actions are set on the Samples tab."
+              />
             </tbody>
           </table>
+          <p>
+            These three columns are matched exactly (ignoring case,
+            spaces, underscores, hyphens and dots), never as part of a
+            longer header: an{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>extraction_batch</code>{" "}
+            column is not an action. Reloading the curated events TSV
+            restores the event evaluations and notes only: the samples'
+            verdicts and keep / suppress actions are not restored, so
+            review the Samples tab before exporting the curated abundance
+            table.
+          </p>
         </HelpSection>
 
         {/* ---------- species_abundance.tsv ---------- */}
@@ -20779,7 +20366,18 @@ const HelpTab = ({ onStartTour }) => {
           <p>
             Format: first column lists species names, every other column is a
             sample. The parser normalizes each sample column to relative
-            abundances summing to 1.
+            abundances summing to 1. Each sample column and each species row
+            must appear once: a table repeating one is refused, with the
+            repeated names. A table with a header but no species rows is
+            refused too.
+          </p>
+          <p>
+            Empty and NA cells read as 0. A cell that is not a number (for
+            instance <code style={{ fontFamily: "ui-monospace, monospace" }}>0,87</code>{" "}
+            from a spreadsheet using a decimal comma) or that is negative also
+            reads as 0, and the number of such cells is reported in the{" "}
+            <em>Check the input files</em> banner, with the first one as an
+            example.
           </p>
         </HelpSection>
 
@@ -20797,6 +20395,34 @@ const HelpTab = ({ onStartTour }) => {
             . Five columns are <em>recognized</em> and trigger dedicated
             features (pills, criteria). Any other column is shown as a generic
             "key: value" pill in the Sample context panel.
+          </p>
+          <p>
+            A header is recognized when it matches a column name or one of
+            its aliases exactly, ignoring case, spaces, underscores, hyphens
+            and dots:{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>Subject ID</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>subject-id</code>{" "}
+            and{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>SubjectID</code>{" "}
+            all read as subject_id. A header that merely contains a name is
+            not:{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>age_group</code>{" "}
+            or{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>host_age</code>{" "}
+            stay context columns, so they cannot make two different
+            subjects look related. A file without a recognized sample_id
+            or subject_id column is refused, with the accepted names and
+            the file's own headers. Once loaded, the metadata card lists the
+            header read for each field. A sample_id found on more than one
+            row keeps its first row; the card names the repeated ids. Its
+            Download button writes the table back under the canonical names
+            (a <code style={{ fontFamily: "ui-monospace, monospace" }}>patient</code>{" "}
+            column becomes subject_id), other columns unchanged, so the file
+            reloads with the same subjects, groups and flags. Metadata kept
+            by a session saved with an earlier version, which matched
+            headers more loosely, is read again with these rules when the
+            session is reopened or imported; the card then says which field
+            changed column.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -20827,7 +20453,7 @@ const HelpTab = ({ onStartTour }) => {
                 required
                 type="string"
                 desc="Unique sample identifier — must match samples used in events and abundance files."
-                aliases={["sample", "sampleid", "id"]}
+                aliases={["sample", "id"]}
                 example={`sample_id\n40D89\n58M\n58D7\nNC3\n83D239`}
               />
               <HelpCol
@@ -20835,15 +20461,25 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Optional human-readable label for the sample. When present, surfaces alongside the canonical sample_id wherever a sample is named (events table, scatter cards, Guided validation header, sample-context panel). Purely cosmetic — the sample_id remains the join key."
-                aliases={["name", "display_name", "displayname", "label", "alias"]}
+                aliases={["name", "display_name", "label", "alias"]}
                 example={`sample_id   sample_name\n40D89       Patient40_D89\n58M         Mother_58\n58D7        Infant_58_D7\nNC3         Negative_ctrl_3\n83D239      Patient83_D239`}
               />
               <HelpCol
                 name="subject_id"
                 recognized
                 type="string"
-                desc="Person / individual the sample belongs to. Two samples sharing a subject_id trigger the 'same subject' criterion (longitudinal pair, often a false-positive risk)."
-                aliases={["subject", "subjectid", "patient_id", "patient", "host", "individual"]}
+                desc="Person / individual the sample belongs to. Two samples sharing a subject_id trigger the 'same subject' criterion (longitudinal pair, often a false-positive risk). A column named host is not read as the subject: in MIxS / NCBI BioSample metadata it holds the host organism (e.g. Homo sapiens); the subject there is host_subject_id."
+                aliases={[
+                  "subject",
+                  "host_subject_id",
+                  "patient_id",
+                  "patient",
+                  "individual_id",
+                  "individual",
+                  "participant_id",
+                  "participant",
+                  "host_id",
+                ]}
                 example={`sample_id  subject_id\n58D7       58\n58D28      58\n60D38      60\nNC3        NC3\n58M        M58`}
               />
               <HelpCol
@@ -20851,7 +20487,7 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Time-of-collection label (e.g. 'D0', 'week2'). Shown as a calendar pill."
-                aliases={["time_point", "time", "day", "week", "visit"]}
+                aliases={["time", "day", "week", "visit"]}
                 example={`sample_id  timepoint\n58D0       D0\n58D7       D7\n58D28      D28\n58D43      D43\n58D382     D382`}
               />
               <HelpCol
@@ -20859,7 +20495,7 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Biological compartment (e.g. 'infant gut', 'maternal gut', 'skin', 'control'). Shown as a beaker pill. Values containing 'control', 'blank' or 'negative' (case-insensitive) automatically tag the sample as a negative control (red shield pill)."
-                aliases={["body_site", "bodysite", "tissue", "sample_site"]}
+                aliases={["body_site", "tissue", "sample_site"]}
                 example={`sample_id  biome\n58D7       infant gut\n58M        maternal gut\nNC3        control\n83D239     infant gut\n40M        maternal gut`}
               />
               <HelpCol
@@ -20867,7 +20503,7 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="bool"
                 desc="True/false flag for low-biomass samples (more vulnerable to contamination, per Lou et al. 2023). Shown as a droplet pill. Accepted values: true/1/yes or false/0/no."
-                aliases={["is_low_biomass", "lowbiomass"]}
+                aliases={["is_low_biomass"]}
                 example={`sample_id  low_biomass\n69D4       true\n72D6       true\nNC3        true\n58D43      false\n58M        false`}
               />
               <HelpCol
@@ -20877,7 +20513,6 @@ const HelpTab = ({ onStartTour }) => {
                 desc="True/false flag for samples with low sequencing depth (sparser abundance profiles, weaker contamination signal). Shown as an activity pill. Accepted values: true/1/yes or false/0/no."
                 aliases={[
                   "is_low_sequencing_depth",
-                  "lowsequencingdepth",
                   "low_seq_depth",
                   "low_depth",
                 ]}
@@ -20887,9 +20522,8 @@ const HelpTab = ({ onStartTour }) => {
                 name="group_id"
                 recognized
                 type="string"
-                desc="Generic group identifier — could be a family, cage, household, etc. Two samples sharing a group_id trigger the 'same group' criterion in Guided validation."
+                desc="Generic group identifier — could be a family, cage, household, etc. Two samples sharing a group_id trigger the 'same group' criterion in Guided validation. A column named just group is not read as group_id: in study metadata it is usually the experimental arm (case / control), whose samples are not related."
                 aliases={[
-                  "group",
                   "related_group_id",
                   "related_group",
                   "family_id",
@@ -20959,7 +20593,16 @@ const HelpTab = ({ onStartTour }) => {
           eyebrow="Optional input"
           title="plate_map.tsv"
         >
-          <p>Three columns: sample id, plate name, well coordinate.</p>
+          <p>
+            Three columns: sample id, plate name, well coordinate — or,
+            instead of the well, its row and column in two columns. Headers
+            are matched like the metadata's: exactly, ignoring case, spaces,
+            underscores, hyphens and dots. A sample placed on more than one
+            row keeps its first well; the plate map card names the repeated
+            ids. It also says when two samples share a well, and when no
+            plate column was recognized: every sample is then on one plate,
+            so samples of different plates would look adjacent.
+          </p>
           <table className="w-full text-left mt-3">
             <thead>
               <tr style={{ borderBottom: "2px solid #275662" }}>
@@ -20979,17 +20622,32 @@ const HelpTab = ({ onStartTour }) => {
               />
               <HelpCol
                 name="plate"
-                required
+                recognized
                 type="string"
-                desc="Plate name or identifier."
-                aliases={["plate_id", "plateid"]}
+                desc="Plate name or identifier. Without it every sample is placed on one plate, P1."
+                aliases={["plate_id", "plate_name", "plate_number", "plate_no", "plate_barcode"]}
               />
               <HelpCol
                 name="well"
                 required
                 type="A01..H12 or A01..P24"
-                desc="Well coordinate. Both 96-well and 384-well plates are supported. Letter-then-number, e.g. 'A01', 'B7', 'P24'."
-                aliases={["position", "well_id", "pos"]}
+                desc="Well coordinate. Both 96-well and 384-well plates are supported. Letter-then-number, e.g. 'A01', 'B7', 'P24'. A file can give row and column instead, in place of the well column or for the rows whose well cell is empty. Rows whose well cannot be read are skipped, and counted on the plate map card; a file that places no sample at all is refused."
+                aliases={["well_position", "position", "well_id", "pos"]}
+              />
+              <HelpCol
+                name="row"
+                recognized
+                type="A..P or 1..16"
+                desc="Instead of well: the well's row, as a letter or its 1-based number. Read together with column, for a file without a well column or a row whose well cell is empty; a filled well cell wins."
+                aliases={["well_row"]}
+                example={`sample_id  plate  row  column\n40D89      P3     A    1\n58M        P3     C    3\nNC3        P3     H    6`}
+              />
+              <HelpCol
+                name="column"
+                recognized
+                type="1..24"
+                desc="Instead of well: the well's 1-based column, together with row. The plate map is downloaded back in the well format."
+                aliases={["col", "well_column", "well_col"]}
               />
             </tbody>
           </table>
@@ -26983,7 +26641,7 @@ const defaultFilter = () => ({
     setRawEvents(restoredEvents);
     setSampleCuration(migratedFromEvents.sampleCuration);
     setRunMetadata(json.run_metadata || null);
-    setMetadata(json.metadata || null);
+    setMetadata(remapMetadata(json.metadata) || null);
     setPlateMap(json.plate_map || null);
     setAb(json.abundance || null);
     setAnalysisTitle(json.analysis_title || "");
@@ -31563,6 +31221,9 @@ export default function App() {
     let cancelled = false;
     loadFromStorage()
       .then((initial) => {
+        // Metadata saved by an earlier version is read again with the
+        // current header rules (remapMetadata, src/parsing.js).
+        if (initial?.metadata) initial.metadata = remapMetadata(initial.metadata);
         if (!cancelled) setBoot({ status: "ready", initial });
       })
       .catch((err) => {
