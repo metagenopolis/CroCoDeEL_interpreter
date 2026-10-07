@@ -828,13 +828,18 @@ const LOW_AB_TIE_TOLERANCE = 1e-12;
         the one sitting at its sample's threshold, is zeroed here. The
         bundled MetaPhlAn4 run (20×) has 13 exact ties, all zeroed
         upstream as here: all 939,600 cells match;
-      - a run made with this app's in-browser runner filtered the fractions
-        as pandas read them back from abundanceToTSV's text; its default
-        parser keeps 17 digits, leading zeros included, so a fraction of
-        3e-6 is read with ~1e-11 relative error, and a value that close to
-        the threshold can fall either way (9 to 12 cells of 1.35 million
-        in a simulation of the bundled Sylph table at 20×, with or without
-        the tolerance).
+      - a run made with this app's in-browser runner reads the table as
+        abundanceToTSV writes it: the input's own values when the parsed
+        table kept its column sums (counts as integers, decimals of up to
+        15 significant digits exactly, longer ones within one double), so
+        it filters what the CLI would, and the two cases above apply —
+        on five bundled tables at 20× (demo, MetaPhlAn4, Sylph, Meteor,
+        PRJEB32731), every cell is kept or zeroed as the CLI does from
+        the input file. A table restored from a session saved before the
+        column sums were kept is sent as its fractions, which the run
+        then filters: the same in exact arithmetic, a value at its
+        sample's threshold aside (3 cells of 1.35 million fall the other
+        way on the Sylph table at 20×).
 
     Returns a new table sharing `samples` and `species` with `ab`; its
     matrix holds only the non-zero cells (every reader already does
