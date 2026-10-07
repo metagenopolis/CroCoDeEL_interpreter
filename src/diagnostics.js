@@ -351,8 +351,9 @@ export function missingAbundantFromSource(ab, source, target, rate) {
   // alone is e^(-λ); the probability of being detected is 1 - e^(-λ).
   // Across all evaluable species the number of misses is a Poisson-
   // binomial sum — its mean is Σ p_miss and its variance is
-  // Σ p_miss × p_detect. We compare the observed miss count to that
-  // expectation (one-sided normal approximation) and report a p-value.
+  // Σ p_miss × p_detect. We compare the observed miss count with that
+  // distribution exactly: the p-value is its upper tail P(X ≥ misses)
+  // (poissonBinomialUpperTail, above), not a normal approximation.
   let missing = 0;
   let expectedMissing = 0;
   let variance = 0;

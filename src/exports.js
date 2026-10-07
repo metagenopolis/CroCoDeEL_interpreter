@@ -680,10 +680,9 @@ const DEFAULT_VALUE = { verdict: "correct", action: "keep" };
     event targets it. On a sample no event targets, an automatic value is
     the default only when it is that very value: the Suppress paired with
     a Contaminated set by hand is the rule's, and the curated table drops
-    the sample. The samples HTML report tags the same values "auto" and
-    "default", the Samples tab marks both "auto". The TSV used to write
-    the three kinds alike, so a never-reviewed sample read as a curated
-    Keep. */
+    the sample. The samples HTML report and the Samples tab tag the same
+    values "auto" and "default". The TSV used to write the three kinds
+    alike, so a never-reviewed sample read as a curated Keep. */
 export function curationOrigin(entry, field, targeted) {
   const value = entry?.[field];
   if (value == null || value === "" || value === "pending") return "";

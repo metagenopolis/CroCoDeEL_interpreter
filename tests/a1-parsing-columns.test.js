@@ -73,10 +73,12 @@ describe("parseMetadata — exact header matching", () => {
     );
     expect(both.cols.subject).toBe("host_subject_id");
     expect(areRelated(both, "S1", "S2")).toEqual({ related: false });
-    // `host` alone is the organism, not a subject id.
-    expect(() =>
-      parseMetadata(tsv([["sample_id", "host"], ["S1", "Homo sapiens"]])),
-    ).toThrow(/subject_id column not found/);
+    // `host` alone is the organism, not a subject id: no subject column,
+    // so relatedness is unknown (the file loads, with a warning).
+    const hostOnly = parseMetadata(tsv([["sample_id", "host"], ["S1", "Homo sapiens"], ["S2", "Homo sapiens"]]));
+    expect(hostOnly.cols.subject).toBeNull();
+    expect(areRelated(hostOnly, "S1", "S2")).toBeNull();
+    expect(hostOnly.warnings.join(" ")).toMatch(/subject_id column not found/);
   });
 
   it("does not take an experimental `group` column for a relatedness group", () => {
@@ -115,13 +117,15 @@ describe("parseMetadata — subject headers and the refusal message", () => {
   });
 
   it("names the accepted headers and the file's own when the subject is missing", () => {
-    const err = () => parseMetadata(tsv([["sample_id", "patient_number", "host"], ["S1", "1", "Homo sapiens"]]));
-    expect(err).toThrow(
+    // Only the sample id is required: the file loads, and its warning
+    // says why no subject was read (it used to be refused with this text).
+    const m = parseMetadata(tsv([["sample_id", "patient_number", "host"], ["S1", "1", "Homo sapiens"]]));
+    expect(m.warnings).toEqual([
       "subject_id column not found: expected subject_id, subject, host_subject_id, patient_id, " +
         "patient, individual_id, individual, participant_id, participant or host_id. Headers are " +
         "matched exactly, ignoring case, spaces, _ - and . — this file has: sample_id, " +
-        "patient_number, host.",
-    );
+        "patient_number, host. No two samples count as the same subject.",
+    ]);
   });
 
   it("does the same for the sample id, and keeps a long header list short", () => {
