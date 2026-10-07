@@ -1727,11 +1727,18 @@ const Scatterplot = ({
   );
 };
 
-/* ---------- NETWORK GRAPH ---------- */
+/* ---------- NETWORK GRAPH ----------
+   The network keys its maps by sample id, and an id is whatever the
+   abundance table's header says: a sample named "constructor" or
+   "toString" found the Object prototype's function in a {} map, so
+   buildComponents never registered it (parent[id] was not undefined)
+   and d3.forceLink threw "node not found: constructor"; one named
+   "__proto__" was never stored at all. Those maps have no prototype
+   (Object.create(null)). */
 /** Build connected components from a list of (source, target) edges,
     treating the graph as undirected for grouping purposes. */
 function buildComponents(events) {
-  const parent = {};
+  const parent = Object.create(null);
   const find = (x) => {
     if (parent[x] !== x) parent[x] = find(parent[x]);
     return parent[x];
@@ -1748,7 +1755,7 @@ function buildComponents(events) {
     union(e.source, e.target);
   });
 
-  const comps = {};
+  const comps = Object.create(null);
   Object.keys(parent).forEach((node) => {
     const root = find(node);
     if (!comps[root]) comps[root] = { nodes: new Set(), edges: [] };
@@ -1771,7 +1778,7 @@ function layoutComponent(comp, cellWidth, cellHeight) {
   const { nodes, edges } = comp;
   const cx = cellWidth / 2;
   const cy = cellHeight / 2;
-  const positions = {};
+  const positions = Object.create(null);
 
   if (nodes.length === 1) {
     positions[nodes[0]] = { x: cx, y: cy };
@@ -1933,7 +1940,7 @@ const NetworkGraph = ({
   // Mapped here as { sampleId: "keep" | "suppress" } so the SVG node
   // pass can read it in O(1).
   const sampleActionMap = useMemo(() => {
-    const m = {};
+    const m = Object.create(null);
     if (!sampleCuration) return m;
     for (const id of Object.keys(sampleCuration)) {
       const a = sampleCuration[id]?.action;
@@ -2054,7 +2061,7 @@ const NetworkGraph = ({
       const layout = layoutComponent(comp, cellWidth, cellHeight);
       const ox = col * cellWidth;
       const oy = 40 + row * cellHeight;
-      const positioned = {};
+      const positioned = Object.create(null);
       const componentSize = layout.nodes.length;
       layout.nodes.forEach((n) => {
         positioned[n.id] = { id: n.id, x: ox + n.x, y: oy + n.y, componentSize };
@@ -2102,12 +2109,12 @@ const NetworkGraph = ({
   }, [events, filteredIds]);
 
   const inDeg = useMemo(() => {
-    const d = {};
+    const d = Object.create(null);
     events.forEach((e) => (d[e.target] = (d[e.target] || 0) + 1));
     return d;
   }, [events]);
   const outDeg = useMemo(() => {
-    const d = {};
+    const d = Object.create(null);
     events.forEach((e) => (d[e.source] = (d[e.source] || 0) + 1));
     return d;
   }, [events]);
@@ -11222,7 +11229,9 @@ const SamplesTab = ({
   // loaded; samples absent from the table get null too (handled below).
   const richnessBySample = useMemo(() => {
     if (!ab?.matrix || !ab?.samples) return null;
-    const out = {};
+    // No prototype: richnessBySample["__proto__"] was Object.prototype,
+    // which React refused to render, and the whole tab failed.
+    const out = Object.create(null);
     for (const s of ab.samples) out[s] = 0;
     for (const sp of Object.keys(ab.matrix)) {
       const row = ab.matrix[sp];

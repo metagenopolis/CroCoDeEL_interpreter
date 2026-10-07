@@ -13,7 +13,9 @@
      - F.3  without storage the header says nothing is auto-saved;
      - F.4  in the dark theme, the Not saved banner, the load errors and
             the buttons of a tab that crashed are readable;
-     - F.5  a warning quoting a long word wraps inside its banner.
+     - F.5  a warning quoting a long word wraps inside its banner;
+     - F.6  samples named constructor, toString or __proto__ do not break
+            the Network or the Samples tab.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -361,6 +363,68 @@ try {
     },
     { contextOptions: { viewport: { width: 1024, height: 900 } } },
   );
+
+  /* F.6 — samples named after an Object property. The network keyed its
+     maps by sample id in plain objects: "constructor" found the prototype's
+     function, so the Network tab failed with "node not found:
+     constructor"; "__proto__" broke the Samples tab too (its richness was
+     Object.prototype, which React cannot render). */
+  for (const ids of [
+    ["S1", "S2", "S3", "S4", "X1", "constructor", "toString"],
+    ["S1", "S2", "S3", "S4", "__proto__", "C1", "toString"],
+  ]) {
+    await scenario(
+      `F.6 sample ids ${ids.slice(4).join(", ")}`,
+      async (page) => {
+        const odd = ids[4] === "X1" ? "constructor" : "__proto__";
+        let seed = 11;
+        const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+        const ab = [["species", ...ids].join("\t")];
+        for (let i = 0; i < 40; i++) {
+          ab.push([`sp${i}`, ...ids.map(() => (rnd() < 0.3 ? 0 : Math.round(rnd() * 1000)))].join("\t"));
+        }
+        const events = [
+          "source\ttarget\trate\tprobability\tcontamination_specific_species",
+          `S1\t${ids[4]}\t0.1\t0.9\tsp1,sp2,sp3`,
+          `S2\t${odd}\t0.1\t0.9\tsp4,sp5`,
+          "toString\tS4\t0.1\t0.9\tsp6,sp7",
+          `${odd}\tS3\t0.1\t0.9\tsp8`,
+        ].join("\n");
+        await upload(page, 0, "contamination_events.tsv", events);
+        await upload(page, 1, "species_abundance.tsv", ab.join("\n"));
+        await upload(page, 2, "metadata.tsv", ["sample_id\tsubject_id", ...ids.map((s, i) => `${s}\tsubj${i % 3}`)].join("\n"));
+        await upload(page, 3, "plate_map.tsv", ["sample_id\twell", ...ids.map((s, i) => `${s}\tA${i + 1}`)].join("\n"));
+        const failed = [];
+        for (const tab of ["Overview", "Samples", "Events", "Scatter", "Validate", "Network", "Plate", "Export"]) {
+          await openTab(page, tab);
+          await page.waitForTimeout(tab === "Network" ? 1500 : 300);
+          if (await page.locator("[data-tab-error]").count()) {
+            failed.push(`${tab}: ${(await page.locator("[data-tab-error] pre").first().innerText()).slice(0, 80)}`);
+          }
+        }
+        check(failed.length === 0, `F.6 ${odd}, toString: every tab renders`, failed.join(" | "));
+        await openTab(page, "Network");
+        await page.waitForTimeout(1500);
+        const nodes = await page.evaluate(() => {
+          const circles = [...document.querySelectorAll("svg circle")];
+          return {
+            nan: circles.filter((c) => /NaN/.test(`${c.getAttribute("cx")} ${c.getAttribute("cy")} ${c.getAttribute("r")}`)).length,
+            labels: [...document.querySelectorAll("svg g > text")].map((t) => t.textContent),
+          };
+        });
+        check(
+          nodes.nan === 0 && [odd, "toString"].every((id) => nodes.labels.includes(id)),
+          `F.6 ${odd}, toString: the network draws their nodes, labelled`,
+          JSON.stringify(nodes),
+        );
+      },
+      // The abundance parser keeps its rows in plain objects, so a column
+      // named "__proto__" is read as non-numeric (the abundance card says
+      // so) and its scatterplots get NaN coordinates: a parsing limit, not
+      // a tab that fails.
+      { expectedErrors: ids.includes("__proto__") ? /attribute c[xy]: Expected length, "NaN"/ : null },
+    );
+  }
 
   /* F.1 — the events TSV's column is "verdict": the Export card and the
      guided tour told to filter on an "evaluation" column. */
