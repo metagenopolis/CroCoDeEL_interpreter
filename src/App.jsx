@@ -20843,8 +20843,12 @@ const HelpTab = ({ onStartTour }) => {
                   Suppress that goes with a Contaminated verdict, yours
                   included; <em>default</em> for the Not contaminated +
                   Keep of a sample no event targets; empty without a
-                  value), and the notes. The samples HTML report tags the
-                  same values <em>auto</em> and <em>default</em>.
+                  value), the notes, and the study (the session's title,
+                  on every row). The header is the first line, with no{" "}
+                  <code>#</code> line above it, so pandas and R read the
+                  file with their default options. The samples HTML
+                  report tags the same values <em>auto</em> and{" "}
+                  <em>default</em>.
                 </li>
                 <li>
                   <strong>Events HTML report</strong> — self-contained
@@ -22700,7 +22704,8 @@ const ExportTab = ({
               "verdict and action, each with its origin (manual; " +
               "automatic, set by the rule from the events or paired " +
               "with Contaminated; or the default Not contaminated + " +
-              "Keep of a sample no event targets), and the notes."
+              "Keep of a sample no event targets), the notes and the " +
+              "study. No # line: pandas and R read it as it is."
             }
             action="Download samples TSV"
             onClick={onExportSamplesTSV}
@@ -26144,9 +26149,13 @@ const defaultFilter = () => ({
       introduced %, plus the curation: verdict and action as every view
       shows them (the effective curation: automatic values and the
       default of a never-targeted sample included), each followed by its
-      origin — manual, automatic or default (curationOrigin) — and the
-      notes. Empty / missing values become empty cells; the rows aren't
-      filtered so downstream tooling can pivot on whatever it needs. */
+      origin — manual, automatic or default (curationOrigin) — the notes
+      and the study. Empty / missing values become empty cells; the rows
+      aren't filtered so downstream tooling can pivot on whatever it
+      needs. The header is the first line: the "# study:" line the file
+      used to start with is a data row to pandas' and R's default readers
+      (pandas silently took the 23 first columns for an index, R refused
+      the file), so the study is a column of its own. */
   const exportSamplesReport = () => {
     const sampleIds = new Set();
     (events || []).forEach((e) => {
@@ -26222,12 +26231,9 @@ const defaultFilter = () => ({
       "action",
       "action_origin",
       "notes",
+      "study",
     ];
-    const lines = [];
-    if (analysisTitle) {
-      lines.push(`# study: ${tsvCell(analysisTitle)}`);
-    }
-    lines.push(header.join("\t"));
+    const lines = [header.join("\t")];
 
     // Letter columns are 1-based when re-emitted to plate map style,
     // matching plateMapToTSV (e.g. row 0 col 0 → "A01").
@@ -26273,6 +26279,7 @@ const defaultFilter = () => ({
             c.action || "",
             curationOrigin(c, "action", a.asTarget > 0),
             c.notes,
+            analysisTitle || "",
           ]
             .map(tsvCell)
             .join("\t"),

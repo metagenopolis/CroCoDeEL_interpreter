@@ -25,7 +25,8 @@
              default) — the Suppress paired with a Contaminated set by
              hand on a sample no event targets is automatic, not default —
              and the samples HTML report's "auto" and "default" tags say
-             the same;
+             the same; the file starts with its header (no "#" line, the
+             study in a column), so pandas and R read it as it is;
      - B2.5  the events and samples HTML reports, of the demo (filtered
              or not) and of a session with a cascade, an event whose
              target and one whose source are not in the abundance table,
@@ -706,12 +707,24 @@ try {
     const autoMark = await row(contaminatedByHand).getByTitle(/^Automatic action/).count();
 
     const samplesFile = await exportFile(page, /Download samples TSV/i);
-    const header =
-      (samplesFile?.text || "").split("\n").find((l) => l && !l.startsWith("#"))?.split("\t") || [];
+    const samplesLines = (samplesFile?.text || "").split("\n");
+    const header = samplesLines[0].split("\t");
     check(
-      header.slice(-5).join(",") === "verdict,verdict_origin,action,action_origin,notes",
-      "B2.4 the samples TSV has verdict_origin and action_origin next to the values",
-      header.slice(-5).join(","),
+      header.slice(-6).join(",") === "verdict,verdict_origin,action,action_origin,notes,study",
+      "B2.4 the samples TSV has verdict_origin and action_origin next to the values, then the notes and the study",
+      header.slice(-6).join(","),
+    );
+    // The header is the first line: a "# study:" line above it was a data
+    // row to pandas and R (pandas made the 23 first columns an index, R
+    // refused the file). Every row has the header's cells, and the study.
+    const ragged = samplesLines.filter((l) => l.split("\t").length !== header.length);
+    check(
+      header[0] === "sample_id" &&
+        !samplesLines.some((l) => l.startsWith("#")) &&
+        ragged.length === 0 &&
+        samplesLines.slice(1).every((l) => l.split("\t").at(-1) === "Demo — Lou et al. 2023 (early-life metagenomes, plate 3)"),
+      "B2.4 the samples TSV starts with its header, no # line, the study in a column of its own",
+      `${samplesLines[0].slice(0, 40)}; ${ragged.length} ragged lines`,
     );
     const expected = (id) => {
       if (id === untargeted) return ["uncertain", "manual", "", ""];
