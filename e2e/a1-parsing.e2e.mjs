@@ -12,12 +12,14 @@
        was read for which field;
      - a plate map given as row + column loads (it used to be refused);
      - the curated events TSV of the Export tab reloads with its verdicts;
-     - the metadata download reloads to the same relatedness.
+     - the metadata download reloads to the same relatedness;
+     - a hand-edited session whose card warnings are not a list loads.
 
    Usage:  node e2e/a1-parsing.e2e.mjs          (starts a preview server)
            BASE_URL=http://host/path/ node e2e/a1-parsing.e2e.mjs */
 
 import { readFileSync } from "node:fs";
+import { parseEvents, parseMetadata } from "../src/parsing.js";
 import {
   startServer,
   stopServer,
@@ -55,14 +57,56 @@ async function relatednessPills(page) {
   };
 }
 
-/** The text of the metadata (or plate map) upload card. */
-async function cardText(page, label) {
+/** The metadata (or plate map) upload card. */
+function card(page, label) {
   return page
     .locator("div.rounded-sm")
     .filter({ has: page.getByText(label, { exact: true }) })
     .filter({ has: page.getByRole("button", { name: /^(Replace|Select file)$/ }) })
-    .last()
-    .innerText();
+    .last();
+}
+
+/** The text of the metadata (or plate map) upload card. */
+async function cardText(page, label) {
+  return card(page, label).innerText();
+}
+
+/** Import a session JSON through the "Import session" button. */
+async function importSession(page, json) {
+  await page.locator('input[accept*="json"]').first().setInputFiles({
+    name: "session.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(json)),
+  });
+  await page.waitForTimeout(3000);
+}
+
+/** A session JSON as exportJSON writes it: the demo events, plus `extra`
+    (metadata, plate_map, ...). */
+function sessionJSON(extra) {
+  const { events, runMetadata } = parseEvents(demo("contamination_events.tsv"));
+  return {
+    generated: new Date().toISOString(),
+    schema_version: 2,
+    analysis_title: "session",
+    run_metadata: runMetadata,
+    metadata: null,
+    plate_map: null,
+    abundance: null,
+    sample_curation: {},
+    ui_state: { tab: "overview" },
+    events: events.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      contamination_rate: e.rate,
+      probability: e.score,
+      introduced_species: e.introduced,
+      verdict: e.verdict,
+      notes: e.notes,
+    })),
+    ...extra,
+  };
 }
 
 // The demo metadata, re-written the way a LIMS export might give it:
@@ -254,6 +298,21 @@ try {
       check(s.tp === 3, "reloading the curated TSV restores the verdicts", `TP ${s.tp}`);
     }
     check(errors.length === 0, "no JS error across the reload", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* -- 7. a hand-edited session whose card warnings are not a list */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    const metadata = { ...parseMetadata(demo("metadata.tsv")), warnings: "2 sample ids appear twice" };
+    await importSession(page, sessionJSON({ metadata }));
+    const body = await page.locator("body").innerText();
+    check(!/Something went wrong/.test(body), "the session loads instead of blanking the app");
+    const text = await card(page, "metadata.tsv")
+      .innerText({ timeout: 5000 })
+      .catch(() => "");
+    check(text.includes("Columns: sample_id · subject_id"), "the metadata card still shows its mapping");
+    check(errors.length === 0, "no JS error on the odd warnings", errors[0] || "");
     await ctx.close();
   }
 } finally {

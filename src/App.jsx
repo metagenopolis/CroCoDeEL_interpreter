@@ -4193,18 +4193,26 @@ const UploadCard = ({
 
 /** The extra lines of the metadata and plate-map cards: which header was
     read as which field, then the parser's warnings (repeated sample ids,
-    unreadable wells). A session saved before these existed has neither. */
-const uploadCardDetails = (columnsLine, warnings) =>
-  columnsLine || warnings?.length ? (
+    unreadable wells). A session saved before these existed has neither,
+    and a hand-edited session file can hold anything there: only a list
+    of strings is shown, rather than letting `.map` throw during render
+    and blank the app. */
+const uploadCardDetails = (columnsLine, warnings) => {
+  const list = Array.isArray(warnings)
+    ? warnings.filter((w) => typeof w === "string" && w)
+    : [];
+  const line = typeof columnsLine === "string" ? columnsLine : null;
+  return line || list.length ? (
     <>
-      {columnsLine && <div>Columns: {columnsLine}</div>}
-      {warnings?.map((w) => (
-        <div key={w} style={{ color: "#d97a3c", fontWeight: 600 }}>
+      {line && <div>Columns: {line}</div>}
+      {list.map((w, i) => (
+        <div key={i} style={{ color: "#d97a3c", fontWeight: 600 }}>
           ⚠ {w}
         </div>
       ))}
     </>
   ) : null;
+};
 
 const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) => {
   const inputRef = useRef(null);
