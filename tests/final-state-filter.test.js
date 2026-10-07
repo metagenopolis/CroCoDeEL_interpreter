@@ -93,15 +93,20 @@ describe("restoreFilter — only the values the filter bar offers", () => {
     }
   });
 
-  it("keeps a verdict list only when every entry is a verdict", () => {
+  it("keeps the verdicts of a list and drops anything else", () => {
     const d = defaults();
     expect(restoreFilter({ verdicts: ["true_positive", "uncertain"] }, d).verdicts).toEqual(["true_positive", "uncertain"]);
     expect(restoreFilter({ verdicts: [] }, d).verdicts).toEqual([]);
-    expect(restoreFilter({ verdicts: ["true_positive", markup] }, d).verdicts).toEqual(d.verdicts);
+    // A list mixing verdicts and other text keeps its verdicts (a session
+    // of a later version may know a verdict this one does not); a list
+    // holding none gets the default.
+    expect(restoreFilter({ verdicts: ["true_positive", markup] }, d).verdicts).toEqual(["true_positive"]);
+    expect(restoreFilter({ verdicts: [markup] }, d).verdicts).toEqual(d.verdicts);
     expect(restoreFilter({ verdict: markup }, d).verdicts).toEqual(d.verdicts);
     expect(restoreFilter({ verdict: "uncertain" }, d).verdicts).toEqual(["uncertain"]);
     expect(restoreFilter({ sampleVerdicts: ["correct"] }, d).sampleVerdicts).toEqual(["correct"]);
-    expect(restoreFilter({ sampleVerdicts: ["correct", markup] }, d).sampleVerdicts).toEqual(d.sampleVerdicts);
+    expect(restoreFilter({ sampleVerdicts: ["correct", markup] }, d).sampleVerdicts).toEqual(["correct"]);
+    expect(restoreFilter({ sampleVerdicts: [markup] }, d).sampleVerdicts).toEqual(d.sampleVerdicts);
   });
 
   it("an imported session file brings none of the markup back", () => {

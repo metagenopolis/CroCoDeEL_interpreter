@@ -44,7 +44,7 @@
    the earlier versions left in a session, and say so. */
 
 import { isSet, migrateSampleCuration, SAMPLE_CURATION_VERSION } from "./curation.js";
-import { remapMetadata, splitSpeciesList } from "./parsing.js";
+import { isReservedId, remapMetadata, splitSpeciesList } from "./parsing.js";
 
 export const LAYOUT_VERSION = 2;
 
@@ -398,12 +398,19 @@ export function restoreFilter(saved, defaults) {
   const f = isObj(saved) ? saved : {};
   const d = defaults;
   const strings = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
-  const listOf = (v, allowed) => Array.isArray(v) && v.every((x) => allowed.includes(x));
-  const oneOf = (v, allowed, fallback) => (allowed.includes(v) ? v : fallback);
   const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
   const str = (v, fallback) => (typeof v === "string" ? v : fallback);
+  // A field with a fixed set of values keeps one of them, else gets its
+  // default: these are written into the events HTML report, and a session
+  // file can hold any text there.
+  const oneOf = (v, allowed, fallback) => (allowed.includes(v) ? v : fallback);
+  // A list keeps its known values; one that held none gets the default.
+  const known = (v, allowed, fallback) => {
+    const kept = v.filter((x) => allowed.includes(x));
+    return kept.length > 0 || v.length === 0 ? kept : [...fallback];
+  };
   let verdicts;
-  if (listOf(f.verdicts, FILTER_VERDICTS)) verdicts = f.verdicts;
+  if (strings(f.verdicts)) verdicts = known(f.verdicts, FILTER_VERDICTS, d.verdicts);
   else if (FILTER_VERDICTS.includes(f.verdict)) verdicts = [f.verdict];
   else verdicts = [...d.verdicts];
   const side = (v) => (v === "source" || v === "target" ? v : "either");
@@ -414,8 +421,8 @@ export function restoreFilter(saved, defaults) {
     minRate: num(f.minRate, d.minRate),
     minIntroduced: num(f.minIntroduced, d.minIntroduced),
     verdicts,
-    sampleVerdicts: listOf(f.sampleVerdicts, FILTER_SAMPLE_VERDICTS)
-      ? f.sampleVerdicts
+    sampleVerdicts: strings(f.sampleVerdicts)
+      ? known(f.sampleVerdicts, FILTER_SAMPLE_VERDICTS, d.sampleVerdicts)
       : [...d.sampleVerdicts],
     sampleVerdictsSide: side(f.sampleVerdictsSide),
     subject: oneOf(f.subject, FILTER_RELATIONS, f.hideRelated ? "different" : d.subject),
@@ -790,6 +797,9 @@ function readAbundance(ab, p) {
   // none — but read as written when present.
   if (ab.firstHeader != null && typeof ab.firstHeader !== "string") {
     return bad('"firstHeader" is not text.');
+  }
+  if (ab.implicitIndex != null && typeof ab.implicitIndex !== "boolean") {
+    return bad('"implicitIndex" is neither true nor false.');
   }
   if (ab.colSums != null) {
     if (!isObj(ab.colSums) || Object.values(ab.colSums).some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0)) {
@@ -1194,6 +1204,31 @@ export function upgradedSession(stored) {
   };
 }
 
+/** The ids of a session file that name a property of every object
+    ("__proto__", "constructor", …), refused as the file parsers refuse
+    them (isReservedId, src/parsing.js): the importer would store them in
+    the same plain objects, where "__proto__" vanishes. */
+function readReservedIds(json, errors) {
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const keys = (o) => (isObj(o) ? Object.keys(o) : []);
+  const ab = isObj(json.abundance) ? json.abundance : {};
+  const places = [
+    ["events", list(json.events).flatMap((e) => (isObj(e) ? [e.source, e.target, ...list(e.introduced_species ?? e.introduced)] : []))],
+    ["sample_curation", keys(json.sample_curation)],
+    ["abundance", [...list(ab.samples), ...list(ab.species), ...keys(ab.matrix)]],
+    ["metadata", keys(isObj(json.metadata) ? json.metadata.bySample : null)],
+    ["plate_map", keys(isObj(json.plate_map) ? json.plate_map.bySample : null)],
+  ];
+  for (const [where, ids] of places) {
+    const id = ids.find((x) => (typeof x === "string" || typeof x === "number") && isReservedId(x));
+    if (id === undefined) continue;
+    errors.push(
+      `${where}: the id "${id}" cannot be read — every JavaScript object already has a ` +
+        `property of that name, and the interface keeps its tables in such objects, keyed by id.`,
+    );
+  }
+}
+
 /** Read a session JSON (exportJSON's format, any version) into a session,
     checking the WHOLE file first: nothing replaces the current session
     unless every part of the file can be shown.
@@ -1216,6 +1251,7 @@ export function sessionFromPayload(json, { defaults, tabs } = {}) {
     };
   }
   const p = problems();
+  readReservedIds(json, p.errors);
   if (!("events" in json)) p.errors.push('Missing "events" list.');
   const parts = readParts(
     {

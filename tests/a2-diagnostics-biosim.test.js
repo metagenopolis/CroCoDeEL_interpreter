@@ -2,13 +2,9 @@ import { describe, it, expect } from "vitest";
 import { areRelated } from "../src/App.jsx";
 import { parseAbundance } from "../src/parsing.js";
 import {
-  automaticScore,
-  buildScatter,
   eventBulkCriteria,
-  lineDiagnostics,
+  eventScore,
   matchesBulkCriteria,
-  missingAbundantFromSource,
-  pointsAboveLine,
 } from "../src/diagnostics.js";
 
 /* A2.3 — the bulk dialog's criteria are the Guided validation panel's.
@@ -67,20 +63,11 @@ const events = names
   .filter((s) => s !== "SRC")
   .map((target, id) => ({ id, source: "SRC", target, rate: 0.1, introduced }));
 
-/** Guided validation: the AppMain memos for the selected event. */
+/** Guided validation: AppMain's memos for the selected event run
+    eventScore (a copy of their chain stood here). */
 function panelScore(e) {
-  const sc = buildScatter(ab, e);
-  const di = lineDiagnostics(sc);
-  return {
-    di,
-    score: automaticScore(
-      di,
-      pointsAboveLine(sc),
-      missingAbundantFromSource(ab, e.source, e.target, e.rate),
-      e.cascade,
-      areRelated(metadata, e.source, e.target),
-    ),
-  };
+  const { diag: di, score } = eventScore(ab, e, areRelated(metadata, e.source, e.target));
+  return { di, score };
 }
 
 /** Bulk dialog: the body of its eventCriteria memo, per event. */

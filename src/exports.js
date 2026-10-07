@@ -304,8 +304,15 @@ export function inputValue(fraction, colSum, integer) {
     in R and in Python's float()); as 1.0630384344999e-6 it reads back to
     its last digit everywhere. */
 function cellNumber(v) {
+  // An integer below 1e17 has at most 17 digits, all of them in String's
+  // fixed notation: no need to look (a count table is all integers).
+  if (Number.isInteger(v) && v < 1e17 && v > -1e17) return String(v);
   const s = String(v);
-  if (!s.includes("e") && s.replace(/^-/, "").replace(".", "").length <= 17) return s;
+  if (s.indexOf("e") < 0) {
+    // The digits: the text without its sign and its point.
+    const digits = s.length - (s.charCodeAt(0) === 45 ? 1 : 0) - (s.indexOf(".") >= 0 ? 1 : 0);
+    if (digits <= 17) return s;
+  }
   return v.toExponential();
 }
 
@@ -320,27 +327,44 @@ function cellNumber(v) {
     again (inputValue): counts stay integers, percentages stay
     percentages, and the first header is the input's. A table saved
     without them — a session of an earlier version — is written as
-    fractions under "species", as before.
+    fractions under "species", as before. A header that had no cell above
+    the species (implicitIndex: R's write.table) is written without one
+    again, which pandas, R and CroCoDeEL read as the input was read.
 
     No "#" line: pandas' read_csv(sep="\t", index_col=0) and R's
     read.delim read one as a data row (pandas refuses the file, R reports
-    duplicate row names). */
+    duplicate row names).
+
+    Only the samples and species `ab` lists are written, so `ab.matrix`
+    may hold more: the curated table is written from the input's own rows
+    (buildCuratedAbundance's `matrix: false`), without a copy of them.
+    Writing the input's values made the Meteor benchmark's export take
+    0.46 s instead of 0.24 s; a zero, a count and a value written with up
+    to 15 digits now take the short paths of inputValue and cellNumber. */
 export function abundanceToTSV(ab) {
   if (!ab) return "";
   const input = hasInputValues(ab);
-  const header = [input ? ab.firstHeader : "species", ...ab.samples];
-  const sums = ab.samples.map((s) => (input ? ab.colSums[s] : 0));
-  const ints = ab.samples.map((s) => input && ab.integerCols[s] === true);
+  const header =
+    input && ab.implicitIndex === true
+      ? [...ab.samples]
+      : [input ? ab.firstHeader : "species", ...ab.samples];
+  const samples = ab.samples;
+  const sums = samples.map((s) => (input ? ab.colSums[s] : 0));
+  const ints = samples.map((s) => input && ab.integerCols[s] === true);
   const lines = [header.map(tsvCell).join("\t")];
   for (const sp of ab.species) {
     const row = ab.matrix[sp] || {};
-    const cells = [tsvCell(sp)];
-    for (let j = 0; j < ab.samples.length; j++) {
-      const v = row[ab.samples[j]];
-      if (!Number.isFinite(v)) cells.push("0");
-      else cells.push(cellNumber(input ? inputValue(v, sums[j], ints[j]) : v));
+    let line = tsvCell(sp);
+    for (let j = 0; j < samples.length; j++) {
+      const v = row[samples[j]];
+      // A fraction is ≥ 0: a zero, an empty cell of a sparse row, or a
+      // value that is not a number is a 0.
+      if (!(v > 0)) line += "\t0";
+      else if (!input) line += `\t${cellNumber(v)}`;
+      else if (ints[j]) line += `\t${cellNumber(Math.round(v * sums[j]))}`;
+      else line += `\t${cellNumber(inputValue(v, sums[j], false))}`;
     }
-    lines.push(cells.join("\t"));
+    lines.push(line);
   }
   return lines.join("\n");
 }
@@ -356,9 +380,9 @@ export function abundanceToTSV(ab) {
     table each column is closed independently, so removing a whole column
     leaves every other column summing to exactly what it did before. (This
     is the opposite of subtracting contamination WITHIN a column, which does
-    break the closure.) The result keeps the table's firstHeader, colSums
-    and integerCols, so abundanceToTSV writes each remaining column with
-    the input's own values.
+    break the closure.) The result keeps the table's firstHeader,
+    implicitIndex, colSums and integerCols, so abundanceToTSV writes each
+    remaining column with the input's own values, under its header.
 
     `dropEmptySpecies` additionally removes the species observed only in
     the suppressed samples — rows the suppression leaves at zero
@@ -424,6 +448,7 @@ export function buildCuratedAbundance(ab, sampleCuration, opts = {}) {
     droppedSamples,
     droppedSpecies,
     firstHeader: ab.firstHeader,
+    implicitIndex: ab.implicitIndex,
     colSums: ab.colSums,
     integerCols: ab.integerCols,
   };
@@ -442,8 +467,12 @@ export function buildCuratedAbundance(ab, sampleCuration, opts = {}) {
 export function curatedAbundanceProvenance(ab, cur, opts = {}) {
   const { study, curated, build, file = "species_abundance_curated.tsv" } = opts;
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  // A plain text file: each value on one line, as written. tsvCell's
+  // quoting (a quote doubled, the value wrapped in quotes) is for a TSV
+  // reader; here it wrote the study '"Lou" 2023' as '"""Lou"" 2023"'.
+  const oneLine = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
   const lines = [`Provenance of ${file}, the curated abundance table.`, ""];
-  if (study) lines.push(`Study: ${tsvCell(study)}`);
+  if (study) lines.push(`Study: ${oneLine(study)}`);
   if (curated) lines.push(`Curated: ${curated}`);
   if (build) lines.push(`Interface: CroCoDeEL Interpretation Interface, build ${build}`);
   lines.push(
@@ -451,7 +480,14 @@ export function curatedAbundanceProvenance(ab, cur, opts = {}) {
     `This table: ${plural(cur.species.length, "species row")} × ${plural(cur.samples.length, "sample")}.`,
     "",
   );
-  if (hasInputValues(cur)) {
+  if (hasInputValues(cur) && cur.implicitIndex === true) {
+    lines.push(
+      "Values: each remaining column holds the input table's own values (counts stay",
+      "integers), under a header without a cell above the species, as the input's",
+      "(R's write.table layout), and with the species in its order. Cells the",
+      "interface read as 0 (empty, NA, not a number, negative) are 0.",
+    );
+  } else if (hasInputValues(cur)) {
     lines.push(
       "Values: each remaining column holds the input table's own values (counts stay",
       `integers), under its first header ("${cur.firstHeader}") and with the species in its`,
@@ -468,16 +504,87 @@ export function curatedAbundanceProvenance(ab, cur, opts = {}) {
     "No column was renormalised: removing a sample does not change any other one.",
     "",
     `Suppressed samples (${cur.droppedSamples.length}), removed because their action is Suppress:`,
-    ...(cur.droppedSamples.length > 0 ? cur.droppedSamples.map(tsvCell) : ["none — every sample is kept"]),
+    ...(cur.droppedSamples.length > 0 ? cur.droppedSamples.map(oneLine) : ["none — every sample is kept"]),
   );
   if (cur.droppedSpecies.length > 0) {
     lines.push(
       "",
       `Species removed because only the suppressed samples hold them (${cur.droppedSpecies.length}):`,
-      ...cur.droppedSpecies.map(tsvCell),
+      ...cur.droppedSpecies.map(oneLine),
     );
   }
   return lines.join("\n") + "\n";
+}
+
+/* ---------- HTML reports ---------- */
+
+/** The labels of the filter bar, by value. */
+const EVENT_VERDICT_LABELS = {
+  pending: "pending",
+  true_positive: "true positive",
+  false_positive: "false positive",
+  uncertain: "uncertain",
+};
+const SAMPLE_VERDICT_LABELS = {
+  pending: "pending",
+  contaminated: "contaminated",
+  correct: "not contaminated",
+  uncertain: "uncertain",
+};
+
+/** The events HTML report's "Filter applied" line: one part for each
+    field of the Export tab's filter that differs from its default, so
+    the reader knows which subset the report covers, every value escaped
+    (a session file can hold any text); null when none does.
+
+    It used to leave out the sample-verdict filter, the sample scope (a
+    Network drill-in) and the target-action filter: a report of the 8
+    events whose target is Contaminated, or of the 4 events of one
+    sample, said nothing of how they were chosen, only "Events in report
+    8" next to "Total events loaded 24". */
+export function reportFilterSummary(filter) {
+  if (!filter || typeof filter !== "object") return null;
+  const parts = [];
+  const list = (values, labels) =>
+    values.length > 0 ? values.map((v) => escapeHTML(labels[v] || v)).join(", ") : "none";
+  const sideOf = (side) => (side === "source" || side === "target" ? side : null);
+  if (typeof filter.q === "string" && filter.q.trim()) {
+    parts.push(`search: "${escapeHTML(filter.q.trim())}"`);
+  }
+  const above = (v) => Number.isFinite(v) && v > 0;
+  if (above(filter.minScore)) parts.push(`probability ≥ ${filter.minScore.toFixed(2)}`);
+  if (above(filter.minRate)) parts.push(`rate ≥ ${(filter.minRate * 100).toFixed(2)}%`);
+  if (above(filter.minIntroduced)) parts.push(`introduced ≥ ${filter.minIntroduced.toFixed(0)}%`);
+  if (Array.isArray(filter.verdicts) && filter.verdicts.length < Object.keys(EVENT_VERDICT_LABELS).length) {
+    parts.push(`verdict: ${list(filter.verdicts, EVENT_VERDICT_LABELS)}`);
+  }
+  if (
+    Array.isArray(filter.sampleVerdicts) &&
+    filter.sampleVerdicts.length < Object.keys(SAMPLE_VERDICT_LABELS).length
+  ) {
+    const side = sideOf(filter.sampleVerdictsSide);
+    parts.push(
+      `${side ? `${side} sample` : "source or target sample"} verdict: ` +
+        list(filter.sampleVerdicts, SAMPLE_VERDICT_LABELS),
+    );
+  }
+  if (Array.isArray(filter.scopeSamples) && filter.scopeSamples.length > 0) {
+    const ids = filter.scopeSamples;
+    const side = sideOf(filter.scopeSide);
+    const shown = ids.slice(0, 5).map(escapeHTML).join(", ");
+    const more = ids.length > 5 ? ` and ${ids.length - 5} more` : "";
+    parts.push(
+      `${side ? `${side} sample` : "source or target sample"}${ids.length > 1 ? "s" : ""} ` +
+        `${shown}${more}`,
+    );
+  }
+  if (filter.action === "keep" || filter.action === "suppress") {
+    parts.push(`target action: ${filter.action}`);
+  }
+  if (filter.subject && filter.subject !== "any") parts.push(`subject: ${escapeHTML(filter.subject)}`);
+  if (filter.group && filter.group !== "any") parts.push(`group: ${escapeHTML(filter.group)}`);
+  if (filter.adjacent && filter.adjacent !== "any") parts.push(`plate: ${escapeHTML(filter.adjacent)}`);
+  return parts.length ? parts.join(" · ") : null;
 }
 
 /* ---------- samples ---------- */
@@ -528,6 +635,31 @@ export function samplesReportCuration(curation, names) {
   const notes = [...new Set(entries.map((c) => c.notes).filter(Boolean))].join("\n\n");
   return notes ? { ...pick, notes } : pick;
 }
+
+/** The samples TSV's is_control, is_low_biomass and is_low_sequencing_depth
+    cells of one sample: "true", "false", or empty when the metadata does
+    not say — no metadata, no row for the sample, no column for the flag,
+    or a cell left empty (a control is read from the biome cell). They
+    used to read "false" in all of these cases, a negative nobody gave:
+    with no metadata loaded, every sample of the TSV was "not a control,
+    not low biomass". `entry` is the sample's metadata entry
+    (parseMetadata), `metadata` the whole metadata (its column flags). */
+export function sampleFlagCells(entry, metadata) {
+  if (!entry || typeof entry !== "object") return ["", "", ""];
+  const flag = (v) => (v === true ? "true" : v === false ? "false" : "");
+  const biome = !!(metadata?.hasBiomeCol || metadata?.cols?.biome) && !!entry.biome;
+  return [
+    entry.isControl === true ? "true" : biome ? "false" : "",
+    flag(entry.lowBiomassExplicit),
+    flag(entry.lowSequencingDepthExplicit),
+  ];
+}
+
+/** The samples TSV's max_target_rate cell: the rate in CroCoDeEL's own
+    notation, every digit kept, as the events TSV writes it (pythonFloat).
+    toFixed(6) wrote a rate below 5e-7 as 0.000000 and cut the others to
+    six decimals. Empty when the sample is no event's target. */
+export const rateCell = (x) => (x == null ? "" : numberCell(x));
 
 /** The values buildEffectiveSampleCuration gives a sample no event
     targets: Not contaminated, and the Keep that goes with it. */

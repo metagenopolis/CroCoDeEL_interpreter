@@ -51,10 +51,13 @@ describe("parseMetadata — duplicated sample ids", () => {
     );
   });
 
-  it("treats an id such as `constructor` as an ordinary id", () => {
-    const m = parseMetadata(tsv([["sample_id", "subject_id"], ["constructor", "p1"], ["toString", "p2"]]));
-    expect(m.nSamples).toBe(2);
-    expect(m.warnings).toEqual([]);
+  // An id such as `constructor` is refused now, named, rather than read
+  // as an ordinary id: the app keys its tables by id in plain objects,
+  // where it reads as present everywhere (tests/final-science-io-ids.test.js).
+  it("refuses an id such as `constructor`, which no plain object can key", () => {
+    expect(() =>
+      parseMetadata(tsv([["sample_id", "subject_id"], ["constructor", "p1"], ["toString", "p2"]])),
+    ).toThrow(/^The sample "constructor" \(line 2 of the metadata\) cannot be read/);
   });
 });
 

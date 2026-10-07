@@ -30,15 +30,19 @@ function unquoteCell(s) {
     make `pandas.read_csv(sep='\t')` either raise or invent rows. Every
     field of every writer goes through here.
 
-    A cell that starts with a double quote is quoted the CSV way (wrapped
-    in quotes, inner quotes doubled). Read back, unquoteCell strips one
-    layer of quotes from a cell that starts and ends with one, so a note
-    such as `"Quoted" ... "end"` came back as `Quoted" ... "end`; pandas
-    and R, whose quote character is `"` too, misread such a cell as well.
-    Quoted, all three give back the text as written. */
+    A cell that holds a double quote is quoted the CSV way (wrapped in
+    quotes, inner quotes doubled). Read back, unquoteCell strips one layer
+    of quotes from a cell that starts and ends with one, so a note such as
+    `"Quoted" ... "end"` came back as `Quoted" ... "end`. R's read.delim,
+    whose quote character is `"`, also reads a quote inside a cell as the
+    start or end of a quoted part: it dropped the quotes of a sample id
+    `S"q"2` (read `Sq2`), and one lone quote (a note `tube labelled 2"
+    short`) swallowed the rest of the file into that cell — 17 rows read
+    of the samples TSV's 91. Quoted, unquoteCell, CroCoDeEL's csv reader,
+    pandas and R all give back the text as written. */
 export function tsvCell(v) {
   const s = String(v ?? "").replace(/[\t\r\n]+/g, " ");
-  return s.charCodeAt(0) === 34 ? `"${s.replace(/"/g, '""')}"` : s;
+  return s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /** Split a TSV text into its header cells, its rows (objects keyed by
@@ -54,67 +58,180 @@ export function tsvCell(v) {
     header, run metadata or notes; below it, a row commented out. That row
     used to be read as data: a species "#sp2" in the abundance table's
     column sums, which CroCoDeEL leaves out, or a sample "#q2:types" in a
-    QIIME 2 metadata file. */
-export function parseTSV(text) {
+    QIIME 2 metadata file.
+
+    `options` asks for the rest of what pandas does there, which only the
+    abundance table needs — CroCoDeEL reads it with read_csv(sep="\t",
+    header=0, index_col=0, comment="#"), while its events reader
+    (csv.DictReader) and the metadata and plate map, which only this
+    interface reads, take a "#" inside a line as text ("well #3"):
+      inlineComments  a "#" inside a line ends it, as comment="#" does
+                      (one inside a quoted cell is text). `inlineComment`
+                      then gives the first line cut, as { line, text },
+                      and `inlineComments` how many were;
+      indexCol        when the first data row has one cell more than the
+                      header, the header has no cell above the species
+                      column — R's write.table writes it so — and each
+                      of its cells names a sample, as pandas reads it
+                      (an implicit index): `implicitIndex` is then true
+                      and `header` starts with "", the species column.
+                      When that cell is an empty one at the end of the
+                      row instead, under no header cell in any row (each
+                      line ends with a tab), pandas still reads it so and
+                      shifts every sample name one column: the table is
+                      read as its header says, and `shiftedByPandas` is
+                      true for the parser to say so. */
+export function parseTSV(text, options = {}) {
+  const { inlineComments = false, indexCol = false } = options;
   const allLines = text.replace(/\r/g, "").split("\n");
   // Separate hash-prefixed header lines (e.g. CroCoDeEL run params) from data
   const headerComments = [];
   const commentLines = [];
-  let header = null;
-  let headerCells = [];
+  let headerCells = null;
   let headerLine = 0;
-  const rows = [];
+  // The cells of each data line, as split, and the file line of each.
+  const data = [];
   const lineNumbers = [];
+  // Past the last non-blank cell of any data line.
+  let width = 0;
+  let inlineComment = null;
+  let cutLines = 0;
   for (let n = 0; n < allLines.length; n++) {
-    const line = allLines[n];
+    let line = allLines[n];
     // Blank lines carry no record, and neither do lines of spaces or tabs
     // only — what a spreadsheet leaves of a cleared row, which used to
     // become an event with an empty source or a sample named "  ".
     if (!/\S/.test(line)) continue;
     if (line.startsWith("#")) {
-      if (header === null) {
+      if (headerCells === null) {
         headerComments.push(line.replace(/^#\s*/, ""));
         commentLines.push({ line: n + 1, cells: line.split("\t").map(unquoteCell) });
       }
       continue;
     }
-    if (header === null) {
-      headerCells = line.split("\t").map(unquoteCell);
-      headerLine = n + 1;
-      header = withoutTrailingBlanks(headerCells);
-      // An empty (or blank) header cell between two named ones made a ""
-      // column — a sample without a name, a "" key in every metadata
-      // row. pandas, so CroCoDeEL, names it "Unnamed: <0-based column>",
-      // the name CroCoDeEL's events give that sample: so does this. The
-      // first cell is left as it is: R's write.table writes "" above the
-      // row names, the species column here.
-      for (let i = 1; i < header.length; i++) {
-        if (header[i].trim() === "") header[i] = `Unnamed: ${i}`;
+    if (inlineComments && line.includes("#")) {
+      const kept = beforeComment(line);
+      if (kept.length < line.length) {
+        cutLines++;
+        if (!inlineComment) inlineComment = { line: n + 1, text: line.slice(kept.length) };
+        line = kept;
+        if (!/\S/.test(line)) continue;
       }
-      continue;
     }
     const cells = line.split("\t");
-    const obj = {};
-    header.forEach((h, i) => (obj[h] = unquoteCell(cells[i] ?? "")));
-    rows.push(obj);
+    if (headerCells === null) {
+      headerCells = cells.map(unquoteCell);
+      headerLine = n + 1;
+      continue;
+    }
+    data.push(cells);
     lineNumbers.push(n + 1);
+    for (let i = cells.length - 1; i >= width; i--) {
+      if (!isBlankCell(cells[i])) {
+        width = i + 1;
+        break;
+      }
+    }
+  }
+  if (headerCells === null) {
+    return {
+      header: [],
+      rows: [],
+      headerComments,
+      lineNumbers,
+      headerLine,
+      headerCells: [],
+      commentLines,
+      implicitIndex: false,
+      shiftedByPandas: false,
+      unnamed: [],
+      inlineComment,
+      inlineComments: cutLines,
+    };
+  }
+
+  // pandas' implicit index (see `indexCol` above).
+  let implicitIndex = false;
+  let shiftedByPandas = false;
+  if (indexCol && data.length > 0 && data[0].length === headerCells.length + 1) {
+    if (isBlankCell(data[0][headerCells.length]) && width <= headerCells.length) {
+      shiftedByPandas = true;
+    } else {
+      implicitIndex = true;
+    }
+  }
+  const offset = implicitIndex ? 1 : 0;
+  const header = implicitIndex ? ["", ...headerCells] : [...headerCells];
+  // Empty cells at the end of the header line (cleared trailing columns)
+  // made phantom "" columns: an empty sample in the abundance table, a ""
+  // key in every metadata row. One with no value under it in any row is
+  // dropped. One with values is a column whose name is missing: dropping
+  // it lost them — a sample CroCoDeEL reads, as "Unnamed: 3", gone from
+  // every view and export — so it is named as the ones below are.
+  while (header.length > 0 && header[header.length - 1].trim() === "" && header.length > width) {
+    header.pop();
+  }
+  // An empty (or blank) header cell between two named ones made a ""
+  // column — a sample without a name, a "" key in every metadata row.
+  // pandas, so CroCoDeEL, names it "Unnamed: <0-based column of the
+  // header line>", the name CroCoDeEL's events give that sample: so does
+  // this. The first cell is left as it is: R's write.table with
+  // col.names=NA writes "" above the row names, the species column here.
+  const unnamed = [];
+  for (let i = 1; i < header.length; i++) {
+    if (header[i].trim() === "") {
+      header[i] = `Unnamed: ${i - offset}`;
+      unnamed.push(header[i]);
+    }
+  }
+  const rows = new Array(data.length);
+  for (let k = 0; k < data.length; k++) {
+    const cells = data[k];
+    const obj = {};
+    for (let i = 0; i < header.length; i++) obj[header[i]] = unquoteCell(cells[i] ?? "");
+    rows[k] = obj;
+    data[k] = null;
   }
   return {
-    header: header || [],
+    header,
     rows,
     headerComments,
     lineNumbers,
     headerLine,
     headerCells,
     commentLines,
+    implicitIndex,
+    shiftedByPandas,
+    unnamed,
+    inlineComment,
+    inlineComments: cutLines,
   };
 }
 
-/** The cells of a header line without its empty trailing ones. Trailing
-    tabs on the header line (cleared trailing columns) made phantom ""
-    columns: an empty sample in the abundance table, a "" key in every
-    metadata row. Dropped, the row cells under them are ignored like any
-    cell past the last column. */
+/** True when a cell as split holds nothing once unquoted and trimmed. */
+function isBlankCell(cell) {
+  return cell === undefined || unquoteCell(cell).trim() === "";
+}
+
+/** A line up to the "#" that starts a comment in it, as pandas'
+    comment="#" cuts it: the first one that is not inside a quoted cell (a
+    cell that starts and ends with a double quote, as unquoteCell reads
+    it). The line itself when it has none. */
+function beforeComment(line) {
+  let start = 0;
+  while (start <= line.length) {
+    let end = line.indexOf("\t", start);
+    if (end < 0) end = line.length;
+    const cell = line.slice(start, end);
+    const quoted = cell.length >= 2 && cell.charCodeAt(0) === 34 && cell.charCodeAt(cell.length - 1) === 34;
+    const hash = quoted ? -1 : cell.indexOf("#");
+    if (hash >= 0) return line.slice(0, start + hash);
+    start = end + 1;
+  }
+  return line;
+}
+
+/** The cells of a header line without its empty trailing ones. */
 function withoutTrailingBlanks(cells) {
   const out = [...cells];
   while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
@@ -200,27 +317,42 @@ const SPECIES_TITLE_WORDS = new Set([
   "name", "id",
 ]);
 
+/* Words of a taxon's name that no column title holds: SILVA's and GTDB's
+   "uncultured organism", "unclassified Bacteria", "gut metagenome", … A
+   title word among them ("organism") does not make such a name a title. */
+const TAXON_NAME_WORDS = new Set([
+  "uncultured", "unclassified", "unidentified", "unknown", "metagenome", "bacterium",
+  "bacteria", "archaea", "archaeon", "candidatus", "incertae", "sedis", "environmental",
+]);
+
 /** True when `cell`, the first cell of the line read as the header, names
     the species column, so that the line is the header and its sample ids
     are numbers ("species\t1\t2\t3", Qiita's "OTU_ID\t10317.000001\t…"):
     the cell is empty (R's write.table writes "" above the row names), or
-    words without a digit, one of them a usual title word, or it repeats
-    the first cell of a "#" line above (an old header commented out above
-    the renamed one). A data row starts with a species or an OTU instead:
-    "sp1", "otu1", a hash, "k__Bacteria", "Bacteroides vulgatus". */
+    words without a digit, one of them a usual title word and none a word
+    of a taxon's name, or it repeats the first cell of a "#" line above
+    (an old header commented out above the renamed one). A data row starts
+    with a species or an OTU instead: "sp1", "otu1", a hash, "k__Bacteria",
+    "Bacteroides vulgatus", a lineage. A lineage holds title words too —
+    "d__Bacteria;…;s__uncultured_organism", MetaPhlAn's "k__Bacteria|…|
+    s__…_organism" — and was taken for a title: a biom table whose header
+    is a "#" line then loaded with its first row's values for sample ids
+    and only a warning. A rank prefix ("s__") or a lineage separator
+    (";", "|") now marks a taxon, as splitSpeciesList reads them. */
 function namesSpeciesColumn(cell, tsv) {
   const t = cell.trim().toLowerCase();
   if (t === "") return true;
   const commented = (cells) => cells[0].replace(/^#\s*/, "").trim().toLowerCase();
   if (tsv.commentLines.some(({ cells }) => commented(cells) === t)) return true;
+  if (/\d/.test(t) || /[a-z]__|[;|]/i.test(t)) return false;
   // Words split on what is not a letter and inside camel case
   // ("FeatureID"); no lookbehind, which Safari reads only from 16.4.
+  const words = cell
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z]+/)
+    .map((w) => w.toLowerCase());
   return (
-    !/\d/.test(t) &&
-    cell
-      .replace(/([a-z])([A-Z])/g, "$1 $2")
-      .split(/[^A-Za-z]+/)
-      .some((w) => SPECIES_TITLE_WORDS.has(w.toLowerCase()))
+    words.some((w) => SPECIES_TITLE_WORDS.has(w)) && !words.some((w) => TAXON_NAME_WORDS.has(w))
   );
 }
 
@@ -240,7 +372,9 @@ function namesSpeciesColumn(cell, tsv) {
     "OTU_ID\t10317.000001\t…". The refusal now also says how to load the
     table when the line read as the header is one after all. */
 function abundanceHeaderCheck(tsv) {
-  if (!looksLikeAbundanceRow(tsv.headerCells)) return null;
+  // A header with one cell fewer than the rows under it (R's write.table)
+  // is one: pandas reads it so, and a data row is as wide as the next.
+  if (tsv.implicitIndex || !looksLikeAbundanceRow(tsv.headerCells)) return null;
   const width = withoutTrailingBlanks(tsv.headerCells).length;
   const linesUp = (cells) => {
     const named = withoutTrailingBlanks(cells);
@@ -289,7 +423,7 @@ function parseRunMetadata(headerComments) {
       if (idx < 0) return;
       const key = kv.slice(0, idx).trim();
       // Unquoted like any cell: the curated exports write "# study: …"
-      // through tsvCell, which quotes a title that starts with a quote.
+      // through tsvCell, which quotes a title that holds a quote.
       const val = unquoteCell(kv.slice(idx + 1).trim());
       if (key) meta[key] = val;
     });
@@ -418,6 +552,36 @@ function looksLikeDecimalComma(cell) {
   const i = s.indexOf(",");
   if (i < 0 || s.indexOf(",", i + 1) >= 0) return false;
   return Number.isFinite(parseStrictNumber(s.slice(0, i) + "." + s.slice(i + 1)));
+}
+
+/* ---------- ids that every object already has ----------
+   The tables are kept in plain objects keyed by id: rows by header, the
+   matrix and the column sums by species and sample, the metadata, the
+   plate map and the curation by sample. An id that names a property every
+   JavaScript object has breaks them. "__proto__" cannot be stored at all:
+   its cells read as "[object Object]", its column sum, its metadata row
+   and its curation entry vanished, so a true positive's target was never
+   suppressed and the curated table fell back to fractions; on the base
+   build the page crashed at load. "constructor", "toString" and the like
+   read as present where they are not: the Network tab failed with "node
+   not found: constructor". pandas reads such ids, but they are refused
+   here, named, wherever they enter: the files and the session import. */
+const RESERVED_IDS = new Set(Object.getOwnPropertyNames(Object.prototype));
+
+/** True when `id` names a property of every object ("__proto__",
+    "constructor", "toString", …). */
+export function isReservedId(id) {
+  return RESERVED_IDS.has(String(id));
+}
+
+/** The error for a reserved id: `what` names it ("sample", "species"),
+    `where` says where it is. */
+export function reservedIdError(id, what, where) {
+  return (
+    `The ${what} "${id}" (${where}) cannot be read: every JavaScript object already has a ` +
+    `property of that name, and the interface keeps its tables in such objects, keyed by id. ` +
+    `Rename it in every input file (and run CroCoDeEL again on the renamed table).`
+  );
 }
 
 /* ---------- duplicated ids ----------
@@ -633,6 +797,16 @@ export function parseEvents(text) {
       skipped.push(i);
       return;
     }
+    for (const [what, col, ids] of [
+      ["sample", cols.source, [r[cols.source]]],
+      ["sample", cols.target, [r[cols.target]]],
+      ["species", cols.species, splitSpeciesList(r[cols.species])],
+    ]) {
+      const id = ids.find(isReservedId);
+      if (id !== undefined) {
+        throw new Error(reservedIdError(id, what, `line ${lineNumbers[i]}, column "${clip(col, 40)}"`));
+      }
+    }
     const rate = eventNumber(r, [cols.rate]);
     // Probability resolution: prefer the column pickCol actually resolved in
     // this file's header (which matches case-insensitively), then fall back
@@ -783,7 +957,17 @@ export function parseEvents(text) {
     needs to rebuild it:
       firstHeader  the first header cell as written ("id_mgs",
                    "clade_name"), which an export would otherwise call
-                   "species";
+                   "species"; "" when the header has none (below);
+      implicitIndex  true when the header has no cell above the species
+                   column, as R's write.table writes it: each header cell
+                   names a sample and the first cell of each row is its
+                   species, as pandas, hence CroCoDeEL, reads such a
+                   table (see parseTSV's indexCol). Read as a usual
+                   header, every sample took the name of the one before
+                   it and the last one was lost — no warning, and the
+                   diagnostics of every event computed on other samples
+                   than the ones it names. An export writes the header so
+                   again;
       colSums      { sample: the sum of its column as read, before
                    normalisation }; matrix[sp][s] * colSums[s] is the value
                    read (an all-zero column keeps fractions of 0 and a sum
@@ -795,7 +979,8 @@ export function parseEvents(text) {
                    integer-like names ("1", "2", …) first.
     Cells read as 0 (empty, NA, not a number, negative) come back as 0. */
 export function parseAbundance(text) {
-  const tsv = parseTSV(text);
+  // Read as CroCoDeEL reads it: pandas, index_col=0, comment="#".
+  const tsv = parseTSV(text, { inlineComments: true, indexCol: true });
   const { header, rows } = tsv;
   const commented = abundanceHeaderCheck(tsv);
   if (commented?.error) throw new Error(commented.error);
@@ -807,6 +992,11 @@ export function parseAbundance(text) {
   const speciesCol = header[0];
   const samples = header.slice(1);
 
+  const reservedSample = samples.findIndex(isReservedId);
+  if (reservedSample >= 0) {
+    const s = samples[reservedSample];
+    throw new Error(reservedIdError(s, "sample", `column ${reservedSample + 2} of the abundance table`));
+  }
   // Duplicates are refused here (see "duplicated ids" above).
   const dupSamples = findDuplicates(samples);
   if (dupSamples.length > 0) {
@@ -826,6 +1016,11 @@ export function parseAbundance(text) {
           ? `only its header line (${n} sample column${n > 1 ? "s" : ""}) was found.`
           : `none of its ${rows.length} rows has a species name in the first column.`),
     );
+  }
+  const reservedSpecies = rows.findIndex((r) => isReservedId(r[speciesCol]));
+  if (reservedSpecies >= 0) {
+    const sp = rows[reservedSpecies][speciesCol];
+    throw new Error(reservedIdError(sp, "species", `line ${tsv.lineNumbers[reservedSpecies]} of the abundance table`));
   }
   const dupSpecies = findDuplicates(speciesNames);
   if (dupSpecies.length > 0) {
@@ -925,6 +1120,7 @@ export function parseAbundance(text) {
   // sample counts and blank plots everywhere, so surface the tally instead
   // of failing silently — and say when the cells look like decimal commas.
   const warnings = commented?.warning ? [commented.warning] : [];
+  warnings.push(...layoutWarnings(tsv));
   if (emptySamples === samples.length) {
     warnings.push(
       `Every sample column sums to 0 — no abundance could be read. ` +
@@ -970,9 +1166,59 @@ export function parseAbundance(text) {
     logRange,
     warnings,
     firstHeader: speciesCol,
+    implicitIndex: tsv.implicitIndex,
     colSums,
     integerCols,
   };
+}
+
+/** What parseTSV read otherwise than the header line says, or than a
+    reader that knows no comments would, in an abundance table: each a
+    warning, since CroCoDeEL (pandas) read the table so. */
+function layoutWarnings(tsv) {
+  const out = [];
+  const { header, unnamed, inlineComment, inlineComments: cut } = tsv;
+  if (tsv.shiftedByPandas) {
+    const first = header[0].trim() ? ` ("${clip(header[0], 30)}")` : "";
+    out.push(
+      `The first row (line ${tsv.lineNumbers[0]}) has one cell more than the header, an empty ` +
+        `one at its end (the line ends with a tab). CroCoDeEL reads such a table with pandas, ` +
+        `which then takes every header cell, the first one${first} included, for a sample ` +
+        `holding the values of the column after it: its events name the samples one column ` +
+        `off. This reads the table as its header says. Remove the tabs at the end of the ` +
+        `lines and run CroCoDeEL again on the fixed table.`,
+    );
+  }
+  if (unnamed.length > 0) {
+    const n = unnamed.length;
+    const names = unnamed.slice(0, 3).map((u) => `"${u}"`).join(", ") + (n > 3 ? ", …" : "");
+    out.push(
+      `${n} sample column${n > 1 ? "s have" : " has"} no name in the header: read as ` +
+        `${names}, the name${n > 1 ? "s" : ""} CroCoDeEL (pandas) gives ${n > 1 ? "them" : "it"}.`,
+    );
+  }
+  if (cut > 0) {
+    out.push(
+      `${cut} line${cut > 1 ? "s hold" : " holds"} a "#" after ${cut > 1 ? "their" : "its"} start ` +
+        `(first: line ${inlineComment.line}, "${clip(inlineComment.text.replace(/\t/g, " "), 40)}"). CroCoDeEL reads ` +
+        `the table with pandas, comment="#", which ignores a line from its "#" on, and so ` +
+        `does this. If a "#" belongs to a name or a value, remove it and run CroCoDeEL again ` +
+        `on the fixed table.`,
+    );
+  }
+  return out;
+}
+
+/** The abundance table's columns in one line, for its card, when its
+    header is not the usual one: species from the first cell of each row
+    under a header without a cell above them (implicitIndex). Null for a
+    usual table, and for a session saved without the flag. */
+export function abundanceColumnsLine(ab) {
+  if (ab?.implicitIndex !== true) return null;
+  return (
+    "species from the first cell of each row — the header has no cell above them " +
+    "(R's write.table), so each of its cells names a sample, as CroCoDeEL (pandas) reads it"
+  );
 }
 
 /* ---------- metadata.tsv ----------
@@ -1133,9 +1379,12 @@ export function parseMetadata(text) {
   // A repeated id keeps its first row (see "duplicated ids" above).
   const seen = new Set();
   const dups = [];
-  rows.forEach((r) => {
+  rows.forEach((r, i) => {
     const id = r[cols.sample];
     if (!id) return;
+    if (isReservedId(id)) {
+      throw new Error(reservedIdError(id, "sample", `line ${tsv.lineNumbers[i]} of the metadata`));
+    }
     if (seen.has(id)) {
       dups.push(id);
       return;
@@ -1413,6 +1662,9 @@ export function parsePlateMap(text) {
   rows.forEach((r, i) => {
     const id = r[cols.sample];
     if (!id) return;
+    if (isReservedId(id)) {
+      throw new Error(reservedIdError(id, "sample", `line ${lineNumbers[i]} of the plate map`));
+    }
     const useWell = cols.well && (String(r[cols.well] ?? "").trim() !== "" || !cols.row);
     const cells = useWell ? [r[cols.well]] : [r[cols.row], r[cols.col]];
     const w = useWell ? parseWell(cells[0]) : parseRowCol(cells[0], cells[1]);
@@ -1507,7 +1759,9 @@ export function parsePlateMap(text) {
 export function plateMapToTSV(plateMap) {
   const lines = ["sample_id\tplate\twell"];
   Object.entries(plateMap.bySample).forEach(([sid, p]) => {
-    lines.push(`${sid}\t${p.plate}\t${wellLabel(p.row, p.col)}`);
+    // Through tsvCell, as every other writer: a quote in an id or a plate
+    // name, which R reads as quoting.
+    lines.push([sid, p.plate, wellLabel(p.row, p.col)].map(tsvCell).join("\t"));
   });
   return lines.join("\n");
 }

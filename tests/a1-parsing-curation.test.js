@@ -215,9 +215,12 @@ describe("tsvCell → parseEvents keeps every note as written", () => {
     "plain",
   ];
 
-  it("quotes a cell that starts with a double quote, the CSV way", () => {
+  // Any cell holding a quote is quoted now, not only one that starts with
+  // one: R reads a quote inside a cell as quoting
+  // (tests/final-science-io-quotes.test.js).
+  it("quotes a cell that holds a double quote, the CSV way", () => {
     expect(tsvCell('"a" b')).toBe('"""a"" b"');
-    expect(tsvCell('a "b"')).toBe('a "b"');
+    expect(tsvCell('a "b"')).toBe('"a ""b"""');
     expect(tsvCell('"')).toBe('""""');
     expect(tsvCell("x\t\ny")).toBe("x y");
   });

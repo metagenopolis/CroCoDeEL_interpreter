@@ -352,7 +352,11 @@ describe("an empty header cell between named ones", () => {
     expect(ab.samples).toEqual(["S1", "Unnamed: 2", "S3"]);
     expect(ab.colSums["Unnamed: 2"]).toBe(60);
     expect(ab.matrix.sp1["Unnamed: 2"]).toBeCloseTo(20 / 60, 12);
-    expect(ab.warnings).toEqual([]);
+    // A sample whose name is made up is now named in a warning, as one at
+    // the end of the header is (tests/final-science-io-layout.test.js).
+    expect(ab.warnings).toEqual([
+      '1 sample column has no name in the header: read as "Unnamed: 2", the name CroCoDeEL (pandas) gives it.',
+    ]);
   });
 
   it("names a blank one and two in a row, and still drops the trailing ones", () => {

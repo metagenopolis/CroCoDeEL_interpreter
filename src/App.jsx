@@ -13,20 +13,18 @@ import {
   wellLabel,
   metadataColumnsLine,
   plateColumnsLine,
+  abundanceColumnsLine,
 } from "./parsing.js";
 import {
   applyLowAbundanceFilter,
-  automaticScore,
   buildScatter,
   detectCascades,
   eventBulkCriteria,
+  eventScore,
   introducedPercent,
-  lineDiagnostics,
   lowAbundanceFilterFactor,
   matchesBulkCriteria,
   matchSpeciesName,
-  missingAbundantFromSource,
-  pointsAboveLine,
   resolveSample,
   spearmanRho,
   speciesCountsBySample,
@@ -57,6 +55,9 @@ import {
   escapeHTML,
   samplesReportCuration,
   samplesReportIndex,
+  reportFilterSummary,
+  sampleFlagCells,
+  rateCell,
 } from "./exports.js";
 import {
   checkStoredSession,
@@ -312,7 +313,10 @@ export function sampleName(metadata, sampleId) {
     column headers in Gephi's data laboratory and Cytoscape's table panel,
     so renaming them later would break saved styles. */
 export function buildContaminationGraph(events, opts = {}) {
-  const { sampleCuration, metadata, plateMap, ab } = opts;
+  // `neverTargeted`: the samples no event of the session targets (the
+  // AppMain set behind effectiveSampleCuration), which tells a default
+  // value from the rule's when the exported events are a filtered subset.
+  const { sampleCuration, metadata, plateMap, ab, neverTargeted } = opts;
   const list = events || [];
 
   const ids = new Set();
@@ -371,11 +375,18 @@ export function buildContaminationGraph(events, opts = {}) {
           if ((ab.matrix[sp]?.[abKey] || 0) > 0) richness++;
         }
       }
+      // Where each value comes from, as the samples TSV says it
+      // (curationOrigin): manual, automatic, or default — the Not
+      // contaminated + Keep of a sample no event targets, which is not a
+      // decision. Without it the default read as a curated Keep.
+      const targeted = neverTargeted ? !neverTargeted.has(id) : a.asTarget > 0;
       return {
         id,
         label: sampleName(metadata, id) || id,
         sample_verdict: cur.verdict || "pending",
+        sample_verdict_origin: curationOrigin(cur, "verdict", targeted),
         sample_action: cur.action || "",
+        sample_action_origin: curationOrigin(cur, "action", targeted),
         notes: cur.notes || "",
         subject: flags.subject || "",
         timepoint: flags.timepoint || "",
@@ -17683,12 +17694,13 @@ const ValidateTab = ({
                 <Criterion
                   n="06"
                   title="Biological similarity (ρ × relatedness)"
-                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects that share no group passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
+                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ is CroCoDeEL's own: over every species of the table, those absent from both samples included, as printed above each plot of its PDF report. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects that share no group passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
                   pass={passFor("biosim")}
                   value={(() => {
                     if (diag?.spearman == null) {
-                      // ρ is computed over the species present in either
-                      // sample (every point of the scatter).
+                      // ρ ranks every species of the table, but means
+                      // nothing with fewer than 3 present in either sample
+                      // (the points of the scatter).
                       const n = scatter?.points?.length ?? 0;
                       return pairOk
                         ? `${n === 1 ? "Only 1 species" : n === 0 ? "No species" : `Only ${n} species`} in source and target — ρ needs at least 3`
@@ -20412,10 +20424,27 @@ const HelpTab = ({ onStartTour }) => {
               to delete the{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
               line if the line under it is the header.
-              Empty cells at the end of the header line are ignored; an
-              empty header cell between two named ones is named{" "}
+              An empty header cell is named{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>Unnamed: N</code>{" "}
-              (N its column, counted from 0), as CroCoDeEL names it.
+              (N its column, counted from 0), as CroCoDeEL names it; one at
+              the end of the header line with no value under it is ignored.
+              In the abundance table a{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              inside a line starts a comment too (outside a quoted cell), as
+              CroCoDeEL reads that table (pandas,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>comment="#"</code>
+              ), and a warning names the first line cut.
+            </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              A sample or species id that names a property every JavaScript
+              object has (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>__proto__</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>constructor</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>toString</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>valueOf</code>
+              …) cannot be kept in the tables of this interface: a file or a
+              session holding one is refused, naming it. Rename it in every
+              file.
             </p>
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
               Sample ids are shown as your files write them. An id too
@@ -20640,9 +20669,18 @@ const HelpTab = ({ onStartTour }) => {
           </p>
           <p>
             Format: first column lists species names, every other column is a
-            sample. The parser normalizes each sample column to relative
-            abundances summing to 1 for the plots and the checks, and keeps
-            each column's total: the card's Download and the curated
+            sample. A header with one cell fewer than the rows — R's{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>write.table</code>{" "}
+            writes no cell above the row names — names samples only: the
+            first cell of each row is then its species, as CroCoDeEL
+            (pandas) reads it, the card says so and the downloads keep that
+            layout. Rows that end with one tab more than the header (an
+            empty cell under no header) are read as the header says, with a
+            warning: CroCoDeEL reads such a table as one without a species
+            cell and names every sample one column off, so run it again on
+            the table without those tabs. The parser normalizes each sample
+            column to relative abundances summing to 1 for the plots and the
+            checks, and keeps each column's total: the card's Download and the curated
             abundance export write the file's own values back (counts stay
             counts). Each sample column and each species row
             must appear once: a table repeating one is refused, with the
@@ -21433,9 +21471,12 @@ const HelpTab = ({ onStartTour }) => {
                   <strong>Contamination graph</strong> — the directed
                   source → target graph as GraphML (Gephi and Cytoscape
                   open it natively) or as a node + edge CSV pair, every
-                  annotation a typed attribute: per sample its verdict,
-                  action, notes, metadata, plate position, event counts
-                  and species richness; per event its rate (also as{" "}
+                  annotation a typed attribute: per sample its verdict and
+                  action, each with its origin as in the samples TSV
+                  (manual, automatic, or default for the Not contaminated +
+                  Keep of a sample no event targets), notes, metadata, plate
+                  position, event counts and species richness; per event its
+                  rate (also as{" "}
                   <code>weight</code>), probability, introduced share,
                   evaluation, notes, cascade flag, relatedness and plate
                   distance. A missing number is −1, never 0, which would
@@ -21824,8 +21865,13 @@ const HelpTab = ({ onStartTour }) => {
                 <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Biological similarity (ρ × relatedness)</td>
                 <td className="py-2.5 align-top text-[13px]">
                   Spearman rank correlation ρ between source and target
-                  profiles, read jointly with the metadata-driven
-                  relatedness signal — because ρ alone is ambiguous:
+                  profiles — CroCoDeEL's own, the rho printed above each
+                  plot of its PDF report: over every species of the table,
+                  those absent from both samples tied below the others, on
+                  the table the diagnostics use (its low-abundance filter
+                  applied when the run declares one) — read jointly with
+                  the metadata-driven relatedness signal, because ρ alone
+                  is ambiguous:
                   high ρ can mean either same-subject biological
                   persistence (FP) <em>or</em> very strong contamination
                   (TP). Cross-referencing with{" "}
@@ -26874,8 +26920,10 @@ const defaultFilter = () => ({
       before. */
   const exportCuratedAbundance = (opts = {}) => {
     if (!ab) return;
-    const cur = buildCuratedAbundance(ab, effectiveSampleCuration, opts);
-    const table = abundanceToTSV(cur);
+    // Written from the input's own rows (abundanceToTSV writes only the
+    // kept samples and species): no copy of the matrix is built.
+    const cur = buildCuratedAbundance(ab, effectiveSampleCuration, { ...opts, matrix: false });
+    const table = abundanceToTSV({ ...cur, matrix: ab.matrix });
     const provenance = curatedAbundanceProvenance(ab, cur, {
       study: analysisTitle,
       curated: new Date().toISOString(),
@@ -26901,6 +26949,7 @@ const defaultFilter = () => ({
   const exportGraph = (format) => {
     const graph = buildContaminationGraph(filtered, {
       sampleCuration: effectiveSampleCuration,
+      neverTargeted,
       metadata,
       plateMap,
       ab,
@@ -27034,7 +27083,6 @@ const defaultFilter = () => ({
       const rowChar = String.fromCharCode(65 + placement.row);
       return `${rowChar}${String(placement.col + 1).padStart(2, "0")}`;
     };
-    const boolCell = (v) => (v == null ? "" : v ? "true" : "false");
     const num = (v, digits) =>
       v == null || !Number.isFinite(v) ? "" : v.toFixed(digits);
 
@@ -27053,9 +27101,8 @@ const defaultFilter = () => ({
             flags.timepoint || "",
             flags.groupId || "",
             flags.biome || "",
-            boolCell(flags.isControl),
-            boolCell(flags.isLowBiomass),
-            boolCell(flags.isLowSequencingDepth),
+            // Empty when the metadata does not say (sampleFlagCells).
+            ...sampleFlagCells(lookupBySample(metadata?.bySample, id), metadata),
             placement?.plate || "",
             well(placement),
             a.asSource || 0,
@@ -27064,7 +27111,7 @@ const defaultFilter = () => ({
             a.fpAsTarget || 0,
             a.uncAsTarget || 0,
             a.pendingAsTarget || 0,
-            num(a.maxTargetRate, 6),
+            rateCell(a.maxTargetRate),
             num(a.maxTargetIntroducedPct, 2),
             c.verdict || "",
             curationOrigin(c, "verdict", a.asTarget > 0),
@@ -27504,28 +27551,38 @@ const defaultFilter = () => ({
       return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
 
+    // The target sample's curation as every view shows it (an event's
+    // target always has one), and an "auto" tag after a value the rule
+    // set rather than the curator — from the events that target the
+    // sample, or the Suppress paired with Contaminated — as the Events
+    // table, the Samples tab and the samples HTML report mark it
+    // (curationOrigin). Printed, so a saved PDF keeps it.
+    const targetCuration = (e) => effectiveSampleCuration?.[e.target] || {};
+    const autoTag = (e, field) =>
+      curationOrigin(targetCuration(e), field, true) === "automatic"
+        ? `<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#797870;">auto</span>`
+        : "";
+
     // Action chip — the curator's "what to do with the contaminated
     // sample" choice. Action lives on the target sample; render the
     // chip whenever an action is recorded for the event's target,
     // regardless of the event's own evaluation.
     const actionPill = (e) => {
-      const eff = sampleCuration?.[e.target]?.action;
+      const eff = targetCuration(e).action;
       if (!eff) return "";
       const tone =
         eff === "suppress"
           ? { bg: "#ed6e6c", label: "Suppress" }
           : { bg: "#00a3a6", label: "Keep" };
-      return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
+      return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>${autoTag(e, "action")}`;
     };
 
-    // Sample-level verdict chip — the curator's call on the target
-    // sample as a whole (contaminated / correct / uncertain /
-    // pending). Cohabits with the event evaluation; we render
-    // whatever lives in sampleCuration for the target, defaulting to
-    // "Pending" with a muted chip when the sample hasn't been
-    // curated yet.
+    // Sample-level verdict chip — the call on the target sample as a
+    // whole (contaminated / correct / uncertain / pending). Cohabits with
+    // the event evaluation; "Pending" with a muted chip when the sample
+    // has no verdict yet.
     const sampleVerdictPill = (e) => {
-      const v = sampleCuration?.[e.target]?.verdict || "pending";
+      const v = targetCuration(e).verdict || "pending";
       const tone =
         v === "contaminated"
           ? { bg: "#ed6e6c", label: "Contaminated" }
@@ -27534,58 +27591,13 @@ const defaultFilter = () => ({
             : v === "uncertain"
               ? { bg: "#d97a3c", label: "Uncertain" }
               : { bg: "#e6e8e8", label: "Pending", textColor: "#5a5550" };
-      return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
+      return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>${autoTag(e, "verdict")}`;
     };
 
-    // Build a one-paragraph summary of the active filter so the reader
-    // knows what subset they're looking at. Only mentions fields that
-    // diverge from the defaults; returns null when nothing is active.
-    // Every value is escaped: the filter comes back from a stored
-    // session or a session file (restoreFilter keeps only the values
-    // the filter bar offers), and markup in it ran in the report.
-    const filterSummary = (() => {
-      if (!reportFilter) return null;
-      const parts = [];
-      if (reportFilter.q && reportFilter.q.trim()) {
-        parts.push(`search: "${escapeHTML(reportFilter.q.trim())}"`);
-      }
-      if (reportFilter.minScore && reportFilter.minScore > 0) {
-        parts.push(`probability ≥ ${reportFilter.minScore.toFixed(2)}`);
-      }
-      if (reportFilter.minRate && reportFilter.minRate > 0) {
-        parts.push(
-          `rate ≥ ${(reportFilter.minRate * 100).toFixed(2)}%`,
-        );
-      }
-      if (reportFilter.minIntroduced && reportFilter.minIntroduced > 0) {
-        parts.push(`introduced ≥ ${reportFilter.minIntroduced.toFixed(0)}%`);
-      }
-      if (
-        Array.isArray(reportFilter.verdicts) &&
-        reportFilter.verdicts.length > 0 &&
-        reportFilter.verdicts.length < 4
-      ) {
-        const labels = {
-          true_positive: "true positive",
-          false_positive: "false positive",
-          uncertain: "uncertain",
-          pending: "pending",
-        };
-        parts.push(
-          `verdict: ${reportFilter.verdicts.map((v) => escapeHTML(labels[v] || v)).join(", ")}`,
-        );
-      }
-      if (reportFilter.subject && reportFilter.subject !== "any") {
-        parts.push(`subject: ${escapeHTML(reportFilter.subject)}`);
-      }
-      if (reportFilter.group && reportFilter.group !== "any") {
-        parts.push(`group: ${escapeHTML(reportFilter.group)}`);
-      }
-      if (reportFilter.adjacent && reportFilter.adjacent !== "any") {
-        parts.push(`plate: ${escapeHTML(reportFilter.adjacent)}`);
-      }
-      return parts.length ? parts.join(" · ") : null;
-    })();
+    // A one-paragraph summary of the active filter so the reader knows
+    // what subset they're looking at (reportFilterSummary): only the
+    // fields that differ from the defaults, escaped; null when none does.
+    const filterSummary = reportFilterSummary(reportFilter);
 
     /** Build a small SVG scatterplot for an event. Mirrors the visual
         language of the main Scatterplot component (deep teal points
@@ -27687,11 +27699,10 @@ const defaultFilter = () => ({
       // which is neither a pass nor a fail.
       if (sc.error)
         return `<div class="aggregate skip">Not evaluable — ${escapeHTML(sc.error)}. No criterion can be computed for this pair.</div>`;
-      const di = lineDiagnostics(sc);
-      const ab2 = pointsAboveLine(sc);
-      const mi = missingAbundantFromSource(diagAb, event.source, event.target, event.rate);
       const rel = areRelated(metadata, event.source, event.target);
-      const score = automaticScore(di, ab2, mi, event.cascade, rel);
+      // Guided validation's evaluation (eventScore), on the scatter
+      // already built for this page.
+      const { diag: di, above: ab2, missing: mi, score } = eventScore(diagAb, event, rel, sc);
       const valueRows = [];
       if (di?.r2 != null) valueRows.push(["R² of line fit", di.r2.toFixed(3)]);
       if (di?.n != null) valueRows.push(["Species on line", di.n]);
@@ -27925,12 +27936,17 @@ const defaultFilter = () => ({
       })
       .join("");
 
-    const runMetaSection = runMetadata
+    // The study is the report's title, not a run parameter: a session
+    // saved by an earlier version may still keep the "# study:" line of a
+    // reloaded curated TSV among its run parameters (the events loader
+    // has kept it out of them since, src/carryOver.js).
+    const runMetaEntries = Object.entries(runMetadata || {}).filter(([k]) => k !== "study");
+    const runMetaSection = runMetaEntries.length > 0
       ? `
       <h2>CroCoDeEL run parameters</h2>
       <table class="kv">
         <tbody>
-          ${Object.entries(runMetadata)
+          ${runMetaEntries
             .map(
               ([k, v]) =>
                 `<tr><th>${escapeHTML(k)}</th><td>${escapeHTML(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`,
@@ -28303,31 +28319,18 @@ const defaultFilter = () => ({
       selected?.introduced,
     ],
   );
-  const diag = useMemo(() => lineDiagnostics(scatter), [scatter]);
-  const above = useMemo(() => pointsAboveLine(scatter), [scatter]);
-  const missing = useMemo(
-    () =>
-      selected && diagAb
-        ? missingAbundantFromSource(diagAb, selected.source, selected.target, selected.rate)
-        : null,
-    [diagAb, selected],
-  );
   const selectedRelatedness = useMemo(
     () =>
       selected ? areRelated(metadata, selected.source, selected.target) : null,
     [metadata, selected],
   );
-  const autoScore = useMemo(
-    () =>
-      automaticScore(
-        diag,
-        above,
-        missing,
-        selected?.cascade,
-        selectedRelatedness,
-      ),
-    [diag, above, missing, selected, selectedRelatedness],
+  // The rest of the evaluation through eventScore (src/diagnostics.js),
+  // the chain the bulk dialog and the HTML report run too.
+  const evaluation = useMemo(
+    () => eventScore(diagAb, selected, selectedRelatedness, scatter),
+    [diagAb, selected, selectedRelatedness, scatter],
   );
+  const { diag, above, missing, score: autoScore } = evaluation;
 
   /* ============================================================
      RENDER
@@ -28881,12 +28884,19 @@ const defaultFilter = () => ({
               }
               // A session saved before the parser kept the column totals
               // has only the fractions: the Download writes those, which
-              // the card must say, as the Export tab's card does.
+              // the card must say, as the Export tab's card does. A header
+              // without a cell above the species (R's write.table) is
+              // named, since each of its cells is then read as a sample.
               details={
-                ab && !hasInputValues(ab)
-                  ? uploadCardDetails(null, [
-                      'Its Download writes relative abundances under a "species" header: this session was saved before the interface kept the table\'s column totals. Load species_abundance.tsv again to download its own values.',
-                    ])
+                ab
+                  ? uploadCardDetails(
+                      abundanceColumnsLine(ab),
+                      hasInputValues(ab)
+                        ? []
+                        : [
+                            'Its Download writes relative abundances under a "species" header: this session was saved before the interface kept the table\'s column totals. Load species_abundance.tsv again to download its own values.',
+                          ],
+                    )
                   : null
               }
               onClear={ab ? () => setAb(null) : undefined}
