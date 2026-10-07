@@ -55,6 +55,8 @@ import {
   buildEffectiveSampleCuration,
   sampleActionCounts,
 } from "./curation.js";
+// The text of the exported files (src/exports.js).
+import { eventsToTSV, curatedEventsToTSV } from "./exports.js";
 import {
   FolderOpen,
   AlertCircle,
@@ -274,38 +276,9 @@ export function sampleName(metadata, sampleId) {
   return n;
 }
 
-/** Serialize the loaded events back to a CroCoDeEL-compatible TSV.
-    Optionally prepend the original `# key: value | ...` header line if it
-    was captured at parse time. */
-function eventsToTSV(rawEvents, runMetadata) {
-  const lines = [];
-  if (runMetadata && Object.keys(runMetadata).length > 0) {
-    const parts = Object.entries(runMetadata).map(([k, v]) => `${k}: ${v}`);
-    lines.push(`# ${parts.join(" | ")}`);
-  }
-  // Canonical CroCoDeEL output header (5 columns).
-  lines.push(
-    [
-      "source",
-      "target",
-      "rate",
-      "probability",
-      "contamination_specific_species",
-    ].join("\t"),
-  );
-  rawEvents.forEach((e) => {
-    lines.push(
-      [
-        e.source,
-        e.target,
-        e.rate ?? "",
-        e.score ?? "",
-        Array.isArray(e.introduced) ? e.introduced.join(",") : (e.species ?? ""),
-      ].join("\t"),
-    );
-  });
-  return lines.join("\n");
-}
+/* eventsToTSV — the loaded events written back as CroCoDeEL writes them —
+   lives in src/exports.js with the curated events TSV, which shares its
+   header line, columns and number formatting. */
 
 /** Serialize the in-memory abundance matrix back to TSV. NOTE: the parser
     normalizes columns to relative abundances per sample, so the output here
@@ -20178,6 +20151,18 @@ const HelpTab = ({ onStartTour }) => {
             review the Samples tab before exporting the curated abundance
             table.
           </p>
+          <p style={{ marginTop: 6 }}>
+            The curated events TSV starts with CroCoDeEL's five columns,
+            under the names above and with CroCoDeEL's own number
+            formatting, so CroCoDeEL reads it back too (to plot the curated
+            events with <code style={{ fontFamily: "ui-monospace, monospace" }}>plot_conta</code>,
+            say); introduced_pct, verdict, action and notes follow. A
+            curated file exported by an earlier version, whose columns were
+            named{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>contamination_rate</code> and{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>introduced_species</code>,
+            still loads here.
+          </p>
         </HelpSection>
 
         {/* ---------- species_abundance.tsv ---------- */}
@@ -20889,10 +20874,24 @@ const HelpTab = ({ onStartTour }) => {
               </p>
               <ul className="list-disc pl-5 mt-2 space-y-1">
                 <li>
-                  <strong>Events TSV</strong> — every matched event
-                  with its evaluation, action and notes. Filter
-                  downstream using the evaluation / action columns if
-                  you only want TPs or want to drop FPs.
+                  <strong>Events TSV</strong> — every matched event,
+                  in CroCoDeEL's own layout followed by the curation:{" "}
+                  <code>source</code>, <code>target</code>,{" "}
+                  <code>rate</code>, <code>probability</code> and{" "}
+                  <code>contamination_specific_species</code> written as
+                  CroCoDeEL writes them, so CroCoDeEL reads the file
+                  back, then <code>introduced_pct</code>,{" "}
+                  <code>verdict</code> (true_positive / false_positive /
+                  uncertain / pending), <code>action</code> (the target
+                  sample's keep / suppress) and <code>notes</code>. The
+                  run's <code>#</code> parameter line and a{" "}
+                  <code># study:</code> line come first. Filter
+                  downstream on the verdict / action columns if you only
+                  want TPs or want to drop FPs, or load the file again
+                  on the events card to restore the evaluations and
+                  notes; a file exported by an earlier version (with{" "}
+                  <code>contamination_rate</code> and{" "}
+                  <code>introduced_species</code>) still loads.
                 </li>
                 <li>
                   <strong>Samples TSV — full table</strong> — one row
@@ -22676,8 +22675,8 @@ const ExportTab = ({
           title={`Events TSV — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
           desc={
             isFiltered
-              ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). Verdict, action and notes columns are included.`
-              : "Every event with its evaluation, action and notes. Filter downstream using the evaluation / action columns if you want to drop FPs or keep TPs only."
+              ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). CroCoDeEL's own columns come first, so CroCoDeEL reads the file too; verdict, action and notes columns follow.`
+              : "Every event with its evaluation, action and notes, after CroCoDeEL's own columns: CroCoDeEL reads the file too, and so does this interface (reload it to restore the evaluations). Filter downstream using the evaluation / action columns if you want to drop FPs or keep TPs only."
           }
           action="Download events TSV"
           onClick={() => onExportTSV(filteredEvents)}
@@ -25994,46 +25993,15 @@ const defaultFilter = () => ({
     // filter bar). When omitted we dump every loaded event so downstream
     // tools can do their own filtering on the verdict/action columns.
     const list = Array.isArray(eventsList) ? eventsList : events;
-    const header = [
-      "source",
-      "target",
-      "contamination_rate",
-      "probability",
-      "introduced_pct",
-      "introduced_species",
-      "verdict",
-      "action",
-      "notes",
-    ];
-    const lines = [];
-    // CroCoDeEL-style header comments — the study name lets downstream
-    // tools or readers identify which dataset this curation belongs to.
-    if (analysisTitle) {
-      lines.push(`# study: ${tsvCell(analysisTitle)}`);
-    }
-    lines.push(header.join("\t"));
-    list.forEach((e) => {
-      lines.push(
-        [
-          e.source,
-          e.target,
-          e.rate,
-          e.score,
-          e.introducedPct == null ? "" : (e.introducedPct / 100).toFixed(4),
-          e.introduced.join(","),
-          e.verdict,
-          // Action lives on the target sample; surface it on the event
-          // row so downstream tools that consume this TSV see the same
-          // shape they did before the sample-level refactor.
-          sampleCuration?.[e.target]?.action || "",
-          e.notes,
-        ]
-          .map(tsvCell)
-          .join("\t"),
-      );
-    });
+    // CroCoDeEL's own columns first, so CroCoDeEL reads the file back,
+    // then introduced_pct, verdict, action and notes; the run's "#" line
+    // and the study name on top (curatedEventsToTSV, src/exports.js).
     downloadFile(
-      lines.join("\n"),
+      curatedEventsToTSV(list, {
+        runMetadata,
+        study: analysisTitle,
+        sampleCuration: effectiveSampleCuration,
+      }),
       `contamination_events_curated.tsv`,
       "text/tab-separated-values",
     );

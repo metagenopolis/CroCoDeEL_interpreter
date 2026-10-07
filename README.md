@@ -16,10 +16,16 @@ Loadable in one click from the **Datasets** tab. Several ship with curated `meta
 
 All files are TSV. Column names are matched against several aliases (case-insensitive); the in-app **Help** tab carries the full table. Numbers use `.` as decimal separator and the whole cell must be a number: a file saved with a decimal comma (`0,87`) is refused (events) or reported (abundance) rather than misread. An empty cell or `NA` / `N/A` / `NaN` / `null` / `None` / `-` means no value.
 
-- `contamination_events.tsv` &mdash; **required.** CroCoDeEL output: `source`, `target`, `rate`, `probability`, `contamination_specific_species`. Header lines starting with `#` are parsed as run metadata. The curated events TSV of the Export tab loads here too: its `verdict` and `notes` columns are restored, its `action` column is read but not applied. The samples' verdicts and keep / suppress actions are not restored, so review the Samples tab before exporting the curated abundance table.
+- `contamination_events.tsv` &mdash; **required.** CroCoDeEL output: `source`, `target`, `rate`, `probability`, `contamination_specific_species`. Header lines starting with `#` are parsed as run metadata. The curated events TSV of the Export tab loads here too (so do the curated files of earlier versions, whose columns were named `contamination_rate` and `introduced_species`): its `verdict` and `notes` columns are restored, its `action` column is read but not applied. The samples' verdicts and keep / suppress actions are not restored, so review the Samples tab before exporting the curated abundance table.
 - `species_abundance.tsv` &mdash; **required for the scatterplots and diagnostic checks.** Wide format: first column = species id, remaining columns = sample ids.
 - `metadata.tsv` &mdash; *optional.* Unlocks the same-individual criterion and sample-context filters. Recognised fields include `sample_id`, `sample_name`, `subject_id`, `timepoint`, `biome`, `low_biomass`, `low_sequencing_depth`, `group_id`. A header must match a recognised name or alias exactly, ignoring case, spaces, `_`, `-` and `.` (`Subject ID` is `subject_id`; `age_group` is not `group_id`), and the metadata card shows which header was read for each field. Extra columns surface as generic pills.
 - `plate_map.tsv` &mdash; *optional.* Unlocks the Plate tab and adjacency filters. Columns: `sample_id`, `plate`, `well` (alphanumeric or `row` + `column`), matched like the metadata headers.
+
+## Exports
+
+The **Export** tab writes files meant to load, unchanged, in the next tool:
+
+- `contamination_events_curated.tsv` &mdash; CroCoDeEL's own five columns first, under its names and with its number formatting, below the run's `#` parameter line and a `# study:` line, so CroCoDeEL reads the file back (e.g. to plot the curated events with `plot_conta`); then `introduced_pct`, `verdict`, `action` (the target sample's keep / suppress) and `notes`. It reloads here with its evaluations and notes.
 
 ## Getting started
 
