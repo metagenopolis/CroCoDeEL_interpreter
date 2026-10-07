@@ -303,6 +303,25 @@ export function sessionFromRecords({ events, ab, metadata, plate, curation, ui }
   return isEmptySession(session) ? null : session;
 }
 
+/** A session restored without its table (abLost) says so once: then the
+    curation record stops naming that table — in place, the revision
+    unchanged, since nothing of the session changes — and a table left
+    behind by an older write is deleted. Kept as it was, the record named
+    the lost table at every later boot, and the notice came back on every
+    reload until another table was loaded.
+
+    `rev` and `token` are the revision and the token read on boot. The
+    records are read again in the transaction that repairs them: null
+    (nothing to do) when they changed since — another tab wrote — or when
+    the table has been written since. Otherwise { curation, deleteAb }. */
+export function forgetLostTable(curation, ab, rev, token) {
+  if (!isObj(curation) || (curation.rev ?? 0) !== rev) return null;
+  const want = curation.abToken ?? null;
+  if (want === null || want !== token) return null;
+  if (isObj(ab) && (ab.storageToken ?? null) === want) return null;
+  return { curation: { ...curation, abToken: null }, deleteAb: isObj(ab) };
+}
+
 /** The session of the first layout: one record ("main") holding
     everything but the abundance table, stored on its own. Null when it
     holds no events: that layout cleared itself whenever the events were

@@ -5,6 +5,7 @@ import {
   abundanceRecord,
   dirtyRecords,
   eventInputsChanged,
+  forgetLostTable,
   restoreFilter,
   sessionFromLegacyMain,
   sessionFromRecords,
@@ -191,6 +192,37 @@ describe("records — a session comes back as it was written", () => {
     expect(back.abLost).toBe(true);
     delete records.ab;
     expect(sessionFromRecords(records).abLost).toBe(true);
+  });
+
+  it("forgets a lost table once said: the next boot restores the session without the notice (B1.3d)", () => {
+    const s = curatedSession();
+    const records = store(s);
+    records.ab = { ...records.ab, storageToken: "an older write" };
+    expect(sessionFromRecords(records).abLost).toBe(true);
+    const fix = forgetLostTable(records.curation, records.ab, 1, "tok-1");
+    // In place: the same revision, no other tab made stale.
+    expect(fix).toEqual({ curation: { ...records.curation, abToken: null }, deleteAb: true });
+    const back = sessionFromRecords({ ...records, curation: fix.curation, ab: undefined });
+    expect(back.abLost).toBeUndefined();
+    expect(back.ab).toBeNull();
+    expect(back.rawEvents).toEqual(s.rawEvents);
+    expect(back.metadata).toEqual(s.metadata);
+  });
+
+  it("forgets nothing when the records changed since the boot read, or the table was written since", () => {
+    const records = store(curatedSession());
+    delete records.ab;
+    expect(forgetLostTable(records.curation, undefined, 1, "tok-1")).toEqual({
+      curation: { ...records.curation, abToken: null },
+      deleteAb: false,
+    });
+    // Another tab wrote meanwhile.
+    expect(forgetLostTable(records.curation, undefined, 2, "tok-1")).toBeNull();
+    expect(forgetLostTable(records.curation, undefined, 1, "another token")).toBeNull();
+    // The table's write has succeeded meanwhile.
+    expect(forgetLostTable(records.curation, { storageToken: "tok-1" }, 1, "tok-1")).toBeNull();
+    // Nothing named.
+    expect(forgetLostTable({ ...records.curation, abToken: null }, undefined, 1, null)).toBeNull();
   });
 
   it("restores a session without events: clearing the events keeps the other files (B1.5)", () => {

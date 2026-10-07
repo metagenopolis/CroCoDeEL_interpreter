@@ -831,6 +831,34 @@ try {
     check((await storedSession(page)).rawEvents.filter((e) => e.verdict === "true_positive").length === 2, "B1.3d …and both TPs are stored");
   });
 
+  /* B1.3d A session restored without its table (the table's last write
+     failed, an older one was left behind) says so once — not at every
+     reload until another table is loaded. */
+  await scenario("B1.3d lost table said once", async (page) => {
+    await mark(page, "true positive", 0);
+    await saved(page);
+    const rev = (await storedRecords(page)).curation.rev;
+    await editRecord(page, "ab", "r.storageToken = 'an older write'; return r;");
+    const notice = page.locator("[data-notice]");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    check(
+      /The abundance table was not restored/.test(await notice.innerText().catch(() => "")),
+      "B1.3d a session restored without its table says so",
+    );
+    await notice.locator("button[aria-label=Dismiss]").click();
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    check((await notice.count()) === 0, "B1.3d …once: the next reload does not say it again", await notice.innerText().catch(() => ""));
+    const r = await storedRecords(page);
+    check(
+      !r.ab && r.curation.abToken === null && r.curation.rev === rev,
+      "B1.3d …the curation record no longer names the table, in place, and the older table is deleted",
+      JSON.stringify({ ab: !!r.ab, abToken: r.curation.abToken, rev: r.curation.rev, was: rev }),
+    );
+    check((await overviewStats(page)).tp === 1, "B1.3d …and the session is otherwise whole");
+  });
+
   /* B1.3e Without IndexedDB, or when it cannot be opened. */
   for (const [label, init] of [
     [

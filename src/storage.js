@@ -26,6 +26,7 @@ import {
   LEGACY_MAIN_KEY,
   RECORD_KEYS,
   abundanceRecord,
+  forgetLostTable,
   sessionFromLegacyMain,
   sessionFromRecords,
   sessionWrites,
@@ -238,6 +239,26 @@ function migrateSession(db, session, abFromLocal) {
   return settled(tx).then(() => migrated);
 }
 
+/** Stop naming a lost abundance table (persistence.js' forgetLostTable),
+    in one transaction that reads the records again. Resolves true when
+    it did. */
+function repairLostTable(db, rev, token) {
+  const tx = db.transaction(STORE, "readwrite");
+  const store = tx.objectStore(STORE);
+  let repaired = false;
+  const cur = store.get(RECORD_KEYS.curation);
+  const ab = store.get(RECORD_KEYS.ab);
+  // Requests complete in order: the curation has been read by now.
+  ab.onsuccess = () => {
+    const fix = forgetLostTable(cur.result, ab.result, rev, token);
+    if (!fix) return;
+    store.put(fix.curation, RECORD_KEYS.curation);
+    if (fix.deleteAb) store.delete(RECORD_KEYS.ab);
+    repaired = true;
+  };
+  return settled(tx).then(() => repaired);
+}
+
 /** The stored session, read on boot: { session, rev, abToken, inRecords }
     — `session` null when nothing is stored, `rev` the revision the next
     write must find, `abToken` the token of the stored abundance table.
@@ -249,7 +270,9 @@ function migrateSession(db, session, abFromLocal) {
     wrote only the curation and UI records at the first change; from
     then on the boot read the current records alone, and the events,
     the metadata and the plate map, left in "main", were lost at the
-    next reload. Rejects when the database cannot be opened or read (the
+    next reload. A session that comes back without its abundance table
+    (abLost) stops naming it (repairLostTable), so that its notice is
+    shown once. Rejects when the database cannot be opened or read (the
     app then runs in memory). */
 export async function readStoredSession() {
   const db = await openDB();
@@ -278,12 +301,18 @@ export async function readStoredSession() {
     }
     records = await readRecords(db);
   }
-  return {
-    session: sessionFromRecords(records),
-    rev: records.curation?.rev ?? 0,
-    abToken: records.curation?.abToken ?? null,
-    inRecords: true,
-  };
+  const session = sessionFromRecords(records);
+  const rev = records.curation?.rev ?? 0;
+  let abToken = records.curation?.abToken ?? null;
+  if (session?.abLost) {
+    // The session came back without its table: AppMain says so, once.
+    try {
+      if (await repairLostTable(db, rev, abToken)) abToken = null;
+    } catch (e) {
+      console.warn("[crocodeel] could not forget the lost abundance table:", e?.message);
+    }
+  }
+  return { session, rev, abToken, inRecords: true };
 }
 
 /** Write the session records (persistence.js' sessionWrites) in one
