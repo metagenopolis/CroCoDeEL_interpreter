@@ -1075,21 +1075,20 @@ export function parseMetadata(text) {
   if (commented) throw new Error(commented);
   if (header.length < 2) {
     throw new Error(
-      notTabSeparated(header) || "At least 2 columns required (sample_id and subject_id)",
+      notTabSeparated(header) ||
+        "At least 2 columns required: sample_id and the annotations (subject_id, biome, …)",
     );
   }
   // The resolved mapping (field → header, or null) is returned as `cols`
   // and shown on the upload card, so a curator can see which column was
   // taken for the subject and the group.
   const cols = metadataCols(header);
-  for (const field of ["sample", "subject"]) {
-    if (cols[field]) continue;
+  const notFound = (field) => {
     const names = METADATA_COLS[field];
     const expected = `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
-    throw new Error(
-      `${names[0]} column not found: expected ${expected}. ${headerHint(header)}`,
-    );
-  }
+    return `${names[0]} column not found: expected ${expected}. ${headerHint(header)}`;
+  };
+  if (!cols.sample) throw new Error(notFound("sample"));
   const bySample = {};
   // A repeated id keeps its first row (see "duplicated ids" above).
   const seen = new Set();
@@ -1106,6 +1105,13 @@ export function parseMetadata(text) {
   });
 
   const warnings = [];
+  // Only the sample id is required, as the Help and the card say. A file
+  // without a subject column — NCBI BioSample's, whose `host` is the host
+  // organism — used to be refused whole, its biome, control and
+  // low-biomass flags with it; it loads, relatedness unknown.
+  if (!cols.subject) {
+    warnings.push(`${notFound("subject")} No two samples count as the same subject.`);
+  }
   if (dups.length > 0) warnings.push(duplicateIdsWarning(dups));
   return metadataResult(cols, bySample, warnings);
 }
@@ -1256,8 +1262,9 @@ export function metadataToTSV(stored) {
     if (k !== "sample" && col && row && col in row) return row[col] ?? "";
     return parsedValue[k](m, id) ?? "";
   };
-  // sample_id and subject_id always (parseMetadata requires both), the
-  // other fields when the upload had them.
+  // sample_id and subject_id always (an empty subject_id when the upload
+  // had none: relatedness unknown, as before), the other fields when the
+  // upload had them.
   const fields = Object.keys(METADATA_COLS).filter(
     (k) =>
       k === "sample" ||

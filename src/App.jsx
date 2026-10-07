@@ -20901,8 +20901,11 @@ const HelpTab = ({ onStartTour }) => {
             <code style={{ fontFamily: "ui-monospace, monospace" }}>host_age</code>{" "}
             stay context columns, so they cannot make two different
             subjects look related. A file without a recognized sample_id
-            or subject_id column is refused, with the accepted names and
-            the file's own headers. Once loaded, the metadata card lists the
+            column is refused, with the accepted names and the file's own
+            headers. One without a recognized subject_id column loads
+            with a warning that lists them too: its biome, control and
+            low-biomass flags are read, but no two samples count as the
+            same subject. Once loaded, the metadata card lists the
             header read for each field. A sample_id found on more than one
             row keeps its first row; the card names the repeated ids. Its
             Download button writes the table back under the canonical names
@@ -20958,7 +20961,7 @@ const HelpTab = ({ onStartTour }) => {
                 name="subject_id"
                 recognized
                 type="string"
-                desc="Person / individual the sample belongs to. Two samples sharing a subject_id trigger the 'same subject' criterion (longitudinal pair, often a false-positive risk). A column named host is not read as the subject: in MIxS / NCBI BioSample metadata it holds the host organism (e.g. Homo sapiens); the subject there is host_subject_id."
+                desc="Person / individual the sample belongs to. Two samples sharing a subject_id trigger the 'same subject' criterion (longitudinal pair, often a false-positive risk). A column named host is not read as the subject: in MIxS / NCBI BioSample metadata it holds the host organism (e.g. Homo sapiens); the subject there is host_subject_id. Without a subject column the file still loads, with a warning, and no two samples count as the same subject."
                 aliases={[
                   "subject",
                   "host_subject_id",

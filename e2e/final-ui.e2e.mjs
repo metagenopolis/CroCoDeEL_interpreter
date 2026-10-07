@@ -21,7 +21,9 @@
      - F.8  the Samples tab and the Events table cut an id only where they
             have no room left, wrapping it first: ids just over the old
             caps, the benchmarks' ids and names over 12 characters read
-            whole.
+            whole;
+     - F.9  a metadata file without a subject column loads, with a
+            warning.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -667,6 +669,33 @@ try {
     },
     { contextOptions: { viewport: { width: 1280, height: 900 } } },
   );
+
+  /* F.9 — a metadata file without a subject column (NCBI BioSample's
+     host is the host organism) was refused whole: "subject_id column not
+     found", although the Help and the card call only sample_id
+     mandatory. It loads, with a warning, relatedness unknown. */
+  await scenario("F.9 metadata without a subject", async (page) => {
+    await loadDemo(page);
+    const md = demo("metadata.tsv").split("\n").filter(Boolean);
+    const header = md[0].split("\t");
+    const biome = header.indexOf("biome");
+    const biosample = [
+      "sample_id\thost\tbiome",
+      ...md.slice(1).map((line) => {
+        const cells = line.split("\t");
+        return `${cells[0]}\tHomo sapiens\t${cells[biome]}`;
+      }),
+    ].join("\n");
+    await upload(page, 2, "metadata.tsv", biosample);
+    const body = (await page.locator("body").innerText()).replace(/\s+/g, " ");
+    const errors = (await page.locator('[role="alert"]').allInnerTexts()).join(" ");
+    const warning = body.match(/Metadata: subject_id column not found: [^]*?No two samples count as the same subject\./)?.[0];
+    check(
+      /91 samples annotated/.test(body) && !/Metadata:/.test(errors) && !!warning,
+      "F.9 a metadata file with host and biome but no subject loads, with a warning",
+      (warning || errors || "(not loaded)").slice(0, 200),
+    );
+  });
 
   /* F.1 — the events TSV's column is "verdict": the Export card and the
      guided tour told to filter on an "evaluation" column. */

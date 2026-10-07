@@ -227,9 +227,10 @@ describe("a header written as a comment, in the layouts the review found", () =>
       /^Line 1 looks like the header \("#SampleID", "BarcodeSequence", "LinkerPrimerSequence", …\).* line 3 \("PC\.354", "AGCACGAGCCTA", "YATGCTGCCTCCCGTAGGAGT", …\) read as the header/,
     );
     // Fixed, the file is read with its own headers: it has no subject
-    // column, and the message now lists the right ones.
-    expect(() => parseMetadata(qiime1.replace(/^#SampleID/, "SampleID"))).toThrow(
-      /^subject_id column not found: .* this file has: SampleID, BarcodeSequence, LinkerPrimerSequence, Treatment, DOB, Description\.$/,
+    // column, and the warning lists the right ones (a file without one
+    // loads, relatedness unknown).
+    expect(parseMetadata(qiime1.replace(/^#SampleID/, "SampleID")).warnings[0]).toMatch(
+      /^subject_id column not found: .* this file has: SampleID, BarcodeSequence, LinkerPrimerSequence, Treatment, DOB, Description\. No two samples count as the same subject\.$/,
     );
     const md = parseMetadata(
       qiime1.replace(/^#SampleID/, "SampleID").replace("\tDescription", "\tsubject_id"),

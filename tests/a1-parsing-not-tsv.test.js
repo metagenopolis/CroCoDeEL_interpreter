@@ -37,7 +37,7 @@ describe("a file that is not tab-separated", () => {
   it("keeps the usual errors for a one-column file without separators", () => {
     expect(() => parseEvents("source\nA")).toThrow(/Could not find source\/target columns/);
     expect(parseAbundance("species\nsp1")).toBeNull();
-    expect(() => parseMetadata("sample_id\nS1")).toThrow("At least 2 columns required (sample_id and subject_id)");
+    expect(() => parseMetadata("sample_id\nS1")).toThrow(/^At least 2 columns required: sample_id and the annotations/);
     expect(() => parsePlateMap("sample_id\nS1")).toThrow(/^Missing columns/);
   });
 });
