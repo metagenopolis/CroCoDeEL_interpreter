@@ -27908,12 +27908,17 @@ const defaultFilter = () => ({
       })
       .join("");
 
-    const runMetaSection = runMetadata
+    // The study is the report's title, not a run parameter: a session
+    // saved by an earlier version may still keep the "# study:" line of a
+    // reloaded curated TSV among its run parameters (the events loader
+    // has kept it out of them since, src/carryOver.js).
+    const runMetaEntries = Object.entries(runMetadata || {}).filter(([k]) => k !== "study");
+    const runMetaSection = runMetaEntries.length > 0
       ? `
       <h2>CroCoDeEL run parameters</h2>
       <table class="kv">
         <tbody>
-          ${Object.entries(runMetadata)
+          ${runMetaEntries
             .map(
               ([k, v]) =>
                 `<tr><th>${escapeHTML(k)}</th><td>${escapeHTML(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`,
