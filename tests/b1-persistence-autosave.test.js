@@ -139,7 +139,7 @@ describe("autosave — writes only what changed (B1.3a)", () => {
     a.change(session());
     await settle();
     expect(store.writes.map((w) => w.keys.sort())).toEqual([
-      ["-metadata", "-plate", "curation", "events"],
+      ["-main", "-metadata", "-plate", "curation", "events"],
       ["ab"],
       ["ui"],
     ]);

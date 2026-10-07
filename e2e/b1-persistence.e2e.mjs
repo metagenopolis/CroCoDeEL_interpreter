@@ -12,6 +12,9 @@
        data-warnings banner and survive a reload;
      - a tab switch writes the small UI record only, an evaluation the
        curation record only;
+     - a session stored by the previous versions ("main" record,
+       localStorage keys, plain or compressed) is migrated once, and kept
+       whole when that migration fails;
      - two tabs of one browser: the second cannot overwrite the first's
        decisions, and says so;
      - a T pressed half a second before a reload — or right before it —
@@ -34,6 +37,7 @@
            E2E_ONLY=<regex> runs only the matching scenarios) */
 
 import { readFileSync } from "node:fs";
+import LZString from "lz-string";
 import {
   BASE,
   startServer,
@@ -115,6 +119,76 @@ function editRecord(page, key, edit) {
         };
       }),
     [key, edit],
+  );
+}
+
+/** Put and delete stored records in one transaction. */
+function writeRecords(page, puts, dels = []) {
+  return page.evaluate(
+    ([puts, dels]) =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open("crocodeel-interpreter");
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction("kv", "readwrite");
+          for (const [k, v] of Object.entries(puts)) tx.objectStore("kv").put(v, k);
+          for (const k of dels) tx.objectStore("kv").delete(k);
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onabort = () => reject(tx.error);
+        };
+      }),
+    [puts, dels],
+  );
+}
+
+/** Rewrite the stored session in the layout the previous versions wrote,
+    the way they wrote it: everything but the abundance table in one
+    "main" record (the events with their verdicts and notes), the table
+    in "ab" (no token) — or, with `local`, under the localStorage keys of
+    the versions before IndexedDB, "plain" JSON or "lz"-compressed. The
+    current records are deleted. The page leaves the app first, so that
+    nothing writes meanwhile; `page.goto(BASE)` boots it again. */
+async function toLegacyLayout(page, local = null) {
+  await page.goto(`${BASE}favicon.svg`);
+  const r = await storedRecords(page);
+  const cur = r.curation;
+  const main = {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    rawEvents: r.events.events.map((e) => ({
+      ...e,
+      verdict: cur.verdicts[String(e.id)] || "pending",
+      notes: cur.notes[String(e.id)] || "",
+    })),
+    sampleCuration: cur.sampleCuration,
+    sampleCurationVersion: cur.sampleCurationVersion,
+    runMetadata: r.events.runMetadata,
+    metadata: r.metadata || null,
+    plateMap: r.plate || null,
+    analysisTitle: cur.analysisTitle,
+    tab: r.ui?.tab,
+    selId: r.ui?.selId,
+    filter: r.ui?.filter,
+    sort: r.ui?.sort,
+  };
+  const { storageToken: _token, ...ab } = r.ab;
+  const current = ["events", "curation", "metadata", "plate", "ui"];
+  if (!local) {
+    await writeRecords(page, { main, ab }, current);
+    return;
+  }
+  await writeRecords(page, {}, [...current, "ab"]);
+  const text = (v) => (local === "lz" ? `lz:${LZString.compressToUTF16(JSON.stringify(v))}` : JSON.stringify(v));
+  await page.evaluate(
+    ([m, a]) => {
+      localStorage.setItem("crocodeel-interpreter-v1", m);
+      localStorage.setItem("crocodeel-interpreter-v1-ab", a);
+    },
+    [text(main), text(ab)],
   );
 }
 
@@ -213,6 +287,20 @@ async function mark(page, title, i) {
   await openTab(page, "Events");
   await page.locator(`button[title="mark as ${title}"]`).nth(i).click();
   await page.waitForTimeout(250);
+}
+
+/** Some curation of the demo: two TPs, an FP, a note, a Keep set by hand
+    on a source no event targets. */
+async function curateSome(page) {
+  await mark(page, "true positive", 0);
+  await mark(page, "true positive", 1);
+  await mark(page, "false positive", 2);
+  await openTab(page, "Validate");
+  await page.locator('textarea[placeholder^="Notes: related samples"]').fill("a note to keep");
+  await page.waitForTimeout(500);
+  await openTab(page, "Samples");
+  await sampleRow(page, "63D250").locator('button[aria-label="Keep 63D250"]').click();
+  await page.waitForTimeout(300);
 }
 
 /** The verdict, note and target action of every event, by pair. */
@@ -540,6 +628,93 @@ try {
       r.events && !r.main && r.events.events.every((e) => !("verdict" in e) && !("notes" in e)) && Object.keys(r.curation.verdicts).length === 1,
       "B1.3a the events are stored without their curation, which is stored by event id",
     );
+  });
+
+  /* B1.3a A session stored by the previous versions — one "main" record,
+     or the localStorage keys before IndexedDB — comes back, migrated
+     once to the current records. */
+  for (const [label, local] of [
+    ['the "main" record', null],
+    ["the localStorage keys", "plain"],
+    ["the lz-compressed localStorage keys", "lz"],
+  ]) {
+    await scenario(`B1.3a migration from ${label}`, async (page) => {
+      await curateSome(page);
+      await saved(page);
+      const stats = await overviewStats(page);
+      const curated = curationByPair(await storedSession(page));
+      await toLegacyLayout(page, local);
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      await page.waitForTimeout(1500);
+      const back = await overviewStats(page);
+      check(JSON.stringify(back) === JSON.stringify(stats), `B1.3a ${label}: the session comes back`, `${JSON.stringify(back)} vs ${JSON.stringify(stats)}`);
+      await saved(page);
+      const r = await storedRecords(page);
+      check(
+        ["events", "curation", "ui", "metadata", "plate", "ab"].every((k) => r[k]) && !r.main,
+        `B1.3a ${label}: written as the current records, without the earlier copy`,
+        Object.keys(r).sort().join(","),
+      );
+      check(
+        JSON.stringify(curationByPair(await storedSession(page))) === JSON.stringify(curated),
+        `B1.3a ${label}: every evaluation, note and sample action is migrated`,
+      );
+      if (local) {
+        const left = await page.evaluate(() =>
+          ["crocodeel-interpreter-v1", "crocodeel-interpreter-v1-ab"].filter((k) => localStorage.getItem(k) != null),
+        );
+        check(left.length === 0, `B1.3a ${label}: the localStorage keys are removed`, left.join(", "));
+      }
+    });
+  }
+
+  /* B1.3a The one-time migration fails (its transaction aborts, as a full
+     quota makes it): the session is read from the earlier layout, and the
+     first save must write every record — writing only the curation used
+     to leave the events, the metadata and the plate map in "main", which
+     no later boot read again. */
+  await scenario("B1.3a migration that fails", async (page) => {
+    await curateSome(page);
+    await saved(page);
+    const stats = await overviewStats(page);
+    await toLegacyLayout(page);
+    await page.addInitScript(() => {
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        const req = put.call(this, value, key);
+        if (key === "curation" && !sessionStorage.getItem("migration-aborted")) {
+          sessionStorage.setItem("migration-aborted", "1");
+          const tx = this.transaction;
+          req.addEventListener("success", () => {
+            try {
+              tx.abort();
+            } catch {
+              // already finished
+            }
+          });
+        }
+        return req;
+      };
+    });
+    await page.goto(BASE, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    const read = await overviewStats(page);
+    check(JSON.stringify(read) === JSON.stringify(stats), "B1.3a failed migration: the session is read from the earlier layout", JSON.stringify(read));
+    await mark(page, "true positive", 5);
+    await saved(page);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    const ev = await card(page, "contamination_events.tsv").innerText();
+    const md = await card(page, "metadata.tsv").innerText();
+    const pm = await card(page, "plate_map.tsv").innerText();
+    check(
+      /24 events loaded/.test(ev) && /samples annotated/.test(md) && /wells/.test(pm),
+      "B1.3a failed migration: after a change and a reload, the events, the metadata and the plate map are still there",
+      [ev, md, pm].map((t) => t.split("\n").find((l) => l.startsWith("✓")) || "-").join(" | "),
+    );
+    const after = await overviewStats(page);
+    check(after.tp === stats.tp + 1 && after.fp === stats.fp, "B1.3a failed migration: …with every evaluation, the one made since included", JSON.stringify(after));
+    check(!(await storedRecords(page)).main, 'B1.3a failed migration: …and "main" is gone');
   });
 
   /* B1.3b Two pages of one browser. */

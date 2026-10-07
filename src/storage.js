@@ -218,9 +218,11 @@ function removeLegacyKeys() {
 
 /** Write a session of an earlier layout as the current records, in one
     transaction, unless another tab has done it first (then nothing is
-    written and false comes back). The abundance record of the "main"
-    layout already has the current shape and stays; one read from
-    localStorage (`abFromLocal`) is written. */
+    written and false comes back). The "main" record goes in the same
+    transaction (sessionWrites deletes it with every write of the events
+    record). The abundance record of the "main" layout already has the
+    current shape and stays; one read from localStorage (`abFromLocal`)
+    is written. */
 function migrateSession(db, session, abFromLocal) {
   const tx = db.transaction(STORE, "readwrite");
   const store = tx.objectStore(STORE);
@@ -232,16 +234,23 @@ function migrateSession(db, session, abFromLocal) {
     putAll(store, sessionWrites(session, { ...ALL_DIRTY, ab: false }, null), 1);
     store.put({ ...uiRecord(session), savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
     if (abFromLocal) store.put(abundanceRecord(abFromLocal, null), RECORD_KEYS.ab);
-    store.delete(LEGACY_MAIN_KEY);
   };
   return settled(tx).then(() => migrated);
 }
 
-/** The stored session, read on boot: { session, rev, abToken } —
-    `session` null when nothing is stored, `rev` the revision the next
+/** The stored session, read on boot: { session, rev, abToken, inRecords }
+    — `session` null when nothing is stored, `rev` the revision the next
     write must find, `abToken` the token of the stored abundance table.
-    A session of an earlier layout is migrated first. Rejects when the
-    database cannot be opened or read (the app then runs in memory). */
+    A session of an earlier layout is migrated first. `inRecords` is
+    false when that migration failed (a full quota aborts it): the
+    session is then read from the earlier layout as it is, and the
+    current records do not hold it — the autosave must write every one
+    of them at its first save. Starting it from that session instead
+    wrote only the curation and UI records at the first change; from
+    then on the boot read the current records alone, and the events,
+    the metadata and the plate map, left in "main", were lost at the
+    next reload. Rejects when the database cannot be opened or read (the
+    app then runs in memory). */
 export async function readStoredSession() {
   const db = await openDB();
   let records = await readRecords(db);
@@ -257,14 +266,15 @@ export async function readStoredSession() {
         fromLocal = !!session;
       }
     }
-    if (!session) return { session: null, rev: 0, abToken: null };
+    if (!session) return { session: null, rev: 0, abToken: null, inRecords: true };
     try {
       await migrateSession(db, session, fromLocal ? abFromLocal : null);
       if (fromLocal) removeLegacyKeys();
     } catch (e) {
-      // Read it as it is; the first save writes the current records.
+      // Read it as it is; the first save writes every current record
+      // (and drops the earlier layout's copies: writeSession).
       console.warn("[crocodeel] session migration failed:", e?.message);
-      return { session, rev: 0, abToken: null };
+      return { session, rev: 0, abToken: null, inRecords: false };
     }
     records = await readRecords(db);
   }
@@ -272,6 +282,7 @@ export async function readStoredSession() {
     session: sessionFromRecords(records),
     rev: records.curation?.rev ?? 0,
     abToken: records.curation?.abToken ?? null,
+    inRecords: true,
   };
 }
 
@@ -279,7 +290,10 @@ export async function readStoredSession() {
     transaction, if the stored revision is still `expectedRev`: resolves
     { status: "ok", rev } with the new revision, or
     { status: "conflict", rev } with the stored one — another tab wrote
-    since, and nothing was written. Rejects when the write fails. */
+    since, and nothing was written. Rejects when the write fails. A write
+    of the events record also drops what is left of the earlier layouts
+    — "main" in the same transaction, the localStorage keys once it has
+    committed — which only a failed migration leaves behind. */
 export function writeSession(writes, expectedRev) {
   return withDB((db) => {
     const tx = db.transaction(STORE, "readwrite");
@@ -295,9 +309,11 @@ export function writeSession(writes, expectedRev) {
       }
       putAll(store, writes, rev);
     };
-    return settled(tx).then(() =>
-      conflict === null ? { status: "ok", rev } : { status: "conflict", rev: conflict },
-    );
+    return settled(tx).then(() => {
+      if (conflict !== null) return { status: "conflict", rev: conflict };
+      if (writes.dels.includes(LEGACY_MAIN_KEY)) removeLegacyKeys();
+      return { status: "ok", rev };
+    });
   });
 }
 

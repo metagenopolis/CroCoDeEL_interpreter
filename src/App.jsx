@@ -21868,7 +21868,9 @@ const HelpTab = ({ onStartTour }) => {
             profile, can read it. Closing the tab keeps the data; clearing
             your browser's site data removes it. Sessions stored by earlier
             versions (a single record, or the old localStorage keys) are
-            migrated transparently on first load.
+            migrated transparently on first load; if that migration cannot
+            be written (storage full), the session is read as it was stored
+            and written in the current form by the first save.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Not saved.</strong>{" "}
@@ -31384,11 +31386,13 @@ export default function App() {
     }
     let cancelled = false;
     readStoredSession()
-      .then(({ session, rev, abToken }) => {
+      .then(({ session, rev, abToken, inRecords }) => {
         // Metadata saved by an earlier version is read again with the
         // current header rules (remapMetadata, src/parsing.js). The
         // stored copy stays as read (`stored`), so the autosave writes
-        // the new reading once.
+        // the new reading once. A session read from an earlier layout
+        // whose migration failed is not in the current records: nothing
+        // counts as stored, so the first save writes every record.
         const initial = session?.metadata
           ? { ...session, metadata: remapMetadata(session.metadata) }
           : session;
@@ -31396,7 +31400,12 @@ export default function App() {
           setBoot({
             status: "ready",
             initial,
-            storage: { available: true, rev, abToken, stored: session },
+            storage: {
+              available: true,
+              rev,
+              abToken,
+              stored: inRecords === false ? null : session,
+            },
           });
       })
       .catch((err) => {

@@ -261,8 +261,19 @@ describe("records — what each change rewrites (B1.3a)", () => {
       { events: true, ab: true, metadata: true, plate: false, curation: true },
       null,
     );
-    expect(dels.sort()).toEqual(["ab", "events", "metadata"]);
+    expect(dels.sort()).toEqual(["ab", "events", "main", "metadata"]);
     expect(puts.map(([k]) => k)).toEqual(["curation"]);
+  });
+
+  it('drops the first layout\'s "main" record with every write of the events record', () => {
+    // After a migration that failed, the first save writes every record:
+    // "main" must go with it, or it would outlive the records that
+    // replace it. A write that leaves the events alone does not touch it.
+    const all = sessionWrites(saved, ALL_DIRTY, "t");
+    expect(all.dels).toContain("main");
+    expect(all.puts.map(([k]) => k).sort()).toEqual(["curation", "events", "metadata", "plate"]);
+    const verdict = sessionWrites(saved, { ...dirtyRecords(saved, { ...saved, sampleCuration: {} }) }, "t");
+    expect(verdict.dels).toEqual([]);
   });
 });
 

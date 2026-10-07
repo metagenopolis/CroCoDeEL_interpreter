@@ -236,7 +236,10 @@ export function dirtyRecords(saved, s) {
     abundance table, which is written on its own (a quota error on the
     largest record must not cost the curation) — as
     { puts: [[key, value]], dels: [key] }. A cleared input deletes its
-    record; a cleared abundance table is deleted here too. */
+    record; a cleared abundance table is deleted here too. The events
+    record replaces the first layout's "main" record, deleted with it:
+    after a migration that failed, the first save writes every record,
+    and "main" must not outlive them. */
 export function sessionWrites(s, dirty, abToken) {
   const puts = [];
   const dels = [];
@@ -244,6 +247,7 @@ export function sessionWrites(s, dirty, abToken) {
     const rec = eventsRecord(s);
     if (rec) puts.push([RECORD_KEYS.events, rec]);
     else dels.push(RECORD_KEYS.events);
+    dels.push(LEGACY_MAIN_KEY);
   }
   if (dirty.metadata) {
     if (s.metadata) puts.push([RECORD_KEYS.metadata, s.metadata]);
