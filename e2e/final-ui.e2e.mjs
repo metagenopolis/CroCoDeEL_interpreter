@@ -1,7 +1,9 @@
 /* Browser checks for the last round of UI fixes, on the whole branch.
 
      - F.1  the Help and the in-app texts say what the app does: the
-            missing-species p-value is the exact Poisson-binomial tail.
+            missing-species p-value is the exact Poisson-binomial tail;
+            the curated events TSV is read in pandas and R by skipping its
+            "#" lines, and filtered on its verdict / action columns.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -65,6 +67,38 @@ try {
       /skiprows=n/.test(eventsTsv) && /skip = n/.test(eventsTsv) && /rather than pass comment="#"/.test(eventsTsv),
       "F.1 Help, Events TSV: how to read it in pandas and R (skip the # lines, not comment=\"#\")",
       eventsTsv.match(/To read the file[^;]*/)?.[0] || "(no reading advice)",
+    );
+  });
+
+  /* F.1 — the events TSV's column is "verdict": the Export card and the
+     guided tour told to filter on an "evaluation" column. */
+  await scenario("F.1 verdict column", async (page) => {
+    await openTab(page, "Help");
+    await page.getByRole("button", { name: /Restart guided tour/ }).first().click();
+    await page.waitForTimeout(1500);
+    const panel = page.locator("aside", { hasText: "Guided tour" });
+    let step = "";
+    for (let i = 0; i < 40 && !/^Export your curated report/.test(step); i++) {
+      await panel.getByRole("button", { name: /^Next/ }).click();
+      await page.waitForTimeout(700);
+      step = (await panel.innerText())
+        .replace(/\s+/g, " ")
+        .replace(/^.*?(Export your curated report)/, "$1");
+    }
+    check(
+      /Export your curated report/.test(step) && /then introduced_pct, verdict, action, notes/.test(step) &&
+        /on the verdict \/ action columns/.test(step) && !/evaluation \/ action/.test(step),
+      "F.1 guided tour: the events TSV's columns are introduced_pct, verdict, action, notes",
+      step.slice(0, 200),
+    );
+    await page.getByRole("button", { name: "Skip tour" }).click();
+    await openTab(page, "Export");
+    const card = (await page.locator("body").innerText()).replace(/\s+/g, " ");
+    const desc = card.match(/Events TSV — \d+ events? (.*?)Download events TSV/)?.[1] || "";
+    check(
+      /on the verdict \/ action columns/.test(desc) && !/evaluation \/ action/.test(desc),
+      "F.1 Export card: filter on the verdict / action columns",
+      desc.slice(0, 200),
     );
   });
 } finally {

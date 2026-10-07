@@ -23178,7 +23178,7 @@ const ExportTab = ({
   return (
     <div>
       <SectionTitle eyebrow="Export" title="Save your curated report">
-        Download a TSV with every event (evaluation, action, notes) or a printable
+        Download a TSV with every event (its verdict, action and notes) or a printable
         HTML report. The filter bar below scopes the export — to back up the
         full session including loaded files and UI state, use{" "}
         <strong style={{ color: "var(--ink)" }}>Download session</strong> on the
@@ -23266,8 +23266,8 @@ const ExportTab = ({
           title={`Events TSV — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
           desc={
             isFiltered
-              ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). CroCoDeEL's own columns come first, so CroCoDeEL reads the file too; verdict, action and notes columns follow.`
-              : "Every event with its evaluation, action and notes, after CroCoDeEL's own columns: CroCoDeEL reads the file too, and so does this interface (reload it to restore the evaluations). Filter downstream using the evaluation / action columns if you want to drop FPs or keep TPs only."
+              ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). CroCoDeEL's own columns come first, so CroCoDeEL reads the file too; the introduced_pct, verdict, action and notes columns follow.`
+              : "Every event after CroCoDeEL's own columns, with its introduced_pct, verdict (the evaluation), action and notes: CroCoDeEL reads the file too, and so does this interface (reload it to restore the evaluations). Filter downstream on the verdict / action columns if you want to drop FPs or keep TPs only."
           }
           action="Download events TSV"
           onClick={() => onExportTSV(filteredEvents)}
@@ -25264,7 +25264,7 @@ const defaultFilter = () => ({
       {
         title: "Export your curated report",
         body:
-          "When done, the Export tab produces six downloads: a curated events TSV (CroCoDeEL's own columns, which CroCoDeEL reads back, then evaluation, action, notes), a full samples TSV (one row per sample with metadata facets, plate position, per-side event counts and breakdown, max rate / introduced %, plus verdict / action / notes), a printable events HTML report, a printable samples HTML report, the curated abundance table (the input's own values, without the samples set to Suppress) and the contamination graph for Gephi or Cytoscape. Filter downstream using the evaluation / action columns if needed.",
+          "When done, the Export tab produces six downloads: a curated events TSV (CroCoDeEL's own columns, which CroCoDeEL reads back, then introduced_pct, verdict, action, notes), a full samples TSV (one row per sample with metadata facets, plate position, per-side event counts and breakdown, max rate / introduced %, plus verdict / action / notes), a printable events HTML report, a printable samples HTML report, the curated abundance table (the input's own values, without the samples set to Suppress) and the contamination graph for Gephi or Cytoscape. Filter downstream on the verdict / action columns if needed.",
         action: "tabExport",
         highlight: '[data-tutorial="tab-export"]',
       },
