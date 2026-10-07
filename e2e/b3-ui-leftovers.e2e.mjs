@@ -22,8 +22,10 @@
              "#" line above a real header stays a comment; a QIIME 2
              metadata file is refused naming its "#SampleID" line;
      - B3.5  the Pending chip of a sample no event targets does not send
-             the curator to its events, and the Help does not count the
-             plate among the plate map's required columns.
+             the curator to its events (nor does its Network popover), also
+             once a verdict of the curator's is removed and after a reload,
+             and the Help does not count the plate among the plate map's
+             required columns.
 
    Usage:  npm run build && node e2e/b3-ui-leftovers.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -843,6 +845,71 @@ try {
         ),
         "B3.5 a targeted sample's automatic verdict still points to its events",
         t,
+      );
+
+      // A verdict of the curator's on 63D250, then Pending: back to the
+      // default, and the chip says so again, also after a reload.
+      await sampleRow(page, "63D250").locator('button[aria-label="Set verdict to Contaminated"]').click();
+      await page.waitForTimeout(500);
+      t = await pendingTitle("63D250");
+      check(
+        t === "Remove your verdict on 63D250: no event targets it, so it goes back to the default Not contaminated",
+        "B3.5 a never-targeted sample's own verdict: Pending says it goes back to the default",
+        t,
+      );
+      await sampleRow(page, "63D250").locator('button[aria-label="Set verdict to Pending"]').click();
+      await page.waitForTimeout(500);
+      const neverTargetedPending =
+        "Pending changes nothing here: 63D250's verdict is automatic (Not contaminated: no event targets it). Pick a verdict to set your own";
+      t = await pendingTitle("63D250");
+      check(t === neverTargetedPending, "B3.5 Pending hands 63D250 back to its default", t);
+      await page.waitForTimeout(1500); // the autosave
+      await page.reload({ waitUntil: "networkidle" });
+      await page.getByRole("button", { name: /^Samples$/ }).first().waitFor({ state: "visible", timeout: 60000 });
+      await page.waitForTimeout(1500);
+      await openTab(page, "Samples");
+      t = await pendingTitle("63D250");
+      check(t === neverTargetedPending, "B3.5 after a reload, 63D250's Pending chip reads the same", t);
+
+      // The Network popover of a node no event targets (63D250, a source
+      // only) does not send the curator to its events either.
+      await openTab(page, "Network");
+      const nodeAt = (id) =>
+        page.evaluate((id) => {
+          const g = [...document.querySelectorAll("svg g")].find(
+            (el) => el.querySelector(":scope > title")?.textContent === id,
+          );
+          const r = g?.querySelector("circle")?.getBoundingClientRect();
+          return r && { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }, id);
+      const popoverTitles = async (id) => {
+        const at = await nodeAt(id);
+        await page.mouse.click(at.x, at.y);
+        await page.waitForTimeout(500);
+        const titles = await page.locator(`button[title*="${id}"]`).evaluateAll((els) =>
+          els.map((el) => [el.textContent.trim(), el.getAttribute("title")]),
+        );
+        const body = await page.locator("body").innerText();
+        await page.mouse.click(5, 5);
+        await page.waitForTimeout(300);
+        return { titles: Object.fromEntries(titles.filter(([k]) => /^(Pending|Automatic)$/.test(k))), body };
+      };
+      let pop = await popoverTitles("63D250");
+      check(
+        pop.titles.Pending ===
+          "Remove the verdict you set by hand on 63D250: no event targets it, so it goes back to the default Not contaminated" &&
+          pop.titles.Automatic ===
+            "No event targets 63D250: its verdict is the default Not contaminated (a verdict you set by hand is kept)" &&
+          pop.body.includes("No event targets it: there is nothing to update here."),
+        "B3.5 Network popover of a never-targeted node: no events behind its verdict",
+        JSON.stringify(pop.titles),
+      );
+      pop = await popoverTitles("63D9");
+      check(
+        pop.titles.Pending === "Remove the verdict you set by hand on 63D9: it then follows its events automatically" &&
+          !pop.body.includes("No event targets it"),
+        "B3.5 Network popover of a targeted node: its verdict follows its events",
+        JSON.stringify(pop.titles),
       );
 
       await openTab(page, "Help");

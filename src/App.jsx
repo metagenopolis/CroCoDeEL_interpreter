@@ -3329,10 +3329,20 @@ const NodeBulkPopover = ({
         Updates the <strong>{counts.asTarget}</strong> event
         {counts.asTarget === 1 ? "" : "s"} where{" "}
         <InlineSampleId id={sampleId} style={{ fontFamily: "ui-monospace, monospace" }} />{" "}
-        is the target (the contaminations flowing into it). With{" "}
-        <em>Automatic</em>, the sample's verdict and action follow those
-        events as when clicking each one; pick a value to set it as your
-        own decision.
+        is the target (the contaminations flowing into it).{" "}
+        {counts.asTarget === 0 ? (
+          <>
+            No event targets it: there is nothing to update here. Without
+            a verdict of your own (set in the Samples tab), it is Not
+            contaminated by default.
+          </>
+        ) : (
+          <>
+            With <em>Automatic</em>, the sample's verdict and action follow
+            those events as when clicking each one; pick a value to set it
+            as your own decision.
+          </>
+        )}
       </div>
 
       <label
@@ -3433,11 +3443,18 @@ const NodeBulkPopover = ({
                 cursor: "pointer",
               }}
               title={
+                // A node no event targets (a source only) has no events
+                // for its verdict to follow: it is the default Not
+                // contaminated, as the Samples tab says of it.
                 opt.id === "pending"
-                  ? `Remove the verdict you set by hand on ${sampleId}: it then follows its events automatically`
+                  ? counts.asTarget === 0
+                    ? `Remove the verdict you set by hand on ${sampleId}: no event targets it, so it goes back to the default Not contaminated`
+                    : `Remove the verdict you set by hand on ${sampleId}: it then follows its events automatically`
                   : opt.id
                     ? `Set ${sampleId}'s sample-level verdict to ${opt.lbl} as your own decision`
-                    : `Same as clicking each event: ${sampleId}'s verdict is recomputed from every event that targets it (a verdict you set by hand is kept)`
+                    : counts.asTarget === 0
+                      ? `No event targets ${sampleId}: its verdict is the default Not contaminated (a verdict you set by hand is kept)`
+                      : `Same as clicking each event: ${sampleId}'s verdict is recomputed from every event that targets it (a verdict you set by hand is kept)`
               }
             >
               {opt.lbl}
@@ -21024,7 +21041,10 @@ const HelpTab = ({ onStartTour }) => {
                 picker (both <em>Automatic</em> by default, as when
                 clicking each event), and three
                 drill-ins → Scatter / → Events / → Samples that scope
-                to that sample and switch tabs.
+                to that sample and switch tabs. A sample no event targets
+                (a source only) has nothing to apply: its verdict is the
+                default Not contaminated unless you set one in the
+                Samples tab.
               </p>
             </div>
             <div>
