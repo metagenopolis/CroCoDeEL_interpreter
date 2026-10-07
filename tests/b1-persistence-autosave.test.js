@@ -338,6 +338,29 @@ describe("autosave — failures (B1.3d)", () => {
     expect(sessionFromRecords(store.records).ab.samples).toEqual(["A", "B", "C"]);
   });
 
+  it("while the table waits for its retry, a tab switch writes the UI record only (B1.3b)", async () => {
+    store.failAb = true;
+    const a = openTab("A", null);
+    a.change(session());
+    await settle();
+    expect(a.last()).toMatchObject({ state: "saved", abFailed: true });
+    const b = openTab("B");
+    const rev = store.records.curation.rev;
+    store.writes.length = 0;
+    a.change({ tab: "table" });
+    await settle();
+    // No new revision: the other tab is not made stale by a tab switch.
+    expect(store.writes.map((w) => w.keys)).toEqual([["ui"]]);
+    expect(store.records.curation.rev).toBe(rev);
+    expect(b.statuses.map((st) => st.state)).not.toContain("conflict");
+    // An evaluation meanwhile is written, the table still waiting.
+    store.writes.length = 0;
+    a.change({ rawEvents: a.state.rawEvents.map((e) => (e.id === 0 ? { ...e, verdict: "true_positive" } : e)) });
+    await settle();
+    expect(store.writes.map((w) => w.keys)).toEqual([["curation"]]);
+    expect(a.last()).toMatchObject({ state: "saved", abFailed: true });
+  });
+
   it("without storage nothing is written and the state stays unavailable (B1.3e)", async () => {
     const statuses = [];
     const saver = createAutosave({

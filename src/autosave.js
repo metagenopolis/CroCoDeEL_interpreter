@@ -160,13 +160,18 @@ export function createAutosave({
   };
 
   /** What the next write holds, or null when nothing changed. A table
-      whose write failed is retried at most every `retryAfter`. */
+      whose write failed is retried at most every `retryAfter`; until
+      then, the other records are written as if the table were saved —
+      a tab switch writes the UI record only. Counting the waiting table
+      as a change rewrote the curation record on every switch, bumping
+      the revision, and every other open tab took it for another tab's
+      work ("changed in another tab"). */
   const plan = () => {
     const s = latest;
     if (!s || (!saved && isEmptySession(s))) return null;
     let d = dirtyRecords(saved, s);
     if (d.ab && s.ab && tableFailedAt != null && now() - tableFailedAt < retryAfter) {
-      d = { ...d, ab: false };
+      d = { ...dirtyRecords({ ...saved, ab: s.ab }, s), ab: false };
       schedule(retryAfter - (now() - tableFailedAt));
     }
     const session = d.events || d.ab || d.metadata || d.plate || d.curation;
