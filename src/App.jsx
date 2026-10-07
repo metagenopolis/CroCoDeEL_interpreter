@@ -339,7 +339,7 @@ export function buildContaminationGraph(events, opts = {}) {
     else if (e.verdict === "false_positive") t.fp++;
     else if (e.verdict === "uncertain") t.uncertain++;
     else t.pending++;
-    if (typeof e.rate === "number") {
+    if (Number.isFinite(e.rate)) {
       if (t.maxIncomingRate == null || e.rate > t.maxIncomingRate) {
         t.maxIncomingRate = e.rate;
       }
@@ -390,7 +390,9 @@ export function buildContaminationGraph(events, opts = {}) {
         fp_as_target: a.fp,
         uncertain_as_target: a.uncertain,
         pending_as_target: a.pending,
-        max_incoming_rate: a.maxIncomingRate ?? 0,
+        // -1 when no event targets the sample, where 0 read as a measured
+        // rate next to the -1 of max_introduced_pct.
+        max_incoming_rate: a.maxIncomingRate ?? -1,
         // A percentage, like the edges' introduced_pct; -1 when unknown (no
         // event targets the sample, or it is not in the abundance table),
         // where 0 read as "no species introduced".
@@ -403,15 +405,19 @@ export function buildContaminationGraph(events, opts = {}) {
   const edges = list.map((e, i) => {
     const rel = areRelated(metadata, e.source, e.target);
     const pd = plateDistance(plateMap, e.source, e.target);
+    // -1 for a rate or a probability that is not a number, as for every
+    // other unknown here (only a hand-edited session has one: the parser
+    // reads a missing cell as 0, with a warning).
+    const rate = Number.isFinite(e.rate) ? e.rate : -1;
     return {
       id: `e${e.id ?? i}`,
       source: e.source,
       target: e.target,
       // Gephi and Cytoscape both read `weight` for edge thickness by
       // convention; the contamination rate is the natural quantity.
-      weight: e.rate ?? 0,
-      rate: e.rate ?? 0,
-      probability: e.score ?? 0,
+      weight: rate,
+      rate,
+      probability: Number.isFinite(e.score) ? e.score : -1,
       introduced_pct: typeof e.introducedPct === "number" ? e.introducedPct : -1,
       n_introduced: e.introduced?.length ?? 0,
       event_verdict: e.verdict || "pending",
@@ -20893,7 +20899,11 @@ const HelpTab = ({ onStartTour }) => {
                   <code>weight</code>), probability, introduced share,
                   evaluation, notes, cascade flag, relatedness and plate
                   distance. A missing number is −1, never 0, which would
-                  read as a measurement.
+                  read as a measurement: a sample no event targets has a{" "}
+                  <code>max_incoming_rate</code> and a{" "}
+                  <code>max_introduced_pct</code> of −1, a sample outside
+                  the abundance table a <code>species_richness</code> of
+                  −1.
                 </li>
               </ul>
               <p style={{ marginTop: 6 }}>

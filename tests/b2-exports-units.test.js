@@ -68,3 +68,36 @@ describe("introduced_pct — one unit, percent, in every export", () => {
     expect(byId.SRC.max_introduced_pct).toBe(-1);
   });
 });
+
+describe("the contamination graph: a missing number is -1, never 0", () => {
+  // The Help says so, and graphToGraphML's doc comment: Gephi draws a
+  // missing number as 0, which reads as a measurement. max_incoming_rate
+  // was 0 on every node no event targets (12 of the demo's 28), next to
+  // its max_introduced_pct of -1.
+  it("writes max_incoming_rate -1 on a node no event targets", () => {
+    const graph = buildContaminationGraph([event], { ab });
+    const byId = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
+    expect(byId.SRC.events_as_target).toBe(0);
+    expect(byId.SRC.max_incoming_rate).toBe(-1);
+    expect(byId.SRC.max_introduced_pct).toBe(-1);
+    expect(byId.TGT.max_incoming_rate).toBe(0.2);
+    const csv = graphToCSV(graph).nodes.split("\n");
+    const header = csv[0].split(",");
+    const src = csv.find((l) => l.startsWith("SRC,")).split(",");
+    expect(src[header.indexOf("max_incoming_rate")]).toBe("-1");
+  });
+
+  it("writes -1 for an event's rate and probability when they are not numbers", () => {
+    // Only a hand-edited session has such an event: parseEvents reads a
+    // missing rate or probability as 0, with a warning.
+    const graph = buildContaminationGraph([{ ...event, rate: undefined, score: null }], { ab });
+    const edge = graph.edges[0];
+    expect(edge.rate).toBe(-1);
+    expect(edge.weight).toBe(edge.rate);
+    expect(edge.probability).toBe(-1);
+    const byId = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
+    expect(byId.TGT.max_incoming_rate).toBe(-1);
+    // A rate CroCoDeEL wrote as 0 stays 0: that one is a number.
+    expect(buildContaminationGraph([{ ...event, rate: 0 }], { ab }).edges[0].rate).toBe(0);
+  });
+});

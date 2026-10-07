@@ -443,6 +443,31 @@ try {
       }),
       "B2.2 each target's max_target_introduced_pct (samples TSV) and max_introduced_pct (graph) is its events' highest",
     );
+    // A node no event targets has no incoming rate and no introduced
+    // share: -1 in both graph files, never 0, which reads as a measurement.
+    const graphmlKey = (name) =>
+      graphml.match(new RegExp(`<key id="(n\\d+)" for="node" attr.name="${name}"`))?.[1];
+    const graphmlNodes = new Map(
+      [...graphml.matchAll(/<node id="([^"]*)">([\s\S]*?)<\/node>/g)].map((m) => [
+        m[1],
+        Object.fromEntries([...m[2].matchAll(/<data key="(n\d+)">([^<]*)<\/data>/g)].map((d) => [d[1], d[2]])),
+      ]),
+    );
+    const inGraphmlNode = (id, name) => graphmlNodes.get(id)?.[graphmlKey(name)];
+    const untargeted = nodes.filter((r) => r.events_as_target === "0");
+    check(
+      untargeted.length > 0 &&
+        untargeted.every(
+          (r) =>
+            r.max_incoming_rate === "-1" &&
+            r.max_introduced_pct === "-1" &&
+            inGraphmlNode(r.id, "max_incoming_rate") === "-1" &&
+            inGraphmlNode(r.id, "max_introduced_pct") === "-1",
+        ) &&
+        nodes.filter((r) => r.events_as_target !== "0").every((r) => Number(r.max_incoming_rate) > 0),
+      "B2.2 a node no event targets has max_incoming_rate and max_introduced_pct -1 in the CSV and the GraphML",
+      untargeted.slice(0, 2).map((r) => `${r.id}: ${r.max_incoming_rate} / ${r.max_introduced_pct}`).join("; "),
+    );
   });
 
   /* ---------------- B2.3 the curated abundance table is the input table
