@@ -3,7 +3,8 @@
      - B3.1  with 150-character sample ids, no tab scrolls sideways at
              1500 px: ids are cut with an ellipsis, the whole id in their
              tooltip, and the Guided validation header keeps it selectable;
-             a long source leaves its target a few characters. Ids that fit
+             a long source leaves its target a few characters; the scatter's
+             axis titles and error box stay inside their boxes. Ids that fit
              are shown whole: the demo's (a pair's target right after its
              arrow, also at 1024 px), the pairs of the bundled PRJEB6337
              study, the sources of the Meteor benchmark's pairs, which share
@@ -374,6 +375,25 @@ try {
       "B3.1 Validate scatter: the axis title cuts the id and its tooltip has it whole",
       axis[0]?.shown.slice(0, 90) || "(no axis title)",
     );
+    // Both titles end inside the plot: the richness after the id shows.
+    const titleBoxes = await page.evaluate(() =>
+      [...document.querySelectorAll("svg text")]
+        .filter((t) => /^(Target \(contaminated\)|Source) — /.test(t.textContent))
+        .map((t) => {
+          const svg = t.ownerSVGElement.getBoundingClientRect();
+          const r = t.getBoundingClientRect();
+          return {
+            text: t.textContent.slice(0, 20),
+            inside: r.left >= svg.left - 1 && r.right <= svg.right + 1 && r.top >= svg.top - 1 && r.bottom <= svg.bottom + 1,
+            past: Math.round(Math.max(svg.left - r.left, r.right - svg.right, svg.top - r.top, r.bottom - svg.bottom)),
+          };
+        }),
+    );
+    check(
+      titleBoxes.length === 2 && titleBoxes.every((b) => b.inside),
+      "B3.1 Validate scatter: both axis titles, richness included, stay inside the plot",
+      JSON.stringify(titleBoxes),
+    );
     await page.getByText(/plate position & sample context/i).first().click();
     await page.waitForTimeout(500);
     await noScroll("Validate, sample context open");
@@ -717,6 +737,23 @@ try {
         cards.every((c) => c.endsWith("not evaluable — sample missing from the abundance table")),
       "B3.2 a sample missing from the table still reads not evaluable",
       cards[0] || "(no card)",
+    );
+    // The box is as wide as the plot (520 px) and its column narrower at
+    // 1500 px: it ran under the Diagnostic checks card beside it.
+    const errBox = await page.evaluate(() => {
+      const msg = [...document.querySelectorAll("div")].find(
+        (d) => d.textContent === 'Source sample "S9" not found in abundance table',
+      );
+      const box = msg?.parentElement;
+      return box && {
+        box: Math.round(box.getBoundingClientRect().right),
+        column: Math.round(box.parentElement.getBoundingClientRect().right),
+      };
+    });
+    check(
+      errBox && errBox.box <= errBox.column + 1,
+      "B3.1 the scatter error box stays inside its column",
+      JSON.stringify(errBox),
     );
   });
 

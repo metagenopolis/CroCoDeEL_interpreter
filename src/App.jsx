@@ -880,6 +880,85 @@ function clipId(id, max) {
   return s.length > max ? `${s.slice(0, Math.max(1, max - 1))}…` : s;
 }
 
+/* The width of a text in the scatter's axis-title font (11 px Raleway,
+   `weight`), measured on a canvas; null where there is none (jsdom). */
+let titleCanvas; // undefined until first used, null without a canvas
+function axisTitleWidth(text, weight) {
+  if (titleCanvas === undefined) {
+    try {
+      titleCanvas = document.createElement("canvas").getContext("2d") || null;
+    } catch {
+      titleCanvas = null;
+    }
+  }
+  if (!titleCanvas) return null;
+  titleCanvas.font = `${weight} 11px Raleway, sans-serif`;
+  return titleCanvas.measureText(text).width;
+}
+
+/** A ref for an axis title's <text>, `title` being { key, idStart, id,
+    shown, room } (the id as written and as shown, from character
+    `idStart` of the title): once drawn, when the title is longer than
+    `room`, `onCut(key, kept)` gets the number of the id's characters that
+    fit before an ellipsis, measured on the text as laid out. A ref
+    callback runs on every commit, before the browser paints. */
+function axisTitleFit(title, onCut) {
+  return (el) => {
+    if (!el || typeof el.getComputedTextLength !== "function") return;
+    const over = el.getComputedTextLength() - title.room;
+    if (!(over > 0.5)) return;
+    const clipped = title.shown !== title.id;
+    let shownChars = clipped ? title.shown.length - 1 : title.shown.length;
+    try {
+      // An ellipsis to add is about one character wide; one already there
+      // stays where it is.
+      let need = over + (clipped ? 0 : el.getSubStringLength(title.idStart + shownChars - 1, 1));
+      while (shownChars > 1 && need > 0) {
+        shownChars--;
+        need -= el.getSubStringLength(title.idStart + shownChars, 1);
+      }
+    } catch {
+      // Runs of blanks inside the id collapse, and the characters as laid
+      // out no longer line up with the id's: keep what the canvas fitted.
+      return;
+    }
+    onCut(title.key, shownChars);
+  };
+}
+
+/** The id of a scatter axis title — `before` (weight 600), the id (600),
+    `after` (weight 500, its runs of spaces collapsed as SVG shows them) —
+    cut with an ellipsis (clipId's way) so that the whole title fits in
+    `room` units, measured on a canvas in the title's font. The first
+    version estimated the widths per character, and a 150-character id
+    still ran 15 to 20 px past the plot's edge, over the richness after
+    it. Without a canvas, that estimate is kept. The SVG lays its text out
+    at its rendered size, a few percent wider than a canvas measures it
+    (487 against 476 units at 1500 px): Scatterplot checks the title once
+    drawn and cuts further (axisTitleFit). */
+function fitAxisTitleId(id, before, after, room, kept) {
+  const text = String(id ?? "");
+  if (kept != null && kept < text.length) return `${text.slice(0, kept)}…`;
+  const fixed = axisTitleWidth(before, 600);
+  if (fixed == null) {
+    return clipId(
+      text,
+      Math.max(8, Math.floor((room - before.length * 5.5 - after.length * 4.5) / 6.4)),
+    );
+  }
+  const used = fixed + axisTitleWidth(after.replace(/\s+/g, " "), 500);
+  if (used + axisTitleWidth(text, 600) <= room) return text;
+  // The most characters of the id that fit before an ellipsis, at least one.
+  let lo = 1;
+  let hi = text.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (used + axisTitleWidth(`${text.slice(0, mid)}…`, 600) <= room) lo = mid;
+    else hi = mid - 1;
+  }
+  return `${text.slice(0, lo)}…`;
+}
+
 const Pill = ({ children, tone = "neutral", className = "" }) => {
   // Backgrounds use rgba overlays so they tint whatever surface sits
   // underneath (light or dark). Text uses the brand accent colour
@@ -1315,12 +1394,19 @@ const Scatterplot = ({
   showRichness = true,
 }) => {
   const [hover, setHover] = useState(null);
+  // How many characters of each axis title's id fit, once measured as
+  // drawn (axisTitleFit), for the title it was measured on.
+  const [axisCut, setAxisCut] = useState({});
   if (!scatter) return null;
   if (scatter.error) {
     return (
       <div
         style={{
           width,
+          // In a column narrower than the plot (Guided validation's, at
+          // 1500 px), the box ran under the card beside it, hiding the
+          // end of each line of a wrapped long id.
+          maxWidth: "100%",
           height,
           background: "var(--bg-alert)",
           border: "1px solid #ed6e6c",
@@ -1354,11 +1440,9 @@ const Scatterplot = ({
 
   // The axis titles name the samples. SVG text has no ellipsis, and a
   // long id ran off the plot on both sides of its centred title: it is
-  // cut to the room its title leaves along the axis (+40 px of margin), at
-  // ~5.5 px per character of the words before it, ~4.5 px of the richness
-  // after it (its runs of spaces collapse) and ~6.4 px of an id (digits
-  // and capitals are wide) in this 11 px font. The whole title is its
-  // tooltip.
+  // cut (fitAxisTitleId) so that the title fits along its axis and the
+  // padding on the narrower side, both sides of a centred title getting
+  // half of it, less 4 units of margin. The whole title is its tooltip.
   const xRichness =
     showRichness && typeof scatter.targetRichness === "number"
       ? `  ·  ${scatter.targetRichness} species`
@@ -1367,13 +1451,20 @@ const Scatterplot = ({
     showRichness && typeof scatter.sourceRichness === "number"
       ? `  ·  ${scatter.sourceRichness} species`
       : "";
-  const axisId = (id, before, after, axisPx) =>
-    clipId(
-      id,
-      Math.max(8, Math.floor((axisPx + 40 - before.length * 5.5 - after.length * 4.5) / 6.4)),
-    );
   const xTitle = "Target (contaminated) — ";
   const yTitle = "Source — ";
+  const axisTitle = (axis, id, before, after, room) => {
+    const key = `${id}\u0000${after}\u0000${room}`;
+    const kept = axisCut[axis]?.key === key ? axisCut[axis].kept : undefined;
+    return { axis, key, id: String(id ?? ""), idStart: before.length, room,
+      shown: fitAxisTitleId(id, before, after, room, kept) };
+  };
+  const onAxisCut = (axis) => (key, kept) =>
+    setAxisCut((cut) =>
+      cut[axis]?.key === key && cut[axis].kept <= kept ? cut : { ...cut, [axis]: { key, kept } },
+    );
+  const xAxis = axisTitle("x", scatter.target, xTitle, xRichness, w + 2 * Math.min(pad.l, pad.r) - 4);
+  const yAxis = axisTitle("y", scatter.source, yTitle, yRichness, h + 2 * Math.min(pad.t, pad.b) - 4);
 
   // Use the per-dataset log10 range when the scatter object carries one
   // (parseAbundance attaches it to ab.logRange and buildScatter forwards
@@ -1482,6 +1573,7 @@ const Scatterplot = ({
         <line x1={pad.l} y1={pad.t + h} x2={pad.l + w} y2={pad.t + h} stroke="#275662" strokeWidth="1" />
         <line x1={pad.l} y1={pad.t} x2={pad.l} y2={pad.t + h} stroke="#275662" strokeWidth="1" />
         <text
+          ref={axisTitleFit(xAxis, onAxisCut("x"))}
           x={pad.l + w / 2}
           y={height - 10}
           textAnchor="middle"
@@ -1492,7 +1584,7 @@ const Scatterplot = ({
         >
           <title>{`${xTitle}${scatter.target}${xRichness}`}</title>
           {xTitle}
-          {axisId(scatter.target, xTitle, xRichness, w)}
+          {xAxis.shown}
           {xRichness && (
             <tspan fill="#797870" fontWeight="500">
               {xRichness}
@@ -1500,6 +1592,7 @@ const Scatterplot = ({
           )}
         </text>
         <text
+          ref={axisTitleFit(yAxis, onAxisCut("y"))}
           x={-(pad.t + h / 2)}
           y={14}
           transform="rotate(-90)"
@@ -1511,7 +1604,7 @@ const Scatterplot = ({
         >
           <title>{`${yTitle}${scatter.source}${yRichness}`}</title>
           {yTitle}
-          {axisId(scatter.source, yTitle, yRichness, h)}
+          {yAxis.shown}
           {yRichness && (
             <tspan fill="#797870" fontWeight="500">
               {yRichness}
