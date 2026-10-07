@@ -20426,6 +20426,21 @@ const HelpTab = ({ onStartTour }) => {
               remove the{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
               before running CroCoDeEL on the table and loading it here.
+              An abundance header whose sample ids are numbers reads as a
+              row of numbers too: when its first cell names the species
+              column (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>species</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>OTU_ID</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>clade_name</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>id_mgs</code>
+              …, or the first cell of the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line), the table is read as CroCoDeEL reads it and the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line is named in a warning; otherwise the message also says
+              to delete the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line if the line under it is the header.
               Empty cells at the end of the header line are ignored; an
               empty header cell between two named ones is named{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>Unnamed: N</code>{" "}

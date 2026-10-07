@@ -46,7 +46,7 @@ describe("a header line written as a comment", () => {
     expect(message).toContain('line 3 ("sp1", "10", "20", …) read as the header');
     expect(message).toContain("which marks a comment line, here as in CroCoDeEL");
     expect(message).toMatch(
-      /Remove the "#" at the start of line 2 and load the file again \(if CroCoDeEL ran on this table, run it again on the fixed one: it misread it the same way\)\.$/,
+      /Remove the "#" at the start of line 2 and load the file again \(if CroCoDeEL ran on this table, run it again on the fixed one: it misread it the same way\)\. If line 3 is the header after all \(its sample ids are numbers\), delete line 2 instead\.$/,
     );
   });
 
@@ -235,6 +235,86 @@ describe("a header written as a comment, in the layouts the review found", () =>
       qiime1.replace(/^#SampleID/, "SampleID").replace("\tDescription", "\tsubject_id"),
     );
     expect(Object.keys(md.bySample)).toEqual(["PC.354", "PC.355"]);
+  });
+});
+
+/* Round 2 of the review: a header whose sample ids are numbers reads as a
+   row of numbers too, and the first version refused it whenever a "#" line
+   above lined up with it, advising to remove the "#" — which would have
+   made the comment the header. CroCoDeEL reads these tables as they are
+   (crocodeel.ab_table_utils.read: columns ['1', '2', '3'], index ['sp1',
+   'sp2']; columns ['10317.000001', '10317.000002', '10317.000003']), and so
+   does the base parser. The line read as the header is one when its first
+   cell names the species column: a usual title ("species", "OTU_ID",
+   "clade_name", "id_mgs", …), the first cell of a "#" line above, or
+   empty. */
+describe("a header of numeric sample ids under a '#' line as wide as it", () => {
+  it("reads an old header commented out above the one renamed to numbers, as CroCoDeEL does", () => {
+    const ab = parseAbundance("#species\tS1\tS2\tS3\nspecies\t1\t2\t3\nsp1\t1\t2\t3\nsp2\t4\t5\t6");
+    expect(ab.firstHeader).toBe("species");
+    expect(ab.samples).toEqual(["1", "2", "3"]);
+    expect(ab.species).toEqual(["sp1", "sp2"]);
+    expect(ab.colSums).toEqual({ 1: 5, 2: 7, 3: 9 });
+    // The "#" line is reported, with what to do if it is the header.
+    expect(ab.warnings).toEqual([
+      'Line 1 ("#species", "S1", "S2", …) starts with "#": it is read as a comment, as CroCoDeEL ' +
+        'reads it, and line 2 ("species", "1", "2", …) as the header (its sample ids are numbers). ' +
+        'If line 1 is the header, remove its "#", load the file again and run CroCoDeEL again on ' +
+        "the fixed table.",
+    ]);
+  });
+
+  it("reads Qiita sample ids under a '#sample_name' line", () => {
+    const ab = parseAbundance(
+      [
+        "#sample_name\tgut_a\tgut_b\tgut_c",
+        "OTU_ID\t10317.000001\t10317.000002\t10317.000003",
+        "OTU1\t5\t0\t3",
+        "OTU2\t1\t2\t3",
+      ].join("\n"),
+    );
+    expect(ab.firstHeader).toBe("OTU_ID");
+    expect(ab.samples).toEqual(["10317.000001", "10317.000002", "10317.000003"]);
+    expect(ab.species).toEqual(["OTU1", "OTU2"]);
+    expect(ab.warnings).toHaveLength(1);
+    expect(ab.warnings[0]).toMatch(/^Line 1 \("#sample_name", "gut_a", "gut_b", …\) starts with "#"/);
+  });
+
+  it("knows the species column's title of the usual tables, and an empty or repeated one", () => {
+    const comment = "#a\tS1\tS2";
+    for (const title of [
+      "id_mgs", "id_msp", "species_name", "clade_name", "gtdb_classification", "OTU ID",
+      "Feature ID", "FeatureID", "consensus_taxonomy", "Taxon", "msp_name", "name", "",
+    ]) {
+      const ab = parseAbundance(`${comment}\n${title}\t1001\t1002\nsp1\t1\t2\nsp2\t3\t4`);
+      expect(ab.firstHeader).toBe(title);
+      expect(ab.samples).toEqual(["1001", "1002"]);
+      expect(ab.warnings).toHaveLength(1);
+    }
+    // Not a usual title, but the one of the "#" line above.
+    const bug = parseAbundance("#Bug\tS1\tS2\nBug\t1\t2\nsp1\t1\t2\nsp2\t3\t4");
+    expect(bug.samples).toEqual(["1", "2"]);
+  });
+
+  it("still refuses a data row read as the header, and says how to load it if it is the header", () => {
+    // A species or an OTU, not a title: digits, ranks, a binomial.
+    for (const first of ["sp1", "otu1", "GG_OTU_1", "k__Bacteria", "Bacteroides vulgatus", "Bug"]) {
+      expect(() => parseAbundance(`#OTU ID\tS1\tS2\n${first}\t10\t20\nsp2\t30\t40`)).toThrow(
+        /^Line 1 looks like the header .* If line 2 is the header after all \(its sample ids are numbers\), delete line 1 instead\.$/,
+      );
+    }
+    // Following that advice loads it.
+    const ab = parseAbundance("Bug\t10\t20\nsp2\t30\t40");
+    expect(ab.samples).toEqual(["10", "20"]);
+    expect(ab.warnings).toEqual([]);
+  });
+
+  it("warns about nothing when no '#' line lines up with the header", () => {
+    for (const comment of ["# made by hand", "#a\tS1", "#a\tS1\tS1"]) {
+      const ab = parseAbundance(`${comment}\nspecies\t1\t2\nsp1\t1\t2\nsp2\t3\t4`);
+      expect(ab.samples).toEqual(["1", "2"]);
+      expect(ab.warnings).toEqual([]);
+    }
   });
 });
 

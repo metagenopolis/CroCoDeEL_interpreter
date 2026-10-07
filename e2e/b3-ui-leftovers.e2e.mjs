@@ -19,8 +19,9 @@
              sample differently from the abundance table;
      - B3.4  a biom-style table, whose header line starts with "#", is
              refused with the line to fix, and loads once it is fixed; a
-             "#" line above a real header stays a comment; a QIIME 2
-             metadata file is refused naming its "#SampleID" line;
+             "#" line above a real header stays a comment, also above a
+             header whose sample ids are numbers (named in a warning); a
+             QIIME 2 metadata file is refused naming its "#SampleID" line;
      - B3.5  the Pending chip of a sample no event targets does not send
              the curator to its events (nor does its Network popover), also
              once a verdict of the curator's is removed and after a reload,
@@ -1007,6 +1008,27 @@ try {
       /\b91 samples annotated/.test(body) && !/Metadata:/.test(body),
       "B3.4 fixed, the QIIME 2 file loads its 91 samples, the #q2:types line a comment",
       body.match(/\d+ samples annotated/)?.[0] || body.match(/Metadata:[^\n]*/)?.[0] || "(not loaded)",
+    );
+    // Sample ids renamed to numbers under the old header, commented out:
+    // the header line reads as a row of numbers, but it names the species
+    // column as the "#" line does. CroCoDeEL reads it as it is, and so does
+    // the interpreter now, naming the "#" line in a warning; the previous
+    // build refused it and advised removing the "#".
+    const first = lines[0].split("\t")[0];
+    const numbered = [
+      `#${lines[0]}`,
+      [first, ...samples.map((_, i) => String(1001 + i))].join("\t"),
+      ...lines.slice(1),
+    ].join("\n");
+    await upload(page, 1, "species_abundance.tsv", numbered);
+    body = await page.locator("body").innerText();
+    check(
+      /91 samples × 927 species/.test(body) && !/Abundance file:/.test(body) &&
+        body.includes(
+          `Line 1 ("#${first}", "${samples[0]}", "${samples[1]}", …) starts with "#": it is read as a comment, as CroCoDeEL reads it, and line 2 ("${first}", "1001", "1002", …) as the header (its sample ids are numbers).`,
+        ),
+      "B3.4 a header of numeric sample ids under a '#' line as wide as it loads, the '#' line in a warning",
+      body.match(/Abundance file:[^\n]*/)?.[0] || body.match(/Line 1 \("#[^\n]*/)?.[0] || "(no warning)",
     );
   });
 } finally {
