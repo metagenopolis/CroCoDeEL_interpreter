@@ -20428,6 +20428,17 @@ const HelpTab = ({ onStartTour }) => {
               ), and a warning names the first line cut.
             </p>
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              A sample or species id that names a property every JavaScript
+              object has (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>__proto__</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>constructor</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>toString</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>valueOf</code>
+              …) cannot be kept in the tables of this interface: a file or a
+              session holding one is refused, naming it. Rename it in every
+              file.
+            </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
               Sample ids are shown as your files write them. An id too
               long for its place — a 150-character LIMS id, say — is cut
               with an ellipsis: hover it to read it whole. The tables cut

@@ -42,6 +42,7 @@
    anything replaces the current session. */
 
 import { migrateSampleCuration, SAMPLE_CURATION_VERSION } from "./curation.js";
+import { isReservedId } from "./parsing.js";
 
 export const LAYOUT_VERSION = 2;
 
@@ -746,6 +747,31 @@ function readPlateMap(pm, errors) {
   return out;
 }
 
+/** The ids of a session file that name a property of every object
+    ("__proto__", "constructor", …), refused as the file parsers refuse
+    them (isReservedId, src/parsing.js): the importer would store them in
+    the same plain objects, where "__proto__" vanishes. */
+function readReservedIds(json, errors) {
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const keys = (o) => (isObj(o) ? Object.keys(o) : []);
+  const ab = isObj(json.abundance) ? json.abundance : {};
+  const places = [
+    ["events", list(json.events).flatMap((e) => (isObj(e) ? [e.source, e.target, ...list(e.introduced_species ?? e.introduced)] : []))],
+    ["sample_curation", keys(json.sample_curation)],
+    ["abundance", [...list(ab.samples), ...list(ab.species), ...keys(ab.matrix)]],
+    ["metadata", keys(isObj(json.metadata) ? json.metadata.bySample : null)],
+    ["plate_map", keys(isObj(json.plate_map) ? json.plate_map.bySample : null)],
+  ];
+  for (const [where, ids] of places) {
+    const id = ids.find((x) => (typeof x === "string" || typeof x === "number") && isReservedId(x));
+    if (id === undefined) continue;
+    errors.push(
+      `${where}: the id "${id}" cannot be read — every JavaScript object already has a ` +
+        `property of that name, and the interface keeps its tables in such objects, keyed by id.`,
+    );
+  }
+}
+
 /** Read a session JSON (exportJSON's format, any version) into a session,
     checking the WHOLE file first: nothing replaces the current session
     unless every part of the file can be shown.
@@ -767,6 +793,7 @@ export function sessionFromPayload(json, { defaults, tabs } = {}) {
     };
   }
   const errors = [];
+  readReservedIds(json, errors);
   if (!("events" in json)) errors.push('Missing "events" list.');
   const { events, renumbered } =
     "events" in json ? readEvents(json.events, errors) : { events: [], renumbered: false };

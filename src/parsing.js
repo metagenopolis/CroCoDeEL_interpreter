@@ -550,6 +550,36 @@ function looksLikeDecimalComma(cell) {
   return Number.isFinite(parseStrictNumber(s.slice(0, i) + "." + s.slice(i + 1)));
 }
 
+/* ---------- ids that every object already has ----------
+   The tables are kept in plain objects keyed by id: rows by header, the
+   matrix and the column sums by species and sample, the metadata, the
+   plate map and the curation by sample. An id that names a property every
+   JavaScript object has breaks them. "__proto__" cannot be stored at all:
+   its cells read as "[object Object]", its column sum, its metadata row
+   and its curation entry vanished, so a true positive's target was never
+   suppressed and the curated table fell back to fractions; on the base
+   build the page crashed at load. "constructor", "toString" and the like
+   read as present where they are not: the Network tab failed with "node
+   not found: constructor". pandas reads such ids, but they are refused
+   here, named, wherever they enter: the files and the session import. */
+const RESERVED_IDS = new Set(Object.getOwnPropertyNames(Object.prototype));
+
+/** True when `id` names a property of every object ("__proto__",
+    "constructor", "toString", …). */
+export function isReservedId(id) {
+  return RESERVED_IDS.has(String(id));
+}
+
+/** The error for a reserved id: `what` names it ("sample", "species"),
+    `where` says where it is. */
+export function reservedIdError(id, what, where) {
+  return (
+    `The ${what} "${id}" (${where}) cannot be read: every JavaScript object already has a ` +
+    `property of that name, and the interface keeps its tables in such objects, keyed by id. ` +
+    `Rename it in every input file (and run CroCoDeEL again on the renamed table).`
+  );
+}
+
 /* ---------- duplicated ids ----------
    One rule for the three tables keyed by sample: a repeated id is always
    reported, never resolved in silence.
@@ -746,6 +776,16 @@ export function parseEvents(text) {
       skipped.push(i);
       return;
     }
+    for (const [what, col, ids] of [
+      ["sample", cols.source, [r[cols.source]]],
+      ["sample", cols.target, [r[cols.target]]],
+      ["species", cols.species, splitSpeciesList(r[cols.species])],
+    ]) {
+      const id = ids.find(isReservedId);
+      if (id !== undefined) {
+        throw new Error(reservedIdError(id, what, `line ${lineNumbers[i]}, column "${clip(col, 40)}"`));
+      }
+    }
     const rate = eventNumber(r, [cols.rate]);
     // Probability resolution: prefer the column pickCol actually resolved in
     // this file's header (which matches case-insensitively), then fall back
@@ -906,6 +946,11 @@ export function parseAbundance(text) {
   const speciesCol = header[0];
   const samples = header.slice(1);
 
+  const reservedSample = samples.findIndex(isReservedId);
+  if (reservedSample >= 0) {
+    const s = samples[reservedSample];
+    throw new Error(reservedIdError(s, "sample", `column ${reservedSample + 2} of the abundance table`));
+  }
   // Duplicates are refused here (see "duplicated ids" above).
   const dupSamples = findDuplicates(samples);
   if (dupSamples.length > 0) {
@@ -925,6 +970,11 @@ export function parseAbundance(text) {
           ? `only its header line (${n} sample column${n > 1 ? "s" : ""}) was found.`
           : `none of its ${rows.length} rows has a species name in the first column.`),
     );
+  }
+  const reservedSpecies = rows.findIndex((r) => isReservedId(r[speciesCol]));
+  if (reservedSpecies >= 0) {
+    const sp = rows[reservedSpecies][speciesCol];
+    throw new Error(reservedIdError(sp, "species", `line ${tsv.lineNumbers[reservedSpecies]} of the abundance table`));
   }
   const dupSpecies = findDuplicates(speciesNames);
   if (dupSpecies.length > 0) {
@@ -1283,9 +1333,12 @@ export function parseMetadata(text) {
   // A repeated id keeps its first row (see "duplicated ids" above).
   const seen = new Set();
   const dups = [];
-  rows.forEach((r) => {
+  rows.forEach((r, i) => {
     const id = r[cols.sample];
     if (!id) return;
+    if (isReservedId(id)) {
+      throw new Error(reservedIdError(id, "sample", `line ${tsv.lineNumbers[i]} of the metadata`));
+    }
     if (seen.has(id)) {
       dups.push(id);
       return;
@@ -1563,6 +1616,9 @@ export function parsePlateMap(text) {
   rows.forEach((r, i) => {
     const id = r[cols.sample];
     if (!id) return;
+    if (isReservedId(id)) {
+      throw new Error(reservedIdError(id, "sample", `line ${lineNumbers[i]} of the plate map`));
+    }
     const useWell = cols.well && (String(r[cols.well] ?? "").trim() !== "" || !cols.row);
     const cells = useWell ? [r[cols.well]] : [r[cols.row], r[cols.col]];
     const w = useWell ? parseWell(cells[0]) : parseRowCol(cells[0], cells[1]);
