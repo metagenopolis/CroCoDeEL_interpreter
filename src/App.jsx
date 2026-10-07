@@ -24852,8 +24852,14 @@ const defaultFilter = () => ({
      record; the events, the abundance matrix, the metadata and the plate
      map are written only when they change. The whole session used to be
      cloned again after every change — tab, selection, filter and sort
-     included: on the largest bundled dataset, 30 ms of main-thread
-     freeze per click, 150 ms on a 4x slower CPU.
+     included. Measured per change (IndexedDB put() plus the save timer's
+     callback), on the bundled dataset whose events carry the longest
+     species lists (Sylph, 15.4k events): 134 ms of main-thread freeze,
+     0.6 s on a 4x slower CPU — 0.2 ms for a tab switch and 0.8 ms for
+     an evaluation now (0.7 / 2.3 ms on the slower CPU). The events
+     record alone costs 0.18 s, once, when the file is loaded. (On
+     Meteor, 16.6k events with shorter lists: 31 ms before, 0.3 / 0.9 ms
+     now.)
 
      A page being hidden or closed is saved at once (a T pressed half a
      second before a reload used to be lost with the 1 s debounce). A

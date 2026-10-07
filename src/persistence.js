@@ -25,8 +25,9 @@
 
    The first layout kept everything but the abundance table in one record
    ("main"), rewritten whole on every change — tab switches included:
-   about 150 ms of structured clone per change on the 16.5k-event Meteor
-   dataset with a 4x slower CPU. It is still read, and migrated on boot
+   about 130 ms of structured clone per change on the Sylph benchmark
+   (15.4k events with long species lists), 0.6 s with a 4x slower CPU;
+   31 ms on Meteor. It is still read, and migrated on boot
    (sessionFromLegacyMain).
 
    Every reader gets the same session object back:
