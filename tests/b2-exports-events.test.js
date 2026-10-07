@@ -186,6 +186,32 @@ describe("curatedEventsToTSV — CroCoDeEL's columns first", () => {
     const bare = curatedEventsToTSV(events.slice(0, 1));
     expect(bare.split("\n")[0]).toBe(CURATED_EVENT_COLUMNS.join("\t"));
   });
+
+  it("keeps a study title with '|' and ':' off the run line, reload after reload", () => {
+    // The reader splits every "#" line on "|" and merges what it finds
+    // into the run parameters: "# study: Lou 2023 | plate: 3" came back
+    // as a study "Lou 2023" and a run parameter "plate: 3", which the
+    // next export appended to the run line CroCoDeEL wrote.
+    const first = curatedEventsToTSV(events, {
+      runMetadata: parsed.runMetadata,
+      study: "Lou 2023 | plate: 3",
+      sampleCuration: curation,
+    });
+    expect(first.split("\n")[1]).toBe("# study: Lou 2023 / plate: 3");
+    const back = parseEvents(first);
+    expect(back.runMetadata).toEqual({ ...parsed.runMetadata, study: "Lou 2023 / plate: 3" });
+    // A colleague's fresh session without a title: the study comes from
+    // the file, and the run line is still CroCoDeEL's.
+    const second = curatedEventsToTSV(back.events, {
+      runMetadata: back.runMetadata,
+      sampleCuration: curation,
+    });
+    expect(second.split("\n").slice(0, 2)).toEqual([
+      demoText.split("\n")[0],
+      "# study: Lou 2023 / plate: 3",
+    ]);
+    expect(parseEvents(second).runMetadata).toEqual(back.runMetadata);
+  });
 });
 
 describe("parseEvents — the curated export of the earlier layout still loads", () => {

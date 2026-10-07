@@ -453,6 +453,69 @@ try {
     );
   });
 
+  /* The curated file goes to a colleague, who loads it in a fresh
+     browser and exports it again. A study titled "Lou 2023 | plate: 3"
+     came back as a run parameter "plate: 3" on the run line CroCoDeEL
+     wrote, since the reader splits every "#" line on "|". */
+  await scenario("B2.1 fresh session", async (page) => {
+    await openTab(page, "Events");
+    const mark = (title) => page.locator(`button[title="mark as ${title}"]`);
+    for (const [title, i] of [
+      ["true positive", 0],
+      ["false positive", 3],
+      ["uncertain", 5],
+    ]) {
+      await mark(title).nth(i).click();
+      await page.waitForTimeout(300);
+    }
+    await openTab(page, "Validate");
+    await page.locator('textarea[placeholder^="Notes: related samples"]').fill(HTML_NOTE);
+    await page.waitForTimeout(1500);
+    await page.locator('button[title="Click to rename this study"]').first().click();
+    await page.locator('input[placeholder="Study title"]').fill("Lou 2023 | plate: 3");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(500);
+    const file = (await exportFile(page, /Download events TSV/i))?.text || "";
+    const lines = file.split("\n");
+    const runLine = demo("contamination_events.tsv").split("\n")[0];
+    check(
+      lines[0] === runLine && lines[1] === "# study: Lou 2023 / plate: 3",
+      "B2.1 a study title with '|' is written with '/', on its own line under the run line",
+      JSON.stringify(lines.slice(1, 2)),
+    );
+
+    // A colleague's browser: the curated file and the abundance table.
+    const fresh = await newPage(browser);
+    try {
+      await upload(fresh.page, 0, "contamination_events_curated.tsv", file);
+      await upload(fresh.page, 1, "species_abundance.tsv", demo("species_abundance.tsv"));
+      const again = (await exportFile(fresh.page, /Download events TSV/i))?.text || "";
+      const againLines = again.split("\n");
+      check(
+        againLines[0] === runLine && !/plate/.test(againLines[0]),
+        "B2.1 exported again from a fresh session, the run line is still CroCoDeEL's",
+        againLines[0].slice(-60),
+      );
+      // Every event with its numbers, introduced_pct, evaluation and note.
+      // (The study line and the action column depend on how the events
+      // card's loader titles the session and derives the sample curation,
+      // which this check leaves out.)
+      const body = (t) =>
+        t
+          .split("\n")
+          .filter((l) => l && !l.startsWith("#"))
+          .map((l) => l.split("\t"))
+          .map((c) => [...c.slice(0, 7), c[8]].join(" | "));
+      check(
+        JSON.stringify(body(again)) === JSON.stringify(body(file)) && body(file).length === 25,
+        "B2.1 and every event comes back with its numbers, introduced_pct, evaluation and note, in order",
+      );
+      check(fresh.errors.length === 0, "B2.1 the colleague's session: no JS error", fresh.errors[0] || "");
+    } finally {
+      await fresh.ctx.close();
+    }
+  });
+
   /* ---------------- B2.2 one unit for the introduced share
      The events TSV wrote 0.6154 where the samples TSV, the GraphML and
      the CSV pair write 61.54. */

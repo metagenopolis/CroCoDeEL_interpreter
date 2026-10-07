@@ -74,8 +74,16 @@ export function pythonFloat(x) {
     a value that is not a number (only a hand-edited session has one). */
 const numberCell = (x) => (Number.isFinite(x) ? pythonFloat(x) : "");
 
-/** A "#" line's text, on one line. */
-const flatten = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
+/** A "#" line's text, on one line and without "|". The reader splits
+    every "#" line on "|" into "key: value" pairs (parseRunMetadata), so a
+    study titled "Lou 2023 | plate: 3" came back as the study "Lou 2023"
+    plus a run parameter "plate: 3", which the next export appended to
+    the run line. "|" is written "/" instead; CroCoDeEL's own keys and
+    values never hold one. */
+const flatten = (v) =>
+  String(v ?? "")
+    .replace(/[\t\r\n]+/g, " ")
+    .replace(/\|/g, "/");
 
 /** The "#" lines in front of an events table.
 
@@ -84,10 +92,11 @@ const flatten = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
     metadata parsed out of the loaded file — the run parameters the
     Overview shows, and the low-abundance factor the diagnostics apply on
     a reload. Then the study, on its own "# study:" line: `study` (the
-    session's title) or else the `study` the run metadata carries, which
-    is where a reloaded curated file leaves it, since the parser merges
-    every "#" line into the run metadata. Keeping it off the run line
-    keeps that line as CroCoDeEL wrote it, reload after reload.
+    session's title) or else the `study` the run metadata carries — the
+    parser merges every "#" line into the run metadata, so a reloaded
+    curated file leaves its study there, which a session without a title
+    then writes back. Keeping it off the run line keeps that line as
+    CroCoDeEL wrote it, reload after reload.
 
     Both CroCoDeEL (read_tsv skips the leading "#" lines) and this
     interface read the table under them. */

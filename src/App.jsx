@@ -20817,7 +20817,9 @@ const HelpTab = ({ onStartTour }) => {
                   uncertain / pending), <code>action</code> (the target
                   sample's keep / suppress) and <code>notes</code>. The
                   run's <code>#</code> parameter line and a{" "}
-                  <code># study:</code> line come first. Filter
+                  <code># study:</code> line come first (a <code>|</code>{" "}
+                  in the title is written <code>/</code>: the reader
+                  splits <code>#</code> lines on it). Filter
                   downstream on the verdict / action columns if you only
                   want TPs or want to drop FPs, or load the file again
                   on the events card to restore the evaluations and
