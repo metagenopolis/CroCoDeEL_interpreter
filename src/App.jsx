@@ -5,15 +5,28 @@ import LZString from "lz-string";
 import {
   applyLowAbundanceFilter,
   automaticScore,
+  buildScatter,
   bulkCriteria,
   cascadeExplanations,
   introducedPercent,
-  introducedSpeciesSet,
+  lineDiagnostics,
   lowAbundanceFilterFactor,
   matchesBulkCriteria,
   matchSpeciesName,
+  missingAbundantFromSource,
+  pointsAboveLine,
   resolveSample,
+  spearmanRho,
   speciesCountsBySample,
+} from "./diagnostics.js";
+// Moved to src/diagnostics.js; still exported from here for the modules
+// and tests that import them from App.jsx.
+export {
+  buildScatter,
+  lineDiagnostics,
+  missingAbundantFromSource,
+  pointsAboveLine,
+  poissonBinomialUpperTail,
 } from "./diagnostics.js";
 import {
   FolderOpen,
@@ -1147,339 +1160,12 @@ function downloadText(content, filename) {
    3. DOMAIN LOGIC — scatter, diagnostics, cascade, relatedness, plate distance
    ============================================================================ */
 
-// resolveSample (sample names of the events file → abundance columns)
-// lives in src/diagnostics.js, next to matchSpeciesName.
-
-export function buildScatter(ab, event) {
-  if (!ab) return null;
-  const { source, target, introduced, rate } = event;
-  const srcKey = resolveSample(ab, source);
-  const tgtKey = resolveSample(ab, target);
-  if (!srcKey || !tgtKey) {
-    return {
-      points: [],
-      logC: null,
-      source,
-      target,
-      error:
-        (!srcKey && !tgtKey)
-          ? `Neither "${source}" nor "${target}" found in abundance table`
-          : !srcKey
-            ? `Source sample "${source}" not found in abundance table`
-            : `Target sample "${target}" not found in abundance table`,
-    };
-  }
-  // Through matchSpeciesName, so that ids CroCoDeEL rewrote as integers
-  // ("1" for the table's "001") still land on the line.
-  const introducedSet = introducedSpeciesSet(ab, introduced);
-  const points = [];
-  ab.species.forEach((sp) => {
-    const xs = ab.matrix[sp][tgtKey] || 0;
-    const ys = ab.matrix[sp][srcKey] || 0;
-    if (xs === 0 && ys === 0) return;
-    points.push({ species: sp, x: xs, y: ys, onLine: introducedSet.has(sp) });
-  });
-  // Species richness = number of species observed (relative abundance > 0)
-  // in each sample, both-zero species included. A property of the sample,
-  // so it is counted on the table as loaded even when `ab` is the
-  // low-abundance-filtered copy the diagnostics use — the same number as
-  // the Samples tab. Cached per table.
-  const richness = speciesCountsBySample(ab.unfiltered || ab);
-  const logC = rate > 0 ? Math.log10(rate) : null;
-  return {
-    points,
-    logC,
-    source,
-    target,
-    sourceRichness: richness[srcKey] ?? 0,
-    targetRichness: richness[tgtKey] ?? 0,
-    logRange: ab.logRange || null,
-  };
-}
-
-/** Complementary error function — Numerical-Recipes rational
-    approximation (max abs error ~1.5e-7 over [0, ∞)). Used to convert
-    a normal-approximation Z-score to a one-sided p-value. */
-function erfc(x) {
-  const z = Math.abs(x);
-  const t = 1 / (1 + 0.5 * z);
-  const ans =
-    t *
-    Math.exp(
-      -z * z -
-        1.26551223 +
-        t *
-          (1.00002368 +
-            t *
-              (0.37409196 +
-                t *
-                  (0.09678418 +
-                    t *
-                      (-0.18628806 +
-                        t *
-                          (0.27886807 +
-                            t *
-                              (-1.13520398 +
-                                t *
-                                  (1.48851587 +
-                                    t * (-0.82215223 + t * 0.17087277))))))))
-    );
-  return x >= 0 ? ans : 2 - ans;
-}
-
-/** Average-rank ranking — handles ties by giving each tied entry the
-    mean of the rank positions they would have taken. Returns ranks in
-    the original input order. */
-function rankArray(arr) {
-  const indexed = arr.map((v, i) => ({ v, i }));
-  indexed.sort((a, b) => a.v - b.v);
-  const ranks = new Array(arr.length);
-  let i = 0;
-  while (i < indexed.length) {
-    let j = i;
-    while (j + 1 < indexed.length && indexed[j + 1].v === indexed[i].v) j++;
-    const avg = (i + j) / 2 + 1; // 1-based average rank
-    for (let k = i; k <= j; k++) ranks[indexed[k].i] = avg;
-    i = j + 1;
-  }
-  return ranks;
-}
-
-/** Spearman's rank correlation between source and target abundances
-    across every species present in at least one of the two samples.
-    A high ρ (≥ 0.7) means the two overall profiles are similar — typical
-    of longitudinal / same-subject pairs where the apparent contamination
-    line is biological persistence rather than mechanical transfer. */
-function spearmanRho(scatter) {
-  if (!scatter || !Array.isArray(scatter.points)) return null;
-  const xs = [];
-  const ys = [];
-  scatter.points.forEach((p) => {
-    if (p.x > 0 || p.y > 0) {
-      xs.push(p.x);
-      ys.push(p.y);
-    }
-  });
-  const n = xs.length;
-  if (n < 3) return null;
-  const rx = rankArray(xs);
-  const ry = rankArray(ys);
-  const mx = rx.reduce((s, v) => s + v, 0) / n;
-  const my = ry.reduce((s, v) => s + v, 0) / n;
-  let sxy = 0,
-    sxx = 0,
-    syy = 0;
-  for (let i = 0; i < n; i++) {
-    sxy += (rx[i] - mx) * (ry[i] - my);
-    sxx += (rx[i] - mx) ** 2;
-    syy += (ry[i] - my) ** 2;
-  }
-  return sxx * syy > 0 ? sxy / Math.sqrt(sxx * syy) : 0;
-}
-
-export function lineDiagnostics(scatter) {
-  // An error scatter (source or target missing from the abundance table —
-  // routine after a CroCoDeEL `-s2` run with one table loaded) has no
-  // diagnostics at all. Its empty point list used to read as "0 species on
-  // the line", a FAIL that graded the event PROBABLY NOT CONTAMINATED.
-  if (!scatter || scatter.error) return null;
-  const spearman = spearmanRho(scatter);
-  const pts = scatter.points.filter((p) => p.onLine && p.x > 0 && p.y > 0);
-  const n = pts.length;
-  if (n < 2) return { n, r2: null, slope: null, decadeRange: null, spearman };
-  const logs = pts.map((p) => ({ x: Math.log10(p.x), y: Math.log10(p.y) }));
-  const mx = logs.reduce((s, p) => s + p.x, 0) / n;
-  const my = logs.reduce((s, p) => s + p.y, 0) / n;
-  let sxy = 0,
-    sxx = 0,
-    syy = 0;
-  logs.forEach((p) => {
-    sxy += (p.x - mx) * (p.y - my);
-    sxx += (p.x - mx) ** 2;
-    syy += (p.y - my) ** 2;
-  });
-  const slope = sxx > 0 ? sxy / sxx : 0;
-  const r2 = sxx * syy > 0 ? (sxy * sxy) / (sxx * syy) : 0;
-  // Spread of the line in log space — how many decades of source
-  // abundance the contamination line spans. A real (mechanical)
-  // contamination transfers ALL species proportionally, so the line is
-  // visible across many decades of abundance (typically 3+). Biological
-  // similarity tends to share only the abundant species, so the
-  // "apparent line" is concentrated within 1-2 decades. This is a
-  // strong discriminator between TP and FP that complements R² (which
-  // only measures linearity).
-  const xMin = Math.min(...logs.map((p) => p.x));
-  const xMax = Math.max(...logs.map((p) => p.x));
-  const decadeRange = xMax - xMin;
-  return { n, r2, slope, decadeRange, spearman };
-}
-
-export function pointsAboveLine(scatter) {
-  if (!scatter || scatter.error || scatter.logC == null) return null;
-  let above = 0;
-  let maxDist = 0;
-  let farAbove = 0; // points ≥ 0.5 decade above the line
-  scatter.points.forEach((p) => {
-    if (p.x <= 0 || p.y <= 0 || p.onLine) return;
-    const threshold = Math.log10(p.x) - scatter.logC;
-    const dist = Math.log10(p.y) - threshold;
-    // Threshold 0.1 decade (~1.26× the predicted target abundance) —
-    // matches what's visibly above the line by eye while still
-    // excluding the tight noise cluster sitting almost exactly on it.
-    if (dist > 0.1) {
-      above++;
-      if (dist > maxDist) maxDist = dist;
-      if (dist >= 0.5) farAbove++;
-    }
-  });
-  return { count: above, maxDist, farAbove };
-}
-
-/** Exact upper-tail probability P(X ≥ k) for a Poisson-binomial sum
-    X = Σ Bernoulli(p_i), by dynamic programming over the p_i.
-
-    The tail is always built as a sum of non-negative terms, never as a
-    difference. It used to be `1 − P(X ≤ k−1)` whenever k was the short
-    side, which cancels catastrophically once the tail drops under ~1e-16:
-    a true 2.5e-20 came back as 8.9e-16, and the Validate panel printed it.
-
-    Only one tail is ever materialised, on whichever side is shorter:
-    - k small: track P(X = j) for j < k (k states) and pour, at every step,
-      the mass that a success moves from k−1 to k into the tail — once
-      there it never leaves, so the tail is accumulated directly;
-    - k large: the complement Y = n − X (a Poisson-binomial on the 1 − p_i)
-      gives P(X ≥ k) = P(Y ≤ n − k), the sum of n − k + 1 states. Y fails
-      with probability p_i itself, used as is: rebuilding it as
-      1 − (1 − p_i) loses every digit of a p_i below ~1e-16.
-    So the cost is O(n × min(k, n−k+1)) — at most n²/2, a few milliseconds
-    for the few thousand species these tables carry, and far less in the
-    usual case where the miss count is small.
-
-    Falls back to a continuity-corrected normal tail only if the DP would
-    be genuinely large, which real inputs do not reach. */
-export function poissonBinomialUpperTail(ps, k) {
-  const n = ps.length;
-  if (k <= 0) return 1;
-  if (n === 0) return 0;
-  if (k > n) return 0;
-
-  const useComplement = n - k + 1 < k;
-  const limit = useComplement ? n - k : k - 1;
-
-  if ((limit + 1) * n > 5e6) {
-    // Unreachable with realistic species counts; keeps the function total.
-    let mean = 0;
-    let variance = 0;
-    for (const p of ps) {
-      mean += p;
-      variance += p * (1 - p);
-    }
-    const sd = Math.sqrt(variance);
-    if (sd <= 0) return k <= mean ? 1 : 0;
-    return 0.5 * erfc((k - 0.5 - mean) / (sd * Math.SQRT2));
-  }
-
-  // dist[j] = P(exactly j successes so far), truncated above `limit`.
-  const dist = new Float64Array(limit + 1);
-  dist[0] = 1;
-  let tail = 0;
-  for (let i = 0; i < n; i++) {
-    // Success / failure probabilities of the variable the DP counts.
-    const p = useComplement ? 1 - ps[i] : ps[i];
-    const q = useComplement ? ps[i] : 1 - ps[i];
-    // X side: a success from state k−1 is mass entering "≥ k" for good.
-    if (!useComplement) tail += dist[limit] * p;
-    const top = Math.min(limit, i + 1);
-    for (let j = top; j >= 1; j--) {
-      dist[j] = dist[j] * q + dist[j - 1] * p;
-    }
-    dist[0] *= q;
-  }
-  // Y side: P(Y ≤ n − k), the plain sum of the states kept.
-  if (useComplement) for (let j = 0; j <= limit; j++) tail += dist[j];
-  return Math.min(1, Math.max(0, tail));
-}
-
-/** Are the source species detected in the target as the contamination
-    model predicts? Poisson-binomial detection test over EVERY species
-    present in the source — no abundance pre-filter is needed because
-    the test self-regulates: rare species (low λ) contribute almost
-    nothing to the variance and roughly equal weight to expected and
-    observed missing counts, so they don't bias the Z-score. Including
-    the full source profile increases statistical power vs. the older
-    "top 80%" heuristic. */
-export function missingAbundantFromSource(ab, source, target, rate) {
-  if (!ab) return null;
-  const srcKey = resolveSample(ab, source);
-  const tgtKey = resolveSample(ab, target);
-  if (!srcKey || !tgtKey) return null;
-
-  // Adaptive empirical LOD for the target — the smallest non-zero
-  // abundance observed in this specific sample. Falls back to a
-  // conservative 1e-5 if the target has zero or one species: a lone
-  // species normalises to exactly 1, an "LOD" of one read under which
-  // every source species is expected to be missed — so 29 misses out of
-  // 30 used to pass as Poisson noise (p ≈ 0.996).
-  const targetValues = [];
-  ab.species.forEach((sp) => {
-    const v = ab.matrix[sp][tgtKey] || 0;
-    if (v > 0) targetValues.push(v);
-  });
-  const targetLOD = targetValues.length >= 2 ? Math.min(...targetValues) : 1e-5;
-
-  // Poisson-binomial detection test — we model the target as a count
-  // process with depth N ≈ 1 / target_LOD (since the LOD is roughly the
-  // smallest detectable relative abundance, ≈ 1 read out of N). For each
-  // source species the expected number of reads under H_real (genuine
-  // contamination at this rate) is λ = N × rate × source = expected /
-  // target_LOD. The probability the species is missed by Poisson sampling
-  // alone is e^(-λ); the probability of being detected is 1 - e^(-λ).
-  // Across all evaluable species the number of misses is a Poisson-
-  // binomial sum — its mean is Σ p_miss and its variance is
-  // Σ p_miss × p_detect. We compare the observed miss count to that
-  // expectation (one-sided normal approximation) and report a p-value.
-  let missing = 0;
-  let expectedMissing = 0;
-  let variance = 0;
-  let evaluated = 0;
-  let coreSize = 0;
-  const missProbs = [];
-  ab.species.forEach((sp) => {
-    const ys = ab.matrix[sp][srcKey] || 0;
-    if (ys <= 0) return;
-    coreSize++;
-    const xs = ab.matrix[sp][tgtKey] || 0;
-    const expected = (rate || 0) * ys;
-    if (expected <= 0) return;
-    const lambda = expected / targetLOD;
-    const pMiss = Math.exp(-lambda);
-    expectedMissing += pMiss;
-    variance += pMiss * (1 - pMiss);
-    missProbs.push(pMiss);
-    evaluated++;
-    if (xs < targetLOD) missing++;
-  });
-  const sigma = Math.sqrt(variance);
-  const zScore = sigma > 0 ? (missing - expectedMissing) / sigma : 0;
-  // One-sided p-value: P(X ≥ missing) under H_real. The normal
-  // approximation `0.5 × erfc(z/√2)` that used to stand here is badly
-  // wrong in exactly the regime this test lives in — most λ are ≪ 1, so
-  // the Poisson-binomial is heavily skewed and nowhere near normal. It
-  // reported p = 3.3e-167 where the exact value is 1.9e-23, and it flipped
-  // the 0.05 decision on real events. The exact DP is O(n × tail) with n a
-  // few hundred, so there is no reason to approximate.
-  const pValue = poissonBinomialUpperTail(missProbs, missing);
-  return {
-    count: missing,
-    evaluated,
-    targetLOD,
-    coreSize,
-    expectedMissing,
-    sigma,
-    zScore,
-    pValue,
-  };
-}
+// The scatter of an event and its line diagnostics — buildScatter,
+// lineDiagnostics, pointsAboveLine, spearmanRho, poissonBinomialUpperTail,
+// missingAbundantFromSource — live in src/diagnostics.js with
+// resolveSample, matchSpeciesName and automaticScore: pure functions that
+// the unit tests can call, together with whatever is built on them,
+// without this file exporting more (see the re-export at the top).
 
 /** A cascade is suspected when event A→B has many points above the line AND
     A is itself flagged as contaminated (C→A).  The points above A→B's line
