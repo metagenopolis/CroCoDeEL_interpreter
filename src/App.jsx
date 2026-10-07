@@ -28686,6 +28686,11 @@ const defaultFilter = () => ({
                           setMetadata(null);
                           setPlateMap(null);
                           setSelId(null);
+                          // The study goes with the rest: kept, it was
+                          // hidden with the emptied files bar, and the next
+                          // events file's "# study:" line was ignored for
+                          // it, its curation exported under the old title.
+                          setAnalysisTitle("");
                           setErr(null);
                           setTab("overview");
                         },
