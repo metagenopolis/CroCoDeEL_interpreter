@@ -351,6 +351,14 @@ export function sessionFromLegacyMain(main, ab) {
 
 /* ----------------------------------------------------------- UI state */
 
+/** The values the filter bar offers (VERDICT_OPTIONS,
+    SAMPLE_VERDICT_OPTIONS and the subject / group / plate selects of
+    App.jsx). */
+const FILTER_VERDICTS = ["pending", "true_positive", "false_positive", "uncertain"];
+const FILTER_SAMPLE_VERDICTS = ["pending", "contaminated", "correct", "uncertain"];
+const FILTER_RELATIONS = ["any", "same", "different"];
+const FILTER_ADJACENCY = ["any", "adjacent", "non-adjacent"];
+
 /** A filter read back from a stored session or a session file, merged
     over the current defaults (`defaults`, AppMain's defaultFilter()):
     a field the file lacks — or holds with the wrong type — gets its
@@ -358,16 +366,24 @@ export function sessionFromLegacyMain(main, ab) {
     filter.q.trim()), so fields added since, such as lowAbFilter, come
     with their default. Earlier shapes are promoted: a single `verdict`
     string to the `verdicts` list, the hideRelated / adjacentOnly
-    booleans to the tri-state strings. */
+    booleans to the tri-state strings.
+
+    The verdict lists and the subject / group / plate choices keep only
+    the values the filter bar offers: any other text used to come back
+    as it was, and the events HTML report prints them in its "Filter
+    applied" banner, so a crafted session file put its own markup and
+    script into the report. */
 export function restoreFilter(saved, defaults) {
   const f = isObj(saved) ? saved : {};
   const d = defaults;
   const strings = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
+  const listOf = (v, allowed) => Array.isArray(v) && v.every((x) => allowed.includes(x));
+  const oneOf = (v, allowed, fallback) => (allowed.includes(v) ? v : fallback);
   const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
   const str = (v, fallback) => (typeof v === "string" ? v : fallback);
   let verdicts;
-  if (strings(f.verdicts)) verdicts = f.verdicts;
-  else if (typeof f.verdict === "string" && f.verdict && f.verdict !== "all") verdicts = [f.verdict];
+  if (listOf(f.verdicts, FILTER_VERDICTS)) verdicts = f.verdicts;
+  else if (FILTER_VERDICTS.includes(f.verdict)) verdicts = [f.verdict];
   else verdicts = [...d.verdicts];
   const side = (v) => (v === "source" || v === "target" ? v : "either");
   return {
@@ -377,11 +393,13 @@ export function restoreFilter(saved, defaults) {
     minRate: num(f.minRate, d.minRate),
     minIntroduced: num(f.minIntroduced, d.minIntroduced),
     verdicts,
-    sampleVerdicts: strings(f.sampleVerdicts) ? f.sampleVerdicts : [...d.sampleVerdicts],
+    sampleVerdicts: listOf(f.sampleVerdicts, FILTER_SAMPLE_VERDICTS)
+      ? f.sampleVerdicts
+      : [...d.sampleVerdicts],
     sampleVerdictsSide: side(f.sampleVerdictsSide),
-    subject: str(f.subject, f.hideRelated ? "different" : d.subject),
-    group: str(f.group, d.group),
-    adjacent: str(f.adjacent, f.adjacentOnly ? "adjacent" : d.adjacent),
+    subject: oneOf(f.subject, FILTER_RELATIONS, f.hideRelated ? "different" : d.subject),
+    group: oneOf(f.group, FILTER_RELATIONS, d.group),
+    adjacent: oneOf(f.adjacent, FILTER_ADJACENCY, f.adjacentOnly ? "adjacent" : d.adjacent),
     // Optional sample-list scope (Network drill-ins).
     scopeSamples: strings(f.scopeSamples) ? f.scopeSamples : null,
     scopeSide: side(f.scopeSide),

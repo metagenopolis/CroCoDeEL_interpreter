@@ -27512,6 +27512,9 @@ const defaultFilter = () => ({
     // Build a one-paragraph summary of the active filter so the reader
     // knows what subset they're looking at. Only mentions fields that
     // diverge from the defaults; returns null when nothing is active.
+    // Every value is escaped: the filter comes back from a stored
+    // session or a session file (restoreFilter keeps only the values
+    // the filter bar offers), and markup in it ran in the report.
     const filterSummary = (() => {
       if (!reportFilter) return null;
       const parts = [];
@@ -27541,17 +27544,17 @@ const defaultFilter = () => ({
           pending: "pending",
         };
         parts.push(
-          `verdict: ${reportFilter.verdicts.map((v) => labels[v] || v).join(", ")}`,
+          `verdict: ${reportFilter.verdicts.map((v) => escapeHTML(labels[v] || v)).join(", ")}`,
         );
       }
       if (reportFilter.subject && reportFilter.subject !== "any") {
-        parts.push(`subject: ${reportFilter.subject}`);
+        parts.push(`subject: ${escapeHTML(reportFilter.subject)}`);
       }
       if (reportFilter.group && reportFilter.group !== "any") {
-        parts.push(`group: ${reportFilter.group}`);
+        parts.push(`group: ${escapeHTML(reportFilter.group)}`);
       }
       if (reportFilter.adjacent && reportFilter.adjacent !== "any") {
-        parts.push(`plate: ${reportFilter.adjacent}`);
+        parts.push(`plate: ${escapeHTML(reportFilter.adjacent)}`);
       }
       return parts.length ? parts.join(" · ") : null;
     })();

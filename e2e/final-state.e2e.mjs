@@ -4,6 +4,8 @@
 
      - clearing the session clears its study title too, so the next
        events file's "# study:" line names the study;
+     - a session file whose filter holds markup brings none of it into
+       the events HTML report;
 
    The stored state is read from IndexedDB, as the app reads it
    (src/persistence.js).
@@ -19,6 +21,7 @@ import {
   launchBrowser,
   newPage,
   loadDemo,
+  openTab,
   tsvInput,
   check,
   finish,
@@ -67,6 +70,39 @@ async function upload(page, i, name, text) {
     buffer: Buffer.from(text),
   });
   await page.waitForTimeout(1500);
+}
+
+/** Import a session JSON through the files bar, replacing the session
+    when the app asks. */
+async function importSession(page, json) {
+  await page
+    .locator('input[accept*="json"]')
+    .first()
+    .setInputFiles({
+      name: "session.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(typeof json === "string" ? json : JSON.stringify(json)),
+    });
+  await page.waitForTimeout(1500);
+  const ask = page.getByRole("dialog", { name: "Replace your session with the imported one?" });
+  if (await ask.count()) {
+    await ask.getByRole("button", { name: "Replace session" }).click();
+    await page.waitForTimeout(1000);
+  }
+}
+
+/** Click a download button and return the file's text (null if none). */
+async function download(page, button) {
+  const [file] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+    button.click(),
+  ]);
+  return file ? readFileSync(await file.path(), "utf8") : null;
+}
+
+/** The session JSON of the files bar. */
+async function exportSession(page) {
+  return download(page, page.getByRole("button", { name: /^Download session$/ }).first());
 }
 
 /** The title in the study pill of the files bar ("" when it is hidden). */
@@ -125,6 +161,36 @@ try {
       "FS and it is the stored title",
     );
   });
+
+  /* A crafted session file: its filter values never reach the report. */
+  let crafted = null;
+  await scenario("FS crafted filter (export)", async (page) => {
+    crafted = JSON.parse(await exportSession(page));
+    const f = crafted.ui_state.filter;
+    f.subject = `<img src=x onerror="document.title='XSS-'+document.title">`;
+    f.group = "<b id=xssgroup>g</b>";
+    f.adjacent = "<i id=xssadj>a</i>";
+    f.verdicts = ["true_positive", "<u id=xssverdict>v</u>"];
+  });
+  await scenario(
+    "FS crafted filter stays out of the HTML report",
+    async (page) => {
+      await importSession(page, crafted);
+      check(
+        (await page.getByText("Failed to import session").count()) === 0,
+        "FS the crafted session imports (its filter falls back to the defaults)",
+      );
+      await openTab(page, "Export");
+      const html = await download(page, page.getByRole("button", { name: /Download events HTML/i }).first());
+      const banner = (html || "").match(/<div class="filter-banner">[\s\S]{0,300}/)?.[0] || "";
+      check(
+        !!html && !/<(img|b|i|u) id=xss|<img src=x/.test(html),
+        "FS the events HTML report holds none of the filter's markup",
+        banner.replace(/\s+/g, " ").slice(0, 200),
+      );
+    },
+    { demo: false },
+  );
 } finally {
   await browser.close();
   stopServer();
