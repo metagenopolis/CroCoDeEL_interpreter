@@ -48,6 +48,10 @@ function memoryStore() {
           store.writes.push({ writer, keys: ["now"] });
           return true;
         },
+        // The revision the tabs mirror in localStorage (src/storage.js).
+        peekRev() {
+          return records[RECORD_KEYS.curation]?.rev ?? null;
+        },
         async writeAb(record) {
           if (store.failAb) throw new DOMException("full", "QuotaExceededError");
           records[RECORD_KEYS.ab] = structuredClone(record);
@@ -292,6 +296,29 @@ describe("autosave — page hidden or closed (B1.3c)", () => {
     a.change({ tab: "export", rawEvents: a.state.rawEvents.map((e) => ({ ...e, notes: "n" })) });
     await settle();
     expect(a.last().state).toBe("saved");
+  });
+
+  it("pagehide writes nothing when another tab has saved since, even without the session channel (B1.3b)", async () => {
+    const a = openTab("A", null);
+    a.change(session());
+    await settle();
+    const b = openTab("B");
+    b.saver.dispose(); // no channel: nothing tells B that A saves
+    const statuses = [];
+    const b2 = createAutosave({
+      backend: { ...store.backend("B2"), openChannel: undefined },
+      initialState: b.state,
+      rev: store.records.curation.rev,
+      onStatus: (st) => statuses.push(st),
+    });
+    a.change({ rawEvents: a.state.rawEvents.map((e) => (e.id === 0 ? { ...e, verdict: "true_positive" } : e)) });
+    await settle();
+    // B evaluates another event and its page goes at once: its last
+    // write cannot wait for the revision check.
+    b2.update({ ...b.state, rawEvents: b.state.rawEvents.map((e) => (e.id === 1 ? { ...e, verdict: "false_positive" } : e)) });
+    b2.flushOnPageHide();
+    expect(sessionFromRecords(store.records).rawEvents.map((e) => e.verdict)).toEqual(["true_positive", "pending"]);
+    expect(statuses[statuses.length - 1].state).toBe("conflict");
   });
 
   it("visibilitychange to hidden writes at once, with the revision check", async () => {

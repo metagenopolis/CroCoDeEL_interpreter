@@ -12,11 +12,13 @@
        flushOnPageHide on pagehide): a T pressed half a second before a
        reload used to be lost with the 1 s debounce;
      - every write of the session records checks the stored revision
-       (src/storage.js). When another tab has written since — or says so
-       on the session channel — this tab stops saving and reports a
-       conflict: it must not overwrite the newer session with its own
-       older copy. The UI record is not checked (last writer wins), but a
-       tab in conflict writes nothing at all;
+       (src/storage.js); the last one, on pagehide, cannot wait for that
+       check and reads the revision the tabs mirror in localStorage
+       instead. When another tab has written since — or says so on the
+       session channel — this tab stops saving and reports a conflict: it
+       must not overwrite the newer session with its own older copy. The
+       UI record is not checked (last writer wins), but a tab in conflict
+       writes nothing at all;
      - a failed write (full quota, storage gone) is reported and retried
        on the next change, at most every RETRY_AFTER_FAILURE_MS: the
        session stays "not saved" until a write succeeds. The abundance
@@ -73,8 +75,9 @@ const pick = (s, fields) => Object.fromEntries(fields.map((f) => [f, s?.[f]]));
 
 /** Start the autosave of a session.
 
-      backend       { writer, writeSession, writeSessionNow, writeAb,
-                      deleteAb, writeUi, openChannel } (src/storage.js)
+      backend       { writer, writeSession, writeSessionNow, peekRev,
+                      writeAb, deleteAb, writeUi, openChannel }
+                      (src/storage.js)
       initialState  the state the stored records hold, as read on boot
                     (null when nothing is stored)
       rev, abToken  the stored revision and abundance-table token
@@ -277,14 +280,23 @@ export function createAutosave({
     },
     /** Write now, synchronously and without the revision check: the page
         is going away and its callbacks may never run (writeSessionNow).
-        Counted as written, so a page restored from the back-forward
-        cache goes on from the revision it wrote. */
+        The revision mirrored by the tabs (peekRev) is read instead: when
+        another tab has written since this one last read or wrote — with
+        no session channel, or before its notice arrived — nothing is
+        written, as the check would have decided. Counted as written, so
+        a page restored from the back-forward cache goes on from the
+        revision it wrote. */
     flushOnPageHide() {
       if (stopped) return;
       clearTimeout(timer);
       timer = null;
       const next = plan();
       if (!next) return;
+      const ahead = backend.peekRev?.();
+      if (ahead != null && ahead > confirmedRev) {
+        conflict();
+        return;
+      }
       const { s, d, session, nextToken } = next;
       const nextRev = confirmedRev + 1;
       const issued = backend.writeSessionNow({

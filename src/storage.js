@@ -186,6 +186,42 @@ function putAll(store, { puts, dels }, rev) {
   for (const key of dels) store.delete(key);
 }
 
+/* --------------------------------------------- the revision, mirrored */
+
+/** The session's revision is mirrored in localStorage by every tab that
+    writes it. A page being hidden for good writes without the revision
+    check (writeSessionNow: its IndexedDB callbacks may never run), and
+    without BroadcastChannel nothing told it that another tab had written
+    since: its older copy then replaced that tab's work. localStorage is
+    read synchronously, in that last moment (peekRev). */
+const REV_KEY = "crocodeel-interpreter-rev";
+
+/** Mirror `rev`. It never goes back — a tab that read the session just
+    before another wrote it must not hide that write — unless `reset`:
+    nothing is stored at all (a deleted database). A mirror left ahead
+    by a last write that failed is caught up by the next write. */
+function mirrorRev(rev, reset = false) {
+  try {
+    const known = peekRev();
+    if (reset || known === null || rev > known) {
+      window.localStorage.setItem(REV_KEY, String(rev));
+    }
+  } catch {
+    // no localStorage: the channel and the revision check remain
+  }
+}
+
+/** The last revision any tab wrote, as mirrored; null when unknown. */
+export function peekRev() {
+  try {
+    const v = window.localStorage.getItem(REV_KEY);
+    const n = v == null ? NaN : Number(v);
+    return Number.isInteger(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------------------------- legacy localStorage */
 
 /** Read a single legacy localStorage key, transparently decompressing
@@ -236,7 +272,10 @@ function migrateSession(db, session, abFromLocal) {
     store.put({ ...uiRecord(session), savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
     if (abFromLocal) store.put(abundanceRecord(abFromLocal, null), RECORD_KEYS.ab);
   };
-  return settled(tx).then(() => migrated);
+  return settled(tx).then(() => {
+    if (migrated) mirrorRev(1);
+    return migrated;
+  });
 }
 
 /** Stop naming a lost abundance table (persistence.js' forgetLostTable),
@@ -289,7 +328,10 @@ export async function readStoredSession() {
         fromLocal = !!session;
       }
     }
-    if (!session) return { session: null, rev: 0, abToken: null, inRecords: true };
+    if (!session) {
+      mirrorRev(0, true);
+      return { session: null, rev: 0, abToken: null, inRecords: true };
+    }
     try {
       await migrateSession(db, session, fromLocal ? abFromLocal : null);
       if (fromLocal) removeLegacyKeys();
@@ -297,6 +339,7 @@ export async function readStoredSession() {
       // Read it as it is; the first save writes every current record
       // (and drops the earlier layout's copies: writeSession).
       console.warn("[crocodeel] session migration failed:", e?.message);
+      mirrorRev(0, true);
       return { session, rev: 0, abToken: null, inRecords: false };
     }
     records = await readRecords(db);
@@ -312,6 +355,8 @@ export async function readStoredSession() {
       console.warn("[crocodeel] could not forget the lost abundance table:", e?.message);
     }
   }
+  // Known from now on (a deleted localStorage loses the mirror).
+  mirrorRev(rev);
   return { session, rev, abToken, inRecords: true };
 }
 
@@ -340,6 +385,7 @@ export function writeSession(writes, expectedRev) {
     };
     return settled(tx).then(() => {
       if (conflict !== null) return { status: "conflict", rev: conflict };
+      mirrorRev(rev);
       if (writes.dels.includes(LEGACY_MAIN_KEY)) removeLegacyKeys();
       return { status: "ok", rev };
     });
@@ -349,9 +395,9 @@ export function writeSession(writes, expectedRev) {
 /** The same writes, plus the abundance table and the UI state, issued
     synchronously and committed at once — for a page being hidden for
     good (pagehide), whose callbacks may never run: a revision check
-    would need one. The revision is the next one; a write by another tab
-    in the last moments before this one would not be detected. Returns
-    false when the database is not open. */
+    would need one. The caller checks the mirrored revision first
+    (peekRev); the revision written is the next one, mirrored at once.
+    Returns false when the database is not open. */
 export function writeSessionNow({ writes, rev, ab, ui }) {
   if (!dbHandle) return false;
   try {
@@ -361,6 +407,7 @@ export function writeSessionNow({ writes, rev, ab, ui }) {
     if (ab) store.put(ab, RECORD_KEYS.ab);
     if (ui) store.put({ ...ui, savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
     if (typeof tx.commit === "function") tx.commit();
+    if (writes) mirrorRev(rev);
     return true;
   } catch {
     return false;
@@ -394,6 +441,7 @@ export const idbBackend = {
   writer: WRITER_ID,
   writeSession,
   writeSessionNow,
+  peekRev,
   writeAb,
   deleteAb,
   writeUi,

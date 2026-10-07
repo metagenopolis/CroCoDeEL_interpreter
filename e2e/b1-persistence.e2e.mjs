@@ -780,6 +780,36 @@ try {
     );
   });
 
+  /* B1.3b + B1.3c The last save of a page that goes away cannot wait for
+     the revision check: without BroadcastChannel, it used to write the
+     page's older copy over another tab's newer session. */
+  await scenario("B1.3b two tabs, reload right after a change", async (page, ctx) => {
+    await saved(page);
+    await page.addInitScript(() => {
+      delete window.BroadcastChannel;
+    });
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    const b = await ctx.newPage();
+    await b.goto(BASE, { waitUntil: "networkidle" });
+    await b.waitForTimeout(1500);
+    await mark(b, "true positive", 0);
+    await saved(b);
+    // The first tab, which has not heard of it, marks another event and
+    // reloads at once.
+    await openTab(page, "Events");
+    await page.locator('button[title="mark as false positive"]').nth(3).click();
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    const s = await storedSession(page);
+    check(
+      s.rawEvents.filter((e) => e.verdict === "true_positive").length === 1 && s.rawEvents.every((e) => e.verdict !== "false_positive"),
+      "B1.3b a page reloaded right after a change does not write its older copy over the other tab's save",
+      JSON.stringify(s.rawEvents.filter((e) => e.verdict !== "pending").map((e) => `${e.source}→${e.target} ${e.verdict}`)),
+    );
+    check((await overviewStats(page)).tp === 1, "B1.3b …and comes back with the other tab's TP");
+  });
+
   /* B1.3c A T just before a reload. */
   await scenario("B1.3c T then reload", async (page) => {
     await saved(page);
