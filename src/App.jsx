@@ -63,6 +63,7 @@ import {
   buildCuratedAbundance,
   curatedAbundanceProvenance,
   hasInputValues,
+  curationOrigin,
 } from "./exports.js";
 import {
   FolderOpen,
@@ -20826,8 +20827,15 @@ const HelpTab = ({ onStartTour }) => {
                   plate position, per-side event counts, per-side TP /
                   FP / Uncertain / Pending breakdown, max
                   contamination rate, max introduced %, plus the
-                  sample-level verdict, action and notes. Same data
-                  the Samples-tab toolbar export produces.
+                  sample-level verdict and action as every view shows
+                  them — automatic values and the Not contaminated +
+                  Keep default of a sample no event targets included —
+                  each followed by its origin (<code>verdict_origin</code>,{" "}
+                  <code>action_origin</code>: <em>manual</em> when you
+                  set it, <em>automatic</em> when the events that target
+                  the sample decide it, <em>default</em> for a sample no
+                  event targets, empty without a value), and the notes.
+                  Same data the Samples-tab toolbar export produces.
                 </li>
                 <li>
                   <strong>Events HTML report</strong> — self-contained
@@ -22669,7 +22677,9 @@ const ExportTab = ({
               "plate position, per-side event counts, per-side TP / " +
               "FP / Uncertain / Pending breakdown, max contamination " +
               "rate and max introduced %, plus the sample-level " +
-              "verdict, action and notes."
+              "verdict and action, each with its origin (manual, " +
+              "automatic, or the default of a sample no event " +
+              "targets), and the notes."
             }
             action="Download samples TSV"
             onClick={onExportSamplesTSV}
@@ -26027,13 +26037,6 @@ const defaultFilter = () => ({
     );
   };
 
-  /** Sample-level curation export. One row per sample in the union of
-      events (source or target) and the abundance table, with every
-      column the Samples tab surfaces: metadata facets, plate position,
-      per-side event counts and evaluation breakdown, max rate, max
-      introduced %, plus the curation triplet (verdict, action, notes).
-      Empty / missing values become empty cells; the rows aren't
-      filtered so downstream tooling can pivot on whatever it needs. */
   /** Preview counts for the Export tab card, recomputed on every curation
       change: no table is built (`matrix: false`), only the samples and
       species it would drop are counted. */
@@ -26120,6 +26123,16 @@ const defaultFilter = () => ({
     return { nodes: ids.size, edges: filtered.length };
   }, [filtered]);
 
+  /** Sample-level curation export. One row per sample in the union of
+      events (source or target) and the abundance table, with every
+      column the Samples tab surfaces: metadata facets, plate position,
+      per-side event counts and evaluation breakdown, max rate, max
+      introduced %, plus the curation: verdict and action as every view
+      shows them (the effective curation: automatic values and the
+      default of a never-targeted sample included), each followed by its
+      origin — manual, automatic or default (curationOrigin) — and the
+      notes. Empty / missing values become empty cells; the rows aren't
+      filtered so downstream tooling can pivot on whatever it needs. */
   const exportSamplesReport = () => {
     const sampleIds = new Set();
     (events || []).forEach((e) => {
@@ -26191,7 +26204,9 @@ const defaultFilter = () => ({
       "max_target_rate",
       "max_target_introduced_pct",
       "verdict",
+      "verdict_origin",
       "action",
+      "action_origin",
       "notes",
     ];
     const lines = [];
@@ -26240,7 +26255,9 @@ const defaultFilter = () => ({
             num(a.maxTargetRate, 6),
             num(a.maxTargetIntroducedPct, 2),
             c.verdict || "",
+            curationOrigin(c, "verdict", a.asTarget > 0),
             c.action || "",
+            curationOrigin(c, "action", a.asTarget > 0),
             c.notes,
           ]
             .map(tsvCell)

@@ -18,6 +18,10 @@
              Download gives the input back as it was; a session saved
              before the column sums were kept exports fractions, and the
              card says so;
+     - B2.4  the samples TSV writes every sample's verdict and action as
+             the views show them, each with its origin (manual, automatic,
+             default), in agreement with the samples HTML report's "auto"
+             and "default" tags;
      - B2.6  a hand-edited session whose metadata entry keeps a string as
              its row: the metadata card does not list its characters as
              columns, the Validate panel shows no "0: a" pill, and the
@@ -186,6 +190,20 @@ async function curatedCard(page) {
   const text = await page.locator("body").innerText();
   const m = text.match(/Curated abundance table — (\d+) of (\d+) samples/);
   return { kept: Number(m?.[1]), total: Number(m?.[2]), text };
+}
+
+/** The samples HTML report's rows: { id: [verdict tag, action tag] },
+    a tag being "auto", "default" or "" (a value set by hand, or none). */
+function htmlReportTags(html) {
+  const tags = {};
+  for (const row of (html || "").split("<tr>").slice(1)) {
+    const tds = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1]);
+    const id = tds[0]?.match(/>([^<]*)<\/div>/)?.[1];
+    if (!id || tds.length < 10) continue;
+    const tag = (td) => td.match(/>(auto|default)<\/span>/)?.[1] || "";
+    tags[id] = [tag(tds[8]), tag(tds[9])];
+  }
+  return tags;
 }
 
 /** Import a session JSON through the files bar. */
@@ -486,6 +504,79 @@ try {
       `${rows[0][0]}; ${sums.slice(0, 3).map((t) => t.toFixed(12)).join(", ")}`,
     );
   }, { demo: false });
+
+  /* ---------------- B2.4 the origin of each sample value
+     The samples TSV wrote the curator's values, the automatic ones and
+     the Not contaminated + Keep default of a sample no event targets
+     alike: a sample nobody reviewed read as a curated "correct / keep". */
+  await scenario("B2.4", async (page) => {
+    await openTab(page, "Events");
+    const mark = (title) => page.locator(`button[title="mark as ${title}"]`);
+    for (const [title, i] of [
+      ["true positive", 0],
+      ["false positive", 1],
+      ["uncertain", 2],
+    ]) {
+      await mark(title).nth(i).click();
+      await page.waitForTimeout(300);
+    }
+    const events = table((await exportFile(page, /Download events TSV/i))?.text);
+    const byTarget = new Map();
+    for (const e of events) byTarget.set(e.target, [...(byTarget.get(e.target) || []), e.verdict]);
+    const tpTarget = events.find((e) => e.verdict === "true_positive")?.target;
+    const untargeted = demoEvents.events.every((e) => e.target !== "40D89") ? "40D89" : null;
+    // By hand: Uncertain on a sample no event targets, Keep on the TP target.
+    const row = (id) =>
+      page
+        .locator("tr")
+        .filter({ has: page.locator('button[aria-label="Set verdict to Pending"]') })
+        .filter({ has: page.getByText(id, { exact: true }) });
+    await openTab(page, "Samples");
+    await row(untargeted).locator('button[aria-label="Set verdict to Uncertain"]').click();
+    await page.waitForTimeout(300);
+    await row(tpTarget).locator(`button[aria-label="Keep ${tpTarget}"]`).click();
+    await page.waitForTimeout(800);
+
+    const samplesFile = await exportFile(page, /Download samples TSV/i);
+    const header =
+      (samplesFile?.text || "").split("\n").find((l) => l && !l.startsWith("#"))?.split("\t") || [];
+    check(
+      header.slice(-5).join(",") === "verdict,verdict_origin,action,action_origin,notes",
+      "B2.4 the samples TSV has verdict_origin and action_origin next to the values",
+      header.slice(-5).join(","),
+    );
+    const expected = (id) => {
+      if (id === untargeted) return ["uncertain", "manual", "", ""];
+      if (id === tpTarget) return ["contaminated", "automatic", "keep", "manual"];
+      const v = byTarget.get(id);
+      if (!v) return ["correct", "default", "keep", "default"];
+      if (v.includes("true_positive")) return ["contaminated", "automatic", "suppress", "automatic"];
+      if (v.includes("uncertain")) return ["uncertain", "automatic", "", ""];
+      if (v.includes("false_positive")) return ["correct", "automatic", "", ""];
+      return ["", "", "", ""];
+    };
+    const rows = table(samplesFile?.text);
+    const values = (r) => [r.verdict, r.verdict_origin, r.action, r.action_origin];
+    const wrong = rows.filter((r) => values(r).join() !== expected(r.sample_id).join());
+    const kinds = new Set(rows.flatMap((r) => [r.verdict_origin, r.action_origin]));
+    check(
+      rows.length === 91 && wrong.length === 0 && ["manual", "automatic", "default"].every((k) => kinds.has(k)),
+      "B2.4 each sample's verdict and action carry their origin: manual, automatic (from the events) or default",
+      wrong.slice(0, 3).map((r) => `${r.sample_id}: ${values(r).join("/")}`).join("; "),
+    );
+    // The same origins as the samples HTML report's tags.
+    const html = await exportFile(page, /Download samples HTML/i);
+    const tags = htmlReportTags(html?.text);
+    const tagOf = { automatic: "auto", default: "default", manual: "", "": "" };
+    const disagree = rows.filter(
+      (r) => (tags[r.sample_id] || []).join() !== [tagOf[r.verdict_origin], tagOf[r.action_origin]].join(),
+    );
+    check(
+      Object.keys(tags).length === rows.length && disagree.length === 0,
+      "B2.4 they agree with the samples HTML report's auto / default tags",
+      disagree.slice(0, 3).map((r) => `${r.sample_id}: ${JSON.stringify(tags[r.sample_id])}`).join("; "),
+    );
+  });
 
   /* ---------------- B2.6 metadata entries whose row is not a row
      Every entry but the last keeps the string "abc" as its row, as a

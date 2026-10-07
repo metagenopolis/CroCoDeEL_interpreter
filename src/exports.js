@@ -432,3 +432,24 @@ export function curatedAbundanceProvenance(ab, cur, opts = {}) {
   }
   return lines.join("\n") + "\n";
 }
+
+/* ---------- samples ---------- */
+
+/** Where a sample's verdict or action (`field`) comes from, as the samples
+    TSV writes it next to the value:
+      manual     the curator set it;
+      automatic  the rule derived it from the evaluations of the events
+                 that target the sample (src/curation.js);
+      default    the Not contaminated + Keep of a sample no event targets
+                 (buildEffectiveSampleCuration), which is not a decision;
+      ""         no value.
+    `entry` is the sample's effective curation; `targeted` says whether an
+    event targets it. The samples HTML report marks the same values "auto"
+    and "default", the Samples tab "auto". The TSV used to write the three
+    kinds alike, so a never-reviewed sample read as a curated Keep. */
+export function curationOrigin(entry, field, targeted) {
+  const value = entry?.[field];
+  if (value == null || value === "" || value === "pending") return "";
+  if (!entry[`${field}Auto`]) return "manual";
+  return targeted ? "automatic" : "default";
+}
