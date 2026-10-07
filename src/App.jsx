@@ -197,8 +197,10 @@ export function flagSample(sampleId, metadata) {
   if (meta.timepoint) flags.timepoint = meta.timepoint;
   if (meta.groupId) flags.groupId = meta.groupId;
 
-  // Other extra columns the user provided that aren't in our standard set
-  if (meta.extra) {
+  // Other extra columns the user provided that aren't in our standard set.
+  // Only a plain object is a row: a hand-edited `extra` string listed its
+  // characters as "0: a", "1: b" pills.
+  if (meta.extra && typeof meta.extra === "object" && !Array.isArray(meta.extra)) {
     // `cols` records which header each standard field came from, so those
     // columns are not repeated in `other`. It is always present on a
     // parseMetadata result, but a hand-edited session JSON can carry a
@@ -20443,9 +20445,13 @@ const HelpTab = ({ onStartTour }) => {
             are matched like the metadata's: exactly, ignoring case, spaces,
             underscores, hyphens and dots. A sample placed on more than one
             row keeps its first well; the plate map card names the repeated
-            ids. It also says when two samples share a well, and when no
-            plate column was recognized: every sample is then on one plate,
-            so samples of different plates would look adjacent.
+            ids. It also says when two samples share a well. A file without
+            a plate column is read as a single plate, P1 (the card's column
+            line then lists no plate): that is the usual one-plate study, so
+            the card warns about it only when the file suggests several
+            plates — a header containing "plate" that is not one of the
+            names below, or two samples in one well — since samples of
+            different plates would then look adjacent.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
