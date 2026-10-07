@@ -37,7 +37,13 @@
      - B2.6  a hand-edited session whose metadata entry keeps a string as
              its row: the metadata card does not list its characters as
              columns, the Validate panel shows no "0: a" pill, and the
-             metadata download works.
+             metadata download works; the plate map card warns about a
+             missing plate column exactly when the Help says it does.
+
+   Also: the curated count table through a reload and a session file
+   imported in another browser, a table of decimals, percentages,
+   counts and NA / empty / negative cells with the "Drop species" box
+   ticked and not, and the events TSV of a filtered subset.
 
    Usage:  npm run build && node e2e/b2-exports.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -698,6 +704,96 @@ try {
     );
   });
 
+  /* The parser's firstHeader, colSums and integerCols must live through
+     what a session goes through — the browser's autosave and a reload,
+     the session file imported in another browser — or the export falls
+     back to fractions. */
+  await scenario("B2.3 persistence", async (page) => {
+    await upload(page, 1, "species_abundance.tsv", demoCounts());
+    await suppressSamples(page, 2);
+    const before = (await curatedDownload(page)).table;
+    // The autosave is debounced by a second.
+    await page.waitForTimeout(2500);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(2500);
+    const reloaded = (await curatedDownload(page)).table;
+    check(
+      !!before && /^id_mgs\t/.test(before) && reloaded === before,
+      "B2.3 after a reload, the curated count table is the same file",
+      (reloaded || "none").split("\n")[0].slice(0, 40),
+    );
+    const session = await downloadVia(page, page.getByRole("button", { name: /^Download session$/ }).first());
+    const other = await newPage(browser);
+    try {
+      await importSession(other.page, JSON.parse(session?.text || "{}"));
+      const imported = (await curatedDownload(other.page)).table;
+      check(
+        !!before && imported === before,
+        "B2.3 imported from the session file in another browser, it is the same file too",
+        (imported || "none").split("\n")[0].slice(0, 40),
+      );
+      check(other.errors.length === 0, "B2.3 the other browser: no JS error", other.errors[0] || "");
+    } finally {
+      await other.ctx.close();
+    }
+  });
+
+  /* Decimals, exponent notation, percentages, counts and cells the parser
+     reads as 0 (NA, empty, negative) in one table; the "Drop species" box
+     ticked, then not. */
+  await scenario("B2.3 mixed table", async (page) => {
+    const input = [
+      "clade_name\tD1\tD2\tP1\tM1\tC1",
+      "sp_a\t0.25\t1.5e-3\t45.5\t12\t10",
+      "sp_b\t0.75\tNA\t54.5\t-3\t0",
+      "sp_c\t0\t0.0015\t0\t\t5",
+      "sp_d\t0\t0.997\t0\t7.25\t1",
+      "sp_e\t0\t0\t0\t5\t0",
+    ].join("\n");
+    await upload(page, 0, "contamination_events.tsv", [
+      "source\ttarget\trate\tprobability\tcontamination_specific_species",
+      "C1\tM1\t0.1\t0.9\tsp_e",
+    ].join("\n"));
+    await upload(page, 1, "species_abundance.tsv", input);
+    await openTab(page, "Events");
+    await page.locator('button[title="mark as true positive"]').first().click();
+    await page.waitForTimeout(800);
+    const inRows = input.split("\n").map((l) => l.split("\t"));
+    // What pandas or R reads in the input: a number, or 0 for a cell the
+    // interface reads as 0 (NA, empty, negative).
+    const inputNumber = (c) => (c === "" || c === "NA" || Number(c) < 0 ? 0 : Number(c));
+    const sameAsInput = (text) => {
+      const rows = (text || "").split("\n").map((l) => l.split("\t"));
+      const col = new Map(inRows[0].map((h, j) => [h, j]));
+      const byName = new Map(inRows.slice(1).map((r) => [r[0], r]));
+      return (
+        rows[0].join() === "clade_name,D1,D2,P1,C1" &&
+        rows.slice(1).every((r) => r.slice(1).every((c, j) => Number(c) === inputNumber(byName.get(r[0])[col.get(rows[0][j + 1])])))
+      );
+    };
+    const ticked = (await curatedDownload(page)).table;
+    check(
+      sameAsInput(ticked) &&
+        ticked.split("\n").map((l) => l.split("\t")[0]).join() === "clade_name,sp_a,sp_b,sp_c,sp_d",
+      "B2.3 a mixed table comes back without M1, each value the input's (NA, empty, negative as 0), sp_e (only in M1) dropped",
+      (ticked || "none").replace(/\n/g, " / "),
+    );
+    check(
+      /^sp_a\t0\.25\t0\.0015\t45\.5\t10$/m.test(ticked || "") && /^sp_b\t0\.75\t0\t54\.5\t0$/m.test(ticked || ""),
+      "B2.3 decimals stay decimals, percentages percentages, counts integers",
+    );
+    await openTab(page, "Export");
+    await page.getByText("Drop species observed only in the suppressed samples").click();
+    await page.waitForTimeout(300);
+    const unticked = (await curatedDownload(page)).table;
+    check(
+      sameAsInput(unticked) &&
+        unticked.split("\n").map((l) => l.split("\t")[0]).join() === inRows.map((r) => r[0]).join(),
+      "B2.3 with the box unticked, every species row stays, in the input's order",
+      (unticked || "none").split("\n").map((l) => l.split("\t")[0]).join(","),
+    );
+  }, { demo: false });
+
   /* A session saved before the parser kept the column sums: the export
      can only write fractions, and the card says so. */
   await scenario("B2.3 earlier session", async (page) => {
@@ -885,6 +981,19 @@ try {
       "B2.5 the report of a filtered subset names the filter and prints no missing value",
       missingIn(filtered) || "",
     );
+    // …and the events TSV of the same subset: the matched events only,
+    // under the same "#" lines and CroCoDeEL's columns.
+    const subsetText = (await exportFile(page, /Download events TSV/i))?.text || "";
+    const subset = table(subsetText);
+    const expectedSubset = tsv.filter((r) => /63D/.test(`${r.source} ${r.target}`));
+    check(
+      subset.length > 0 &&
+        subset.length < tsv.length &&
+        JSON.stringify(subset) === JSON.stringify(expectedSubset) &&
+        subsetText.split("\n")[0] === demo("contamination_events.tsv").split("\n")[0],
+      "B2.5 the events TSV of the filtered subset holds exactly its events, under the run's # line",
+      `${subset.length} of ${tsv.length} events`,
+    );
   });
 
   /* A cascade C → A → B, an event whose target and one whose source are
@@ -979,6 +1088,36 @@ try {
       /subject/i.test(panel) && !/(^|\s)[012]:\s*[abc](\s|$)/m.test(panel),
       "B2.6 the Validate panel's sample context shows no pill made of a string's characters",
       (panel.match(/(^|\s)[012]:\s*[abc](\s|$)/m) || [""])[0].replace(/\s+/g, " ").trim(),
+    );
+  }, { demo: false });
+
+  /* The plate map card reports a missing plate column only when the
+     file suggests several plates, as the Help says: a header containing
+     "plate" that is not recognised, or two samples in one well. */
+  await scenario("B2.6 plate warning", async (page) => {
+    await upload(page, 0, "contamination_events.tsv", [
+      "source\ttarget\trate\tprobability\tcontamination_specific_species",
+      "S1\tS2\t0.1\t0.9\tsp_a",
+    ].join("\n"));
+    const warned = async (text) => {
+      await upload(page, 3, "plate_map.tsv", text);
+      return /No plate column was recognised/.test(await card(page, "plate_map.tsv").innerText());
+    };
+    check(
+      !(await warned("sample_id\twell\nS1\tA01\nS2\tA02")),
+      "B2.6 a one-plate map without a plate column loads without a warning",
+    );
+    check(
+      await warned("sample_id\twell\tPlateLabel\nS1\tA01\tX\nS2\tA02\tY"),
+      "B2.6 a map whose plate header is not recognised is reported on the card",
+    );
+    check(
+      await warned("sample_id\twell\nS1\tA01\nS2\tA01"),
+      "B2.6 so is one where two samples share a well",
+    );
+    check(
+      !(await warned("sample_id\tplate\twell\nS1\tP1\tA01\nS2\tP2\tA01")),
+      "B2.6 and not one whose plate column is recognised",
     );
   }, { demo: false });
 } finally {
