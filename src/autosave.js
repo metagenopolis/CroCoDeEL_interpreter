@@ -175,6 +175,15 @@ export function createAutosave({
     return { s, d, session, nextToken };
   };
 
+  /** Another tab's notice can arrive while one of this tab's writes is in
+      flight: the status then stays "conflict" and this tab writes no UI
+      record. Setting "saved" (or "failed") once the write settled used to
+      hide the banner of a tab that had stopped saving for good. (The
+      table of a session just written is still written: a tab that wrote
+      since read that session, and its curation record names that
+      table.) */
+  const inConflict = () => status.state === "conflict";
+
   async function write({ s, d, session, nextToken }) {
     let abFailed = status.abFailed;
     if (session) {
@@ -211,8 +220,10 @@ export function createAutosave({
       }
       saved = { ...saved, ...pick(s, SESSION_FIELDS), ab: table };
     }
+    if (inConflict()) return;
     if (d.ui) {
       await backend.writeUi(uiRecord(s));
+      if (inConflict()) return;
       saved = { ...saved, ...pick(s, UI_FIELDS) };
     }
     failedAt = null;
@@ -236,6 +247,7 @@ export function createAutosave({
     inFlight = write(next)
       .catch((e) => {
         console.warn("[crocodeel] saving the session failed:", e?.message || e);
+        if (inConflict()) return;
         failedAt = now();
         setStatus({ state: "failed", error: describeStorageError(e) });
       })

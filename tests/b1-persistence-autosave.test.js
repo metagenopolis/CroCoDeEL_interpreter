@@ -14,6 +14,9 @@ function memoryStore() {
     writes: [],
     failNext: null,
     failAb: false,
+    // A UI write that takes this long (ms), and fails when failUi is set.
+    uiDelay: 0,
+    failUi: false,
     backend(writer) {
       return {
         writer,
@@ -54,6 +57,8 @@ function memoryStore() {
           delete records[RECORD_KEYS.ab];
         },
         async writeUi(ui) {
+          if (store.uiDelay) await new Promise((resolve) => setTimeout(resolve, store.uiDelay));
+          if (store.failUi) throw new DOMException("The write was aborted", "AbortError");
           records[RECORD_KEYS.ui] = structuredClone(ui);
           store.writes.push({ writer, keys: ["ui"] });
         },
@@ -227,6 +232,35 @@ describe("autosave — two tabs (B1.3b)", () => {
     await settle();
     expect(b.last().state).toBe("conflict");
     expect(sessionFromRecords(store.records).rawEvents.map((e) => e.verdict)).toEqual(["true_positive", "true_positive"]);
+  });
+
+  it("a conflict reported while one of the tab's writes is in flight stays reported", async () => {
+    const a = openTab("A", null);
+    a.change(session());
+    await settle();
+    for (const failUi of [false, true]) {
+      const b = openTab(`B${failUi ? "2" : "1"}`);
+      store.uiDelay = 1000;
+      store.failUi = failUi;
+      // B's UI write is in flight for a second...
+      b.change({ tab: "network" });
+      await vi.advanceTimersByTimeAsync(SAVE_DELAY_MS + 10);
+      // ...when A saves an evaluation and says so.
+      a.change({ rawEvents: a.state.rawEvents.map((e) => ({ ...e, verdict: e.verdict === "true_positive" ? "uncertain" : "true_positive" })) });
+      await vi.advanceTimersByTimeAsync(SAVE_DELAY_MS + 10);
+      expect(b.last().state).toBe("conflict");
+      // B's write then settles, written or failed: B has stopped saving
+      // for good, and still says so.
+      await settle(2000);
+      expect(b.statuses.map((st) => st.state)).toEqual(["conflict"]);
+      store.uiDelay = 0;
+      store.failUi = false;
+      store.writes.length = 0;
+      b.change({ selId: 1, rawEvents: b.state.rawEvents.map((e) => ({ ...e, verdict: "false_positive" })) });
+      await settle(RETRY_AFTER_FAILURE_MS);
+      expect(store.writes).toEqual([]);
+      expect(b.last().state).toBe("conflict");
+    }
   });
 
   it("a UI-only change in one tab does not make the other one stale", async () => {
