@@ -13,6 +13,7 @@ import {
   wellLabel,
   metadataColumnsLine,
   plateColumnsLine,
+  abundanceColumnsLine,
 } from "./parsing.js";
 import {
   applyLowAbundanceFilter,
@@ -20415,10 +20416,16 @@ const HelpTab = ({ onStartTour }) => {
               to delete the{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
               line if the line under it is the header.
-              Empty cells at the end of the header line are ignored; an
-              empty header cell between two named ones is named{" "}
+              An empty header cell is named{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>Unnamed: N</code>{" "}
-              (N its column, counted from 0), as CroCoDeEL names it.
+              (N its column, counted from 0), as CroCoDeEL names it; one at
+              the end of the header line with no value under it is ignored.
+              In the abundance table a{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              inside a line starts a comment too (outside a quoted cell), as
+              CroCoDeEL reads that table (pandas,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>comment="#"</code>
+              ), and a warning names the first line cut.
             </p>
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
               Sample ids are shown as your files write them. An id too
@@ -20625,9 +20632,18 @@ const HelpTab = ({ onStartTour }) => {
           </p>
           <p>
             Format: first column lists species names, every other column is a
-            sample. The parser normalizes each sample column to relative
-            abundances summing to 1 for the plots and the checks, and keeps
-            each column's total: the card's Download and the curated
+            sample. A header with one cell fewer than the rows — R's{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>write.table</code>{" "}
+            writes no cell above the row names — names samples only: the
+            first cell of each row is then its species, as CroCoDeEL
+            (pandas) reads it, the card says so and the downloads keep that
+            layout. Rows that end with one tab more than the header (an
+            empty cell under no header) are read as the header says, with a
+            warning: CroCoDeEL reads such a table as one without a species
+            cell and names every sample one column off, so run it again on
+            the table without those tabs. The parser normalizes each sample
+            column to relative abundances summing to 1 for the plots and the
+            checks, and keeps each column's total: the card's Download and the curated
             abundance export write the file's own values back (counts stay
             counts). Each sample column and each species row
             must appear once: a table repeating one is refused, with the
@@ -28845,12 +28861,19 @@ const defaultFilter = () => ({
               }
               // A session saved before the parser kept the column totals
               // has only the fractions: the Download writes those, which
-              // the card must say, as the Export tab's card does.
+              // the card must say, as the Export tab's card does. A header
+              // without a cell above the species (R's write.table) is
+              // named, since each of its cells is then read as a sample.
               details={
-                ab && !hasInputValues(ab)
-                  ? uploadCardDetails(null, [
-                      'Its Download writes relative abundances under a "species" header: this session was saved before the interface kept the table\'s column totals. Load species_abundance.tsv again to download its own values.',
-                    ])
+                ab
+                  ? uploadCardDetails(
+                      abundanceColumnsLine(ab),
+                      hasInputValues(ab)
+                        ? []
+                        : [
+                            'Its Download writes relative abundances under a "species" header: this session was saved before the interface kept the table\'s column totals. Load species_abundance.tsv again to download its own values.',
+                          ],
+                    )
                   : null
               }
               onClear={ab ? () => setAb(null) : undefined}

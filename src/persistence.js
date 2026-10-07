@@ -630,6 +630,9 @@ function readAbundance(ab, errors) {
   if (ab.firstHeader != null && typeof ab.firstHeader !== "string") {
     return bad('"firstHeader" is not text.');
   }
+  if (ab.implicitIndex != null && typeof ab.implicitIndex !== "boolean") {
+    return bad('"implicitIndex" is neither true nor false.');
+  }
   if (ab.colSums != null) {
     if (!isObj(ab.colSums) || Object.values(ab.colSums).some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0)) {
       return bad('"colSums" must map samples to their column sums.');

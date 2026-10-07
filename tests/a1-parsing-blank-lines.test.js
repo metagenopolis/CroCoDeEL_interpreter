@@ -36,14 +36,18 @@ describe("parseTSV", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("drops empty trailing header cells and the row cells under them", () => {
+  // The empty trailing header cells with nothing under them are dropped.
+  // The one with a value under it ("stray") is a column without a name,
+  // read as pandas reads it ("Unnamed: 2"), no longer dropped with its
+  // value (tests/final-science-io-layout.test.js).
+  it("drops empty trailing header cells with nothing under them", () => {
     const { header, rows } = parseTSV(
       ["a\tb\t\t \t", "1\t2\t\t\t", "3\t4\tstray\t\t"].join("\n"),
     );
-    expect(header).toEqual(["a", "b"]);
+    expect(header).toEqual(["a", "b", "Unnamed: 2"]);
     expect(rows).toEqual([
-      { a: "1", b: "2" },
-      { a: "3", b: "4" },
+      { a: "1", b: "2", "Unnamed: 2": "" },
+      { a: "3", b: "4", "Unnamed: 2": "stray" },
     ]);
   });
 });

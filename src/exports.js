@@ -289,7 +289,9 @@ function cellNumber(v) {
     again (inputValue): counts stay integers, percentages stay
     percentages, and the first header is the input's. A table saved
     without them — a session of an earlier version — is written as
-    fractions under "species", as before.
+    fractions under "species", as before. A header that had no cell above
+    the species (implicitIndex: R's write.table) is written without one
+    again, which pandas, R and CroCoDeEL read as the input was read.
 
     No "#" line: pandas' read_csv(sep="\t", index_col=0) and R's
     read.delim read one as a data row (pandas refuses the file, R reports
@@ -297,7 +299,10 @@ function cellNumber(v) {
 export function abundanceToTSV(ab) {
   if (!ab) return "";
   const input = hasInputValues(ab);
-  const header = [input ? ab.firstHeader : "species", ...ab.samples];
+  const header =
+    input && ab.implicitIndex === true
+      ? [...ab.samples]
+      : [input ? ab.firstHeader : "species", ...ab.samples];
   const sums = ab.samples.map((s) => (input ? ab.colSums[s] : 0));
   const ints = ab.samples.map((s) => input && ab.integerCols[s] === true);
   const lines = [header.map(tsvCell).join("\t")];
@@ -325,9 +330,9 @@ export function abundanceToTSV(ab) {
     table each column is closed independently, so removing a whole column
     leaves every other column summing to exactly what it did before. (This
     is the opposite of subtracting contamination WITHIN a column, which does
-    break the closure.) The result keeps the table's firstHeader, colSums
-    and integerCols, so abundanceToTSV writes each remaining column with
-    the input's own values.
+    break the closure.) The result keeps the table's firstHeader,
+    implicitIndex, colSums and integerCols, so abundanceToTSV writes each
+    remaining column with the input's own values, under its header.
 
     `dropEmptySpecies` additionally removes the species observed only in
     the suppressed samples — rows the suppression leaves at zero
@@ -393,6 +398,7 @@ export function buildCuratedAbundance(ab, sampleCuration, opts = {}) {
     droppedSamples,
     droppedSpecies,
     firstHeader: ab.firstHeader,
+    implicitIndex: ab.implicitIndex,
     colSums: ab.colSums,
     integerCols: ab.integerCols,
   };
@@ -420,7 +426,14 @@ export function curatedAbundanceProvenance(ab, cur, opts = {}) {
     `This table: ${plural(cur.species.length, "species row")} × ${plural(cur.samples.length, "sample")}.`,
     "",
   );
-  if (hasInputValues(cur)) {
+  if (hasInputValues(cur) && cur.implicitIndex === true) {
+    lines.push(
+      "Values: each remaining column holds the input table's own values (counts stay",
+      "integers), under a header without a cell above the species, as the input's",
+      "(R's write.table layout), and with the species in its order. Cells the",
+      "interface read as 0 (empty, NA, not a number, negative) are 0.",
+    );
+  } else if (hasInputValues(cur)) {
     lines.push(
       "Values: each remaining column holds the input table's own values (counts stay",
       `integers), under its first header ("${cur.firstHeader}") and with the species in its`,

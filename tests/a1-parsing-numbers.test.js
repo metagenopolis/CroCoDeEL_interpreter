@@ -232,7 +232,12 @@ describe("parseAbundance — strict cells", () => {
     expect(ab.matrix.sp_a.S1).toBe(0);
     expect(ab.matrix.sp_b.S1).toBe(1);
     expect(ab.matrix.sp_c.S2).toBe(1);
-    expect(ab.warnings).toEqual([]);
+    // Nothing about the cells. The first row ends with one tab more than
+    // the header, which pandas, hence CroCoDeEL, reads as a header without
+    // a cell above the species, every sample one column off: said so
+    // (tests/final-science-io-layout.test.js).
+    expect(ab.warnings).toHaveLength(1);
+    expect(ab.warnings[0]).toMatch(/^The first row \(line 2\) has one cell more than the header/);
   });
 
   it("rejects hexadecimal and infinite cells instead of reading them", () => {
