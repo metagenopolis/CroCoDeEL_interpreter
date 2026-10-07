@@ -17,10 +17,10 @@
      5. a run whose header declares `filtering_ab_thr_factor: 20.0` shows
         the low-abundance filter and its toggle; every diagnostic consumer
         (Guided validation, gallery, bulk dialog, HTML report, cascades)
-        follows the filter and switching it off changes them, while the
-        abundance download and the session keep the table as loaded; the
-        choice survives a reload and a session file; a run with "None"
-        shows no toggle;
+        follows the filter and switching it off changes them — after the
+        toggle says it is recomputing them — while the abundance download
+        and the session keep the table as loaded; the choice survives a
+        reload and a session file; a run with "None" shows no toggle;
      6. the bulk dialog's "Biological similarity" pass / fail picks select
         the events Guided validation ticks / crosses: high ρ between
         unrelated samples passes, high ρ within a subject or a group fails;
@@ -462,12 +462,32 @@ try {
     );
 
     await openTab(page, "Overview");
+    // Record what the line next to the box says, change by change: the
+    // switch recomputes every diagnostic in one blocking render (seconds
+    // on a large run), so it must say so before that render starts.
+    await page.evaluate(() => {
+      const box = document.querySelector('input[aria-label="Apply CroCoDeEL\'s low-abundance filter to the diagnostics"]');
+      const line = box?.closest("div")?.querySelector("span");
+      window.__lowAbLine = [];
+      if (line)
+        new MutationObserver(() => window.__lowAbLine.push(line.textContent)).observe(line, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+    });
     // Guarded so that a build without the toggle reports the checks
     // below as failures instead of timing out here.
     if (await toggle.count()) await toggle.uncheck();
     await page.waitForTimeout(600);
     text = await page.locator("body").innerText();
     check(/Low-abundance filter 20×\s*— not applied/i.test(text), "switching it off is shown");
+    const seen = await page.evaluate(() => window.__lowAbLine || []);
+    check(
+      seen.length >= 2 && /recomputing the diagnostics/.test(seen[0]) && /not applied/.test(seen.at(-1)),
+      "…after saying the diagnostics are being recomputed",
+      JSON.stringify(seen),
+    );
     await openTab(page, "Validate");
     text = await page.locator("body").innerText();
     check(/\b20 species on line/i.test(text) && !/Only 10 species on line/i.test(text), "switching it off changes the diagnostics (20 species on the line)", (text.match(LINE) || ["none"])[0]);

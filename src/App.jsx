@@ -5103,6 +5103,22 @@ const RunMetadataBlock = ({ meta, lowAbFilter }) => {
   // Run parameters are useful but not essential after first glance —
   // collapsible, but expanded by default so first-time viewers see them.
   const [open, setOpen] = useState(true);
+  // The low-abundance filter state just asked for, while the diagnostics
+  // are recomputed (null otherwise). Switching the filter rebuilds the
+  // filtered table and every event's cascade check in one synchronous
+  // render — one to two seconds on the largest bundled runs, the page
+  // frozen meanwhile — so the box flips and says so first, and the
+  // change is applied once that has been painted.
+  const [lowAbPending, setLowAbPending] = useState(null);
+  const switchLowAb = (on) => {
+    setLowAbPending(on);
+    requestAnimationFrame(() =>
+      setTimeout(() => {
+        lowAbFilter.setApplied(on);
+        setLowAbPending(null);
+      }, 0),
+    );
+  };
   // Choose which fields to show, in this order, with friendly labels.
   // Optional `format(value)` lets a field clean up the raw string (e.g.
   // strip a trailing ".0" so "25.0" → "25").
@@ -5237,17 +5253,20 @@ const RunMetadataBlock = ({ meta, lowAbFilter }) => {
           >
             <input
               type="checkbox"
-              checked={lowAbFilter.applied}
-              onChange={(e) => lowAbFilter.setApplied(e.target.checked)}
+              checked={lowAbPending ?? lowAbFilter.applied}
+              disabled={lowAbPending != null}
+              onChange={(e) => switchLowAb(e.target.checked)}
               aria-label="Apply CroCoDeEL's low-abundance filter to the diagnostics"
               style={{ accentColor: "#00a3a6" }}
             />
             Low-abundance filter {lowAbFilter.factor}×
           </label>
           <span style={{ color: "var(--ink-muted)" }}>
-            {lowAbFilter.applied
-              ? "— applied to diagnostics, as in CroCoDeEL"
-              : "— not applied: diagnostics use the abundance table as loaded, unlike the CroCoDeEL run"}
+            {lowAbPending != null
+              ? "— recomputing the diagnostics…"
+              : lowAbFilter.applied
+                ? "— applied to diagnostics, as in CroCoDeEL"
+                : "— not applied: diagnostics use the abundance table as loaded, unlike the CroCoDeEL run"}
           </span>
         </div>
       )}
