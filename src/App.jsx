@@ -16657,7 +16657,8 @@ const ValidateTab = ({
   const [showSampleInfo, setShowSampleInfo] = useState(false);
   const [showDiagBlurb, setShowDiagBlurb] = useState(false);
   // Whether the diagnostics below run on the low-abundance-filtered table
-  // (AppMain's diagAb): the run declares a factor and it is not off.
+  // (AppMain's diagAb): the run declares a factor and it is not off. The
+  // grade says which, on or off.
   const lowAbFactor = lowAbundanceFilterFactor(runMetadata);
   const lowAbOn = lowAbFactor != null && filter?.lowAbFilter !== false;
   useEffect(() => {
@@ -17317,13 +17318,18 @@ const ValidateTab = ({
                       NOT EVALUABLE — sample missing from the abundance table
                     </div>
                   )}
-                  {lowAbOn && autoScore.grade !== "not_evaluable" && (
+                  {/* Which table the grade comes from, whenever the run
+                      filtered: switched off (saved with the session),
+                      the grades are no longer those of the run's table. */}
+                  {lowAbFactor != null && autoScore.grade !== "not_evaluable" && (
                     <div
                       className="text-[10px] mt-0.5"
                       style={{ color: "var(--ink-muted)" }}
-                      title="Overview › Run parameters switches it off."
+                      title="Switched in Overview › Run parameters."
                     >
-                      After CroCoDeEL's low-abundance filter ({lowAbFactor}×), as in the run
+                      {lowAbOn
+                        ? `After CroCoDeEL's low-abundance filter (${lowAbFactor}×), as in the run`
+                        : `Low-abundance filter (${lowAbFactor}×) switched off — diagnostics on the table as loaded, unlike the run`}
                     </div>
                   )}
                 </div>

@@ -358,6 +358,11 @@ try {
     await openTab(page, "Validate");
     text = await page.locator("body").innerText();
     check(/\b20 species on line/i.test(text) && !/Only 10 species on line/i.test(text), "switching it off changes the diagnostics (20 species on the line)", (text.match(/(Only )?\d+ species on line/i) || ["none"])[0]);
+    check(
+      /Low-abundance filter \(20×\) switched off — diagnostics on the table as loaded, unlike the run/.test(text) &&
+        !/After CroCoDeEL's low-abundance filter/.test(text),
+      "Guided validation says the filter is switched off",
+    );
 
     // Saved with the session: the auto-save is debounced by a second.
     await page.waitForTimeout(2500);
