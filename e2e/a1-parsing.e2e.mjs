@@ -156,8 +156,8 @@ function legacyAgedMetadata() {
   return { ...rest, cols: { ...md.cols, groupId: "age_group" }, bySample, hasGroupIdCol: true };
 }
 
-/** Put `metadata` into the session IndexedDB holds, as an earlier version
-    would have saved it. */
+/** Put `metadata` into the session IndexedDB holds (its own record, see
+    src/persistence.js), as an earlier version would have saved it. */
 async function storeMetadata(page, metadata) {
   await page.evaluate(async (md) => {
     const db = await new Promise((resolve, reject) => {
@@ -165,15 +165,9 @@ async function storeMetadata(page, metadata) {
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
-    const main = await new Promise((resolve, reject) => {
-      const req = db.transaction("kv", "readonly").objectStore("kv").get("main");
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-    main.metadata = md;
     await new Promise((resolve, reject) => {
       const tx = db.transaction("kv", "readwrite");
-      tx.objectStore("kv").put(main, "main");
+      tx.objectStore("kv").put(md, "metadata");
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
@@ -364,6 +358,14 @@ try {
     );
     if (text) {
       await upload(page, 0, "contamination_events_curated.tsv", text);
+      // The session holds curation: replacing its events asks first.
+      // "Start fresh" keeps nothing of it, so what comes back is the
+      // file's.
+      await page
+        .getByRole("dialog", { name: "Replace the events file?" })
+        .getByRole("button", { name: "Start fresh" })
+        .click();
+      await page.waitForTimeout(500);
       const s = await overviewStats(page);
       check(s.tp === 3 && s.fp === 2, "reloading the curated TSV restores the verdicts", `TP ${s.tp}, FP ${s.fp}`);
       // Export again: every verdict and every note comes back as written.
