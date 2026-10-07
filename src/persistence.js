@@ -900,7 +900,8 @@ function readAbundance(ab, p) {
       );
     }
   }
-  const warnings = warningList(ab.warnings);
+  let warnings = warningList(ab.warnings);
+  if (out.matrix !== ab.matrix) warnings = recountZeroColumns(warnings, out.samples, species, out.matrix);
   if (warnings !== ab.warnings) patch({ warnings });
   const lr = ab.logRange;
   if (!(isObj(lr) && Number.isFinite(lr.min) && Number.isFinite(lr.max))) {
@@ -911,6 +912,41 @@ function readAbundance(ab, p) {
     });
   }
   return { ab: out, renamed: renamed.size > 0 ? renamed : null };
+}
+
+/** The abundance parser's warning about the sample columns that sum to 0
+    ("N of M sample columns sum to 0 and were left empty.", or "Every
+    sample column sums to 0 — …", parseAbundance), told again for the
+    table as readAbundance leaves it. The parser counted the table it
+    read: the columns with an empty name and no value, left out since,
+    were among its N and its M, and a column whose total its negative
+    values brought to 0 or below holds values once they read as 0. Kept
+    as it was, the warning said, right below the notice that the empty
+    column was left out, "1 of 92 sample columns sum to 0" of a table of
+    91 samples, none of them empty. The list itself when nothing
+    changes. */
+const ZERO_SOME = /^\d+ of \d+ sample columns sum to 0 and were left empty\.$/;
+const ZERO_EVERY = /^Every sample column sums to 0\b/;
+function recountZeroColumns(warnings, samples, species, matrix) {
+  const i = warnings.findIndex((w) => ZERO_SOME.test(w) || ZERO_EVERY.test(w));
+  if (i < 0) return warnings;
+  const filled = new Set();
+  for (const sp of species) {
+    const row = matrix[sp];
+    for (const s in row) if (row[s] > 0) filled.add(s);
+  }
+  const empty = samples.filter((s) => !filled.has(s)).length;
+  const line =
+    empty === 0
+      ? null
+      : empty === samples.length && ZERO_EVERY.test(warnings[i])
+        ? warnings[i]
+        : `${empty} of ${samples.length} sample columns sum to 0 and were left empty.`;
+  if (line === warnings[i]) return warnings;
+  const next = [...warnings];
+  if (line) next[i] = line;
+  else next.splice(i, 1);
+  return next;
 }
 
 /** The sample curation with the samples the abundance table renamed or
