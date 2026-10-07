@@ -417,8 +417,12 @@ export function buildCuratedAbundance(ab, sampleCuration, opts = {}) {
 export function curatedAbundanceProvenance(ab, cur, opts = {}) {
   const { study, curated, build, file = "species_abundance_curated.tsv" } = opts;
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  // A plain text file: each value on one line, as written. tsvCell's
+  // quoting (a quote doubled, the value wrapped in quotes) is for a TSV
+  // reader; here it wrote the study '"Lou" 2023' as '"""Lou"" 2023"'.
+  const oneLine = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
   const lines = [`Provenance of ${file}, the curated abundance table.`, ""];
-  if (study) lines.push(`Study: ${tsvCell(study)}`);
+  if (study) lines.push(`Study: ${oneLine(study)}`);
   if (curated) lines.push(`Curated: ${curated}`);
   if (build) lines.push(`Interface: CroCoDeEL Interpretation Interface, build ${build}`);
   lines.push(
@@ -450,13 +454,13 @@ export function curatedAbundanceProvenance(ab, cur, opts = {}) {
     "No column was renormalised: removing a sample does not change any other one.",
     "",
     `Suppressed samples (${cur.droppedSamples.length}), removed because their action is Suppress:`,
-    ...(cur.droppedSamples.length > 0 ? cur.droppedSamples.map(tsvCell) : ["none — every sample is kept"]),
+    ...(cur.droppedSamples.length > 0 ? cur.droppedSamples.map(oneLine) : ["none — every sample is kept"]),
   );
   if (cur.droppedSpecies.length > 0) {
     lines.push(
       "",
       `Species removed because only the suppressed samples hold them (${cur.droppedSpecies.length}):`,
-      ...cur.droppedSpecies.map(tsvCell),
+      ...cur.droppedSpecies.map(oneLine),
     );
   }
   return lines.join("\n") + "\n";
