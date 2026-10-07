@@ -20,7 +20,12 @@
      - the plate card keeps its column mapping and warnings through a
        Plate tab edit and a page reload;
      - a hand-edited session whose card warnings are not a list loads;
-     - a comma-separated events file is refused with a short message.
+     - a comma-separated events file is refused with a short message, and
+       the session it would have replaced stays;
+     - the metadata card names a repeated sample id, and both cards keep
+       their lines across a page reload;
+     - header-only, repeated-column and negative abundance tables, and the
+       fields the session keeps to rebuild the original values.
 
    Usage:  node e2e/a1-parsing.e2e.mjs          (starts a preview server)
            BASE_URL=http://host/path/ node e2e/a1-parsing.e2e.mjs */
@@ -439,7 +444,14 @@ try {
     await loadDemo(page);
     const plate = ["sample_id\tplate\twell", "40D89\tP3\tA01", "58M\tP3\tC03", "58M\tP3\tC04", "NC3\tP3\tH06"].join("\n");
     await upload(page, 3, "plate_map.tsv", plate);
+    // The metadata repeats a sample too.
+    const md = demo("metadata.tsv").split("\n").filter((l) => l);
+    await upload(page, 2, "metadata.tsv", [...md, md.find((l) => l.startsWith("58M\t"))].join("\n"));
     const repeated = 'sample id appears on more than one row ("58M")';
+    check(
+      (await cardText(page, "metadata.tsv")).includes(repeated),
+      "the metadata card names the repeated sample id",
+    );
     const before = await cardText(page, "plate_map.tsv");
     check(
       before.includes("Columns: sample_id · plate · well") && before.includes(repeated),
@@ -471,6 +483,12 @@ try {
       "the plate card's mapping and warning survive a page reload",
       reloaded.replace(/\s+/g, " ").slice(0, 200),
     );
+    const mdReloaded = await cardText(page, "metadata.tsv");
+    check(
+      mdReloaded.includes("Columns: sample_id · subject_id") && mdReloaded.includes(repeated),
+      "so do the metadata card's",
+      mdReloaded.replace(/\s+/g, " ").slice(0, 200),
+    );
     check(errors.length === 0, "no JS error across the plate edit", errors[0] || "");
     await ctx.close();
   }
@@ -493,6 +511,10 @@ try {
   /* -- 10. a comma-separated events file: refused, saying why, briefly */
   {
     const { ctx, page, errors } = await newPage(browser);
+    await loadDemo(page);
+    await openTab(page, "Events");
+    await page.locator('button[title="mark as true positive"]').first().click();
+    await page.waitForTimeout(500);
     const csv = demo("contamination_events.tsv")
       .split("\n")
       .filter((l) => l && !l.startsWith("#"))
@@ -505,7 +527,104 @@ try {
       "a comma-separated events file is refused with a short message naming the separator",
       `${alert.length} characters: ${alert.slice(0, 160)}`,
     );
+    const kept = await overviewStats(page);
+    check(kept.tp === 1, "the refused file leaves the session as it was", `TP ${kept.tp}`);
     check(errors.length === 0, "no JS error on the CSV", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* -- 11. abundance tables in the browser, and what the session keeps */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    await loadDemo(page);
+    const lines = demo("species_abundance.tsv").split("\n").filter((l) => l);
+    const alertText = async () => (await page.locator('[role="alert"]').allInnerTexts()).join(" ");
+
+    await upload(page, 1, "species_abundance.tsv", lines[0]);
+    check(
+      /Abundance file: The abundance table has no species rows: only its header line \(91 sample columns\) was found/.test(
+        await alertText(),
+      ),
+      "a header-only abundance table is refused",
+      (await alertText()).slice(0, 160),
+    );
+
+    const head = lines[0].split("\t");
+    const dupHeader = [...head.slice(0, -1), head[1]].join("\t");
+    await upload(page, 1, "species_abundance.tsv", [dupHeader, ...lines.slice(1)].join("\n"));
+    check(
+      /1 sample column appears more than once in the abundance table \("40D89"\)/.test(await alertText()),
+      "an abundance table repeating a sample column is refused, naming it",
+      (await alertText()).slice(0, 160),
+    );
+
+    // One non-zero cell made negative.
+    const cells = lines[1].split("\t");
+    const k = cells.findIndex((c, j) => j > 0 && Number(c) > 0);
+    cells[k] = `-${cells[k]}`;
+    const negative = [lines[0], cells.join("\t"), ...lines.slice(2)].join("\n");
+    await upload(page, 1, "species_abundance.tsv", negative);
+    const banner = await page.locator("body").innerText();
+    check(
+      /Check the input files/.test(banner) && /1 cell holds a negative value and was read as 0/.test(banner),
+      "a negative abundance is reported in the banner",
+      (banner.match(/\d+ cells? holds? a negative[^\n]*/) || [""])[0].slice(0, 160),
+    );
+
+    // Counts: what an export needs to give them back is kept in the
+    // session, across a page reload.
+    const counts = lines
+      .map((l, i) =>
+        i === 0
+          ? l
+          : l
+              .split("\t")
+              .map((c, j) => (j === 0 ? c : String(Math.round(Number(c) * 1e7))))
+              .join("\t"),
+      )
+      .join("\n");
+    await upload(page, 1, "species_abundance.tsv", counts);
+    const firstSum = counts
+      .split("\n")
+      .slice(1)
+      .reduce((t, l) => t + Number(l.split("\t")[1]), 0);
+    const storedAb = () =>
+      page.evaluate(async () => {
+        const db = await new Promise((resolve, reject) => {
+          const req = indexedDB.open("crocodeel-interpreter", 1);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        const ab = await new Promise((resolve, reject) => {
+          const req = db.transaction("kv", "readonly").objectStore("kv").get("ab");
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return ab
+          ? {
+              firstHeader: ab.firstHeader,
+              sum: ab.colSums?.["40D89"],
+              integer: Object.values(ab.integerCols || {}).every((v) => v === true),
+            }
+          : null;
+      });
+    await page.waitForTimeout(2500); // auto-save
+    const saved = await storedAb();
+    check(
+      saved?.firstHeader === "id_mgs" && saved.sum === firstSum && saved.integer,
+      "the session keeps the first header, the column sums and the integer flags",
+      JSON.stringify(saved),
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(3500); // restore, then the first auto-save
+    const again = await storedAb();
+    check(
+      JSON.stringify(again) === JSON.stringify(saved),
+      "they are still there once the session is restored and saved again",
+      JSON.stringify(again),
+    );
+    check(errors.length === 0, "no JS error across the abundance checks", errors[0] || "");
     await ctx.close();
   }
 } finally {
