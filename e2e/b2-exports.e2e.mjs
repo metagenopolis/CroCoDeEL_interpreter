@@ -10,6 +10,14 @@
      - B2.2  the introduced share of each event and target is the same
              percentage in the events TSV, the samples TSV, the GraphML
              and the CSV pair;
+     - B2.3  from a count table (integer-like species names first, a
+             first header of its own), the curated abundance table is the
+             input without the suppressed columns — same header, same
+             species order, same values, no "#" line — and its provenance
+             file names the suppressed samples; the abundance card's
+             Download gives the input back as it was; a session saved
+             before the column sums were kept exports fractions, and the
+             card says so;
      - B2.6  a hand-edited session whose metadata entry keeps a string as
              its row: the metadata card does not list its characters as
              columns, the Validate panel shows no "0: a" pill, and the
@@ -20,7 +28,7 @@
            E2E_ONLY=<regex> runs only the matching scenarios) */
 
 import { readFileSync } from "node:fs";
-import { parseEvents, parseMetadata } from "../src/parsing.js";
+import { parseAbundance, parseEvents, parseMetadata } from "../src/parsing.js";
 import {
   startServer,
   stopServer,
@@ -141,6 +149,43 @@ function sameAsDemo(events) {
       );
     })
   );
+}
+
+/** The demo abundance table as counts (each relative abundance × 1e7,
+    rounded), with the first two species renamed "20" and "3": integer-like
+    names, which an export listing Object.keys() would move. */
+function demoCounts() {
+  return demo("species_abundance.tsv")
+    .split("\n")
+    .filter((l) => l && !l.startsWith("#"))
+    .map((l, i) => {
+      if (i === 0) return l;
+      const cells = l.split("\t");
+      if (i === 1) cells[0] = "20";
+      if (i === 2) cells[0] = "3";
+      return cells.map((c, j) => (j === 0 ? c : String(Math.round(Number(c) * 1e7)))).join("\t");
+    })
+    .join("\n");
+}
+
+/** Mark the first `n` samples of the Samples tab Contaminated, which sets
+    their action to Suppress. */
+async function suppressSamples(page, n) {
+  await openTab(page, "Samples");
+  const contaminated = page.locator('button[title="Verdict: Contaminated"]');
+  await contaminated.first().waitFor({ state: "visible", timeout: 60000 });
+  for (let i = 0; i < n; i++) {
+    await contaminated.nth(i).click();
+    await page.waitForTimeout(500);
+  }
+}
+
+/** The "N of M samples" of the curated abundance card, and its text. */
+async function curatedCard(page) {
+  await openTab(page, "Export");
+  const text = await page.locator("body").innerText();
+  const m = text.match(/Curated abundance table — (\d+) of (\d+) samples/);
+  return { kept: Number(m?.[1]), total: Number(m?.[2]), text };
 }
 
 /** Import a session JSON through the files bar. */
@@ -350,6 +395,97 @@ try {
       "B2.2 each target's max_target_introduced_pct (samples TSV) and max_introduced_pct (graph) is its events' highest",
     );
   });
+
+  /* ---------------- B2.3 the curated abundance table is the input table
+     It wrote fractions (1500 / 500 came out 0.75 / 0.25) under a "species"
+     header, behind "#" lines that pandas and R read as data. */
+  await scenario("B2.3 counts", async (page) => {
+    const input = demoCounts();
+    await upload(page, 1, "species_abundance.tsv", input);
+    await suppressSamples(page, 2);
+    const card = await curatedCard(page);
+    const file = await exportFile(page, /Download curated abundance TSV/i);
+    const rows = (file?.text || "").split("\n").map((l) => l.split("\t"));
+    const inRows = input.split("\n").map((l) => l.split("\t"));
+    const header = rows[0] || [];
+    const dropped = inRows[0].slice(1).filter((c) => !header.includes(c));
+    check(
+      header[0] === "id_mgs" && dropped.length === 2 && card.total - card.kept === 2,
+      "B2.3 the curated table keeps the input's first header, without the 2 suppressed columns the card counts",
+      `${header[0]}; without ${dropped.join(", ")}; card ${card.kept} of ${card.total}`,
+    );
+    check(
+      !(file?.text || "").split("\n").some((l) => l.startsWith("#")),
+      "B2.3 it has no # line (pandas and R would read one as data)",
+    );
+    // The same table, column by column, as text: counts stay counts. Only
+    // the species observed in the suppressed samples alone go (the box is
+    // ticked by default); rows at zero everywhere in the input stay.
+    const keep = inRows[0].map((c, j) => j === 0 || header.includes(c));
+    const onlyDropped = (r) =>
+      r.slice(1).every((c, j) => c === "0" || !keep[j + 1]) &&
+      r.slice(1).some((c, j) => c !== "0" && !keep[j + 1]);
+    const expected = inRows
+      .filter((r, i) => i === 0 || !onlyDropped(r))
+      .map((r) => r.filter((_, j) => keep[j]));
+    check(
+      file?.text === expected.map((r) => r.join("\t")).join("\n"),
+      "B2.3 every remaining column equals the input column, species in the input's order (20 and 3 first)",
+      rows.slice(1, 3).map((r) => r.slice(0, 3).join(" ")).join(" | "),
+    );
+    const empty = inRows.slice(1).filter((r) => r.slice(1).every((c) => c === "0")).length;
+    check(
+      empty > 0 &&
+        rows.length === expected.length &&
+        card.text.includes(
+          `Drop species observed only in the suppressed samples (${inRows.length - expected.length})`,
+        ),
+      "B2.3 the species rows at zero in the whole input stay; the card counts only those the suppression empties",
+      `${empty} empty input rows kept; ${inRows.length - expected.length} dropped`,
+    );
+    check(
+      /holds the input file's own\s+values/.test(card.text) && !/Written as relative abundances/.test(card.text),
+      "B2.3 the card says the values are the input's own",
+    );
+    const provenance = await downloadVia(page, page.getByRole("button", { name: /Download its provenance/i }).first());
+    const plines = (provenance?.text || "").split("\n");
+    check(
+      provenance?.name === "species_abundance_curated.provenance.txt" &&
+        plines.includes("Suppressed samples (2), removed because their action is Suppress:") &&
+        dropped.every((id) => plines.includes(id)) &&
+        /own values/.test(provenance.text),
+      "B2.3 the provenance file names the suppressed samples and the values",
+      plines.slice(0, 3).join(" / "),
+    );
+    // The abundance card's own Download: the input as it was.
+    await openTab(page, "Overview");
+    const own = await downloadVia(page, page.locator('button[title="Download this file"]').nth(1));
+    check(
+      own?.name === "species_abundance.tsv" && own.text === input,
+      "B2.3 the abundance card's Download gives the uploaded count table back as it was",
+      (own?.text || "").split("\n")[1]?.slice(0, 60) || "",
+    );
+  });
+
+  /* A session saved before the parser kept the column sums: the export
+     can only write fractions, and the card says so. */
+  await scenario("B2.3 earlier session", async (page) => {
+    const { samples, species, matrix, logRange } = parseAbundance(demo("species_abundance.tsv"));
+    await importSession(page, sessionJSON({ abundance: { samples, species, matrix, logRange } }));
+    const card = await curatedCard(page);
+    check(
+      /Written as relative abundances/.test(card.text),
+      "B2.3 the card says an earlier session's table is written as relative abundances",
+    );
+    const file = await exportFile(page, /Download curated abundance TSV/i);
+    const rows = (file?.text || "").split("\n").map((l) => l.split("\t"));
+    const sums = rows[0].slice(1).map((_, j) => rows.slice(1).reduce((t, r) => t + Number(r[j + 1]), 0));
+    check(
+      rows[0][0] === "species" && sums.every((t) => Math.abs(t - 1) < 1e-9 || t === 0),
+      "B2.3 and writes fractions summing to 1 under a species header",
+      `${rows[0][0]}; ${sums.slice(0, 3).map((t) => t.toFixed(12)).join(", ")}`,
+    );
+  }, { demo: false });
 
   /* ---------------- B2.6 metadata entries whose row is not a row
      Every entry but the last keeps the string "abc" as its row, as a
