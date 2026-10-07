@@ -162,18 +162,22 @@ function commentedHeaderError(tsv, isHeader, after = "") {
   return null;
 }
 
-/** True when the cells after the first are numbers or empty / NA, at
-    least one a number: a data row of the abundance table, not its header.
-    (A table whose sample ids are all numbers reads so too; it is refused
-    only when a "#" line above lines up with it as a header would.) */
+/** True when the cells after the first are mostly numbers (or empty /
+    NA), at least one a number: a data row of the abundance table, not its
+    header — a biom table may end its rows with a taxonomy text. (A table
+    whose sample ids are numbers reads so too; it is refused only when a
+    "#" line above lines up with it as a header would.) */
 function looksLikeAbundanceRow(cells) {
   let numbers = 0;
+  let blanks = 0;
+  let texts = 0;
   for (const c of withoutTrailingBlanks(cells).slice(1)) {
     const v = parseStrictNumber(c);
-    if (Number.isNaN(v)) return false;
-    if (v !== null) numbers++;
+    if (Number.isNaN(v)) texts++;
+    else if (v === null) blanks++;
+    else numbers++;
   }
-  return numbers > 0;
+  return numbers > 0 && texts <= numbers + blanks;
 }
 
 /** The commented-header error of an abundance table, or null: its header

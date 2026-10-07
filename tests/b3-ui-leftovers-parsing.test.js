@@ -182,6 +182,21 @@ describe("a header written as a comment, in the layouts the review found", () =>
     expect(ab.species).toEqual(["sp1", "sp2", "sp3"]);
   });
 
+  it("refuses a biom table whose rows end with their taxonomy", () => {
+    // `biom convert --to-tsv --header-key taxonomy`. CroCoDeEL reads the
+    // first row as the header and stops on its taxonomy "sample": "not
+    // numeric: k__Bacteria; p__Firmicutes".
+    const biom = [
+      "# Constructed from biom file",
+      "#OTU ID\tS1\tS2\ttaxonomy",
+      "otu1\t10\t20\tk__Bacteria; p__Firmicutes",
+      "otu2\t30\t40\tk__Bacteria; p__Bacteroidetes",
+    ].join("\n");
+    expect(() => parseAbundance(biom)).toThrow(
+      /^Line 2 looks like the header \("#OTU ID", "S1", "S2", …\).* line 3 \("otu1", "10", "20", …\) read as the header/,
+    );
+  });
+
   it("names the '#SampleID' line of a QIIME 2 metadata file, not its '#q2:types' line", () => {
     const qiime2 = [
       "#SampleID\tsubject_id\tbody-site",
