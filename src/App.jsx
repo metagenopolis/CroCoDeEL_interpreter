@@ -16212,7 +16212,7 @@ const BulkApplyByCriteriaDialog = ({
                     e.currentTarget.style.borderColor = "var(--border-strong)";
                     e.currentTarget.style.color = "#275662";
                   }}
-                  title="Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note. Target sample verdicts are left untouched — many subjects share some species naturally, so a target may still be genuinely contaminated by something else."
+                  title="Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note. Each target sample then follows the automatic rule, as if you had clicked each event: it stays Contaminated while another event targeting it is TP, becomes Uncertain if one is uncertain, and Not contaminated otherwise. A verdict or an action you set by hand is left unchanged."
                 >
                   <XCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>
@@ -16243,7 +16243,7 @@ const BulkApplyByCriteriaDialog = ({
                     e.currentTarget.style.borderColor = "var(--border-strong)";
                     e.currentTarget.style.color = "#275662";
                   }}
-                  title="Bulk-classify events flowing into a negative control as true positives. Their target negative-control samples are also flagged as Contaminated (skipping any target that already carries a sample-level verdict)."
+                  title="Bulk-classify events flowing into a negative control as true positives. Their target negative-control samples then follow the automatic rule, as if you had clicked each event: Contaminated, paired with Suppress, both automatic (rejecting those events later takes them back). Only a verdict or an action you set by hand is left unchanged."
                 >
                   <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                   <span>

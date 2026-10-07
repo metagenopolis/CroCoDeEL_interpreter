@@ -33,11 +33,11 @@ const demoEvents = tsvRows("public/demo/contamination_events.tsv");
 const targets = new Set(demoEvents.map((c) => c[1]));
 const NC3_SOURCES = demoEvents.filter((c) => c[1] === "NC3").map((c) => c[0]);
 
-/** The sample curation stored by the app, once the autosave has caught
-    up with everything done so far. Saves are debounced by one second
-    after the last change; when nothing changed, none comes and the
-    stored session is already current. */
-async function storedCuration(page) {
+/** The session stored by the app (IndexedDB), once the autosave has
+    caught up with everything done so far. Saves are debounced by one
+    second after the last change; when nothing changed, none comes and
+    the stored session is already current. */
+async function storedSession(page) {
   const since = await page.evaluate(() => Date.now());
   let latest = null;
   for (let i = 0; i < 40; i++) {
@@ -56,13 +56,59 @@ async function storedCuration(page) {
           };
         }),
     );
-    if (main && Date.parse(main.savedAt) > since) {
-      return main.sampleCuration || {};
-    }
+    if (main && Date.parse(main.savedAt) > since) return main;
     latest = main;
-    if (i >= 12 && latest) return latest.sampleCuration || {};
+    if (i >= 12 && latest) return latest;
   }
   throw new Error("no autosaved session found");
+}
+
+/** The sample curation of the stored session. */
+async function storedCuration(page) {
+  return (await storedSession(page)).sampleCuration || {};
+}
+
+/** Where the stored curation departs from the rule, recomputed here from
+    the stored events (independently of src/curation.js): a value
+    without its *Auto flag is the curator's and is left as it is; an
+    automatic verdict is TP > Uncertain > FP > none over every event
+    targeting the sample; with no action set by hand, Contaminated goes
+    with an automatic Suppress and anything else with no action. */
+function ruleViolations(session) {
+  const evals = new Map();
+  for (const e of session.rawEvents || []) {
+    if (!e.target) continue;
+    evals.set(e.target, [...(evals.get(e.target) || []), e.verdict || "pending"]);
+  }
+  const sc = session.sampleCuration || {};
+  const out = [];
+  for (const id of new Set([...evals.keys(), ...Object.keys(sc)])) {
+    const c = sc[id] || {};
+    const v = evals.get(id) || [];
+    const auto = v.includes("true_positive")
+      ? "contaminated"
+      : v.includes("uncertain")
+        ? "uncertain"
+        : v.includes("false_positive")
+          ? "correct"
+          : null;
+    const ownVerdict = c.verdict && !c.verdictAuto;
+    if (!ownVerdict && ((c.verdict ?? null) !== auto || (auto && c.verdictAuto !== true)))
+      out.push(`${id} ${show(c)}: verdict should be ${auto}`);
+    const verdict = ownVerdict ? c.verdict : auto;
+    if (!(c.action && !c.actionAuto)) {
+      const want = verdict === "contaminated" ? "suppress" : null;
+      if ((c.action ?? null) !== want || (want && c.actionAuto !== true))
+        out.push(`${id} ${show(c)}: action should be ${want}`);
+    }
+  }
+  return out;
+}
+
+/** Check that the stored curation follows the rule. */
+async function checkRule(page, name) {
+  const bad = ruleViolations(await storedSession(page));
+  check(bad.length === 0, `${name}: the stored curation follows the rule`, bad.slice(0, 3).join("; "));
 }
 
 const show = (entry) => JSON.stringify(entry ?? null);
@@ -495,6 +541,55 @@ try {
     },
     { demo: false },
   );
+
+  /* The two presets: their buttons say what they do to the targets now
+     (the rule, as when clicking each event; only values set by hand are
+     left alone), and they do it. */
+  await scenario("presets", async (page) => {
+    const dialog = await openBulkDialog(page);
+    const titleOf = (re) => dialog.getByRole("button", { name: re }).first().getAttribute("title");
+    const same = (await titleOf(/Mark all same-subject contaminations as FP/i)) || "";
+    const nc = (await titleOf(/Mark all events targeting a negative control as TP/i)) || "";
+    check(
+      /automatic rule/.test(same) && !/left untouched/.test(same),
+      "presets: the same-subject button says its targets follow the automatic rule",
+      same,
+    );
+    check(
+      /automatic rule/.test(nc) && /Suppress/.test(nc) && !/skipping any target/.test(nc),
+      "presets: the negative-control button says its targets become Contaminated + Suppress, automatic",
+      nc,
+    );
+
+    // Same-subject preset: the targets end as if each event had been
+    // clicked FP.
+    await dialog.getByRole("button", { name: /Mark all same-subject contaminations as FP/i }).first().click();
+    await page.getByRole("button", { name: /^Mark \d+ as FP$/ }).click();
+    await page.waitForTimeout(600);
+    const session = await storedSession(page);
+    const fpTargets = [...new Set(
+      session.rawEvents.filter((e) => e.verdict === "false_positive").map((e) => e.target),
+    )];
+    const sc = session.sampleCuration;
+    check(
+      fpTargets.length > 0 && fpTargets.every((t) => sc[t]?.verdictAuto === true),
+      "presets: every target of the same-subject preset gets its automatic verdict",
+      fpTargets.map((t) => `${t}=${show(sc[t])}`).join(" "),
+    );
+    await checkRule(page, "presets: after the same-subject preset");
+
+    // NC preset: a verdict set by hand on the NC is protected.
+    await setSampleVerdictInTable(page, "NC3", "Uncertain");
+    await negativeControlPreset(page);
+    const after = await storedCuration(page);
+    const s = await overviewStats(page);
+    check(
+      show(after.NC3) === show({ verdict: "uncertain" }) && s.tp === NC3_SOURCES.length,
+      "presets: the NC preset marks NC3's events TP but leaves its verdict set by hand",
+      `${show(after.NC3)} tp=${s.tp}`,
+    );
+    await checkRule(page, "presets: after the NC preset");
+  });
 
   /* A3.2 "Don't overwrite …" protects what the curator set by hand,
      not the automatic values: an automatic Suppress must not make a
