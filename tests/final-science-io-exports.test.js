@@ -6,6 +6,13 @@ import {
   sampleFlagCells,
   rateCell,
 } from "../src/exports.js";
+import {
+  syncSampleCuration,
+  withManualAction,
+  neverTargetedSamples,
+  buildEffectiveSampleCuration,
+} from "../src/curation.js";
+import { buildContaminationGraph, graphToCSV, graphToGraphML } from "../src/App.jsx";
 
 /* The provenance file next to the curated abundance table is plain text:
    its study and its sample and species lists used to go through tsvCell,
@@ -62,5 +69,47 @@ describe("samples TSV cells", () => {
     expect(rateCell(1)).toBe("1.0");
     expect(rateCell(null)).toBe("");
     expect(rateCell(undefined)).toBe("");
+  });
+});
+
+/* The graph files wrote the never-targeted default, Not contaminated +
+   Keep, as sample_verdict / sample_action without saying it is one: a
+   sample nobody reviewed read as a curated "correct / keep", while the
+   samples TSV marks the same values "default". Each node now carries
+   sample_verdict_origin and sample_action_origin (curationOrigin). */
+describe("buildContaminationGraph — where a sample's verdict and action come from", () => {
+  const events = [
+    { id: 0, source: "S", target: "T", rate: 0.1, score: 0.9, verdict: "true_positive" },
+    { id: 1, source: "S", target: "U", rate: 0.1, score: 0.9, verdict: "pending" },
+  ];
+  let stored = syncSampleCuration({}, events);
+  stored = withManualAction(stored, "T", "keep", events);
+  const never = new Set(neverTargetedSamples(events, ["S", "T", "U"]));
+  const effective = buildEffectiveSampleCuration(stored, never);
+
+  it("says manual, automatic or default, as the samples TSV does", () => {
+    const g = buildContaminationGraph(events, { sampleCuration: effective, neverTargeted: never });
+    const node = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+    expect([node.S.sample_verdict, node.S.sample_verdict_origin]).toEqual(["correct", "default"]);
+    expect([node.S.sample_action, node.S.sample_action_origin]).toEqual(["keep", "default"]);
+    expect([node.T.sample_verdict, node.T.sample_verdict_origin]).toEqual(["contaminated", "automatic"]);
+    expect([node.T.sample_action, node.T.sample_action_origin]).toEqual(["keep", "manual"]);
+    expect([node.U.sample_verdict, node.U.sample_verdict_origin]).toEqual(["pending", ""]);
+    const csv = graphToCSV(g).nodes.split("\n");
+    expect(csv[0].split(",").slice(0, 6)).toEqual([
+      "id", "label", "sample_verdict", "sample_verdict_origin", "sample_action", "sample_action_origin",
+    ]);
+    expect(graphToGraphML(g)).toContain('attr.name="sample_action_origin"');
+  });
+
+  it("tells the rule's value from a default when the exported events are a subset", () => {
+    // Only the S → U event exported: T is no node; U is targeted.
+    const g = buildContaminationGraph([events[1]], { sampleCuration: effective, neverTargeted: never });
+    const s = g.nodes.find((n) => n.id === "S");
+    expect(s.sample_verdict_origin).toBe("default");
+    // A sample targeted only by an event left out is still no default.
+    const ev = [{ id: 2, source: "T", target: "U", rate: 0.1, score: 0.9, verdict: "pending" }];
+    const t = buildContaminationGraph(ev, { sampleCuration: effective, neverTargeted: never }).nodes.find((n) => n.id === "T");
+    expect([t.sample_verdict, t.sample_verdict_origin]).toEqual(["contaminated", "automatic"]);
   });
 });

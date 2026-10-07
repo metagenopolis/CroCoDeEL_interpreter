@@ -319,7 +319,10 @@ export { abundanceToTSV, buildCuratedAbundance } from "./exports.js";
     column headers in Gephi's data laboratory and Cytoscape's table panel,
     so renaming them later would break saved styles. */
 export function buildContaminationGraph(events, opts = {}) {
-  const { sampleCuration, metadata, plateMap, ab } = opts;
+  // `neverTargeted`: the samples no event of the session targets (the
+  // AppMain set behind effectiveSampleCuration), which tells a default
+  // value from the rule's when the exported events are a filtered subset.
+  const { sampleCuration, metadata, plateMap, ab, neverTargeted } = opts;
   const list = events || [];
 
   const ids = new Set();
@@ -378,11 +381,18 @@ export function buildContaminationGraph(events, opts = {}) {
           if ((ab.matrix[sp]?.[abKey] || 0) > 0) richness++;
         }
       }
+      // Where each value comes from, as the samples TSV says it
+      // (curationOrigin): manual, automatic, or default — the Not
+      // contaminated + Keep of a sample no event targets, which is not a
+      // decision. Without it the default read as a curated Keep.
+      const targeted = neverTargeted ? !neverTargeted.has(id) : a.asTarget > 0;
       return {
         id,
         label: sampleName(metadata, id) || id,
         sample_verdict: cur.verdict || "pending",
+        sample_verdict_origin: curationOrigin(cur, "verdict", targeted),
         sample_action: cur.action || "",
+        sample_action_origin: curationOrigin(cur, "action", targeted),
         notes: cur.notes || "",
         subject: flags.subject || "",
         timepoint: flags.timepoint || "",
@@ -21448,9 +21458,12 @@ const HelpTab = ({ onStartTour }) => {
                   <strong>Contamination graph</strong> — the directed
                   source → target graph as GraphML (Gephi and Cytoscape
                   open it natively) or as a node + edge CSV pair, every
-                  annotation a typed attribute: per sample its verdict,
-                  action, notes, metadata, plate position, event counts
-                  and species richness; per event its rate (also as{" "}
+                  annotation a typed attribute: per sample its verdict and
+                  action, each with its origin as in the samples TSV
+                  (manual, automatic, or default for the Not contaminated +
+                  Keep of a sample no event targets), notes, metadata, plate
+                  position, event counts and species richness; per event its
+                  rate (also as{" "}
                   <code>weight</code>), probability, introduced share,
                   evaluation, notes, cascade flag, relatedness and plate
                   distance. A missing number is −1, never 0, which would
@@ -26894,6 +26907,7 @@ const defaultFilter = () => ({
   const exportGraph = (format) => {
     const graph = buildContaminationGraph(filtered, {
       sampleCuration: effectiveSampleCuration,
+      neverTargeted,
       metadata,
       plateMap,
       ab,
