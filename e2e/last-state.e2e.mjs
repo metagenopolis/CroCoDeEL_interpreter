@@ -320,6 +320,8 @@ try {
           "sp_C\t1\t2\t3\t4\t5\t6\t7\t8",
         ].join("\n"),
       );
+      // A plate map that writes it as the events file does.
+      await upload(page, 3, "plate_map.tsv", "sample_id\tplate\twell\nS1\tP1\tA01\ns2\tP1\tA02\nS3\tP1\tA03\nS4\tP1\tA04\n");
       await mark(page, 0, "true positive");
       await saved(page);
       await openTab(page, "Samples");
@@ -334,6 +336,13 @@ try {
         s.Samples === 8 && s.Contaminated === 1 && s["To suppress"] === 1,
         "LS it counts the table's 8 samples, S2 contaminated and to suppress",
         JSON.stringify(s),
+      );
+      const context = row.locator('button[title="Show context"]');
+      if (await context.count()) await context.click();
+      check(
+        (await row.locator('[title^="Open plate P1 · well A02"]').count()) === 1,
+        "LS its context has the well the plate map gives s2",
+        (await row.innerText()).replace(/\s+/g, " ").slice(0, 120),
       );
       const verdictTitle = await row.locator('button[data-verdict-chip="contaminated"]').getAttribute("title").catch(() => null);
       const suppress = row.locator('button[aria-label="Suppress S2"]');

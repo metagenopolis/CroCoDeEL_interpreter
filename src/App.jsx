@@ -11535,7 +11535,9 @@ const SamplesTab = ({
       // in the automatic sample verdicts (src/curation.js).
       const suggested = autoVerdictFromCounts(evalCountsAsTarget);
       const flags = flagSample(id, metadata);
-      const placement = plateMap?.bySample?.[id] || null;
+      // Looked up as the metadata is (lookupBySample): a row is the
+      // table's spelling, and a plate map may write it as the events do.
+      const placement = plateMap ? lookupBySample(plateMap.bySample, id) || null : null;
       return {
         id,
         name: sampleName(metadata, id) || "",
