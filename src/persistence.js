@@ -366,11 +366,21 @@ export function restoreFilter(saved, defaults) {
   const strings = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
   const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
   const str = (v, fallback) => (typeof v === "string" ? v : fallback);
+  // A field with a fixed set of values keeps one of them, else gets its
+  // default: these are written into the events HTML report, and a session
+  // file can hold any text there.
+  const oneOf = (v, allowed, fallback) => (allowed.includes(v) ? v : fallback);
+  // A list keeps its known values; one that held none gets the default.
+  const known = (v, allowed, fallback) => {
+    const kept = v.filter((x) => allowed.has(x));
+    return kept.length > 0 || v.length === 0 ? kept : [...fallback];
+  };
   let verdicts;
-  if (strings(f.verdicts)) verdicts = f.verdicts;
-  else if (typeof f.verdict === "string" && f.verdict && f.verdict !== "all") verdicts = [f.verdict];
+  if (strings(f.verdicts)) verdicts = known(f.verdicts, EVENT_VERDICTS, d.verdicts);
+  else if (EVENT_VERDICTS.has(f.verdict)) verdicts = [f.verdict];
   else verdicts = [...d.verdicts];
   const side = (v) => (v === "source" || v === "target" ? v : "either");
+  const related = ["any", "same", "different"];
   return {
     ...d,
     q: str(f.q, d.q),
@@ -378,11 +388,13 @@ export function restoreFilter(saved, defaults) {
     minRate: num(f.minRate, d.minRate),
     minIntroduced: num(f.minIntroduced, d.minIntroduced),
     verdicts,
-    sampleVerdicts: strings(f.sampleVerdicts) ? f.sampleVerdicts : [...d.sampleVerdicts],
+    sampleVerdicts: strings(f.sampleVerdicts)
+      ? known(f.sampleVerdicts, SAMPLE_VERDICTS, d.sampleVerdicts)
+      : [...d.sampleVerdicts],
     sampleVerdictsSide: side(f.sampleVerdictsSide),
-    subject: str(f.subject, f.hideRelated ? "different" : d.subject),
-    group: str(f.group, d.group),
-    adjacent: str(f.adjacent, f.adjacentOnly ? "adjacent" : d.adjacent),
+    subject: oneOf(f.subject, related, f.hideRelated ? "different" : d.subject),
+    group: oneOf(f.group, related, d.group),
+    adjacent: oneOf(f.adjacent, ["any", "adjacent", "non-adjacent"], f.adjacentOnly ? "adjacent" : d.adjacent),
     // Optional sample-list scope (Network drill-ins).
     scopeSamples: strings(f.scopeSamples) ? f.scopeSamples : null,
     scopeSide: side(f.scopeSide),
