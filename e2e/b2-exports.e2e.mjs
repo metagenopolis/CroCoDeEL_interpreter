@@ -420,8 +420,15 @@ try {
       "B2.1 the note is on one line, in the notes column",
     );
 
-    // Back through the events card: same evaluations, same notes.
+    // Back through the events card: same evaluations, same notes. The
+    // session holds curation, so the card asks first; the file's own
+    // verdict and notes columns win over what is carried over.
     await upload(page, 0, "contamination_events_curated.tsv", file.text);
+    await page
+      .getByRole("dialog", { name: "Replace the events file?" })
+      .getByRole("button", { name: "Carry over" })
+      .click();
+    await page.waitForTimeout(1500);
     const reloaded = await overviewStats(page);
     check(
       reloaded.tp === marked.tp && reloaded.fp === marked.fp,
@@ -442,16 +449,17 @@ try {
       "B2.1 exported again after the reload, it gives the same events, verdicts and notes",
     );
 
-    // The events card's own Download: CroCoDeEL's file, as read (the
-    // study the curated file carried stays on its own "#" line).
+    // The events card's own Download: CroCoDeEL's file, as read. The run
+    // line comes first; the study names the session (its title), so a
+    // "# study:" line, when written, stays on its own "#" line.
     const own = await downloadVia(page, page.locator('button[title="Download this file"]').first());
     const ownLines = (own?.text || "").split("\n");
     const ownRead = readLikeCroCoDeEL(own?.text || "");
+    const header = ownLines[1]?.startsWith("# study:") ? ownLines[2] : ownLines[1];
     check(
       own?.name === "contamination_events.tsv" &&
         ownLines[0] === lines[0] &&
-        ownLines[1] === lines[1] &&
-        ownLines[2] === CROCODEEL_COLUMNS.join("\t") &&
+        header === CROCODEEL_COLUMNS.join("\t") &&
         !ownRead.error &&
         sameAsDemo(ownRead.events),
       "B2.1 the events card's Download is CroCoDeEL's five columns, every event as read",
@@ -1055,39 +1063,26 @@ try {
      Every entry but the last keeps the string "abc" as its row, as a
      hand-edited session file can. The download threw ("Cannot use 'in'
      operator"), the card read "other: 0, 1, 2" and the Validate panel
-     showed "0: a" pills. */
+     showed "0: a" pills. The session import now refuses such a file
+     before anything changes (sessionFromPayload names the sample), and
+     the metadata readers that met it are hardened as well (unit tests in
+     tests/b2-exports-*.test.js) for sessions stored by older versions. */
   await scenario("B2.6", async (page) => {
     const metadata = parseMetadata(demo("metadata.tsv"));
     const ids = Object.keys(metadata.bySample);
     for (const id of ids.slice(0, -1)) metadata.bySample[id].extra = "abc";
     await importSession(page, sessionJSON({ metadata }));
+    const body = await page.locator("body").innerText();
+    check(
+      /Failed to import session/i.test(body) && /annotations of \S+ are not an object/i.test(body),
+      "B2.6 a session whose metadata rows are not rows is refused, naming the sample",
+      (body.match(/Failed to import session[^\n]*\n?[^\n]*/i) || [""])[0].slice(0, 200),
+    );
     const text = await card(page, "metadata.tsv").innerText();
     check(
-      /other: ncbi_code/.test(text) && !/other: 0, 1, 2/.test(text),
-      "B2.6 the metadata card lists the columns of the one readable row, not a string's characters",
+      /Select file/i.test(text) && !/other: 0, 1, 2/.test(text),
+      "B2.6 and nothing of it is loaded",
       text.replace(/\s+/g, " ").slice(0, 200),
-    );
-    const file = await downloadVia(
-      page,
-      card(page, "metadata.tsv").locator('button[title="Download this file"]'),
-    );
-    const rows = (file?.text || "").split("\n").map((l) => l.split("\t"));
-    const back = file ? parseMetadata(file.text) : null;
-    check(
-      rows[0]?.join(",") === "sample_id,subject_id,timepoint,biome,low_biomass,group_id,ncbi_code" &&
-        rows.length === ids.length + 1 &&
-        ids.every((id) => back.bySample[id]?.subject === metadata.bySample[id].subject),
-      "B2.6 the metadata download works and keeps every subject",
-      JSON.stringify(rows[0]),
-    );
-    await openTab(page, "Validate");
-    await page.getByText(/plate position & sample context/i).first().click();
-    await page.waitForTimeout(500);
-    const panel = await page.locator("body").innerText();
-    check(
-      /subject/i.test(panel) && !/(^|\s)[012]:\s*[abc](\s|$)/m.test(panel),
-      "B2.6 the Validate panel's sample context shows no pill made of a string's characters",
-      (panel.match(/(^|\s)[012]:\s*[abc](\s|$)/m) || [""])[0].replace(/\s+/g, " ").trim(),
     );
   }, { demo: false });
 
