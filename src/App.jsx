@@ -24594,7 +24594,9 @@ function AppMain({ initial, storage }) {
   // the clean-up of an earlier model (stamped defaults, cleared actions)
   // only applies to a session saved before it, never to one curated with
   // this version. (An imported session JSON is migrated the same way, by
-  // sessionFromPayload in src/persistence.js.)
+  // sessionFromPayload in src/persistence.js; a stored session of an
+  // earlier layout already was, before its records were written —
+  // upgradedSession — so this only acts when that write failed.)
   // Once, on the session this component was mounted with (it only
   // seeds the useState initialisers below).
   const initialMigration = useMemo(
@@ -26080,7 +26082,9 @@ const defaultFilter = () => ({
   // null | { kind, count, onConfirm }. Opens on what reopening a session
   // saved by an earlier version changed, if anything.
   const [bulkConfirm, setBulkConfirm] = useState(() =>
-    sessionMigrationNotice(initialMigration.changes),
+    sessionMigrationNotice(
+      initialMigration.changes || initial?.migrationChanges || null,
+    ),
   );
   // Global Escape handler — closes the topmost dialog (config /
   // bulk-confirm) so keyboard users aren't trapped behind a backdrop
@@ -32016,7 +32020,7 @@ export default function App() {
     }
     let cancelled = false;
     readStoredSession()
-      .then(({ session, rev, abToken, inRecords }) => {
+      .then(({ session, rev, abToken, inRecords, upgrade }) => {
         // The stored session is read by the readers of the session
         // import (checkStoredSession, src/persistence.js): what an
         // earlier version or a damaged profile left in it is repaired,
@@ -32028,13 +32032,21 @@ export default function App() {
         // an earlier layout whose migration failed is not in the current
         // records: nothing counts as stored, so the first save writes
         // every record.
+        // A session of an earlier layout was brought up to date before
+        // it was written (`upgrade`, src/storage.js): this tab says what
+        // that changed.
         const checked = checkStoredSession(session);
         const read = checked.session;
         let initial = read?.metadata
           ? { ...read, metadata: remapMetadata(read.metadata) }
           : read;
-        if (initial && checked.notes.length > 0) {
-          initial = { ...initial, storageNotes: checked.notes };
+        const notes = [...(upgrade?.notes || []), ...checked.notes];
+        if (initial && (notes.length > 0 || upgrade?.changes)) {
+          initial = {
+            ...initial,
+            storageNotes: notes,
+            migrationChanges: upgrade?.changes || null,
+          };
         }
         if (!cancelled)
           setBoot({

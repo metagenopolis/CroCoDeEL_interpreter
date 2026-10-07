@@ -15,6 +15,8 @@
        session this version downloads after opening such a stored
        session; a damaged stored session opens instead of blanking the
        app;
+     - two tabs restored at once on a session of the previous version
+       both save: it is brought up to date once, when it is migrated;
 
    The stored state is read from IndexedDB, as the app reads it
    (src/persistence.js).
@@ -25,6 +27,7 @@
 
 import { readFileSync } from "node:fs";
 import {
+  BASE,
   startServer,
   stopServer,
   launchBrowser,
@@ -88,6 +91,39 @@ function writeRecords(page, puts, dels = []) {
       }),
     [puts, dels],
   );
+}
+
+/** The stored session rewritten in the previous version's layout: one
+    "main" record (the events with their verdicts and notes, no sample
+    curation version) and the table, without a token; `edit(main)` then
+    changes it. The page leaves the app first, so that nothing writes
+    meanwhile; its next goto(BASE) boots it again. */
+async function toPreviousLayout(page, edit = () => {}) {
+  await page.goto(`${BASE}favicon.svg`);
+  const r = await storedRecords(page);
+  const cur = r.curation;
+  const main = {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    rawEvents: r.events.events.map((e) => ({
+      ...e,
+      verdict: cur.verdicts[String(e.id)] || "pending",
+      notes: cur.notes[String(e.id)] || "",
+    })),
+    sampleCuration: cur.sampleCuration,
+    runMetadata: r.events.runMetadata,
+    metadata: r.metadata || null,
+    plateMap: r.plate || null,
+    analysisTitle: cur.analysisTitle,
+    tab: r.ui?.tab,
+    selId: r.ui?.selId,
+    filter: r.ui?.filter,
+    sort: r.ui?.sort,
+  };
+  edit(main);
+  const { storageToken: _token, ...ab } = r.ab;
+  await writeRecords(page, { main, ab }, ["events", "curation", "metadata", "plate", "ui"]);
+  return main;
 }
 
 /** Let the autosave (0.3 s after the last change) write. */
@@ -461,6 +497,52 @@ try {
     check(
       (await page.getByText("Something went wrong").count()) === 0,
       "FS the Plate and Samples tabs show",
+    );
+  });
+
+  /* Two tabs restored at once on a session of the previous version. */
+  await scenario("FS two tabs open a previous session at once", async (page, ctx) => {
+    await openTab(page, "Events");
+    await page.locator('button[title="mark as true positive"]').first().click();
+    await saved(page);
+    await toPreviousLayout(page, (main) => {
+      // Its model: a bulk TP left the target without an entry, the
+      // Samples tab stamped a sample no event targets.
+      const target = main.rawEvents.find((e) => e.verdict === "true_positive").target;
+      delete main.sampleCuration[target];
+      main.sampleCuration["63D250"] = { verdict: "correct", action: "keep" };
+    });
+    const other = await ctx.newPage();
+    await Promise.all([page.goto(BASE, { waitUntil: "networkidle" }), other.goto(BASE, { waitUntil: "networkidle" })]);
+    await page.waitForTimeout(3000);
+    let told = 0;
+    for (const p of [page, other]) {
+      const dialog = p.getByRole("dialog", { name: "Session brought up to date" });
+      if (await dialog.count()) {
+        told += /Now to suppress \(1\)/.test(await dialog.innerText()) ? 1 : 0;
+        await dialog.getByRole("button", { name: /^Close$/ }).click();
+      }
+    }
+    check(told === 1, "FS the tab that migrated it says what the update changed", `${told} tab(s)`);
+    const r = await storedRecords(page);
+    check(
+      r.curation?.rev === 1 && r.curation?.sampleCurationVersion === 2 && !r.main,
+      "FS the previous session is migrated once, up to date",
+      `rev ${r.curation?.rev}, version ${r.curation?.sampleCurationVersion}, main ${!!r.main}`,
+    );
+    check(
+      (await banner(page, "conflict").count()) === 0 && (await banner(other, "conflict").count()) === 0,
+      "FS neither tab is told the session changed in another tab",
+    );
+    // The second tab saves.
+    await openTab(other, "Events");
+    await other.locator('button[title="mark as false positive"]').nth(3).click();
+    await saved(other);
+    const after = await storedRecords(other);
+    check(
+      after.curation?.rev === 2 && Object.values(after.curation.verdicts).includes("false_positive"),
+      "FS and the second tab saves its evaluation",
+      `rev ${after.curation?.rev}`,
     );
   });
 } finally {

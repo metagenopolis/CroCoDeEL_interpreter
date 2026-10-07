@@ -32,6 +32,7 @@ import {
   sessionFromRecords,
   sessionWrites,
   uiRecord,
+  upgradedSession,
 } from "./persistence.js";
 
 export const DB_NAME = "crocodeel-interpreter";
@@ -259,9 +260,9 @@ function removeLegacyKeys() {
     written and false comes back). The "main" record goes in the same
     transaction (sessionWrites deletes it with every write of the events
     record). The abundance record of the "main" layout already has the
-    current shape and stays; one read from localStorage (`abFromLocal`)
-    is written. */
-function migrateSession(db, session, abFromLocal) {
+    current shape and stays; `table` is written when there is one to
+    write instead (read from localStorage, or repaired by the readers). */
+function migrateSession(db, session, table) {
   const tx = db.transaction(STORE, "readwrite");
   const store = tx.objectStore(STORE);
   let migrated = false;
@@ -271,7 +272,7 @@ function migrateSession(db, session, abFromLocal) {
     migrated = true;
     putAll(store, sessionWrites(session, { ...ALL_DIRTY, ab: false }, null), 1);
     store.put({ ...uiRecord(session), savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
-    if (abFromLocal) store.put(abundanceRecord(abFromLocal, null), RECORD_KEYS.ab);
+    if (table) store.put(abundanceRecord(table, null), RECORD_KEYS.ab);
   };
   return settled(tx).then(() => {
     if (migrated) mirrorRev(1);
@@ -299,10 +300,14 @@ function repairLostTable(db, rev, token) {
   return settled(tx).then(() => repaired);
 }
 
-/** The stored session, read on boot: { session, rev, abToken, inRecords }
-    — `session` null when nothing is stored, `rev` the revision the next
-    write must find, `abToken` the token of the stored abundance table.
-    A session of an earlier layout is migrated first. `inRecords` is
+/** The stored session, read on boot: { session, rev, abToken, inRecords,
+    upgrade } — `session` null when nothing is stored, `rev` the revision
+    the next write must find, `abToken` the token of the stored abundance
+    table. A session of an earlier layout is migrated first, brought up
+    to date on the way (upgradedSession): `upgrade` ({ notes, changes })
+    says, to the tab that wrote it, what the readers repaired and what
+    the curation's update changed (null: this tab migrated nothing).
+    `inRecords` is
     false when that migration failed (a full quota aborts it): the
     session is then read from the earlier layout as it is, and the
     current records do not hold it — the autosave must write every one
@@ -317,6 +322,7 @@ function repairLostTable(db, rev, token) {
 export async function readStoredSession() {
   const db = await openDB();
   let records = await readRecords(db);
+  let upgrade = null;
   if (!records.curation) {
     let session = sessionFromLegacyMain(records[LEGACY_MAIN_KEY], records.ab);
     let abFromLocal = null;
@@ -331,17 +337,22 @@ export async function readStoredSession() {
     }
     if (!session) {
       mirrorRev(0, true);
-      return { session: null, rev: 0, abToken: null, inRecords: true };
+      return { session: null, rev: 0, abToken: null, inRecords: true, upgrade: null };
     }
+    // Up to date before it is written, so that every tab reads it so.
+    const up = upgradedSession(session);
+    const table = fromLocal || up.session.ab !== session.ab ? up.session.ab : null;
     try {
-      await migrateSession(db, session, fromLocal ? abFromLocal : null);
+      if (await migrateSession(db, up.session, table)) {
+        upgrade = { notes: up.notes, changes: up.changes };
+      }
       if (fromLocal) removeLegacyKeys();
     } catch (e) {
       // Read it as it is; the first save writes every current record
       // (and drops the earlier layout's copies: writeSession).
       console.warn("[crocodeel] session migration failed:", e?.message);
       mirrorRev(0, true);
-      return { session, rev: 0, abToken: null, inRecords: false };
+      return { session, rev: 0, abToken: null, inRecords: false, upgrade: null };
     }
     records = await readRecords(db);
   }
@@ -358,7 +369,7 @@ export async function readStoredSession() {
   }
   // Known from now on (a deleted localStorage loses the mirror).
   mirrorRev(rev);
-  return { session, rev, abToken, inRecords: true };
+  return { session, rev, abToken, inRecords: true, upgrade };
 }
 
 /** Write the session records (persistence.js' sessionWrites) in one

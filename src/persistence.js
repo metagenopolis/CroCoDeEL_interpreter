@@ -44,7 +44,7 @@
    the earlier versions left in a session, and say so. */
 
 import { migrateSampleCuration, SAMPLE_CURATION_VERSION } from "./curation.js";
-import { splitSpeciesList } from "./parsing.js";
+import { remapMetadata, splitSpeciesList } from "./parsing.js";
 
 export const LAYOUT_VERSION = 2;
 
@@ -1116,6 +1116,41 @@ export function checkStoredSession(s) {
   }
   const same = Object.keys(session).every((k) => session[k] === s[k]);
   return { session: same ? s : session, notes };
+}
+
+/** A session of an earlier layout, as the boot writes it into the
+    current records: read by the readers (checkStoredSession), its
+    metadata read again with the current header rules (remapMetadata),
+    its sample curation brought up to date with the current model
+    (migrateSampleCuration), its events without their legacy actions.
+    Returns { session, notes, changes }: what the readers repaired and
+    what the migration changed in the curated output, for the notice of
+    the tab that writes it.
+
+    Done once, before the records are written, so that every tab reads a
+    session already up to date. AppMain did it on mount, as a change of
+    the session: two tabs opening such a session at once each wrote it,
+    and the second one was told "This session was changed in another
+    tab" and stopped saving, although nothing had changed. */
+export function upgradedSession(stored) {
+  const checked = checkStoredSession(stored);
+  const s = checked.session;
+  const migrated = migrateSampleCuration(s.rawEvents, s.sampleCuration, s.sampleCurationVersion);
+  return {
+    session: {
+      ...s,
+      rawEvents: s.rawEvents.map((e) => {
+        if (!e.action) return e;
+        const { action: _drop, ...rest } = e;
+        return rest;
+      }),
+      sampleCuration: migrated.sampleCuration,
+      sampleCurationVersion: SAMPLE_CURATION_VERSION,
+      metadata: s.metadata ? remapMetadata(s.metadata) : s.metadata,
+    },
+    notes: checked.notes,
+    changes: migrated.changes,
+  };
 }
 
 /** Read a session JSON (exportJSON's format, any version) into a session,
