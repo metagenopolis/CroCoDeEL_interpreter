@@ -415,8 +415,11 @@ try {
       "B2.1 its verdict column holds the evaluations",
       `TP ${marked.tp}, FP ${marked.fp}`,
     );
+    // On one line, and quoted the CSV way since it holds quotes (tsvCell:
+    // R reads a quote inside a cell as quoting), which CroCoDeEL's csv
+    // reader, pandas, R and the events card read back as written.
     check(
-      rows.some((c) => c[8] === '<b>"Quoted"</b> & co with a tab and a second line'),
+      rows.some((c) => c[8] === '"<b>""Quoted""</b> & co with a tab and a second line"'),
       "B2.1 the note is on one line, in the notes column",
     );
 
