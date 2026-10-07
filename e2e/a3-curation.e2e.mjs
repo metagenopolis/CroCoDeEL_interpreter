@@ -190,7 +190,19 @@ function sampleRow(page, id) {
     .filter({ has: page.getByText(id, { exact: true }) });
 }
 
-/** Import a session JSON through the files bar. */
+/** The info dialog opened by reopening a session saved by an earlier
+    version: its text, once closed; null when none is open. */
+async function takeSessionNotice(page) {
+  const title = page.getByText("Session brought up to date", { exact: true });
+  if ((await title.count()) === 0) return null;
+  const text = await title.locator("xpath=..").innerText();
+  await page.getByRole("button", { name: /^Close$/ }).last().click();
+  await page.waitForTimeout(200);
+  return text;
+}
+
+/** Import a session JSON through the files bar. Returns the text of the
+    notice it opened (closed here), or null. */
 async function importSession(page, session) {
   await page
     .locator('input[accept*="json"]')
@@ -201,6 +213,52 @@ async function importSession(page, session) {
       buffer: Buffer.from(JSON.stringify(session)),
     });
   await page.waitForTimeout(1500);
+  return takeSessionNotice(page);
+}
+
+/** Reload the page (the session comes back from the browser's storage),
+    once the autosave — debounced by a second after the last change, a
+    tab switch included — has written everything. Returns the text of
+    the notice it opened (closed here), or null. */
+async function reloadSession(page) {
+  await page.waitForTimeout(1500);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(1500);
+  return takeSessionNotice(page);
+}
+
+/** Click a download button and return the downloaded file's text. */
+async function download(page, name) {
+  const [file] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30000 }),
+    page.getByRole("button", { name }).first().click(),
+  ]);
+  return readFileSync(await file.path(), "utf8");
+}
+
+/** Rewrite fields of the stored session (IndexedDB), as another version
+    of the app would have saved it: `set` replaces fields, `remove`
+    deletes them. */
+async function editStoredSession(page, { set = {}, remove = [] }) {
+  await page.evaluate(
+    ([set, remove]) =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open("crocodeel-interpreter");
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const store = req.result.transaction("kv", "readwrite").objectStore("kv");
+          const get = store.get("main");
+          get.onsuccess = () => {
+            const main = { ...get.result, ...set };
+            for (const k of remove) delete main[k];
+            const put = store.put(main, "main");
+            put.onsuccess = () => resolve();
+            put.onerror = () => reject(put.error);
+          };
+        };
+      }),
+    [set, remove],
+  );
 }
 
 /** True when the button exists and is drawn active (filled). */
@@ -375,7 +433,7 @@ try {
         verdict,
         notes: "",
       });
-      await importSession(page, {
+      const notice = await importSession(page, {
         schema_version: 2,
         events: [
           event(0, "S1", "T1", "pending"),
@@ -400,31 +458,25 @@ try {
         "an imported session's automatic values are recomputed, manual ones kept",
         JSON.stringify(sc),
       );
-      // Same through a reload: write stale values straight into the
-      // stored session, as an older version would have left them.
-      await page.evaluate(
-        () =>
-          new Promise((resolve, reject) => {
-            const req = indexedDB.open("crocodeel-interpreter");
-            req.onerror = () => reject(req.error);
-            req.onsuccess = () => {
-              const store = req.result.transaction("kv", "readwrite").objectStore("kv");
-              const get = store.get("main");
-              get.onsuccess = () => {
-                const main = get.result;
-                main.sampleCuration = {
-                  T1: { verdict: "correct", verdictAuto: true },
-                  T3: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true },
-                };
-                const put = store.put(main, "main");
-                put.onsuccess = () => resolve();
-                put.onerror = () => reject(put.error);
-              };
-            };
-          }),
+      check(
+        /Now to suppress \(1\): T2\b/.test(notice || "") &&
+          /No longer suppressed \(1\): T3\b/.test(notice || ""),
+        "…and a notice lists what the curated table now drops differently",
+        notice || "no notice",
       );
-      await page.reload({ waitUntil: "networkidle" });
-      await page.waitForTimeout(1500);
+      // Same through a reload: write stale values straight into the
+      // stored session, as an older version would have left them (no
+      // curation version).
+      await editStoredSession(page, {
+        set: {
+          sampleCuration: {
+            T1: { verdict: "correct", verdictAuto: true },
+            T3: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true },
+          },
+        },
+        remove: ["sampleCurationVersion"],
+      });
+      const reloadNotice = await reloadSession(page);
       const restored = await storedCuration(page);
       check(
         restored.T1 === undefined &&
@@ -433,6 +485,13 @@ try {
         "a session restored from the browser's storage is recomputed the same way",
         JSON.stringify(restored),
       );
+      check(
+        /Now to suppress \(1\): T2\b/.test(reloadNotice || ""),
+        "…with the same notice",
+        reloadNotice || "no notice",
+      );
+      // Once saved again, it is a current session: no notice any more.
+      check((await reloadSession(page)) === null, "…shown once: the next reload opens no notice");
     },
     { demo: false },
   );
@@ -677,6 +736,99 @@ try {
     },
     { demo: false },
   );
+  /* A3.5 Not contaminated + Keep is also what a curator writes on
+     purpose on a never-targeted sample. Saved by this version, it is a
+     decision: it must survive a reload and a session export / import
+     (only sessions saved by an earlier version lose their stamps). */
+  await scenario("A3.5 decisions survive a reload", async (page) => {
+    const mine = { verdict: "correct", action: "keep" };
+    await setSampleVerdictInTable(page, "63D250", "Not contaminated");
+    await sampleRow(page, "63D250").locator('button[aria-label="Keep 63D250"]').click();
+    await page.waitForTimeout(300);
+    let sc = await storedCuration(page);
+    check(show(sc["63D250"]) === show(mine), "A3.5 63D250 set by hand to Not contaminated + Keep", show(sc["63D250"]));
+    let notice = await reloadSession(page);
+    sc = await storedCuration(page);
+    let s = await overviewStats(page);
+    check(
+      show(sc["63D250"]) === show(mine) && s.keep === 1 && notice === null,
+      "A3.5 …survives a reload (still 1 to keep, no notice)",
+      `${show(sc["63D250"])} keep=${s.keep} notice=${notice}`,
+    );
+    const session = JSON.parse(await download(page, /^Download session$/));
+    check(
+      session.sample_curation_version === 2 && show(session.sample_curation["63D250"]) === show(mine),
+      "A3.5 the session JSON carries it, with its curation version",
+      `version=${session.sample_curation_version} ${show(session.sample_curation["63D250"])}`,
+    );
+    notice = await importSession(page, session);
+    sc = await storedCuration(page);
+    s = await overviewStats(page);
+    check(
+      show(sc["63D250"]) === show(mine) && s.keep === 1 && notice === null,
+      "A3.5 …and a session export / import",
+      `${show(sc["63D250"])} keep=${s.keep} notice=${notice}`,
+    );
+    // The Samples tab's bulk dialog writes the same entry on every
+    // sample it applies to.
+    const dialog = await openSampleBulkDialog(page);
+    await dialog.getByRole("button", { name: /^Not contaminated$/ }).last().click();
+    await dialog.getByRole("button", { name: /^Keep$/ }).last().click();
+    await dialog.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(600);
+    const before = (await overviewStats(page)).keep;
+    await reloadSession(page);
+    const after = (await overviewStats(page)).keep;
+    check(
+      before > 75 && after === before,
+      "A3.5 a bulk Not contaminated + Keep on the Samples tab survives a reload",
+      `keep ${before} → ${after}`,
+    );
+  });
+
+  /* A session saved by the release before this change: removing the
+     Suppress of a Contaminated sample left it with no action, and the
+     curated table kept it. Reopened now, it is marked Keep — the
+     rule must not pair it with Suppress again — and the notice says so,
+     along with what the update does change. */
+  await scenario("release session", async (page) => {
+    await openTab(page, "Events");
+    await clickEvent(page, "83D88", "NC3", "tp");
+    await clickEvent(page, "63D250", "63D9", "tp");
+    await clickEvent(page, "63D29", "63D40", "tp");
+    const session = JSON.parse(await download(page, /^Download session$/));
+    // As the release saved it: no curation version; NC3's Suppress
+    // removed by the curator ("Clear suppress"); 63D40 never reached by
+    // the target sync (the bulk-TP bug). Each event carries its target's
+    // action, as the release's export wrote it.
+    delete session.sample_curation_version;
+    session.sample_curation.NC3 = { verdict: "contaminated", verdictAuto: true };
+    delete session.sample_curation["63D40"];
+    for (const e of session.events) e.action = session.sample_curation[e.target]?.action || null;
+    const notice = await importSession(page, session);
+    const sc = await storedCuration(page);
+    check(
+      show(sc.NC3) === show({ verdict: "contaminated", verdictAuto: true, action: "keep" }),
+      "release session: NC3, whose Suppress the curator removed, comes back as Keep set by hand",
+      show(sc.NC3),
+    );
+    check(isAutoContaminated(sc["63D9"]), "release session: 63D9 keeps its automatic Suppress", show(sc["63D9"]));
+    check(isAutoContaminated(sc["63D40"]), "release session: 63D40 (TP, never synced) is now Contaminated + Suppress", show(sc["63D40"]));
+    check(
+      /Now to suppress \(1\): 63D40\b/.test(notice || "") &&
+        /now marked Keep \(1\): NC3\b/.test(notice || "") &&
+        !/No longer suppressed/.test(notice || ""),
+      "release session: the notice lists 63D40 (now suppressed) and NC3 (kept, now Keep)",
+      notice || "no notice",
+    );
+    const card = await curatedCard(page);
+    check(
+      card && card.total - card.kept === 2,
+      "release session: the curated table drops 63D9 and 63D40, and still keeps NC3",
+      JSON.stringify(card),
+    );
+  });
+
   /* A3.6 Keep / suppress counts agree everywhere, and "to suppress" is
      what the curated abundance export drops — whatever the event filter
      of the Export tab. */

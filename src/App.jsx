@@ -9,6 +9,7 @@ import {
   withManualAction,
   applyTargetSideEffects,
   migrateSampleCuration,
+  SAMPLE_CURATION_VERSION,
   neverTargetedSamples,
   buildEffectiveSampleCuration,
   sampleActionCounts,
@@ -21604,10 +21605,20 @@ const HelpTab = ({ onStartTour }) => {
             Automatic values carry an <em>auto</em> tag in the Samples
             tab. Clicking a sample-level verdict or action makes it
             yours; choosing <em>Pending</em>, or clearing your action,
-            hands the sample back to the automatic rule. A session saved
-            by an earlier version has its automatic values recomputed
-            with these rules when it is reopened or imported; the values
-            you set by hand are kept as they are.
+            hands the sample back to the automatic rule.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            <strong>Sessions saved by an earlier version</strong> are
+            brought up to date when they are reopened or imported: their
+            automatic values are recomputed with these rules and the
+            values you set by hand are kept as they are. A Contaminated
+            sample whose Suppress you had removed is marked{" "}
+            <em>Keep</em>, so the curated abundance table still keeps
+            it; the Not contaminated + Keep that the Samples tab used to
+            write on every sample no event targets is dropped (that
+            default is derived now). A message lists the samples whose
+            suppression changed. A session saved by this version comes
+            back exactly as it was saved.
           </p>
           <h4
             className="mt-3 text-[14px]"
@@ -24485,14 +24496,55 @@ function AppMain({ initial }) {
   // first load that detects them, then strip the field from the events.
   // When a target's events disagree, the most severe action wins, as in
   // the legacy app (see migrateSampleCuration in src/curation.js).
-  const migrateLegacyAction = (rawEv, existingSC) =>
-    migrateSampleCuration(rawEv, existingSC);
+  // `version` is the SAMPLE_CURATION_VERSION the session was saved with:
+  // the clean-up of an earlier model (stamped defaults, cleared actions)
+  // only applies to a session saved before it, never to one curated with
+  // this version.
+  const migrateLegacyAction = (rawEv, existingSC, version) =>
+    migrateSampleCuration(rawEv, existingSC, version);
   // Once, on the session this component was mounted with (it only
-  // seeds the two useState initialisers below).
+  // seeds the useState initialisers below).
   const initialMigration = useMemo(
-    () => migrateSampleCuration(initial?.rawEvents, initial?.sampleCuration),
+    () =>
+      migrateSampleCuration(
+        initial?.rawEvents,
+        initial?.sampleCuration,
+        initial?.sampleCurationVersion,
+      ),
     [initial],
   );
+  // What reopening a session saved by an earlier version changed in the
+  // curated output, told once in the info dialog (null: nothing to say).
+  const sessionMigrationNotice = (changes) => {
+    if (!changes) return null;
+    const list = (ids) =>
+      ids.length > 12
+        ? `${ids.slice(0, 12).join(", ")} … (+${ids.length - 12})`
+        : ids.join(", ");
+    const parts = [
+      "This session was saved by an earlier version of the interface. Its automatic sample verdicts and actions have been recomputed with the current rules (Help → Auto-sync); the values you set by hand are unchanged.",
+    ];
+    if (changes.nowSuppressed.length)
+      parts.push(
+        `Now to suppress (${changes.nowSuppressed.length}): ${list(changes.nowSuppressed)} — a true-positive event targets them and nothing you set by hand says otherwise.`,
+      );
+    if (changes.noLongerSuppressed.length)
+      parts.push(
+        `No longer suppressed (${changes.noLongerSuppressed.length}): ${list(changes.noLongerSuppressed)} — their automatic Suppress no longer matched their events.`,
+      );
+    if (changes.keptAsKeep.length)
+      parts.push(
+        `Still kept in the curated table, now marked Keep (${changes.keptAsKeep.length}): ${list(changes.keptAsKeep)} — you had removed their Suppress; this version records that as Keep.`,
+      );
+    parts.push(
+      "The Samples tab shows each of them; the curated abundance export follows.",
+    );
+    return {
+      kind: "info",
+      title: "Session brought up to date",
+      body: parts.join("\n\n"),
+    };
+  };
   const [rawEvents, setRawEvents] = useState(() => {
     const ev = initial?.rawEvents || [];
     if (!initialMigration.touched) return ev;
@@ -25219,6 +25271,9 @@ const defaultFilter = () => ({
           savedAt: new Date().toISOString(),
           rawEvents,
           sampleCuration,
+          // The model the curation follows (src/curation.js): a session
+          // without it is migrated as one saved by an earlier version.
+          sampleCurationVersion: SAMPLE_CURATION_VERSION,
           runMetadata,
           metadata,
           plateMap,
@@ -25849,7 +25904,11 @@ const defaultFilter = () => ({
       auto-generated note explaining the rationale. Events that already
       have a manual verdict are skipped (to avoid overwriting user
       decisions). User notes are preserved by prepending the auto-note. */
-  const [bulkConfirm, setBulkConfirm] = useState(null); // null | { kind, count, onConfirm }
+  // null | { kind, count, onConfirm }. Opens on what reopening a session
+  // saved by an earlier version changed, if anything.
+  const [bulkConfirm, setBulkConfirm] = useState(() =>
+    sessionMigrationNotice(initialMigration.changes),
+  );
   // Global Escape handler — closes the topmost dialog (config /
   // bulk-confirm) so keyboard users aren't trapped behind a backdrop
   // click target. Bulk-apply, popovers and tour-style overlays own
@@ -26975,6 +27034,7 @@ const defaultFilter = () => ({
     const migratedFromEvents = migrateLegacyAction(
       restoredEventsWithLegacyAction,
       restoredSampleCuration,
+      json.sample_curation_version,
     );
     const restoredEvents = restoredEventsWithLegacyAction.map((e) => {
       if (!e.action) return e;
@@ -27005,6 +27065,10 @@ const defaultFilter = () => ({
         setSort(json.ui_state.sort);
     }
     setErr(null);
+    // A session saved by an earlier version: say what its migration
+    // changed in the curated output.
+    const notice = sessionMigrationNotice(migratedFromEvents.changes);
+    if (notice) setBulkConfirm(notice);
   };
 
   const exportJSON = () => {
@@ -27042,8 +27106,10 @@ const defaultFilter = () => ({
       // Sample-level curation: verdict / action / notes per sample.
       // Action lives here (not on the event) since the curator's
       // downstream decision is bound to the sample, not to a single
-      // flagged event touching it.
+      // flagged event touching it. Its version tells the importer which
+      // model the map follows (src/curation.js).
       sample_curation: sampleCuration,
+      sample_curation_version: SAMPLE_CURATION_VERSION,
       events: events.map((e) => ({
         id: e.id,
         source: e.source,

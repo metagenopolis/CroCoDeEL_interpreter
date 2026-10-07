@@ -343,6 +343,23 @@ export function sampleActionCounts(curation, ids) {
 // Only keep / suppress were ever offered; anything else is dropped.
 const LEGACY_ACTION_SEVERITY = { keep: 1, suppress: 2 };
 
+/** The sample-curation model a saved session was written under. It is
+    saved with every session (the browser's autosave, the session JSON);
+    a session without it was saved by an earlier version, whose model
+    differed in ways a migration must undo — and only for such a session:
+
+      - the Samples tab stamped Not contaminated + Keep, as if set by
+        hand, on every sample no event targets (the same entry a curator
+        now writes on purpose);
+      - "Clear" on the action of a Contaminated sample left it with no
+        action, and the curated abundance table kept it; the current
+        model pairs such a sample with Suppress;
+      - automatic values could depend on the order of the clicks, or lag
+        behind a bulk change.
+
+    2 is the model of this module. */
+export const SAMPLE_CURATION_VERSION = 2;
+
 /** The Not contaminated + Keep the Samples tab used to write, as if by
     hand, on every never-targeted sample it displayed: exactly those two
     values, no notes, no automatic flag. */
@@ -355,25 +372,39 @@ function isNeverTargetedStamp(entry) {
 }
 
 /** Bring a stored session's sample curation in line with the current
-    model, once, when it is loaded:
+    model, once, when it is loaded. `version` is the
+    SAMPLE_CURATION_VERSION the session was saved with (missing: an
+    earlier version).
 
       1. legacy per-event actions move to their target sample (most
          severe wins; a sample that already has an action keeps it);
-      2. the Not contaminated + Keep stamps of never-targeted samples are
-         dropped: that default is derived now (buildEffectiveSampleCuration),
-         and a stamp, stored as a manual value, counted as a Keep decision
-         and blocked the Contaminated → Suppress pairing;
+      2. (earlier versions only) the Not contaminated + Keep stamps of
+         never-targeted samples are dropped: that default is derived now
+         (buildEffectiveSampleCuration), and a stamp, stored as a manual
+         value, counted as a Keep decision and blocked the
+         Contaminated → Suppress pairing. In a current session the same
+         entry is the curator's decision and stays;
       3. the automatic values are recomputed with the current rule, so a
          session saved by an older version — whose automatic values could
          depend on the order of the clicks, or lag behind a bulk change —
-         reads like one curated today. Manual values are not touched.
+         reads like one curated today. Manual values are not touched;
+      4. (earlier versions only) a Contaminated sample stored with no
+         action — which only an explicit clear of its action could leave,
+         and which the curated table kept — gets a Keep set by hand where
+         the recomputed rule would pair it with Suppress: the curator's
+         "do not suppress" survives, and so does the curated table.
 
-    Returns { sampleCuration, touched }; `touched` is true when the events
-    carry legacy actions (which the caller strips) or the curation
-    changed. */
-export function migrateSampleCuration(rawEvents, sampleCuration) {
+    Returns { sampleCuration, touched, changes }. `touched` is true when
+    the events carry legacy actions (which the caller strips) or the
+    curation changed. `changes` (earlier versions only, null when nothing
+    the curator should hear about changed) lists, sorted:
+      nowSuppressed       samples the curated table now drops,
+      noLongerSuppressed  samples it no longer drops,
+      keptAsKeep          the samples of step 4. */
+export function migrateSampleCuration(rawEvents, sampleCuration, version) {
   const events = rawEvents || [];
   const original = sampleCuration || {};
+  const earlierModel = !(Number(version) >= SAMPLE_CURATION_VERSION);
   const sc = { ...original };
   let touched = false;
   const legacy = new Map();
@@ -394,17 +425,39 @@ export function migrateSampleCuration(rawEvents, sampleCuration) {
     if (cur.action != null) continue;
     sc[target] = { ...cur, action };
   }
-  const targeted = new Set();
-  for (const e of events) if (e?.target) targeted.add(e.target);
-  for (const id of Object.keys(sc)) {
-    if (!targeted.has(id) && isNeverTargetedStamp(sc[id])) {
-      delete sc[id];
-      touched = true;
+  // What the session said before this load: its entries and the legacy
+  // actions, which were its decisions too.
+  const before = { ...sc };
+  if (earlierModel) {
+    const targeted = new Set();
+    for (const e of events) if (e?.target) targeted.add(e.target);
+    for (const id of Object.keys(sc)) {
+      if (!targeted.has(id) && isNeverTargetedStamp(sc[id])) {
+        delete sc[id];
+        touched = true;
+      }
     }
   }
-  const synced = syncSampleCuration(sc, events);
+  const synced = { ...syncSampleCuration(sc, events) };
+  const keptAsKeep = [];
+  if (earlierModel) {
+    for (const id of Object.keys(before)) {
+      const was = before[id];
+      const now = synced[id];
+      if (
+        was?.verdict === "contaminated" &&
+        !isSet(was.action) &&
+        now?.action === "suppress" &&
+        now.actionAuto
+      ) {
+        const { actionAuto: _paired, ...rest } = now;
+        synced[id] = { ...rest, action: "keep" };
+        keptAsKeep.push(id);
+      }
+    }
+  }
+  const ids = new Set([...Object.keys(original), ...Object.keys(synced)]);
   if (!touched) {
-    const ids = new Set([...Object.keys(original), ...Object.keys(synced)]);
     for (const id of ids) {
       if (!sameEntry(original[id] ?? null, synced[id] ?? null)) {
         touched = true;
@@ -412,5 +465,23 @@ export function migrateSampleCuration(rawEvents, sampleCuration) {
       }
     }
   }
-  return { sampleCuration: synced, touched };
+  let changes = null;
+  if (earlierModel) {
+    const nowSuppressed = [];
+    const noLongerSuppressed = [];
+    for (const id of new Set([...Object.keys(before), ...ids])) {
+      const was = before[id]?.action === "suppress";
+      const is = synced[id]?.action === "suppress";
+      if (is && !was) nowSuppressed.push(id);
+      else if (was && !is) noLongerSuppressed.push(id);
+    }
+    if (nowSuppressed.length || noLongerSuppressed.length || keptAsKeep.length) {
+      changes = {
+        nowSuppressed: nowSuppressed.sort(),
+        noLongerSuppressed: noLongerSuppressed.sort(),
+        keptAsKeep: keptAsKeep.sort(),
+      };
+    }
+  }
+  return { sampleCuration: touched ? synced : original, touched, changes };
 }
