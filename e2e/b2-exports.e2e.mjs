@@ -20,8 +20,10 @@
              card says so;
      - B2.4  the samples TSV writes every sample's verdict and action as
              the views show them, each with its origin (manual, automatic,
-             default), in agreement with the samples HTML report's "auto"
-             and "default" tags;
+             default) — the Suppress paired with a Contaminated set by
+             hand on a sample no event targets is automatic, not default —
+             and the samples HTML report's "auto" and "default" tags say
+             the same;
      - B2.5  the events and samples HTML reports, of the demo (filtered
              or not) and of a session with a cascade, an event whose
              target and one whose source are not in the abundance table,
@@ -553,8 +555,11 @@ try {
     const byTarget = new Map();
     for (const e of events) byTarget.set(e.target, [...(byTarget.get(e.target) || []), e.verdict]);
     const tpTarget = events.find((e) => e.verdict === "true_positive")?.target;
-    const untargeted = demoEvents.events.every((e) => e.target !== "40D89") ? "40D89" : null;
-    // By hand: Uncertain on a sample no event targets, Keep on the TP target.
+    const inNoEvent = (id) => demoEvents.events.every((e) => e.source !== id && e.target !== id);
+    const untargeted = inNoEvent("40D89") ? "40D89" : null;
+    const contaminatedByHand = inNoEvent("58D13") ? "58D13" : null;
+    // By hand: Uncertain on a sample no event targets, Contaminated on
+    // another (the rule pairs it with Suppress), Keep on the TP target.
     const row = (id) =>
       page
         .locator("tr")
@@ -563,8 +568,11 @@ try {
     await openTab(page, "Samples");
     await row(untargeted).locator('button[aria-label="Set verdict to Uncertain"]').click();
     await page.waitForTimeout(300);
+    await row(contaminatedByHand).locator('button[aria-label="Set verdict to Contaminated"]').click();
+    await page.waitForTimeout(300);
     await row(tpTarget).locator(`button[aria-label="Keep ${tpTarget}"]`).click();
     await page.waitForTimeout(800);
+    const autoMark = await row(contaminatedByHand).getByTitle(/^Automatic action/).count();
 
     const samplesFile = await exportFile(page, /Download samples TSV/i);
     const header =
@@ -576,6 +584,7 @@ try {
     );
     const expected = (id) => {
       if (id === untargeted) return ["uncertain", "manual", "", ""];
+      if (id === contaminatedByHand) return ["contaminated", "manual", "suppress", "automatic"];
       if (id === tpTarget) return ["contaminated", "automatic", "keep", "manual"];
       const v = byTarget.get(id);
       if (!v) return ["correct", "default", "keep", "default"];
@@ -593,16 +602,30 @@ try {
       "B2.4 each sample's verdict and action carry their origin: manual, automatic (from the events) or default",
       wrong.slice(0, 3).map((r) => `${r.sample_id}: ${values(r).join("/")}`).join("; "),
     );
-    // The same origins as the samples HTML report's tags.
+    // A sample no event targets, marked Contaminated by hand: its Suppress
+    // is the rule's — the Samples tab marks it automatic, the curated
+    // table drops the sample — not the default (Not contaminated + Keep).
+    const byHand = rows.find((r) => r.sample_id === contaminatedByHand);
+    check(
+      byHand && values(byHand).join() === "contaminated,manual,suppress,automatic" && autoMark === 1,
+      "B2.4 the Suppress paired with a Contaminated set by hand on a sample no event targets is automatic, as the Samples tab marks it",
+      byHand ? `${values(byHand).join("/")}; Samples tab automatic mark: ${autoMark}` : "row missing",
+    );
+    // The samples HTML report's tags say the same, from the expected
+    // origins above (not from the TSV, which shares the rule).
     const html = await exportFile(page, /Download samples HTML/i);
     const tags = htmlReportTags(html?.text);
     const tagOf = { automatic: "auto", default: "default", manual: "", "": "" };
-    const disagree = rows.filter(
-      (r) => (tags[r.sample_id] || []).join() !== [tagOf[r.verdict_origin], tagOf[r.action_origin]].join(),
-    );
+    const expectedTags = (id) => {
+      const [, verdictOrigin, , actionOrigin] = expected(id);
+      return [tagOf[verdictOrigin], tagOf[actionOrigin]];
+    };
+    const disagree = rows.filter((r) => (tags[r.sample_id] || []).join() !== expectedTags(r.sample_id).join());
     check(
-      Object.keys(tags).length === rows.length && disagree.length === 0,
-      "B2.4 they agree with the samples HTML report's auto / default tags",
+      Object.keys(tags).length === rows.length &&
+        disagree.length === 0 &&
+        tags[contaminatedByHand]?.join() === ",auto",
+      "B2.4 the samples HTML report tags the same values auto and default",
       disagree.slice(0, 3).map((r) => `${r.sample_id}: ${JSON.stringify(tags[r.sample_id])}`).join("; "),
     );
   });

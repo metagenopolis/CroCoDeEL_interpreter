@@ -435,21 +435,32 @@ export function curatedAbundanceProvenance(ab, cur, opts = {}) {
 
 /* ---------- samples ---------- */
 
+/** The values buildEffectiveSampleCuration gives a sample no event
+    targets: Not contaminated, and the Keep that goes with it. */
+const DEFAULT_VALUE = { verdict: "correct", action: "keep" };
+
 /** Where a sample's verdict or action (`field`) comes from, as the samples
     TSV writes it next to the value:
       manual     the curator set it;
-      automatic  the rule derived it from the evaluations of the events
-                 that target the sample (src/curation.js);
+      automatic  the rule set it (src/curation.js): a verdict from the
+                 evaluations of the events that target the sample, or
+                 the Suppress that goes with a Contaminated verdict —
+                 also with one the curator set on a sample no event
+                 targets;
       default    the Not contaminated + Keep of a sample no event targets
                  (buildEffectiveSampleCuration), which is not a decision;
       ""         no value.
     `entry` is the sample's effective curation; `targeted` says whether an
-    event targets it. The samples HTML report marks the same values "auto"
-    and "default", the Samples tab "auto". The TSV used to write the three
-    kinds alike, so a never-reviewed sample read as a curated Keep. */
+    event targets it. On a sample no event targets, an automatic value is
+    the default only when it is that very value: the Suppress paired with
+    a Contaminated set by hand is the rule's, and the curated table drops
+    the sample. The samples HTML report tags the same values "auto" and
+    "default", the Samples tab marks both "auto". The TSV used to write
+    the three kinds alike, so a never-reviewed sample read as a curated
+    Keep. */
 export function curationOrigin(entry, field, targeted) {
   const value = entry?.[field];
   if (value == null || value === "" || value === "pending") return "";
   if (!entry[`${field}Auto`]) return "manual";
-  return targeted ? "automatic" : "default";
+  return !targeted && value === DEFAULT_VALUE[field] ? "default" : "automatic";
 }

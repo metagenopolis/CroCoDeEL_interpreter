@@ -20832,10 +20832,13 @@ const HelpTab = ({ onStartTour }) => {
                   Keep default of a sample no event targets included —
                   each followed by its origin (<code>verdict_origin</code>,{" "}
                   <code>action_origin</code>: <em>manual</em> when you
-                  set it, <em>automatic</em> when the events that target
-                  the sample decide it, <em>default</em> for a sample no
-                  event targets, empty without a value), and the notes.
-                  Same data the Samples-tab toolbar export produces.
+                  set it; <em>automatic</em> when the rule sets it — the
+                  verdict the events that target the sample call for, the
+                  Suppress that goes with a Contaminated verdict, yours
+                  included; <em>default</em> for the Not contaminated +
+                  Keep of a sample no event targets; empty without a
+                  value), and the notes. The samples HTML report tags the
+                  same values <em>auto</em> and <em>default</em>.
                 </li>
                 <li>
                   <strong>Events HTML report</strong> — self-contained
@@ -22677,9 +22680,10 @@ const ExportTab = ({
               "plate position, per-side event counts, per-side TP / " +
               "FP / Uncertain / Pending breakdown, max contamination " +
               "rate and max introduced %, plus the sample-level " +
-              "verdict and action, each with its origin (manual, " +
-              "automatic, or the default of a sample no event " +
-              "targets), and the notes."
+              "verdict and action, each with its origin (manual; " +
+              "automatic, set by the rule from the events or paired " +
+              "with Contaminated; or the default Not contaminated + " +
+              "Keep of a sample no event targets), and the notes."
             }
             action="Download samples TSV"
             onClick={onExportSamplesTSV}
@@ -26379,13 +26383,17 @@ const defaultFilter = () => ({
           : { bg: "#e0b13a", label: "Keep" };
       return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
-    // Values the curator did not set: "auto" when derived from the events
-    // that target the sample, "default" for the Not contaminated + Keep
-    // of a sample no event targets. Printed, so a saved PDF keeps it.
-    const autoTag = (on, targeted) =>
-      on
-        ? `<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#797870;">${targeted ? "auto" : "default"}</span>`
+    // Values the curator did not set, as the samples TSV's origin columns
+    // name them (curationOrigin): "auto" for the rule's — from the events
+    // that target the sample, or the Suppress paired with Contaminated —
+    // and "default" for the Not contaminated + Keep of a sample no event
+    // targets. Printed, so a saved PDF keeps it.
+    const originTag = (c, field, targeted) => {
+      const origin = curationOrigin(c, field, targeted);
+      return origin === "automatic" || origin === "default"
+        ? `<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#797870;">${origin === "automatic" ? "auto" : "default"}</span>`
         : "";
+    };
     const flagChip = (label, on, color) => {
       if (!on) return "";
       return `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:2px;font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;margin-right:2px;">${label}</span>`;
@@ -26444,8 +26452,8 @@ const defaultFilter = () => ({
             </td>
             <td style="text-align:right;font-family:ui-monospace,monospace;">${ratePct(a.maxTargetRate)}</td>
             <td style="text-align:right;font-family:ui-monospace,monospace;">${introPct(a.maxTargetIntroducedPct)}</td>
-            <td>${verdictPill(c.verdict)}${autoTag(c.verdict && c.verdictAuto, a.asTarget > 0)}</td>
-            <td>${actionPill(c.action)}${autoTag(c.action && c.actionAuto, a.asTarget > 0)}</td>
+            <td>${verdictPill(c.verdict)}${originTag(c, "verdict", a.asTarget > 0)}</td>
+            <td>${actionPill(c.action)}${originTag(c, "action", a.asTarget > 0)}</td>
             <td style="font-size:10px;color:#5a5550;white-space:pre-wrap;">${escapeHTML(c.notes || "")}</td>
           </tr>
         `;
@@ -26498,7 +26506,7 @@ const defaultFilter = () => ({
     <div class="stat keep" title="${escapeHTML(SAMPLES_TO_KEEP_HINT)}"><div class="label">Keep</div><div class="value">${summary.keep}</div></div>
     <div class="stat suppress" title="${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)}"><div class="label">Suppress</div><div class="value">${summary.suppress}</div></div>
   </div>
-  <div class="meta">Keep: ${escapeHTML(SAMPLES_TO_KEEP_HINT)} Suppress: ${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)} In the table, <em>auto</em> marks a verdict or an action derived from the event evaluations and <em>default</em> the Not contaminated + Keep of a sample no event targets; the others were set by hand.</div>
+  <div class="meta">Keep: ${escapeHTML(SAMPLES_TO_KEEP_HINT)} Suppress: ${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)} In the table, <em>auto</em> marks a verdict or an action set by the rule — a verdict derived from the event evaluations, or the Suppress that goes with a Contaminated verdict — and <em>default</em> the Not contaminated + Keep of a sample no event targets; the others were set by hand.</div>
 
   <h2>Samples</h2>
   <table>
