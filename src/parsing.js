@@ -30,15 +30,19 @@ function unquoteCell(s) {
     make `pandas.read_csv(sep='\t')` either raise or invent rows. Every
     field of every writer goes through here.
 
-    A cell that starts with a double quote is quoted the CSV way (wrapped
-    in quotes, inner quotes doubled). Read back, unquoteCell strips one
-    layer of quotes from a cell that starts and ends with one, so a note
-    such as `"Quoted" ... "end"` came back as `Quoted" ... "end`; pandas
-    and R, whose quote character is `"` too, misread such a cell as well.
-    Quoted, all three give back the text as written. */
+    A cell that holds a double quote is quoted the CSV way (wrapped in
+    quotes, inner quotes doubled). Read back, unquoteCell strips one layer
+    of quotes from a cell that starts and ends with one, so a note such as
+    `"Quoted" ... "end"` came back as `Quoted" ... "end`. R's read.delim,
+    whose quote character is `"`, also reads a quote inside a cell as the
+    start or end of a quoted part: it dropped the quotes of a sample id
+    `S"q"2` (read `Sq2`), and one lone quote (a note `tube labelled 2"
+    short`) swallowed the rest of the file into that cell — 17 rows read
+    of the samples TSV's 91. Quoted, unquoteCell, CroCoDeEL's csv reader,
+    pandas and R all give back the text as written. */
 export function tsvCell(v) {
   const s = String(v ?? "").replace(/[\t\r\n]+/g, " ");
-  return s.charCodeAt(0) === 34 ? `"${s.replace(/"/g, '""')}"` : s;
+  return s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /** Split a TSV text into its header cells, its rows (objects keyed by
@@ -419,7 +423,7 @@ function parseRunMetadata(headerComments) {
       if (idx < 0) return;
       const key = kv.slice(0, idx).trim();
       // Unquoted like any cell: the curated exports write "# study: …"
-      // through tsvCell, which quotes a title that starts with a quote.
+      // through tsvCell, which quotes a title that holds a quote.
       const val = unquoteCell(kv.slice(idx + 1).trim());
       if (key) meta[key] = val;
     });
@@ -1713,7 +1717,9 @@ export function parsePlateMap(text) {
 export function plateMapToTSV(plateMap) {
   const lines = ["sample_id\tplate\twell"];
   Object.entries(plateMap.bySample).forEach(([sid, p]) => {
-    lines.push(`${sid}\t${p.plate}\t${wellLabel(p.row, p.col)}`);
+    // Through tsvCell, as every other writer: a quote in an id or a plate
+    // name, which R reads as quoting.
+    lines.push([sid, p.plate, wellLabel(p.row, p.col)].map(tsvCell).join("\t"));
   });
   return lines.join("\n");
 }
