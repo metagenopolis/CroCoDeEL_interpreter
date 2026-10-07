@@ -20554,9 +20554,16 @@ const HelpTab = ({ onStartTour }) => {
             restores the event evaluations, their notes and the targets'
             keep / suppress actions, so an export reloaded into an empty
             session gives back the same counts and the same curated
-            abundance table. What the file does not hold — sample verdicts
-            and sample notes set by hand, the action of a sample no event
-            targets — only the session JSON (Download session) keeps. Its{" "}
+            abundance table — unless you set a sample's verdict by hand or
+            gave a sample no event targets an action of its own. The file
+            holds neither: reloaded, a sample gets the verdict its events
+            call for, with its automatic action, and a sample no event
+            targets the default Keep, so the to suppress / to keep counts
+            and the curated table can differ (a Contaminated set by hand on
+            a sample no event targets loses its Suppress). What the file
+            does not hold — sample verdicts and sample notes set by hand,
+            the action of a sample no event targets — only the session
+            JSON (Download session) keeps. Its{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}># study: …</code>{" "}
             line names the study when the session has none yet; it is not a
             run parameter. An events file without CroCoDeEL's run header,

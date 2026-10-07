@@ -4,7 +4,9 @@
             missing-species p-value is the exact Poisson-binomial tail;
             the curated events TSV is read in pandas and R by skipping its
             "#" lines, and filtered on its verdict / action columns; the
-            Events table's Target verdict / action chips are editable.
+            Events table's Target verdict / action chips are editable; a
+            reloaded export gives back the same counts, with the exceptions
+            named.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -69,6 +71,17 @@ try {
       /skiprows=n/.test(eventsTsv) && /skip = n/.test(eventsTsv) && /rather than pass comment="#"/.test(eventsTsv),
       "F.1 Help, Events TSV: how to read it in pandas and R (skip the # lines, not comment=\"#\")",
       eventsTsv.match(/To read the file[^;]*/)?.[0] || "(no reading advice)",
+    );
+    // Reloaded into an empty session, the export gives back the same
+    // counts only when no sample verdict was set by hand and no sample
+    // no event targets has an action of its own (Suppress by hand on 58M,
+    // Contaminated by hand on 40D89: to suppress 3 before, 1 after).
+    const eventsFile = await helpSection(page, "contamination_events.tsv");
+    const reload = eventsFile.match(/Reloading the curated events TSV(.*?)only the session JSON/)?.[1] || "";
+    check(
+      /gives back the same counts and the same curated abundance table — unless you set a sample's verdict by hand or gave a sample no event targets an action of its own/.test(reload),
+      "F.1 Help, contamination_events.tsv: a reloaded export gives back the same counts unless…",
+      reload.slice(0, 240),
     );
   });
 
