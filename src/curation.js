@@ -206,6 +206,17 @@ export function withManualAction(curation, sampleId, action, events) {
   );
 }
 
+/** The action a sample gets when the curator set none, from its
+    effective verdict: Suppress goes with Contaminated (syncSampleEntry);
+    a sample no event targets (`neverTargeted`) is kept by default while
+    it is Not contaminated (buildEffectiveSampleCuration); otherwise
+    none. */
+export function automaticAction(verdict, neverTargeted = false) {
+  if (verdict === "contaminated") return "suppress";
+  if (neverTargeted && verdict === "correct") return "keep";
+  return null;
+}
+
 /** What a click on the Keep or the Suppress chip (`chip`) of a sample
     does, given its effective entry — the same in every view:
 
@@ -215,14 +226,18 @@ export function withManualAction(curation, sampleId, action, events) {
                             put it straight back);
       active, set by hand → removed: the sample goes back to the rule,
                             which pairs a Contaminated sample with
-                            Suppress again.
+                            Suppress again, and keeps a Not contaminated
+                            sample no event targets by default.
+
+    `neverTargeted` says that no event targets the sample (only the
+    Samples tab lists such samples).
 
     Returns { active, auto, next, returnsTo }: `next` is the action to
     write with withManualAction (null removes the curator's), and
     `returnsTo`, for a removal, the action the rule leaves in its place
-    ("suppress" on a Contaminated sample, else null) — what the chip's
-    label must announce, since "clear" then does not mean "no action". */
-export function actionChipState(entry, chip) {
+    (automaticAction: "suppress", "keep" or null) — what the chip's label
+    must announce, since "clear" then does not mean "no action". */
+export function actionChipState(entry, chip, { neverTargeted = false } = {}) {
   const active = entry?.action === chip;
   const auto = active && !!entry.actionAuto;
   if (!active || auto) return { active, auto, next: chip, returnsTo: undefined };
@@ -230,7 +245,7 @@ export function actionChipState(entry, chip) {
     active,
     auto,
     next: null,
-    returnsTo: entry.verdict === "contaminated" ? "suppress" : null,
+    returnsTo: automaticAction(entry.verdict, neverTargeted),
   };
 }
 

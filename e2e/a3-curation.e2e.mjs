@@ -1030,6 +1030,42 @@ try {
     check(s.suppress === 1 && s.keep === 0, "A3.5 Overview: 1 to suppress, 0 to keep", `suppress=${s.suppress} keep=${s.keep}`);
   });
 
+  /* The chips of a never-targeted sample say what a click leaves in
+     place: the curator's own Keep or Suppress, cleared, gives the default
+     Keep back. "Clear keep on 63D250" used to say nothing about it. */
+  await scenario("A3.5 never-targeted chips", async (page) => {
+    await openTab(page, "Samples");
+    const row = sampleRow(page, "63D250");
+    const chip = (label) => row.locator(`button[aria-label="${label}"]`);
+    const title = async (label) => ((await chip(label).count()) === 1 ? chip(label).getAttribute("title") : "");
+    const backToDefault = async (what) => {
+      const sc = await storedCuration(page);
+      check(
+        sc["63D250"] === undefined &&
+          (await isFilled(chip("Keep 63D250"))) &&
+          (await row.locator("[data-auto-mark]").count()) === 2,
+        `${what}: no entry left, the default Keep active and tagged auto`,
+        show(sc["63D250"]),
+      );
+    };
+    await chip("Keep 63D250").click(); // the default Keep, made the curator's own
+    await page.waitForTimeout(300);
+    const sc = await storedCuration(page);
+    check(show(sc["63D250"]) === show({ action: "keep" }), "never-targeted: a click on the default Keep makes it the curator's own", show(sc["63D250"]));
+    const clearKeep = (await title("Clear keep on 63D250")) || "";
+    check(/Keep the default again/.test(clearKeep), "never-targeted: 'Clear keep' says the Keep becomes the default again", clearKeep);
+    await chip("Clear keep on 63D250").click();
+    await page.waitForTimeout(300);
+    await backToDefault("never-targeted: 'Clear keep'");
+    await chip("Suppress 63D250").click();
+    await page.waitForTimeout(300);
+    const clearSuppress = (await title("Clear suppress on 63D250")) || "";
+    check(/goes back to the default Keep/.test(clearSuppress), "never-targeted: 'Clear suppress' says it goes back to the default Keep", clearSuppress);
+    await chip("Clear suppress on 63D250").click();
+    await page.waitForTimeout(300);
+    await backToDefault("never-targeted: 'Clear suppress'");
+  });
+
   /* A3.5 A session saved while the Samples tab stamped never-targeted
      samples as Not contaminated + Keep (manual) loses those stamps. */
   await scenario(

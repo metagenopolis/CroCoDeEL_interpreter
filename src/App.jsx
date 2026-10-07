@@ -10945,10 +10945,11 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
     (actionChipState in src/curation.js) and how the chip says so. A
     click on the curator's own action removes it, and the label tells
     what the rule leaves instead: on a Contaminated sample, Suppress —
-    Keep is how not to suppress it. */
-function sampleActionChip(sampleId, entry, chip) {
+    Keep is how not to suppress it; on a Not contaminated sample no
+    event targets (`opts.neverTargeted`), the default Keep. */
+function sampleActionChip(sampleId, entry, chip, opts) {
   const label = chip === "keep" ? "Keep" : "Suppress";
-  const state = actionChipState(entry, chip);
+  const state = actionChipState(entry, chip, opts);
   if (!state.active)
     return {
       ...state,
@@ -10973,6 +10974,15 @@ function sampleActionChip(sampleId, entry, chip) {
         chip === "suppress"
           ? `Make ${sampleId}'s Suppress automatic again: it stays suppressed while ${sampleId} is Contaminated (pick Keep to keep it in the curated table)`
           : `Clear keep on ${sampleId}: ${sampleId} is Contaminated, so it goes back to the automatic Suppress`,
+    };
+  if (state.returnsTo === "keep")
+    return {
+      ...state,
+      ariaLabel,
+      title:
+        chip === "keep"
+          ? `Make ${sampleId}'s Keep the default again: no event targets ${sampleId}, so it stays kept by default (not counted as a Keep decision)`
+          : `Clear suppress on ${sampleId}: no event targets ${sampleId}, so it goes back to the default Keep`,
     };
   return { ...state, ariaLabel, title: ariaLabel };
 }
@@ -11024,7 +11034,9 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
       { id: "keep", color: "#e0b13a", Icon: Save },
       { id: "suppress", color: "#ed6e6c", Icon: Trash2 },
     ].map((opt) => {
-      const chip = sampleActionChip(row.id, entry, opt.id);
+      const chip = sampleActionChip(row.id, entry, opt.id, {
+        neverTargeted: row.neverTargeted,
+      });
       const Icon = opt.Icon;
       return (
         <button
@@ -11610,6 +11622,7 @@ const SamplesTab = ({
   ab,
   hasAb,
   sampleCuration,
+  neverTargeted,
   tableSample,
   setSampleVerdict,
   setSampleAction,
@@ -11887,10 +11900,13 @@ const SamplesTab = ({
           // Set by the event-driven rule rather than by the curator.
           verdictAuto: !!(cur.verdict && cur.verdictAuto),
           actionAuto: !!(cur.action && cur.actionAuto),
+          // No event of the full list targets it: its defaults are
+          // Not contaminated + Keep, which a cleared value returns to.
+          neverTargeted: !!neverTargeted?.has(agg.id),
           notes: cur.notes || "",
         };
       }),
-    [sampleAggregates, sampleCuration],
+    [sampleAggregates, sampleCuration, neverTargeted],
   );
 
   const subjectFiltered = useMemo(() => {
@@ -21429,7 +21445,9 @@ const HelpTab = ({ onStartTour }) => {
                 every tab and report: they are not counted as Keep
                 decisions and do not block yours — mark such a sample
                 Contaminated and it is paired with Suppress like any
-                other.
+                other. Clearing a Keep or a Suppress you set on a Not
+                contaminated one brings back the default Keep (its chip
+                says so).
               </p>
               <p style={{ marginTop: 6 }}>
                 The bar above the table is split in two: the shared
@@ -24663,13 +24681,13 @@ function AppMain({ initial }) {
     () => neverTargetedSamples(rawEvents, ab?.samples).join("\n"),
     [rawEvents, ab],
   );
+  const neverTargeted = useMemo(
+    () => new Set(neverTargetedKey ? neverTargetedKey.split("\n") : []),
+    [neverTargetedKey],
+  );
   const effectiveSampleCuration = useMemo(
-    () =>
-      buildEffectiveSampleCuration(
-        sampleCuration,
-        neverTargetedKey ? neverTargetedKey.split("\n") : [],
-      ),
-    [sampleCuration, neverTargetedKey],
+    () => buildEffectiveSampleCuration(sampleCuration, neverTargeted),
+    [sampleCuration, neverTargeted],
   );
   // Samples to keep / to suppress, the same numbers in the Overview, the
   // Export tab and the HTML reports: matched to the abundance table's
@@ -28977,6 +28995,7 @@ const defaultFilter = () => ({
               ab={ab}
               hasAb={!!ab}
               sampleCuration={effectiveSampleCuration}
+              neverTargeted={neverTargeted}
               tableSample={tableSample}
               setSampleVerdict={setSampleVerdict}
               setSampleAction={setSampleAction}

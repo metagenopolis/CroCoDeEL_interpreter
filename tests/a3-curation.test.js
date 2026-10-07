@@ -10,6 +10,8 @@ import {
   hasManualVerdict,
   hasManualAction,
   actionChipState,
+  automaticAction,
+  buildEffectiveSampleCuration,
 } from "../src/curation.js";
 
 /* The event → sample rule (src/curation.js): every path that changes an
@@ -442,5 +444,70 @@ describe("actionChipState — what a click on a Keep / Suppress chip does", () =
     sc = withManualAction(sc, "T", "suppress", events); // the unusual combination
     expect(actionChipState(sc.T, "suppress")).toMatchObject({ next: null, returnsTo: null });
     expect(click(sc, "suppress")).toEqual({ verdict: "correct" });
+  });
+});
+
+/* The label of the curator's own Keep / Suppress announces what a click
+   leaves in its place (returnsTo). On a sample no event targets, that is
+   the default Keep while it is Not contaminated: "Clear keep" on 63D250
+   (a source only) gave the default Keep back, and its label said
+   nothing about it. */
+describe("actionChipState — what a cleared action gives way to", () => {
+  it("names the default Keep of a Not contaminated sample no event targets", () => {
+    const entry = { verdict: "correct", verdictAuto: true, action: "keep" };
+    expect(actionChipState(entry, "keep", { neverTargeted: true })).toMatchObject({
+      active: true,
+      auto: false,
+      next: null,
+      returnsTo: "keep",
+    });
+    expect(
+      actionChipState({ ...entry, action: "suppress" }, "suppress", { neverTargeted: true }).returnsTo,
+    ).toBe("keep");
+    // A targeted sample has no default action.
+    expect(actionChipState(entry, "keep").returnsTo).toBe(null);
+    // Nor a never-targeted one marked Uncertain by hand.
+    expect(
+      actionChipState({ verdict: "uncertain", action: "keep" }, "keep", { neverTargeted: true }).returnsTo,
+    ).toBe(null);
+  });
+
+  it("is automaticAction: Suppress with Contaminated, the never-targeted Keep, else none", () => {
+    expect(automaticAction("contaminated")).toBe("suppress");
+    expect(automaticAction("contaminated", true)).toBe("suppress");
+    expect(automaticAction("correct", true)).toBe("keep");
+    expect(automaticAction("correct")).toBe(null);
+    expect(automaticAction("uncertain", true)).toBe(null);
+    expect(automaticAction(undefined, true)).toBe(null);
+  });
+
+  it("announces exactly what the click leaves, on every kind of sample", () => {
+    // T is targeted by one event from A; A is targeted by none.
+    let checked = 0;
+    for (const evaluation of VERDICTS) {
+      const events = [{ id: 0, source: "A", target: "T", verdict: evaluation }];
+      const never = new Set(["A"]);
+      for (const id of ["T", "A"]) {
+        for (const verdict of [null, "contaminated", "correct", "uncertain"]) {
+          for (const action of ["keep", "suppress"]) {
+            let raw = syncSampleCuration({}, events);
+            if (verdict) raw = withManualVerdict(raw, id, verdict, events);
+            raw = withManualAction(raw, id, action, events);
+            const before = buildEffectiveSampleCuration(raw, never)[id];
+            const state = actionChipState(before, action, { neverTargeted: never.has(id) });
+            const what = `${id} ${evaluation} ${verdict} ${action}`;
+            expect(state, what).toMatchObject({ active: true, auto: false, next: null });
+            const after = buildEffectiveSampleCuration(
+              withManualAction(raw, id, state.next, events),
+              never,
+            )[id];
+            expect(after?.action ?? null, what).toBe(state.returnsTo);
+            if (state.returnsTo) expect(after.actionAuto, what).toBe(true);
+            checked++;
+          }
+        }
+      }
+    }
+    expect(checked).toBe(64);
   });
 });
