@@ -466,6 +466,86 @@ export function curatedAbundanceProvenance(ab, cur, opts = {}) {
   return lines.join("\n") + "\n";
 }
 
+/* ---------- HTML reports ---------- */
+
+/** Text made safe inside HTML, the reports' escaping. */
+export function escapeHTML(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** The labels of the filter bar, by value. */
+const EVENT_VERDICT_LABELS = {
+  pending: "pending",
+  true_positive: "true positive",
+  false_positive: "false positive",
+  uncertain: "uncertain",
+};
+const SAMPLE_VERDICT_LABELS = {
+  pending: "pending",
+  contaminated: "contaminated",
+  correct: "not contaminated",
+  uncertain: "uncertain",
+};
+
+/** The events HTML report's "Filter applied" line: one part for each
+    field of the Export tab's filter that differs from its default, so
+    the reader knows which subset the report covers, every value escaped
+    (a session file can hold any text); null when none does.
+
+    It used to leave out the sample-verdict filter, the sample scope (a
+    Network drill-in) and the target-action filter: a report of the 8
+    events whose target is Contaminated, or of the 4 events of one
+    sample, said nothing of how they were chosen, only "Events in report
+    8" next to "Total events loaded 24". */
+export function reportFilterSummary(filter) {
+  if (!filter || typeof filter !== "object") return null;
+  const parts = [];
+  const list = (values, labels) =>
+    values.length > 0 ? values.map((v) => escapeHTML(labels[v] || v)).join(", ") : "none";
+  const sideOf = (side) => (side === "source" || side === "target" ? side : null);
+  if (typeof filter.q === "string" && filter.q.trim()) {
+    parts.push(`search: "${escapeHTML(filter.q.trim())}"`);
+  }
+  const above = (v) => Number.isFinite(v) && v > 0;
+  if (above(filter.minScore)) parts.push(`probability ≥ ${filter.minScore.toFixed(2)}`);
+  if (above(filter.minRate)) parts.push(`rate ≥ ${(filter.minRate * 100).toFixed(2)}%`);
+  if (above(filter.minIntroduced)) parts.push(`introduced ≥ ${filter.minIntroduced.toFixed(0)}%`);
+  if (Array.isArray(filter.verdicts) && filter.verdicts.length < Object.keys(EVENT_VERDICT_LABELS).length) {
+    parts.push(`verdict: ${list(filter.verdicts, EVENT_VERDICT_LABELS)}`);
+  }
+  if (
+    Array.isArray(filter.sampleVerdicts) &&
+    filter.sampleVerdicts.length < Object.keys(SAMPLE_VERDICT_LABELS).length
+  ) {
+    const side = sideOf(filter.sampleVerdictsSide);
+    parts.push(
+      `${side ? `${side} sample` : "source or target sample"} verdict: ` +
+        list(filter.sampleVerdicts, SAMPLE_VERDICT_LABELS),
+    );
+  }
+  if (Array.isArray(filter.scopeSamples) && filter.scopeSamples.length > 0) {
+    const ids = filter.scopeSamples;
+    const side = sideOf(filter.scopeSide);
+    const shown = ids.slice(0, 5).map(escapeHTML).join(", ");
+    const more = ids.length > 5 ? ` and ${ids.length - 5} more` : "";
+    parts.push(
+      `${side ? `${side} sample` : "source or target sample"}${ids.length > 1 ? "s" : ""} ` +
+        `${shown}${more}`,
+    );
+  }
+  if (filter.action === "keep" || filter.action === "suppress") {
+    parts.push(`target action: ${filter.action}`);
+  }
+  if (filter.subject && filter.subject !== "any") parts.push(`subject: ${escapeHTML(filter.subject)}`);
+  if (filter.group && filter.group !== "any") parts.push(`group: ${escapeHTML(filter.group)}`);
+  if (filter.adjacent && filter.adjacent !== "any") parts.push(`plate: ${escapeHTML(filter.adjacent)}`);
+  return parts.length ? parts.join(" · ") : null;
+}
+
 /* ---------- samples ---------- */
 
 /** The values buildEffectiveSampleCuration gives a sample no event

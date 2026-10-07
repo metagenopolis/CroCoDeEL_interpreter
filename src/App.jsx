@@ -64,6 +64,7 @@ import {
   curatedAbundanceProvenance,
   hasInputValues,
   curationOrigin,
+  reportFilterSummary,
 } from "./exports.js";
 import {
   restoreFilter,
@@ -27536,54 +27537,10 @@ const defaultFilter = () => ({
       return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
 
-    // Build a one-paragraph summary of the active filter so the reader
-    // knows what subset they're looking at. Only mentions fields that
-    // diverge from the defaults; returns null when nothing is active.
-    const filterSummary = (() => {
-      if (!reportFilter) return null;
-      const parts = [];
-      if (reportFilter.q && reportFilter.q.trim()) {
-        parts.push(`search: "${escapeHTML(reportFilter.q.trim())}"`);
-      }
-      if (reportFilter.minScore && reportFilter.minScore > 0) {
-        parts.push(`probability ≥ ${reportFilter.minScore.toFixed(2)}`);
-      }
-      if (reportFilter.minRate && reportFilter.minRate > 0) {
-        parts.push(
-          `rate ≥ ${(reportFilter.minRate * 100).toFixed(2)}%`,
-        );
-      }
-      if (reportFilter.minIntroduced && reportFilter.minIntroduced > 0) {
-        parts.push(`introduced ≥ ${reportFilter.minIntroduced.toFixed(0)}%`);
-      }
-      if (
-        Array.isArray(reportFilter.verdicts) &&
-        reportFilter.verdicts.length > 0 &&
-        reportFilter.verdicts.length < 4
-      ) {
-        const labels = {
-          true_positive: "true positive",
-          false_positive: "false positive",
-          uncertain: "uncertain",
-          pending: "pending",
-        };
-        parts.push(
-          `verdict: ${reportFilter.verdicts.map((v) => escapeHTML(labels[v] || v)).join(", ")}`,
-        );
-      }
-      // Escaped like every other value: a session file can hold any text
-      // here, and an imported one put a <script> into the report.
-      if (reportFilter.subject && reportFilter.subject !== "any") {
-        parts.push(`subject: ${escapeHTML(reportFilter.subject)}`);
-      }
-      if (reportFilter.group && reportFilter.group !== "any") {
-        parts.push(`group: ${escapeHTML(reportFilter.group)}`);
-      }
-      if (reportFilter.adjacent && reportFilter.adjacent !== "any") {
-        parts.push(`plate: ${escapeHTML(reportFilter.adjacent)}`);
-      }
-      return parts.length ? parts.join(" · ") : null;
-    })();
+    // A one-paragraph summary of the active filter so the reader knows
+    // what subset they're looking at (reportFilterSummary): only the
+    // fields that differ from the defaults, escaped; null when none does.
+    const filterSummary = reportFilterSummary(reportFilter);
 
     /** Build a small SVG scatterplot for an event. Mirrors the visual
         language of the main Scatterplot component (deep teal points

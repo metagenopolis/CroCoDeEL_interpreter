@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { restoreFilter, sessionFromPayload } from "../src/persistence.js";
+import { reportFilterSummary } from "../src/exports.js";
 
 /* The filter a session file carries is written into the events HTML
    report ("Filter applied: … · subject: …"). restoreFilter accepted any
@@ -82,5 +83,50 @@ describe("restoreFilter — fields with a fixed set of values", () => {
     );
     expect(r.ok).toBe(true);
     expect(r.session.filter).toMatchObject({ minScore: 0.5, subject: "any", group: "same" });
+  });
+});
+
+/* The report's "Filter applied" line left out the sample-verdict filter,
+   the sample scope (a Network drill-in) and the target-action filter: a
+   report of the 8 events whose target is Contaminated said only "Events
+   in report 8" next to "Total events loaded 24". */
+describe("reportFilterSummary", () => {
+  it("is null for the default filter", () => {
+    expect(reportFilterSummary(defaults())).toBeNull();
+    expect(reportFilterSummary(null)).toBeNull();
+  });
+
+  it("names the fields it named before, as before", () => {
+    expect(
+      reportFilterSummary({ ...defaults(), q: " 63D ", minScore: 0.5, minRate: 0.01, verdicts: ["true_positive", "uncertain"], subject: "same", adjacent: "adjacent" }),
+    ).toBe('search: "63D" · probability ≥ 0.50 · rate ≥ 1.00% · verdict: true positive, uncertain · subject: same · plate: adjacent');
+  });
+
+  it("names the sample verdicts and their side", () => {
+    expect(reportFilterSummary({ ...defaults(), sampleVerdicts: ["contaminated"], sampleVerdictsSide: "target" })).toBe(
+      "target sample verdict: contaminated",
+    );
+    expect(reportFilterSummary({ ...defaults(), sampleVerdicts: ["correct", "uncertain"] })).toBe(
+      "source or target sample verdict: not contaminated, uncertain",
+    );
+    expect(reportFilterSummary({ ...defaults(), sampleVerdicts: [] })).toBe("source or target sample verdict: none");
+  });
+
+  it("names the sample scope and its side, escaped", () => {
+    expect(reportFilterSummary({ ...defaults(), scopeSamples: ["63D9"], scopeSide: "source" })).toBe("source sample 63D9");
+    expect(
+      reportFilterSummary({ ...defaults(), scopeSamples: ["a", "b", "c", "d", "<i>e</i>", "f", "g"], scopeSide: "either" }),
+    ).toBe("source or target samples a, b, c, d, &lt;i&gt;e&lt;/i&gt; and 2 more");
+  });
+
+  it("names the target-action filter", () => {
+    expect(reportFilterSummary({ ...defaults(), action: "suppress" })).toBe("target action: suppress");
+    expect(reportFilterSummary({ ...defaults(), action: "<b>" })).toBeNull();
+  });
+
+  it("escapes what it prints", () => {
+    expect(reportFilterSummary({ ...defaults(), q: "<script>", subject: "<img src=x>" })).toBe(
+      'search: "&lt;script&gt;" · subject: &lt;img src=x&gt;',
+    );
   });
 });
