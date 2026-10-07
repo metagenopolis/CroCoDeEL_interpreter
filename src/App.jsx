@@ -26301,11 +26301,15 @@ const defaultFilter = () => ({
     });
   };
 
+  // Counted as the other questions that would lose the curation count it
+  // (curationTotals, src/carryOver.js): evaluations, notes and what was
+  // set by hand on a sample. An automatic sample value is not a decision
+  // — it goes with the evaluations it was derived from — and counting
+  // every sample entry made one TP read "1 event evaluation and 0 notes,
+  // plus 1 sample-level verdict / action" here and "1 evaluation" in the
+  // replace / import / dataset / tour questions.
   const bulkResetAllVerdicts = () => {
-    const decided = events.filter((e) => e.verdict !== "pending").length;
-    const noted = events.filter((e) => e.notes && e.notes.length > 0).length;
-    const sampleDecisions = Object.keys(sampleCuration).length;
-    if (decided === 0 && noted === 0 && sampleDecisions === 0) {
+    if (!curationTotals.any) {
       setBulkConfirm({
         kind: "info",
         title: "Nothing to reset",
@@ -26313,20 +26317,13 @@ const defaultFilter = () => ({
       });
       return;
     }
-    const sampleParts = [];
-    if (sampleDecisions > 0) {
-      sampleParts.push(
-        `${sampleDecisions} sample-level verdict${sampleDecisions !== 1 ? "s" : ""} / action${sampleDecisions !== 1 ? "s" : ""}`,
-      );
-    }
     setBulkConfirm({
       kind: "confirm",
       title: "Reset all curation work?",
       body:
-        `This will clear ${decided} event evaluation${decided !== 1 ? "s" : ""} and ` +
-        `${noted} note${noted !== 1 ? "s" : ""}` +
-        (sampleParts.length ? `, plus ${sampleParts.join(" / ")}` : "") +
-        `, returning every event to the "pending" state.\n\n` +
+        `Your session holds ${curationPhrase(curationTotals)}. Resetting clears it all and ` +
+        `returns every event to the "pending" state, so the sample verdicts and actions ` +
+        `derived from the evaluations go too.\n\n` +
         "The files you opened (events, abundance, metadata, plate map) are NOT affected.",
       confirmLabel: "Reset everything",
       destructive: true,

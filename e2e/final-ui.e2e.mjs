@@ -6,7 +6,10 @@
             "#" lines, and filtered on its verdict / action columns; the
             Events table's Target verdict / action chips are editable; a
             reloaded export gives back the same counts, with the exceptions
-            named.
+            named;
+     - F.2  the Reset question counts the curation as the other questions
+            that would lose it do: automatic sample values are not
+            decisions.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -106,6 +109,53 @@ try {
       titles.length === 2 && titles.every((t) => /Its chips set it/.test(t) && !/Set from the Samples tab/.test(t)),
       "F.1 Events table: the Target verdict / action headers say their chips set the value",
       titles.join(" | "),
+    );
+  });
+
+  /* F.2 — the Reset question counts what the other questions that would
+     lose the curation count: one TP read "1 event evaluation and 0
+     notes, plus 1 sample-level verdict / action" (the target's automatic
+     Contaminated + Suppress) where replacing the session said "1
+     evaluation". */
+  await scenario("F.2 reset question", async (page) => {
+    await loadDemo(page);
+    await openTab(page, "Events");
+    await page.locator('button[title="mark as true positive"]').first().click();
+    await page.waitForTimeout(400);
+    await openTab(page, "Validate");
+    await page.getByRole("button", { name: /Reset all evaluations/ }).first().click();
+    const reset = page.getByRole("dialog", { name: "Reset all curation work?" });
+    const resetText = ((await reset.count()) ? await reset.innerText() : "").replace(/\s+/g, " ");
+    await reset.getByRole("button", { name: "Cancel" }).click();
+    // The guided tour replaces the session with the demo's, and asks.
+    await openTab(page, "Help");
+    await page.getByRole("button", { name: /Restart guided tour/ }).first().click();
+    const replace = page.getByRole("dialog", { name: "Replace your session with the demo dataset?" });
+    const replaceText = ((await replace.count()) ? await replace.innerText() : "").replace(/\s+/g, " ");
+    await replace.getByRole("button", { name: "Cancel" }).click();
+    check(
+      /Your session holds 1 evaluation\./.test(resetText) && !/sample-level verdict/.test(resetText) &&
+        /1 evaluation\b/.test(replaceText) && !/sample decision/.test(replaceText),
+      "F.2 Reset counts one TP as 1 evaluation, as replacing the session does",
+      `reset: "${resetText.slice(0, 160)}" | replace: "${replaceText.slice(0, 160)}"`,
+    );
+    // A verdict set by hand is a decision, and still counted.
+    await openTab(page, "Samples");
+    await page
+      .locator("tr")
+      .filter({ has: page.locator('button[aria-label="Set verdict to Pending"]') })
+      .filter({ has: page.getByText("63D40", { exact: true }) })
+      .locator('button[aria-label="Set verdict to Uncertain"]')
+      .click();
+    await page.waitForTimeout(300);
+    await openTab(page, "Validate");
+    await page.getByRole("button", { name: /Reset all evaluations/ }).first().click();
+    const again = ((await reset.count()) ? await reset.innerText() : "").replace(/\s+/g, " ");
+    await reset.getByRole("button", { name: "Cancel" }).click();
+    check(
+      /Your session holds 1 evaluation and 1 sample decision\./.test(again),
+      "F.2 …and a verdict set by hand as a sample decision",
+      again.slice(0, 120),
     );
   });
 
