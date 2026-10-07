@@ -16,6 +16,32 @@ import {
   plateColumnsLine,
 } from "./parsing.js";
 import {
+  applyLowAbundanceFilter,
+  automaticScore,
+  buildScatter,
+  cascadeExplanations,
+  eventBulkCriteria,
+  introducedPercent,
+  lineDiagnostics,
+  lowAbundanceFilterFactor,
+  matchesBulkCriteria,
+  matchSpeciesName,
+  missingAbundantFromSource,
+  pointsAboveLine,
+  resolveSample,
+  spearmanRho,
+  speciesCountsBySample,
+} from "./diagnostics.js";
+// Moved to src/diagnostics.js; still exported from here for the modules
+// and tests that import them from App.jsx.
+export {
+  buildScatter,
+  lineDiagnostics,
+  missingAbundantFromSource,
+  pointsAboveLine,
+  poissonBinomialUpperTail,
+} from "./diagnostics.js";
+import {
   FolderOpen,
   AlertCircle,
   CheckCircle2,
@@ -626,536 +652,12 @@ function downloadText(content, filename) {
    3. DOMAIN LOGIC — scatter, diagnostics, cascade, relatedness, plate distance
    ============================================================================ */
 
-/** Resolve a sample name against the abundance table's known samples.
-    Tries exact, case-insensitive, then trimmed-match. Returns the canonical
-    key into ab.matrix[sp][...], or null if no reasonable match. */
-function resolveSample(ab, name) {
-  if (!ab || !name) return null;
-  if (ab.samples.includes(name)) return name;
-  const lc = String(name).toLowerCase().trim();
-  const hit = ab.samples.find((s) => s.toLowerCase().trim() === lc);
-  return hit || null;
-}
-
-export function buildScatter(ab, event) {
-  if (!ab) return null;
-  const { source, target, introduced, rate } = event;
-  const srcKey = resolveSample(ab, source);
-  const tgtKey = resolveSample(ab, target);
-  if (!srcKey || !tgtKey) {
-    return {
-      points: [],
-      logC: null,
-      source,
-      target,
-      error:
-        (!srcKey && !tgtKey)
-          ? `Neither "${source}" nor "${target}" found in abundance table`
-          : !srcKey
-            ? `Source sample "${source}" not found in abundance table`
-            : `Target sample "${target}" not found in abundance table`,
-    };
-  }
-  const introducedSet = new Set(introduced);
-  const points = [];
-  // Species richness = number of species observed (relative abundance > 0)
-  // in each sample. Counted independently of the both-zero skip below.
-  let sourceRichness = 0;
-  let targetRichness = 0;
-  ab.species.forEach((sp) => {
-    const xs = ab.matrix[sp][tgtKey] || 0;
-    const ys = ab.matrix[sp][srcKey] || 0;
-    if (xs > 0) targetRichness++;
-    if (ys > 0) sourceRichness++;
-    if (xs === 0 && ys === 0) return;
-    points.push({ species: sp, x: xs, y: ys, onLine: introducedSet.has(sp) });
-  });
-  const logC = rate > 0 ? Math.log10(rate) : null;
-  return {
-    points,
-    logC,
-    source,
-    target,
-    sourceRichness,
-    targetRichness,
-    logRange: ab.logRange || null,
-  };
-}
-
-/** Complementary error function — Numerical-Recipes rational
-    approximation (max abs error ~1.5e-7 over [0, ∞)). Used to convert
-    a normal-approximation Z-score to a one-sided p-value. */
-function erfc(x) {
-  const z = Math.abs(x);
-  const t = 1 / (1 + 0.5 * z);
-  const ans =
-    t *
-    Math.exp(
-      -z * z -
-        1.26551223 +
-        t *
-          (1.00002368 +
-            t *
-              (0.37409196 +
-                t *
-                  (0.09678418 +
-                    t *
-                      (-0.18628806 +
-                        t *
-                          (0.27886807 +
-                            t *
-                              (-1.13520398 +
-                                t *
-                                  (1.48851587 +
-                                    t * (-0.82215223 + t * 0.17087277))))))))
-    );
-  return x >= 0 ? ans : 2 - ans;
-}
-
-/** Average-rank ranking — handles ties by giving each tied entry the
-    mean of the rank positions they would have taken. Returns ranks in
-    the original input order. */
-function rankArray(arr) {
-  const indexed = arr.map((v, i) => ({ v, i }));
-  indexed.sort((a, b) => a.v - b.v);
-  const ranks = new Array(arr.length);
-  let i = 0;
-  while (i < indexed.length) {
-    let j = i;
-    while (j + 1 < indexed.length && indexed[j + 1].v === indexed[i].v) j++;
-    const avg = (i + j) / 2 + 1; // 1-based average rank
-    for (let k = i; k <= j; k++) ranks[indexed[k].i] = avg;
-    i = j + 1;
-  }
-  return ranks;
-}
-
-/** Spearman's rank correlation between source and target abundances
-    across every species present in at least one of the two samples.
-    A high ρ (≥ 0.7) means the two overall profiles are similar — typical
-    of longitudinal / same-subject pairs where the apparent contamination
-    line is biological persistence rather than mechanical transfer. */
-function spearmanRho(scatter) {
-  if (!scatter || !Array.isArray(scatter.points)) return null;
-  const xs = [];
-  const ys = [];
-  scatter.points.forEach((p) => {
-    if (p.x > 0 || p.y > 0) {
-      xs.push(p.x);
-      ys.push(p.y);
-    }
-  });
-  const n = xs.length;
-  if (n < 3) return null;
-  const rx = rankArray(xs);
-  const ry = rankArray(ys);
-  const mx = rx.reduce((s, v) => s + v, 0) / n;
-  const my = ry.reduce((s, v) => s + v, 0) / n;
-  let sxy = 0,
-    sxx = 0,
-    syy = 0;
-  for (let i = 0; i < n; i++) {
-    sxy += (rx[i] - mx) * (ry[i] - my);
-    sxx += (rx[i] - mx) ** 2;
-    syy += (ry[i] - my) ** 2;
-  }
-  return sxx * syy > 0 ? sxy / Math.sqrt(sxx * syy) : 0;
-}
-
-export function lineDiagnostics(scatter) {
-  if (!scatter) return null;
-  const spearman = spearmanRho(scatter);
-  const pts = scatter.points.filter((p) => p.onLine && p.x > 0 && p.y > 0);
-  const n = pts.length;
-  if (n < 2) return { n, r2: null, slope: null, decadeRange: null, spearman };
-  const logs = pts.map((p) => ({ x: Math.log10(p.x), y: Math.log10(p.y) }));
-  const mx = logs.reduce((s, p) => s + p.x, 0) / n;
-  const my = logs.reduce((s, p) => s + p.y, 0) / n;
-  let sxy = 0,
-    sxx = 0,
-    syy = 0;
-  logs.forEach((p) => {
-    sxy += (p.x - mx) * (p.y - my);
-    sxx += (p.x - mx) ** 2;
-    syy += (p.y - my) ** 2;
-  });
-  const slope = sxx > 0 ? sxy / sxx : 0;
-  const r2 = sxx * syy > 0 ? (sxy * sxy) / (sxx * syy) : 0;
-  // Spread of the line in log space — how many decades of source
-  // abundance the contamination line spans. A real (mechanical)
-  // contamination transfers ALL species proportionally, so the line is
-  // visible across many decades of abundance (typically 3+). Biological
-  // similarity tends to share only the abundant species, so the
-  // "apparent line" is concentrated within 1-2 decades. This is a
-  // strong discriminator between TP and FP that complements R² (which
-  // only measures linearity).
-  const xMin = Math.min(...logs.map((p) => p.x));
-  const xMax = Math.max(...logs.map((p) => p.x));
-  const decadeRange = xMax - xMin;
-  return { n, r2, slope, decadeRange, spearman };
-}
-
-export function pointsAboveLine(scatter) {
-  if (!scatter || scatter.logC == null) return null;
-  let above = 0;
-  let maxDist = 0;
-  let farAbove = 0; // points ≥ 0.5 decade above the line
-  scatter.points.forEach((p) => {
-    if (p.x <= 0 || p.y <= 0 || p.onLine) return;
-    const threshold = Math.log10(p.x) - scatter.logC;
-    const dist = Math.log10(p.y) - threshold;
-    // Threshold 0.1 decade (~1.26× the predicted target abundance) —
-    // matches what's visibly above the line by eye while still
-    // excluding the tight noise cluster sitting almost exactly on it.
-    if (dist > 0.1) {
-      above++;
-      if (dist > maxDist) maxDist = dist;
-      if (dist >= 0.5) farAbove++;
-    }
-  });
-  return { count: above, maxDist, farAbove };
-}
-
-/** Exact upper-tail probability P(X ≥ k) for a Poisson-binomial sum
-    X = Σ Bernoulli(p_i), by dynamic programming over the p_i.
-
-    Only one tail is ever materialised. Computing P(X ≥ k) directly as
-    1 − P(X ≤ k−1) needs k terms; the complement Y = n − X (a Poisson-
-    binomial on the 1 − p_i) gives P(X ≥ k) = P(Y ≤ n − k) and needs
-    n − k + 1 terms. We take whichever is shorter, so the cost is
-    O(n × min(k, n−k+1)) — at most n²/2, a few milliseconds for the few
-    thousand species these tables carry, and far less in the usual case
-    where the miss count is small.
-
-    Falls back to a continuity-corrected normal tail only if the DP would
-    be genuinely large, which real inputs do not reach. */
-export function poissonBinomialUpperTail(ps, k) {
-  const n = ps.length;
-  if (k <= 0) return 1;
-  if (n === 0) return 0;
-  if (k > n) return 0;
-
-  const useComplement = n - k + 1 < k;
-  const limit = useComplement ? n - k : k - 1;
-
-  if ((limit + 1) * n > 5e6) {
-    // Unreachable with realistic species counts; keeps the function total.
-    let mean = 0;
-    let variance = 0;
-    for (const p of ps) {
-      mean += p;
-      variance += p * (1 - p);
-    }
-    const sd = Math.sqrt(variance);
-    if (sd <= 0) return k <= mean ? 1 : 0;
-    return 0.5 * erfc((k - 0.5 - mean) / (sd * Math.SQRT2));
-  }
-
-  // dist[j] = P(exactly j successes), truncated above `limit` — the
-  // dropped mass is precisely the other tail, which we never read.
-  const dist = new Float64Array(limit + 1);
-  dist[0] = 1;
-  for (let i = 0; i < n; i++) {
-    const p = useComplement ? 1 - ps[i] : ps[i];
-    const q = 1 - p;
-    const top = Math.min(limit, i + 1);
-    for (let j = top; j >= 1; j--) {
-      dist[j] = dist[j] * q + dist[j - 1] * p;
-    }
-    dist[0] *= q;
-  }
-
-  let cum = 0;
-  for (let j = 0; j <= limit; j++) cum += dist[j];
-  // useComplement: cum is P(Y ≤ n−k) = P(X ≥ k) directly.
-  // otherwise:     cum is P(X ≤ k−1), so the upper tail is its complement.
-  const tail = useComplement ? cum : 1 - cum;
-  return Math.min(1, Math.max(0, tail));
-}
-
-/** Are the source species detected in the target as the contamination
-    model predicts? Poisson-binomial detection test over EVERY species
-    present in the source — no abundance pre-filter is needed because
-    the test self-regulates: rare species (low λ) contribute almost
-    nothing to the variance and roughly equal weight to expected and
-    observed missing counts, so they don't bias the Z-score. Including
-    the full source profile increases statistical power vs. the older
-    "top 80%" heuristic. */
-export function missingAbundantFromSource(ab, source, target, rate) {
-  if (!ab) return null;
-  const srcKey = resolveSample(ab, source);
-  const tgtKey = resolveSample(ab, target);
-  if (!srcKey || !tgtKey) return null;
-
-  // Adaptive empirical LOD for the target — the smallest non-zero
-  // abundance observed in this specific sample. Falls back to a
-  // conservative 1e-5 if the target has zero or one species.
-  const targetValues = [];
-  ab.species.forEach((sp) => {
-    const v = ab.matrix[sp][tgtKey] || 0;
-    if (v > 0) targetValues.push(v);
-  });
-  const targetLOD = targetValues.length > 0 ? Math.min(...targetValues) : 1e-5;
-
-  // Poisson-binomial detection test — we model the target as a count
-  // process with depth N ≈ 1 / target_LOD (since the LOD is roughly the
-  // smallest detectable relative abundance, ≈ 1 read out of N). For each
-  // source species the expected number of reads under H_real (genuine
-  // contamination at this rate) is λ = N × rate × source = expected /
-  // target_LOD. The probability the species is missed by Poisson sampling
-  // alone is e^(-λ); the probability of being detected is 1 - e^(-λ).
-  // Across all evaluable species the number of misses is a Poisson-
-  // binomial sum — its mean is Σ p_miss and its variance is
-  // Σ p_miss × p_detect. We compare the observed miss count to that
-  // expectation (one-sided normal approximation) and report a p-value.
-  let missing = 0;
-  let expectedMissing = 0;
-  let variance = 0;
-  let evaluated = 0;
-  let coreSize = 0;
-  const missProbs = [];
-  ab.species.forEach((sp) => {
-    const ys = ab.matrix[sp][srcKey] || 0;
-    if (ys <= 0) return;
-    coreSize++;
-    const xs = ab.matrix[sp][tgtKey] || 0;
-    const expected = (rate || 0) * ys;
-    if (expected <= 0) return;
-    const lambda = expected / targetLOD;
-    const pMiss = Math.exp(-lambda);
-    expectedMissing += pMiss;
-    variance += pMiss * (1 - pMiss);
-    missProbs.push(pMiss);
-    evaluated++;
-    if (xs < targetLOD) missing++;
-  });
-  const sigma = Math.sqrt(variance);
-  const zScore = sigma > 0 ? (missing - expectedMissing) / sigma : 0;
-  // One-sided p-value: P(X ≥ missing) under H_real. The normal
-  // approximation `0.5 × erfc(z/√2)` that used to stand here is badly
-  // wrong in exactly the regime this test lives in — most λ are ≪ 1, so
-  // the Poisson-binomial is heavily skewed and nowhere near normal. It
-  // reported p = 3.3e-167 where the exact value is 1.9e-23, and it flipped
-  // the 0.05 decision on real events. The exact DP is O(n × tail) with n a
-  // few hundred, so there is no reason to approximate.
-  const pValue = poissonBinomialUpperTail(missProbs, missing);
-  return {
-    count: missing,
-    evaluated,
-    targetLOD,
-    coreSize,
-    expectedMissing,
-    sigma,
-    zScore,
-    pValue,
-  };
-}
-
-function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
-  // Each reason carries a stable `key` so the Validate panel can pair
-  // the colloquial summary line with its matching Criterion card
-  // even when some entries are missing (no abundance loaded etc.).
-  // `ok` is true (pass), false (fail) or null (evaluated but inconclusive
-  // — counts for neither the numerator nor the denominator).
-  const reasons = [];
-  if (diag && diag.r2 != null) {
-    if (diag.r2 > 0.8) {
-      reasons.push({ key: "r2", ok: true, label: `Straight line (R² = ${diag.r2.toFixed(2)})` });
-    } else {
-      reasons.push({ key: "r2", ok: false, label: `Dispersed line (R² = ${diag.r2.toFixed(2)})` });
-    }
-  }
-  if (diag && diag.n != null) {
-    if (diag.n > 10) {
-      reasons.push({ key: "n", ok: true, label: `${diag.n} species on line (> 10)` });
-    } else {
-      reasons.push({ key: "n", ok: false, label: `Only ${diag.n} species on line` });
-    }
-  }
-  // Decade range of the contamination line — a real (mechanical)
-  // contamination transfers ALL species proportionally, so the line
-  // spans many decades of abundance (TP cases C and D in the paper:
-  // 4-5 decades). Biological similarity shares only the most abundant
-  // species, concentrating the apparent line in 1-1.5 decades. Threshold
-  // ≥ 1.5 decades is permissive enough not to penalise genuine low-rate
-  // TPs but flags the typical FP-by-shared-microbiota pattern.
-  if (diag && diag.decadeRange != null) {
-    const dr = diag.decadeRange;
-    if (dr >= 1.5) {
-      reasons.push({
-        key: "decade",
-        ok: true,
-        label: `Line spans ${dr.toFixed(1)} decades of abundance (≥ 1.5)`,
-      });
-    } else {
-      reasons.push({
-        key: "decade",
-        ok: false,
-        label: `Line concentrated in ${dr.toFixed(1)} decades — possibly only abundant species shared`,
-      });
-    }
-  }
-  if (nMissing != null) {
-    const {
-      count: missingCount,
-      evaluated,
-      expectedMissing,
-      pValue,
-    } = nMissing;
-    if (evaluated === 0) {
-      // No core species had any predictable contribution (rate ≈ 0 or
-      // empty source). Cannot inform the verdict — mark it inconclusive
-      // rather than passing it, which used to hand a free point to every
-      // event whose rate column failed to parse.
-      reasons.push({
-        key: "missing",
-        ok: null,
-        label: `Missing-species check not informative (no species expected in target given rate)`,
-      });
-    } else if (missingCount === 0) {
-      reasons.push({
-        key: "missing",
-        ok: true,
-        label: `All ${evaluated} expected source species present in target`,
-      });
-    } else if (pValue >= 0.05) {
-      // Observed misses are consistent with Poisson-binomial sampling
-      // noise under H_real — fold them into the "tolerable" bucket and
-      // keep the criterion as a pass. Headline stays short so the
-      // card row doesn't spill over; the p-value / expected count
-      // are surfaced in the dropdown's technical readout.
-      reasons.push({
-        key: "missing",
-        ok: true,
-        label: `${missingCount}/${evaluated} missing — within Poisson noise`,
-      });
-    } else {
-      reasons.push({
-        key: "missing",
-        ok: false,
-        label: `${missingCount}/${evaluated} expected species missing — beyond Poisson noise`,
-      });
-    }
-  }
-  // Above-line points. buildScatter puts TARGET on x and SOURCE on y, so
-  // pointsAboveLine's `dist > 0` is log10(rate × source / target) > 0,
-  // i.e. target < rate × source — the half-plane additive contamination
-  // cannot reach, since the target keeps its own natives on top of what
-  // it received. ANY such point is a signal, but the magnitude matters
-  // more than the count: a single point 3 decades off is much stronger
-  // evidence than 5 points slightly off. Threshold:
-  // PASS if no point is more than 0.5 decade above the line (tight
-  // tolerance — beyond that the target holds ≤ 1/3 of the delivered
-  // contamination, so either the rate is over-estimated or the line is
-  // shared biology rather than transfer); FAIL
-  // otherwise. The exception is cascade contamination — we soften the
-  // wording when a cascade has been detected upstream.
-  if (aboveInfo != null) {
-    const { count: nAbove, maxDist, farAbove } = aboveInfo;
-    if (nAbove === 0) {
-      reasons.push({ key: "above", ok: true, label: `No points above the line` });
-    } else if (maxDist < 0.5) {
-      reasons.push({
-        key: "above",
-        ok: true,
-        label: `${nAbove} points above the line, all within 0.5 decade (tolerable)`,
-      });
-    } else if (cascade) {
-      reasons.push({
-        key: "above",
-        ok: false,
-        label: `${nAbove} points above the line (${farAbove} ≥ 0.5 decade, max ${maxDist.toFixed(1)}) — explained by detected cascade`,
-      });
-    } else {
-      reasons.push({
-        key: "above",
-        ok: false,
-        label: `${nAbove} points above the line (${farAbove} ≥ 0.5 decade, max ${maxDist.toFixed(1)}) — strong biological signal, no cascade detected`,
-      });
-    }
-  }
-  // Joint "biological similarity" criterion — combines the Spearman
-  // correlation (ρ) with the metadata-driven relatedness check. ρ
-  // alone is ambiguous: high ρ can mean either longitudinal /
-  // same-subject persistence (FP) OR very strong contamination (TP).
-  // Reading the two signals together resolves the ambiguity:
-  //   • high ρ + samples NOT related   → strong contamination plausible → PASS (TP-leaning)
-  //   • high ρ + samples ARE related   → biological persistence  → FAIL (FP-leaning)
-  //   • low ρ                          → profiles distinct  → PASS
-  //   • high ρ + no metadata           → ambiguous, mark inconclusive (ok: null)
-  // Replaces the older separate Spearman + relatedness criteria.
-  if (diag && diag.spearman != null) {
-    const rho = diag.spearman;
-    const rhoText = `ρ = ${rho.toFixed(2)}`;
-    const high = rho >= 0.7;
-    const related =
-      relatedness && relatedness.related != null
-        ? relatedness.related
-        : null;
-    if (related === null) {
-      if (!high) {
-        reasons.push({
-          key: "biosim",
-          ok: true,
-          label: `Source / target profiles distinct (${rhoText})`,
-        });
-      } else {
-        // High ρ without metadata: can't tell longitudinal vs strong
-        // contamination. Surface as inconclusive (ok = null) so the
-        // curator sees it but it doesn't tilt the score.
-        reasons.push({
-          key: "biosim",
-          ok: null,
-          label: `Source / target profiles highly correlated (${rhoText}) — load metadata to know if same subject (FP) or strong contamination (TP)`,
-        });
-      }
-    } else if (related === false) {
-      if (high) {
-        reasons.push({
-          key: "biosim",
-          ok: true,
-          label: `Profiles highly correlated (${rhoText}) despite different subjects — consistent with strong contamination`,
-        });
-      } else {
-        reasons.push({
-          key: "biosim",
-          ok: true,
-          label: `Profiles distinct (${rhoText}) and from different subjects`,
-        });
-      }
-    } else {
-      // related === true
-      const kindText =
-        relatedness.kind === "group"
-          ? `same group (${relatedness.value})`
-          : `same subject (${relatedness.value})`;
-      if (high) {
-        reasons.push({
-          key: "biosim",
-          ok: false,
-          label: `Profiles highly correlated (${rhoText}) AND ${kindText} — biological persistence, likely FP`,
-        });
-      } else {
-        reasons.push({
-          key: "biosim",
-          ok: true,
-          label: `Profiles distinct (${rhoText}) despite ${kindText}`,
-        });
-      }
-    }
-  }
-  // Derive both counts from `reasons` rather than maintaining a `good++`
-  // alongside a hard-coded `total = 6`. Criteria are only pushed when
-  // their input exists, so `total` is now the number of criteria actually
-  // evaluated — 0 when no abundance table is loaded (the callers guard on
-  // `total > 0` and suppress the banner) instead of a red "0 / 6 —
-  // PROBABLY NOT CONTAMINATED" printed above "Open the abundance table to
-  // compute." And an `ok: null` abstention no longer silently consumes a
-  // point, which used to cap otherwise-perfect events at 5/6.
-  const total = reasons.filter((r) => r.ok !== null).length;
-  const good = reasons.filter((r) => r.ok === true).length;
-  return { good, total, reasons };
-}
+// The scatter of an event and its line diagnostics — buildScatter,
+// lineDiagnostics, pointsAboveLine, spearmanRho, poissonBinomialUpperTail,
+// missingAbundantFromSource — live in src/diagnostics.js with
+// resolveSample, matchSpeciesName and automaticScore: pure functions that
+// the unit tests can call, together with whatever is built on them,
+// without this file exporting more (see the re-export at the top).
 
 /** A cascade is suspected when event A→B has many points above the line AND
     A is itself flagged as contaminated (C→A).  The points above A→B's line
@@ -1183,25 +685,7 @@ function detectCascades(events, abundance, metadata) {
     if (aboveInfo == null || aboveInfo.count <= 3) return { ...e, cascade: null };
     const upstream = incoming[e.source] || [];
     if (upstream.length === 0) return { ...e, cascade: null };
-    const explained = [];
-    upstream.forEach((up) => {
-      const upIntroduced = new Set(up.introduced);
-      let count = 0;
-      scatter.points.forEach((p) => {
-        if (p.onLine || p.x <= 0 || p.y <= 0 || scatter.logC == null) return;
-        const threshold = Math.log10(p.x) - scatter.logC;
-        if (Math.log10(p.y) > threshold + 0.3 && upIntroduced.has(p.species)) {
-          count++;
-        }
-      });
-      if (count >= 2) {
-        explained.push({
-          upstream_source: up.source,
-          upstream_event_id: up.id,
-          species_explained: count,
-        });
-      }
-    });
+    const explained = cascadeExplanations(scatter, upstream, abundance);
     if (explained.length === 0) return { ...e, cascade: null };
     return {
       ...e,
@@ -5152,10 +4636,28 @@ function shortenPath(v) {
   return v;
 }
 
-const RunMetadataBlock = ({ meta }) => {
+/** `lowAbFilter` — { factor, applied, setApplied } when the run declares a
+    --filter-low-ab factor (see diagAb in AppMain), else null. */
+const RunMetadataBlock = ({ meta, lowAbFilter }) => {
   // Run parameters are useful but not essential after first glance —
   // collapsible, but expanded by default so first-time viewers see them.
   const [open, setOpen] = useState(true);
+  // The low-abundance filter state just asked for, while the diagnostics
+  // are recomputed (null otherwise). Switching the filter rebuilds the
+  // filtered table and every event's cascade check in one synchronous
+  // render — one to two seconds on the largest bundled runs, the page
+  // frozen meanwhile — so the box flips and says so first, and the
+  // change is applied once that has been painted.
+  const [lowAbPending, setLowAbPending] = useState(null);
+  const switchLowAb = (on) => {
+    setLowAbPending(on);
+    requestAnimationFrame(() =>
+      setTimeout(() => {
+        lowAbFilter.setApplied(on);
+        setLowAbPending(null);
+      }, 0),
+    );
+  };
   // Choose which fields to show, in this order, with friendly labels.
   // Optional `format(value)` lets a field clean up the raw string (e.g.
   // strip a trailing ".0" so "25.0" → "25").
@@ -5270,11 +4772,48 @@ const RunMetadataBlock = ({ meta }) => {
         ))}
       </dl>
       )}
+      {/* The run filtered low abundances before fitting anything; the
+          diagnostics follow it unless the curator switches it off here
+          (stored in the filter state, so it is saved with the session). */}
+      {open && lowAbFilter && (
+        <div
+          className="mt-3 pt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[12px]"
+          style={{ borderTop: "1px solid var(--border)" }}
+        >
+          <label
+            className="inline-flex items-center gap-1.5"
+            title={`In each sample, CroCoDeEL set to 0 every abundance up to ${lowAbFilter.factor} times the sample's smallest one, then rescaled the rest to sum to 1, before fitting any contamination line. Untick to compute the diagnostics on the abundance table as loaded instead.`}
+            style={{
+              cursor: "pointer",
+              color: "var(--ink)",
+              fontWeight: 600,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={lowAbPending ?? lowAbFilter.applied}
+              disabled={lowAbPending != null}
+              onChange={(e) => switchLowAb(e.target.checked)}
+              aria-label="Apply CroCoDeEL's low-abundance filter to the diagnostics"
+              style={{ accentColor: "#00a3a6" }}
+            />
+            Low-abundance filter {lowAbFilter.factor}×
+          </label>
+          <span style={{ color: "var(--ink-muted)" }}>
+            {lowAbPending != null
+              ? "— recomputing the diagnostics…"
+              : lowAbFilter.applied
+                ? "— applied to diagnostics, as in CroCoDeEL"
+                : "— not applied: diagnostics use the abundance table as loaded, unlike the CroCoDeEL run"}
+          </span>
+        </div>
+      )}
     </div>
   );
 };
 
-const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOpen, onLoadDemo, demoLoading, actionEnabled, sampleCuration }) => {
+const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, lowAbFilter, onOpen, onLoadDemo, demoLoading, actionEnabled, sampleCuration }) => {
   const topByScore = [...events].sort((a, b) => b.score - a.score).slice(0, 5);
   const topByRate = [...events].sort((a, b) => b.rate - a.rate).slice(0, 5);
   const bottomByScore = [...events].sort((a, b) => a.score - b.score).slice(0, 5);
@@ -5438,7 +4977,9 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
         </div>
       )}
 
-      {runMetadata && <RunMetadataBlock meta={runMetadata} />}
+      {runMetadata && (
+        <RunMetadataBlock meta={runMetadata} lowAbFilter={lowAbFilter} />
+      )}
 
       {!noData && (
         <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-3 mt-8 mb-4">
@@ -8811,9 +8352,11 @@ const ExplorePairs = ({
               {introducedFromLine.length} species fall on the line you placed
               {(() => {
                 if (!ab || !tgt) return null;
+                // Richness on the table as loaded, not the filtered copy.
+                const asLoaded = ab.unfiltered || ab;
                 let n = 0;
                 for (const sp of ab.species) {
-                  if ((ab.matrix[sp]?.[tgt] || 0) > 0) n++;
+                  if ((asLoaded.matrix[sp]?.[tgt] || 0) > 0) n++;
                 }
                 if (n === 0) return null;
                 const pct = (introducedFromLine.length / n) * 100;
@@ -8884,9 +8427,11 @@ const ExplorePairs = ({
         {(() => {
           const targetSpeciesCount = (() => {
             if (!ab || !tgt) return null;
+            // Richness on the table as loaded, not the filtered copy.
+            const asLoaded = ab.unfiltered || ab;
             let n = 0;
             for (const sp of ab.species) {
-              if ((ab.matrix[sp]?.[tgt] || 0) > 0) n++;
+              if ((asLoaded.matrix[sp]?.[tgt] || 0) > 0) n++;
             }
             return n;
           })();
@@ -14710,10 +14255,11 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
 /* ---------- BULK APPLY BY CRITERIA DIALOG ----------
    Modal that lets the user bulk-apply a verdict (TP / FP / Uncertain /
    Reset) to every event matching a rate range, a probability range and
-   a per-criterion pass/fail filter. The 6 criteria mirror the
-   data-driven checks displayed inline in the Guided validation panel —
-   they're computed here on demand for every event using the abundance
-   table.
+   a per-criterion pass/fail filter. The 6 criteria ARE the data-driven
+   checks displayed inline in the Guided validation panel: computed on
+   demand for every event using the abundance table, and read off the
+   same automaticScore evaluation (eventBulkCriteria), so a "pass" here
+   is a ✓ there.
 
    Comment behaviour: if the textarea is empty, existing notes on each
    matched event are preserved untouched. If non-empty, the comment is
@@ -14725,7 +14271,9 @@ const BULK_CRIT = [
   { id: "decade", label: "Decade range — line spans ≥ 1.5 decades" },
   { id: "missing", label: "Missing source species — observed misses within Poisson sampling noise (p ≥ 0.05)" },
   { id: "above", label: "Above-line points — none, or all within 0.5 decade" },
-  { id: "spearman", label: "Profile dissimilarity — Spearman ρ < 0.7" },
+  // id kept from when this was a Spearman-only check; it now carries the
+  // joint ρ × relatedness criterion 06 of the Validate panel.
+  { id: "spearman", label: "Biological similarity — ρ < 0.7, or ρ ≥ 0.7 between unrelated samples (different subjects, no shared group; needs metadata)" },
 ];
 
 /** Two-thumb (low / high) slider built on react-range. The track lights
@@ -15403,39 +14951,25 @@ const BulkApplyByCriteriaDialog = ({
   // Compute the 6-criteria pass/fail status for every event. Each entry is
   // { shape, nOnLine, decade, missing, above, spearman } where each value
   // is true (pass), false (fail), or null (not evaluable).
+  //
+  // The values are read off automaticScore (eventBulkCriteria, in
+  // src/diagnostics.js, where the unit tests call it), the evaluation the
+  // Validate panel draws its ✓ / ✗ from — never re-derived here. Two
+  // re-derivations had already drifted: "missing" once tested
+  // `count <= 2`, and "spearman" tested ρ < 0.7 alone, failing the high-ρ
+  // pairs from different subjects that the panel (and the Help) pass as
+  // strong contamination — so "✓ pass" here skipped events the panel
+  // ticked. Keep this a plain map of eventBulkCriteria.
   const eventCriteria = useMemo(() => {
     if (!ab || !critActive) return null;
     return events.map((e) => {
       try {
-        const sc = buildScatter(ab, e);
-        if (!sc || sc.error) return null;
-        const di = lineDiagnostics(sc);
-        const ab2 = pointsAboveLine(sc);
-        const mi = missingAbundantFromSource(ab, e.source, e.target, e.rate);
-        return {
-          shape: di?.r2 != null ? di.r2 > 0.8 : null,
-          nOnLine: di?.n != null ? di.n > 10 : null,
-          decade: di?.decadeRange != null ? di.decadeRange >= 1.5 : null,
-          // Same rule as automaticScore's "missing" criterion and as this
-          // checkbox's own label ("within Poisson sampling noise, p ≥
-          // 0.05"). It used to test `count <= 2`, a third, unrelated rule:
-          // the dialog then selected a completely different set of events
-          // from the one the Validate panel showed a green tick for.
-          missing:
-            mi == null
-              ? null
-              : mi.evaluated === 0
-                ? null
-                : mi.count === 0 || mi.pValue >= 0.05,
-          above:
-            ab2 != null ? ab2.count === 0 || ab2.maxDist < 0.5 : null,
-          spearman: di?.spearman != null ? di.spearman < 0.7 : null,
-        };
+        return eventBulkCriteria(ab, e, areRelated(metadata, e.source, e.target));
       } catch {
         return null;
       }
     });
-  }, [events, ab, critActive]);
+  }, [events, ab, metadata, critActive]);
 
   const introducedFilterActive = minIntroduced > 0 || maxIntroduced < 100;
 
@@ -15452,15 +14986,7 @@ const BulkApplyByCriteriaDialog = ({
         if (e.introducedPct < minIntroduced || e.introducedPct > maxIntroduced)
           return false;
       }
-      const c = eventCriteria?.[i];
-      for (const k of Object.keys(crit)) {
-        const want = crit[k];
-        if (want === "any") continue;
-        if (!c) return false; // criteria not computable but a filter is set
-        if (want === "pass" && c[k] !== true) return false;
-        if (want === "fail" && c[k] !== false) return false;
-      }
-      return true;
+      return matchesBulkCriteria(eventCriteria?.[i], crit);
     });
   }, [
     events,
@@ -16689,6 +16215,11 @@ const ValidateTab = ({
   // their dataset.
   const [showSampleInfo, setShowSampleInfo] = useState(false);
   const [showDiagBlurb, setShowDiagBlurb] = useState(false);
+  // Whether the diagnostics below run on the low-abundance-filtered table
+  // (AppMain's diagAb): the run declares a factor and it is not off. The
+  // grade says which, on or off.
+  const lowAbFactor = lowAbundanceFilterFactor(runMetadata);
+  const lowAbOn = lowAbFactor != null && filter?.lowAbFilter !== false;
   useEffect(() => {
     const handler = (e) => {
       // Don't compete with the bulk-apply dialog's own input handling.
@@ -17212,12 +16743,15 @@ const ValidateTab = ({
                     style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
                   >
                     {sel.introduced.slice(0, 80).map((s, i) => {
-                      const active = pickedSpecies.includes(s);
+                      // Pin the table's name: the plotted point is "001" when
+                      // CroCoDeEL wrote "1" (see matchSpeciesName).
+                      const sp = matchSpeciesName(ab, s) ?? s;
+                      const active = pickedSpecies.includes(sp);
                       return (
                         <button
                           key={i}
                           type="button"
-                          onClick={() => togglePickedSpecies(s)}
+                          onClick={() => togglePickedSpecies(sp)}
                           title={
                             active
                               ? "Click to unpin this species in the plot"
@@ -17305,14 +16839,17 @@ const ValidateTab = ({
                       <HelpCircle className="w-3 h-3" />
                     </button>
                   </div>
-                  {autoScore.total > 0 && (
+                  {/* The grade comes from automaticScore — never re-derived
+                      here — so "not evaluable" (a sample missing from the
+                      abundance table) cannot fall through to a fail. */}
+                  {autoScore.grade !== "not_evaluable" && (
                     <div
                       className="text-[11px] mt-0.5"
                       style={{
                         color:
-                          autoScore.good === autoScore.total
+                          autoScore.grade === "contaminated"
                             ? EVAL_TP_COLOR
-                            : autoScore.good >= Math.ceil(autoScore.total * 0.6)
+                            : autoScore.grade === "possibly_not"
                               ? "#d97a3c"
                               : EVAL_FP_COLOR,
                         fontWeight: 700,
@@ -17320,23 +16857,49 @@ const ValidateTab = ({
                         letterSpacing: "0.02em",
                       }}
                     >
-                      {autoScore.good === autoScore.total
+                      {autoScore.grade === "contaminated"
                         ? "CONTAMINATED — CroCoDeEL is probably right"
-                        : autoScore.good >= Math.ceil(autoScore.total * 0.6)
+                        : autoScore.grade === "possibly_not"
                           ? "POSSIBLY NOT CONTAMINATED — use CroCoDeEL's call with prudence"
                           : "PROBABLY NOT CONTAMINATED — review carefully before validating"}
                     </div>
                   )}
+                  {autoScore.grade === "not_evaluable" && scatter?.error && (
+                    <div
+                      className="text-[11px] mt-0.5"
+                      style={{
+                        color: "var(--ink-muted)",
+                        fontWeight: 700,
+                        fontFamily: '"Raleway", sans-serif',
+                        letterSpacing: "0.02em",
+                      }}
+                    >
+                      NOT EVALUABLE — sample missing from the abundance table
+                    </div>
+                  )}
+                  {/* Which table the grade comes from, whenever the run
+                      filtered: switched off (saved with the session),
+                      the grades are no longer those of the run's table. */}
+                  {lowAbFactor != null && autoScore.grade !== "not_evaluable" && (
+                    <div
+                      className="text-[10px] mt-0.5"
+                      style={{ color: "var(--ink-muted)" }}
+                      title="Switched in Overview › Run parameters."
+                    >
+                      {lowAbOn
+                        ? `After CroCoDeEL's low-abundance filter (${lowAbFactor}×), as in the run`
+                        : `Low-abundance filter (${lowAbFactor}×) switched off — diagnostics on the table as loaded, unlike the run`}
+                    </div>
+                  )}
                 </div>
-                {autoScore.total > 0 && (
+                {autoScore.grade !== "not_evaluable" && (
                   <div
                     className="tabular shrink-0"
                     style={{
                       color:
-                        autoScore.good === autoScore.total
+                        autoScore.grade === "contaminated"
                           ? EVAL_TP_COLOR
-                          : autoScore.good >=
-                              Math.ceil(autoScore.total * 0.6)
+                          : autoScore.grade === "possibly_not"
                             ? "#d97a3c"
                             : EVAL_FP_COLOR,
                       fontFamily: '"Raleway", sans-serif',
@@ -17369,7 +16932,9 @@ const ValidateTab = ({
               )}
               {autoScore.reasons.length === 0 && (
                 <div className="text-[12px]" style={{ color: "var(--ink-muted)" }}>
-                  Open the abundance table to compute.
+                  {scatter?.error
+                    ? `${scatter.error}, so none of the checks below can be computed for this pair — it is neither a pass nor a fail. Expected after a CroCoDeEL -s2 run when only one of its two abundance tables is loaded.`
+                    : "Open the abundance table to compute."}
                 </div>
               )}
               {(() => {
@@ -17435,6 +17000,12 @@ const ValidateTab = ({
                 // `null` (not evaluated, or evaluated-inconclusive) renders
                 // the neutral grey state Criterion already handles.
                 const passFor = (key) => reasonFor(key)?.ok ?? null;
+                // A pair whose source or target is missing from the loaded
+                // table is "not evaluable" — the table is there, the
+                // sample is not.
+                const naValue = scatter?.error
+                  ? "not evaluable — sample missing from the abundance table"
+                  : "abundance table required";
                 return (
               <div className="mt-4">
                 <Criterion
@@ -17445,7 +17016,7 @@ const ValidateTab = ({
                   value={
                     diag?.r2 != null
                       ? `R² = ${diag.r2.toFixed(3)}`
-                      : "abundance table required"
+                      : naValue
                   }
                   summary={summaryFor("r2")}
                 />
@@ -17455,7 +17026,7 @@ const ValidateTab = ({
                   wiki="More than 10 species expected. Below this threshold the alignment may be statistical noise."
                   pass={passFor("n")}
                   value={
-                    diag?.n != null ? `${diag.n} species` : "abundance table required"
+                    diag?.n != null ? `${diag.n} species` : naValue
                   }
                   summary={summaryFor("n")}
                 />
@@ -17467,7 +17038,7 @@ const ValidateTab = ({
                   value={
                     diag?.decadeRange != null
                       ? `${diag.decadeRange.toFixed(1)} decades`
-                      : "abundance table required"
+                      : naValue
                   }
                   summary={summaryFor("decade")}
                 />
@@ -17545,7 +17116,7 @@ const ValidateTab = ({
                                 : missing.pValue.toExponential(1)
                             }, expected ≈ ${missing.expectedMissing.toFixed(1)})`
                           : `${missing.count} / ${missing.evaluated} missing`
-                      : "abundance table required"
+                      : naValue
                   }
                   summary={summaryFor("missing")}
                 />
@@ -17563,17 +17134,17 @@ const ValidateTab = ({
                           : sel?.cascade
                             ? `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)} — cascade explains)`
                             : `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)})`
-                      : "abundance table required"
+                      : naValue
                   }
                   summary={summaryFor("above")}
                 />
                 <Criterion
                   n="06"
                   title="Biological similarity (ρ × relatedness)"
-                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
+                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects that share no group passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
                   pass={passFor("biosim")}
                   value={(() => {
-                    if (diag?.spearman == null) return "abundance table required";
+                    if (diag?.spearman == null) return naValue;
                     const rhoText = `ρ = ${diag.spearman.toFixed(2)}`;
                     const high = diag.spearman >= 0.7;
                     const isRelated =
@@ -17838,12 +17409,15 @@ const ValidateTab = ({
                   style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
                 >
                   {sel.introduced.slice(0, 80).map((s, i) => {
-                    const active = pickedSpecies.includes(s);
+                    // Pin the table's name: the plotted point is "001" when
+                    // CroCoDeEL wrote "1" (see matchSpeciesName).
+                    const sp = matchSpeciesName(ab, s) ?? s;
+                    const active = pickedSpecies.includes(sp);
                     return (
                       <button
                         key={i}
                         type="button"
-                        onClick={() => togglePickedSpecies(s)}
+                        onClick={() => togglePickedSpecies(sp)}
                         title={
                           active
                             ? "Click to unpin this species in the plot"
@@ -20379,6 +19953,14 @@ const HelpTab = ({ onStartTour }) => {
             <em>Check the input files</em> banner, with the first one as an
             example.
           </p>
+          <p>
+            The events file must name species exactly as this table does,
+            with one exception CroCoDeEL itself causes: when every species
+            name is an integer (say <code>001</code>), it reads them as
+            numbers and writes <code>1</code> in its events. Such a name is
+            matched to the table's <code>001</code> when no other species
+            of the table is the same integer.
+          </p>
         </HelpSection>
 
         {/* ---------- metadata.tsv ---------- */}
@@ -21232,6 +20814,34 @@ const HelpTab = ({ onStartTour }) => {
             Guided validation panel summarises the score and lists
             the individual reasons.
           </p>
+          <p style={{ marginTop: 6 }}>
+            An event whose source or target is not in the loaded
+            abundance table — the normal situation after a CroCoDeEL{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>-s2</code>{" "}
+            run when only one of its two tables is loaded — cannot be
+            scored at all. It is shown as <em>not evaluable</em>, in the
+            panel as in the HTML report: neither a pass nor a fail, and
+            the bulk dialog's pass / fail filters match it with neither.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            <strong>Low-abundance filter.</strong> A CroCoDeEL run made
+            with{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>--filter-low-ab F</code>{" "}
+            (the run parameters on the Overview show F) set to 0, in each
+            sample, every abundance up to F times the sample's smallest
+            one, and rescaled the rest, before fitting anything. Every
+            criterion, scatterplot and report plot here uses that same
+            filtered table by default; untick{" "}
+            <em>Low-abundance filter F×</em> in the run parameters to
+            compute them on the table as loaded (the choice is saved with
+            the session). Exports, sample richness and the introduced %
+            always use the table as loaded. One rare case differs: a value
+            exactly F times its sample's smallest one is zeroed here, as
+            CroCoDeEL zeroes it in a count table, but in a table of
+            decimals CroCoDeEL's floating-point rounding keeps about one
+            such tie in eight (20 × 0.00007 falls just under 0.0014) —
+            the relative abundances loaded here no longer tell which.
+          </p>
           <table className="w-full text-left mt-3">
             <thead>
               <tr style={{ borderBottom: "2px solid #275662" }}>
@@ -21347,7 +20957,8 @@ const HelpTab = ({ onStartTour }) => {
                       <strong>ρ &lt; 0.7</strong> → passes (profiles distinct).
                     </li>
                     <li>
-                      <strong>ρ ≥ 0.7 and samples from different subjects</strong>{" "}
+                      <strong>ρ ≥ 0.7 and samples from different subjects
+                      that share no group</strong>{" "}
                       → passes too (consistent with strong contamination — a
                       TP-supportive reading).
                     </li>
@@ -21695,8 +21306,9 @@ const HelpTab = ({ onStartTour }) => {
               range in %, probability range, introduced % range, and
               pass / fail / any per criterion: shape, n on line,
               decade range, missing source species, above-line points,
-              Spearman profile dissimilarity), then apply, in one
-              sweep:
+              biological similarity — the very ✓ / ✗ Guided validation
+              shows, ρ read together with the metadata), then apply, in
+              one sweep:
               <ul className="list-disc pl-5 mt-2 space-y-1">
                 <li>
                   An <em>event evaluation</em> (TP / FP / Uncertain /
@@ -24521,6 +24133,10 @@ const defaultFilter = () => ({
     adjacent: "any",
     scopeSamples: null,
     scopeSide: "either",
+    // Apply the run's --filter-low-ab to the diagnostics, as CroCoDeEL
+    // did (only meaningful when the run header declares a factor; see
+    // diagAb). On by default, switchable in Overview › Run parameters.
+    lowAbFilter: true,
   });
   const [filter, setFilter] = useState(() => {
     // Migrate legacy boolean fields (hideRelated / adjacentOnly) to the
@@ -24561,6 +24177,8 @@ const defaultFilter = () => ({
         f.scopeSide === "source" || f.scopeSide === "target"
           ? f.scopeSide
           : "either",
+      // Sessions saved before the toggle existed get it on.
+      lowAbFilter: f.lowAbFilter !== false,
     };
   });
   const [sort, setSort] = useState(
@@ -24861,19 +24479,37 @@ const defaultFilter = () => ({
 
   /* ---- derived state ---- */
   /** Count of species with non-zero abundance per sample. Used to compute
-      introducedPct (= introduced species / target's total species). */
-  const targetSpeciesCounts = useMemo(() => {
-    if (!ab) return null;
-    const counts = {};
-    for (const sample of ab.samples) {
-      let n = 0;
-      for (const sp of ab.species) {
-        if ((ab.matrix[sp]?.[sample] || 0) > 0) n++;
-      }
-      counts[sample] = n;
-    }
-    return counts;
-  }, [ab]);
+      introducedPct (= introduced species / target's total species), on
+      the table as loaded: a sample's richness is a plain statistic, not a
+      diagnostic. */
+  const targetSpeciesCounts = useMemo(
+    () => (ab ? speciesCountsBySample(ab) : null),
+    [ab],
+  );
+
+  /* The table the DIAGNOSTICS run on. A CroCoDeEL run with
+     --filter-low-ab F zeroed, in each sample, every abundance ≤ F × the
+     sample's smallest one and rescaled the rest before fitting anything;
+     its header records F (filtering_ab_thr_factor). The scatter points and
+     line, R², points above the line, the missing-species test, cascades,
+     the automatic grade, the bulk criteria and the gallery / report plots
+     must see that same table — applyLowAbundanceFilter rebuilds it once
+     per (table, factor, toggle).
+
+     Data and plain statistics — exports and downloads, session storage,
+     sample lists, richness, introduced % — keep `ab`, the table as loaded.
+     `ab` itself is never replaced: a consumer that still reads it falls
+     back to the unfiltered diagnostics, never to saving a filtered table.
+     When the run declares no factor (or "None"), diagAb IS ab. */
+  const lowAbFactor = useMemo(
+    () => lowAbundanceFilterFactor(runMetadata),
+    [runMetadata],
+  );
+  const lowAbApplied = lowAbFactor != null && filter.lowAbFilter !== false;
+  const diagAb = useMemo(
+    () => (ab && lowAbApplied ? applyLowAbundanceFilter(ab, lowAbFactor) : ab),
+    [ab, lowAbApplied, lowAbFactor],
+  );
 
   // `detectCascades` is O(events × species) and was the dominant cost
   // on verdict clicks for large datasets — it ran on every rawEvents
@@ -24907,27 +24543,24 @@ const defaultFilter = () => ({
     const sig = sigParts.join("\n");
     let cascadeMap;
     if (
-      cascadeCacheRef.current.ab === ab &&
+      cascadeCacheRef.current.ab === diagAb &&
       cascadeCacheRef.current.metadata === metadata &&
       cascadeCacheRef.current.sig === sig
     ) {
       cascadeMap = cascadeCacheRef.current.byId;
     } else {
-      const cascaded = detectCascades(rawEvents, ab, metadata);
+      const cascaded = detectCascades(rawEvents, diagAb, metadata);
       cascadeMap = new Map(cascaded.map((e) => [e.id, e.cascade || null]));
-      cascadeCacheRef.current = { ab, metadata, sig, byId: cascadeMap };
+      cascadeCacheRef.current = { ab: diagAb, metadata, sig, byId: cascadeMap };
     }
     const prev = eventsAugmentedCacheRef.current;
     const next = new Map();
     const out = rawEvents.map((e) => {
       const cascade = cascadeMap.get(e.id) || null;
-      let pct = null;
-      if (targetSpeciesCounts) {
-        const total = targetSpeciesCounts[e.target];
-        if (total > 0 && Array.isArray(e.introduced)) {
-          pct = (e.introduced.length / total) * 100;
-        }
-      }
+      // The target is resolved like the scatter resolves it: a raw-name
+      // lookup left "s2 " without a count — a blank introduced_pct in the
+      // export, and an event the introduced-% filter always hid.
+      const pct = introducedPercent(ab, targetSpeciesCounts, e);
       const cached = prev.get(e.id);
       // Reuse the cached augmented object if the underlying raw event
       // and the two derived fields are all unchanged. This preserves
@@ -24948,7 +24581,7 @@ const defaultFilter = () => ({
     });
     eventsAugmentedCacheRef.current = next;
     return out;
-  }, [rawEvents, ab, metadata, targetSpeciesCounts]);
+  }, [rawEvents, ab, diagAb, metadata, targetSpeciesCounts]);
 
   const allSamples = useMemo(() => {
     if (ab) return ab.samples;
@@ -25007,13 +24640,14 @@ const defaultFilter = () => ({
       );
     }
     if (ab && rawEvents.length > 0) {
-      const known = new Set(ab.species);
       let withSpecies = 0;
       let unresolved = 0;
       for (const e of rawEvents) {
         if (!e.introduced?.length) continue;
         withSpecies++;
-        if (!e.introduced.some((sp) => known.has(sp))) unresolved++;
+        // Same matcher as the scatter: integer ids CroCoDeEL rewrote
+        // ("1" for "001") resolve, so they no longer trip this warning.
+        if (!e.introduced.some((sp) => matchSpeciesName(ab, sp) != null)) unresolved++;
       }
       if (withSpecies > 0 && unresolved / withSpecies > 0.5) {
         const sample = rawEvents.find((e) => e.introduced?.length)?.introduced[0];
@@ -26948,10 +26582,14 @@ const defaultFilter = () => ({
     /** Render the diagnostic checks for an event as a small list, plus
         a side table with the underlying numerical values. */
     const renderDiagChecks = (event, sc) => {
-      if (!sc || sc.error) return "<em style='color:#797870'>abundance table required</em>";
+      if (!sc) return "<em style='color:#797870'>abundance table required</em>";
+      // The table is loaded but this pair is not in it: not evaluable,
+      // which is neither a pass nor a fail.
+      if (sc.error)
+        return `<div class="aggregate skip">Not evaluable — ${escapeHTML(sc.error)}. No criterion can be computed for this pair.</div>`;
       const di = lineDiagnostics(sc);
       const ab2 = pointsAboveLine(sc);
-      const mi = missingAbundantFromSource(ab, event.source, event.target, event.rate);
+      const mi = missingAbundantFromSource(diagAb, event.source, event.target, event.rate);
       const rel = areRelated(metadata, event.source, event.target);
       const score = automaticScore(di, ab2, mi, event.cascade, rel);
       const valueRows = [];
@@ -27006,13 +26644,13 @@ const defaultFilter = () => ({
                 .join("")}
             </ul>
             ${
-              score.total > 0
-                ? `<div class="aggregate ${score.good === score.total ? "all-pass" : score.good >= Math.ceil(score.total * 0.6) ? "warn" : "fail"}">
+              score.grade !== "not_evaluable"
+                ? `<div class="aggregate ${score.grade === "contaminated" ? "all-pass" : score.grade === "possibly_not" ? "warn" : "fail"}">
               ${score.good} / ${score.total} —
               ${
-                score.good === score.total
+                score.grade === "contaminated"
                   ? "CONTAMINATED — CroCoDeEL is probably right"
-                  : score.good >= Math.ceil(score.total * 0.6)
+                  : score.grade === "possibly_not"
                     ? "POSSIBLY NOT CONTAMINATED — use CroCoDeEL's call with prudence"
                     : "PROBABLY NOT CONTAMINATED — review carefully"
               }
@@ -27106,7 +26744,7 @@ const defaultFilter = () => ({
         // through both renderers — buildScatter is O(species) and
         // running it twice per event is the dominant export cost on
         // big reports.
-        const sc = ab ? buildScatter(ab, e) : null;
+        const sc = diagAb ? buildScatter(diagAb, e) : null;
         const rel = areRelated(metadata, e.source, e.target);
         const pd = plateDistance(plateMap, e.source, e.target);
         // Print up to 80 introduced species in the per-event detail —
@@ -27129,7 +26767,7 @@ const defaultFilter = () => ({
             ${e.cascade.explained
               .map(
                 (c) =>
-                  `<li><strong>${escapeHTML(c.upstream_source)} → ${escapeHTML(e.source)}</strong> (${(c.rate * 100).toFixed(2)}%) explains ${c.species_explained} species</li>`,
+                  `<li><strong>${escapeHTML(c.upstream_source)} → ${escapeHTML(e.source)}</strong>${Number.isFinite(c.upstream_rate) ? ` (${(c.upstream_rate * 100).toFixed(2)}%)` : ""} explains ${c.species_explained} species</li>`,
               )
               .join("")}
           </ul>`
@@ -27469,7 +27107,12 @@ const defaultFilter = () => ({
   <div class="dataset-grid">
     <div class="item"><div class="k">Total events loaded</div><div class="v">${events.length}</div></div>
     <div class="item"><div class="k">Events in report</div><div class="v">${list.length}</div></div>
-    <div class="item"><div class="k">Abundance table</div><div class="v">${ab ? `${ab.species?.length || 0} species · ${ab.samples?.length || 0} samples` : "<em style='font-weight:400;color:#797870;'>not loaded</em>"}</div></div>
+    <div class="item"><div class="k">Abundance table</div><div class="v">${ab ? `${ab.species?.length || 0} species · ${ab.samples?.length || 0} samples` : "<em style='font-weight:400;color:#797870;'>not loaded</em>"}</div></div>${
+      ab && lowAbFactor != null
+        ? `
+    <div class="item"><div class="k">Low-abundance filter</div><div class="v">${lowAbFactor}× — ${lowAbApplied ? "applied to the diagnostics, as in the CroCoDeEL run" : "<em style='font-weight:400;'>not applied: diagnostics on the table as loaded</em>"}</div></div>`
+        : ""
+    }
     <div class="item"><div class="k">Sample metadata</div><div class="v">${
       metadata
         ? `${metadata.nSamples} samples${metadata.hasGroupIdCol ? " · group_id" : ""}${metadata.hasBiomeCol ? " · biome" : ""}${metadata.hasLowBiomassCol ? " · low_biomass" : ""}${metadata.hasLowSequencingDepthCol ? " · low_seq_depth" : ""}`
@@ -27550,9 +27193,9 @@ const defaultFilter = () => ({
   // so verdict / action / cascade flips on the selected event don't
   // re-run buildScatter (and the diag chain that depends on it).
   const scatter = useMemo(
-    () => (selected ? buildScatter(ab, selected) : null),
+    () => (selected ? buildScatter(diagAb, selected) : null),
     [
-      ab,
+      diagAb,
       selected?.source,
       selected?.target,
       selected?.rate,
@@ -27563,10 +27206,10 @@ const defaultFilter = () => ({
   const above = useMemo(() => pointsAboveLine(scatter), [scatter]);
   const missing = useMemo(
     () =>
-      selected && ab
-        ? missingAbundantFromSource(ab, selected.source, selected.target, selected.rate)
+      selected && diagAb
+        ? missingAbundantFromSource(diagAb, selected.source, selected.target, selected.rate)
         : null,
-    [ab, selected],
+    [diagAb, selected],
   );
   const selectedRelatedness = useMemo(
     () =>
@@ -28294,6 +27937,16 @@ const defaultFilter = () => ({
               metadata={metadata}
               plateMap={plateMap}
               runMetadata={runMetadata}
+              lowAbFilter={
+                lowAbFactor != null
+                  ? {
+                      factor: lowAbFactor,
+                      applied: lowAbApplied,
+                      setApplied: (on) =>
+                        setFilter((f) => ({ ...f, lowAbFilter: on })),
+                    }
+                  : null
+              }
               onOpen={(id) => {
                 setSelId(id);
                 setTab("validate");
@@ -28335,7 +27988,8 @@ const defaultFilter = () => ({
               filtered={filtered}
               filter={filter}
               setFilter={setFilter}
-              ab={ab}
+              // Gallery mini-plots and Explore pairs are diagnostics.
+              ab={diagAb}
               metadata={metadata}
               plateMap={plateMap}
               runMetadata={runMetadata}
@@ -28724,7 +28378,8 @@ const defaultFilter = () => ({
       {bulkApplyOpen && bulkApplyToEvents && (
         <BulkApplyByCriteriaDialog
           events={events}
-          ab={ab}
+          // Its criteria and preview plots are the Validate panel's.
+          ab={diagAb}
           metadata={metadata}
           filter={filter}
           onClose={() => setBulkApplyOpen(false)}
@@ -30605,7 +30260,7 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
             <div
               className="flex items-center gap-3 mb-2"
               style={{ opacity: running ? 0.5 : 1 }}
-              title="Equivalent to the --filter-low-ab CLI flag. Drops species with median abundance below the LOD multiplied by this factor. 0 disables the filter."
+              title="Equivalent to the --filter-low-ab CLI flag: in each sample, every abundance up to this factor times the sample's smallest one is set to 0 (and the rest rescaled) before the search. 0 disables the filter."
             >
               <span
                 className="text-[10px] uppercase tracking-[0.05em]"
@@ -30640,11 +30295,11 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
               >
                 {filterLowAb > 0 ? (
                   <>
-                    Drop species with median abundance below{" "}
+                    In each sample, set to 0 every abundance up to{" "}
                     <strong style={{ color: "var(--ink)" }}>
-                      {filterLowAb}× LOD
-                    </strong>
-                    .
+                      {filterLowAb}×
+                    </strong>{" "}
+                    the sample's smallest one.{" "}
                   </>
                 ) : (
                   <>0 = disabled. </>
