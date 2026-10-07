@@ -201,6 +201,27 @@ describe("sessionFromPayload — a malformed file is refused whole (B1.4)", () =
     refused((j) => (j.ui_state = 4), /"ui_state" must be an object/);
   });
 
+  /* Shapes that passed the check and then broke a tab at every visit. */
+  it("an abundance matrix that is not an object, or has a row its species list does not name", () => {
+    refused((j) => (j.abundance.matrix = "oops"), /abundance: "matrix" \(species → sample → abundance\) is missing or is not an object/);
+    refused((j) => (j.abundance.matrix.__ghost = null), /abundance: "matrix" has a row for "__ghost", which "species" does not list/);
+    refused((j) => (j.abundance.matrix.__ghost = { S1: 0.5 }), /"matrix" has a row for "__ghost"/);
+  });
+
+  it("metadata fields that are not text, flags that are not true / false", () => {
+    refused((j) => (j.metadata.bySample.S1.subject = { id: "P1" }), /metadata: the subject of S1 is not text/);
+    refused((j) => (j.metadata.bySample.S1.sampleName = ["S1"]), /metadata: the sampleName of S1 is not text/);
+    refused((j) => (j.metadata.bySample.S1.groupId = true), /metadata: the groupId of S1 is not text/);
+    refused((j) => (j.metadata.bySample.S1.isControl = "yes"), /metadata: isControl of S1 is neither true nor false/);
+    refused((j) => (j.metadata.bySample.S1.lowBiomassExplicit = 1), /metadata: lowBiomassExplicit of S1 is neither true nor false/);
+    refused((j) => (j.metadata.bySample.S1.extra.subject_id = { x: 1 }), /metadata: the "subject_id" cell of S1 is not text/);
+  });
+
+  it("run metadata values that are not text", () => {
+    refused((j) => (j.run_metadata = { datetime: { a: 1 } }), /run_metadata: "datetime" is not text/);
+    refused((j) => (j.run_metadata = { probability_cutoff: [0.5] }), /run_metadata: "probability_cutoff" is not text/);
+  });
+
   it("not an object, or nothing to import", () => {
     expect(read(null).ok).toBe(false);
     expect(read([]).ok).toBe(false);
@@ -234,6 +255,37 @@ describe("sessionFromPayload — what is repaired rather than refused", () => {
     const back = read(json).session.ab;
     expect(back.logRange).toEqual(ab.logRange);
     expect(new Set(back.species)).toEqual(new Set(ab.species));
+  });
+
+  it("metadata fields written as numbers, or missing, are read as text", () => {
+    const json = exported();
+    for (const m of Object.values(json.metadata.bySample)) {
+      delete m.extra;
+      delete m.timepoint;
+      delete m.isControl;
+    }
+    json.metadata.bySample.S1.subject = 12;
+    json.metadata.bySample.T1.sampleName = 7;
+    const md = read(json).session.metadata;
+    expect(md.bySample.S1).toMatchObject({ subject: "12", timepoint: "", isControl: false, lowBiomassExplicit: null });
+    expect(md.bySample.T1.sampleName).toBe("7");
+    // What the tabs do with them now works (it threw on a number).
+    for (const m of Object.values(md.bySample)) {
+      expect((m.sampleName || "").trim()).toBeTypeOf("string");
+      expect(m.subject.localeCompare("P1")).toBeTypeOf("number");
+    }
+    // Run metadata written as numbers are kept.
+    json.run_metadata = { probability_cutoff: 0.5, rate_cutoff: null };
+    expect(read(json).session.runMetadata).toEqual({ probability_cutoff: 0.5, rate_cutoff: null });
+  });
+
+  it("a plate named by a number, or not named, is read as parsePlateMap names it", () => {
+    const json = exported();
+    json.plate_map.bySample.S1.plate = 3;
+    json.plate_map.bySample.T1.plate = null;
+    const pm = read(json).session.plateMap;
+    expect(pm.bySample.S1).toEqual({ plate: "3", row: 0, col: 0 });
+    expect(pm.bySample.T1.plate).toBe("P1");
   });
 
   it("metadata warnings that are not a list, or no nSamples", () => {

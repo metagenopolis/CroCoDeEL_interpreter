@@ -583,7 +583,9 @@ function readAbundance(ab, errors) {
     return bad('"samples" must be a list of sample names.');
   }
   if (new Set(samples).size !== samples.length) return bad("a sample appears twice.");
-  if (!isObj(matrix)) return bad('"matrix" (species → sample → abundance) is missing.');
+  if (!isObj(matrix)) {
+    return bad('"matrix" (species → sample → abundance) is missing or is not an object.');
+  }
   const species = ab.species == null ? Object.keys(matrix) : ab.species;
   if (!Array.isArray(species) || species.some((sp) => typeof sp !== "string" || !sp)) {
     return bad('"species" must be a list of species names.');
@@ -603,6 +605,15 @@ function readAbundance(ab, errors) {
         if (v < min) min = v;
         if (v > max) max = v;
       }
+    }
+  }
+  // Some views read the species list, others the matrix's rows: a row the
+  // list does not name passed unchecked, and then broke the Samples tab.
+  if (ab.species != null) {
+    const listed = new Set(species);
+    const stray = Object.keys(matrix).find((sp) => !listed.has(sp));
+    if (stray !== undefined) {
+      return bad(`"matrix" has a row for "${stray.slice(0, 60)}", which "species" does not list.`);
     }
   }
   const out = { ...ab, samples, species, matrix, warnings: warningList(ab.warnings) };
@@ -631,19 +642,60 @@ function readAbundance(ab, errors) {
   return out;
 }
 
+/** A value a table cell can hold: text, a number, or nothing. */
+const isCell = (v) => v == null || typeof v === "string" || (typeof v === "number" && Number.isFinite(v));
+
+/** The text fields of a metadata entry (parseMetadata's metadataEntry),
+    and its true / false flags (null: not given). */
+const METADATA_TEXT = ["sampleName", "subject", "timepoint", "biome", "groupId"];
+const METADATA_FLAGS = ["lowBiomassExplicit", "lowSequencingDepthExplicit"];
+
+/** The metadata of a session file. Every entry is read the way
+    parseMetadata writes it: its text fields as text — a number becomes
+    text, a missing field "" — its flags as true / false, the cells of its
+    row (`extra`) as text or numbers. Anything else is refused: a subject
+    or a sample name written as a number, or a cell holding an object,
+    passed unchecked and then broke the Samples, Events, Scatter and
+    Validate tabs at every visit. */
 function readMetadata(md, errors) {
   if (md == null) return null;
   if (!isObj(md) || !isObj(md.bySample)) {
     errors.push('metadata: "bySample" (the per-sample annotations) is missing.');
     return null;
   }
+  const bySample = {};
   for (const [id, m] of Object.entries(md.bySample)) {
+    const name = id.slice(0, 60);
     if (!isObj(m) || (m.extra != null && !isObj(m.extra))) {
-      errors.push(`metadata: the annotations of ${id} are not an object.`);
+      errors.push(`metadata: the annotations of ${name} are not an object.`);
       return null;
     }
+    const entry = { ...m };
+    for (const f of METADATA_TEXT) {
+      if (!isCell(m[f])) {
+        errors.push(`metadata: the ${f} of ${name} is not text.`);
+        return null;
+      }
+      entry[f] = m[f] == null ? "" : String(m[f]);
+    }
+    for (const f of ["isControl", ...METADATA_FLAGS]) {
+      if (m[f] != null && typeof m[f] !== "boolean") {
+        errors.push(`metadata: ${f} of ${name} is neither true nor false.`);
+        return null;
+      }
+    }
+    entry.isControl = m.isControl === true;
+    for (const f of METADATA_FLAGS) entry[f] = m[f] ?? null;
+    if (m.extra != null) {
+      const cell = Object.entries(m.extra).find(([, v]) => !isCell(v));
+      if (cell) {
+        errors.push(`metadata: the "${cell[0].slice(0, 60)}" cell of ${name} is not text.`);
+        return null;
+      }
+    }
+    bySample[id] = entry;
   }
-  const out = { ...md, warnings: warningList(md.warnings) };
+  const out = { ...md, bySample, warnings: warningList(md.warnings) };
   if (md.cols != null && !isObj(md.cols)) delete out.cols;
   if (typeof md.nSamples !== "number") out.nSamples = Object.keys(md.bySample).length;
   return out;
@@ -679,7 +731,12 @@ function readPlateMap(pm, errors) {
   const formatOk =
     isObj(f) &&
     ((f.rows === 8 && f.cols === 12 && !big) || (f.rows === 16 && f.cols === 24));
-  const out = { ...pm, warnings: warningList(pm.warnings) };
+  // The plate as parsePlateMap names it: text, "P1" when none is given.
+  const bySample = {};
+  for (const [id, p] of Object.entries(pm.bySample)) {
+    bySample[id] = { ...p, plate: p.plate == null || p.plate === "" ? "P1" : String(p.plate) };
+  }
+  const out = { ...pm, bySample, warnings: warningList(pm.warnings) };
   if (!formatOk) out.format = big ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 };
   if (pm.cols != null && !isObj(pm.cols)) delete out.cols;
   return out;
@@ -716,6 +773,11 @@ export function sessionFromPayload(json, { defaults, tabs } = {}) {
   const runMetadata = json.run_metadata == null ? null : json.run_metadata;
   if (runMetadata !== null && !isObj(runMetadata)) {
     errors.push('"run_metadata" must be an object.');
+  } else if (runMetadata !== null) {
+    // Shown as they are in the Overview: a value that is an object
+    // stopped that tab.
+    const value = Object.entries(runMetadata).find(([, v]) => !isCell(v));
+    if (value) errors.push(`run_metadata: "${value[0].slice(0, 60)}" is not text.`);
   }
   const ui = json.ui_state == null ? {} : json.ui_state;
   if (!isObj(ui)) errors.push('"ui_state" must be an object.');

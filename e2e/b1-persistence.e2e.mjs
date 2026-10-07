@@ -1116,10 +1116,15 @@ try {
     await saved(page);
     const good = JSON.parse(await exportSession(page));
     const alert = async () => (await page.locator('[role="alert"]').allInnerTexts()).join(" ");
+    const firstSample = Object.keys(good.metadata.bySample)[0];
     for (const [what, edit, re] of [
       ["an abundance table that is not one", (j) => (j.abundance.matrix = "oops"), /abundance: "matrix"/],
       ["an event without a target", (j) => delete j.events[3].target, /event 4 has no source or no target/],
       ["metadata without its samples", (j) => (j.metadata = { nSamples: 3 }), /metadata: "bySample"/],
+      // These passed the check, then broke a tab at every visit.
+      ["a matrix row the species list does not name", (j) => (j.abundance.matrix.__ghost = null), /abundance: "matrix" has a row for "__ghost"/],
+      ["a run parameter that is an object", (j) => (j.run_metadata = { ...j.run_metadata, datetime: { a: 1 } }), /run_metadata: "datetime" is not text/],
+      ["a metadata subject that is an object", (j) => (j.metadata.bySample[firstSample].subject = { id: 1 }), /metadata: the subject of .+ is not text/],
     ]) {
       const json = structuredClone(good);
       edit(json);
@@ -1151,6 +1156,30 @@ try {
     check(!/Something went wrong/.test(body) && (await overviewStats(page)).tp === 0, "B1.4 a session whose filter has no q imports without crashing");
     const ui = (await storedRecords(page)).ui;
     check(ui?.filter?.q === "" && ui.filter.lowAbFilter === true, "B1.4 …its filter merged over the defaults (lowAbFilter on)", JSON.stringify(ui?.filter));
+  });
+
+  /* B1.4 Metadata written as numbers (a hand-edited session JSON): read
+     as text. It used to be accepted as it was, and the Samples, Events,
+     Scatter and Validate tabs then failed on it at every visit. */
+  await scenario("B1.4 numbers in the metadata", async (page) => {
+    const json = JSON.parse(await exportSession(page));
+    let n = 0;
+    for (const m of Object.values(json.metadata.bySample)) {
+      delete m.extra;
+      m.sampleName = 1000 + n;
+      if (/^\d+$/.test(m.subject)) m.subject = Number(m.subject);
+      n++;
+    }
+    await importSession(page, json);
+    const alert = (await page.locator('[role="alert"]').allInnerTexts()).join(" ");
+    check(!/Failed to import session/.test(alert), "B1.4 a session whose metadata holds numbers imports", alert.slice(0, 200));
+    const failed = [];
+    for (const name of ["Overview", "Samples", "Events", "Scatter", "Validate", "Network", "Plate", "Export"]) {
+      await openTab(page, name);
+      if (await page.locator("[data-tab-error]").count()) failed.push(name);
+    }
+    check(failed.length === 0, "B1.4 …and every tab shows it", failed.join(", "));
+    check((await storedRecords(page)).metadata.bySample[Object.keys(json.metadata.bySample)[0]].sampleName === "1000", "B1.4 …read as text");
   });
 
   /* B1.4 The error screen says what is really stored, and offers it. */
