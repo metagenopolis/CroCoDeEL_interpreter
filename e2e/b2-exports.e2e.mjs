@@ -234,6 +234,15 @@ function reportIntroduced(html) {
   return out;
 }
 
+/** The overview table of the events HTML report: { "src→tgt": the
+    rate cell }. */
+function reportRates(html) {
+  const out = {};
+  const re = /<td class="num">\d+<\/td>\s*<td>([^<]*)<\/td>\s*<td>([^<]*)<\/td>\s*<td class="num">([^<]*)<\/td>/g;
+  for (const m of (html || "").matchAll(re)) out[`${m[1]}→${m[2]}`] = m[3];
+  return out;
+}
+
 /** A note with HTML special characters, a tab and a line break. */
 const HTML_NOTE = `<b>"Quoted"</b> & 'single'\twith a tab\nsecond line`;
 
@@ -685,6 +694,14 @@ try {
         tsv.every((r) => intro[`${r.source}→${r.target}`] === `${Number(r.introduced_pct).toFixed(1)}%`),
       "B2.5 its introduced % is the events TSV's introduced_pct, in percent",
       Object.entries(intro).slice(0, 2).map(([k, v]) => `${k} ${v}`).join("; "),
+    );
+    // Rates: a fraction in the TSV (CroCoDeEL's own number), a percentage
+    // in the report, as the Help's Units paragraph says.
+    const rates = reportRates(eventsHtml);
+    check(
+      tsv.every((r) => Number(r.rate) < 1 && rates[`${r.source}→${r.target}`] === `${(Number(r.rate) * 100).toFixed(2)}%`),
+      "B2.5 its rate is the events TSV's fraction, as a percentage",
+      Object.entries(rates).slice(0, 2).map(([k, v]) => `${k} ${v}`).join("; "),
     );
     // A filtered subset: the report names the filter.
     await page.locator('input[placeholder="sample id or name…"]').first().fill("63D");

@@ -20907,10 +20907,12 @@ const HelpTab = ({ onStartTour }) => {
                 </li>
               </ul>
               <p style={{ marginTop: 6 }}>
-                <strong>Units.</strong> Rates are fractions (0.704), as
-                in CroCoDeEL's files. The introduced share is a
-                percentage of the target's species (61.54 for 8 of 13),
-                the same in every export:{" "}
+                <strong>Units.</strong> Rates are fractions (0.704) in
+                the TSV and graph files, as in CroCoDeEL's files, and
+                percentages with a % sign (70.40%) in the HTML reports,
+                as on screen. The introduced share is a percentage of
+                the target's species (61.54 for 8 of 13), the same in
+                every export:{" "}
                 <code>introduced_pct</code> in the events TSV and the
                 graph files, <code>max_target_introduced_pct</code> in
                 the samples TSV, <code>max_introduced_pct</code> on the
