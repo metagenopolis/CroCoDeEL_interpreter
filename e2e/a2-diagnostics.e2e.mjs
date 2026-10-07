@@ -426,6 +426,17 @@ try {
     check(fail === 2, "bulk “✗ fail” selects the same-subject and same-group high-ρ pairs", `Apply to ${fail}`);
     const all = await bulkPick(page, label, "any");
     check(all === 5, "“any” keeps all five events", `Apply to ${all}`);
+    const rowText = await page.evaluate(
+      (label) =>
+        [...document.querySelectorAll("span")].find((el) => el.textContent.startsWith(label))
+          ?.textContent || "",
+      label,
+    );
+    check(
+      /ρ ≥ 0\.7 between unrelated samples \(different subjects, no shared group/.test(rowText),
+      "the criterion's label states the same-group rule",
+      rowText,
+    );
     await closeBulk(page);
     check(errors.length === 0, "no JS error in the bulk dialog", errors[0] || "");
     await ctx.close();

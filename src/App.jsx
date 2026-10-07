@@ -14714,7 +14714,7 @@ const BULK_CRIT = [
   { id: "above", label: "Above-line points — none, or all within 0.5 decade" },
   // id kept from when this was a Spearman-only check; it now carries the
   // joint ρ × relatedness criterion 06 of the Validate panel.
-  { id: "spearman", label: "Biological similarity — ρ < 0.7, or ρ ≥ 0.7 between different subjects (needs metadata)" },
+  { id: "spearman", label: "Biological similarity — ρ < 0.7, or ρ ≥ 0.7 between unrelated samples (different subjects, no shared group; needs metadata)" },
 ];
 
 /** Two-thumb (low / high) slider built on react-range. The track lights
@@ -17576,7 +17576,7 @@ const ValidateTab = ({
                 <Criterion
                   n="06"
                   title="Biological similarity (ρ × relatedness)"
-                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
+                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects that share no group passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
                   pass={passFor("biosim")}
                   value={(() => {
                     if (diag?.spearman == null) return naValue;
@@ -21274,7 +21274,8 @@ const HelpTab = ({ onStartTour }) => {
                       <strong>ρ &lt; 0.7</strong> → passes (profiles distinct).
                     </li>
                     <li>
-                      <strong>ρ ≥ 0.7 and samples from different subjects</strong>{" "}
+                      <strong>ρ ≥ 0.7 and samples from different subjects
+                      that share no group</strong>{" "}
                       → passes too (consistent with strong contamination — a
                       TP-supportive reading).
                     </li>
