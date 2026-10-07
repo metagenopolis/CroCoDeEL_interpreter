@@ -3953,6 +3953,24 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
 };
 
 /* ---------- event queue sidebar ---------- */
+
+/** "source → target" as one text in which each id is cut (clipId) to share
+    `max` characters, a short id staying whole next to a long one — what
+    SamplePair does with three boxes. The event queue lists every event (all
+    16,555 of the Meteor benchmark), and those boxes made Guided validation
+    open ~400 ms and answer each verdict click ~100 ms slower there; one
+    text per row keeps it as it was. `max` fits the 260 px queue column at
+    12 px; the row's ellipsis stays as a fallback. */
+function clipPair(source, target, max) {
+  const s = String(source ?? "");
+  const t = String(target ?? "");
+  const room = max - 3; // " → "
+  if (s.length + t.length <= room) return `${s} → ${t}`;
+  const half = Math.floor(room / 2);
+  const sMax = t.length <= half ? room - t.length : Math.min(s.length, half);
+  return `${clipId(s, sMax)} → ${clipId(t, room - Math.min(s.length, sMax))}`;
+}
+
 const EventQueue = ({ events, currentId, onSelect, compact }) => {
   // Keep the active row in view as the user steps through events with the
   // ↑/↓/←/→ shortcuts. `block: "nearest"` means we only scroll when the
@@ -4020,11 +4038,13 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
               />
             )}
             <div className="flex-1 min-w-0">
-              <SamplePair
-                source={e.source}
-                target={e.target}
+              <div
+                className="truncate"
                 style={{ fontWeight: 600 }}
-              />
+                title={`${e.source} → ${e.target}`}
+              >
+                {clipPair(e.source, e.target, e.cascade ? 22 : 30)}
+              </div>
               <div
                 className="flex mt-0.5 tabular gap-2"
                 style={{

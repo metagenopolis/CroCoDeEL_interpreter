@@ -246,6 +246,20 @@ try {
       "B3.1 Validate header: both ids cut, each whole in its tooltip",
       JSON.stringify(hd.map((c) => [c.cut, c.ellipsis, c.title?.slice(0, 12)])),
     );
+    const queue = await page.locator("aside button div.truncate").evaluateAll((els) =>
+      els.map((el) => ({
+        text: el.textContent,
+        fits: el.scrollWidth <= el.clientWidth + 1,
+        title: el.getAttribute("title") || "",
+      })),
+    );
+    const firstQueued = queue.find((q) => q.title === `${src0} → ${tgt0}`);
+    check(
+      queue.length === 24 && queue.every((q) => q.fits && /^\S+… → \S+…$/.test(q.text)) &&
+        firstQueued?.text.startsWith("63D250_Long") && firstQueued.text.includes("→ 63D9_Long"),
+      "B3.1 Validate queue: each row shows both ids, each cut, the pair whole in its tooltip",
+      `${queue.length} rows; "${firstQueued?.text}"`,
+    );
     const selected = await header.nth(0).evaluate((el) => {
       const range = document.createRange();
       range.selectNodeContents(el);
