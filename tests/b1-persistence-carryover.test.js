@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { curationSummary, replaceEvents, replaceReportLines } from "../src/carryOver.js";
+import { curationSummary, replaceEvents, replaceReportLines, replacedRunMetadata } from "../src/carryOver.js";
 import {
   buildEffectiveSampleCuration,
   neverTargetedSamples,
@@ -287,6 +287,9 @@ describe("replaceEvents — an export reloaded into an empty session reproduces 
     const lines = replaceReportLines(report);
     expect(lines.join(" ")).toMatch(/Restored from the file: 6 evaluations, 2 notes, 3 sample actions\./);
     expect(lines.join(" ")).toMatch(/only the session JSON \(Download session\) keeps them/);
+    // The notes come back as the TSV holds them: on one line.
+    expect(report.notesFromFile).toBe(2);
+    expect(lines.join(" ")).toMatch(/Notes read from the file are on one line, as the events TSV holds them/);
   });
 
   it("and again when carried over into the session it came from", () => {
@@ -316,7 +319,31 @@ describe("replaceEvents — notes the TSV holds on one line", () => {
       carryOver: true,
     });
     expect(events[0].notes).toBe(note);
-    expect(report).toMatchObject({ replacedNotes: 0, keptNotes: 0, fileNotes: 1 });
+    expect(report).toMatchObject({ replacedNotes: 0, keptNotes: 0, fileNotes: 1, notesFromFile: 0 });
+    expect(replaceReportLines(report).join(" ")).not.toMatch(/on one line/);
+  });
+});
+
+describe("replacedRunMetadata — the run header after a replacement", () => {
+  const run = { "crocodeel version": "1.2.1", filtering_ab_thr_factor: "20.0", probability_cutoff: "0.5" };
+
+  it("a curated export carries the study title, no run header: carried over, the session keeps its own", () => {
+    const curated = parseEvents(["# study: My study", "source\ttarget\trate\tprobability\tverdict", "A\tB\t0.1\t0.9\ttrue_positive"].join("\n"));
+    expect(curated.runMetadata).toEqual({ study: "My study" });
+    expect(replacedRunMetadata(curated.runMetadata, run, true)).toEqual({ runMetadata: run, study: "My study", kept: true });
+    // Started fresh, nothing of the session is kept, and the title is
+    // no run parameter.
+    expect(replacedRunMetadata(curated.runMetadata, run, false)).toEqual({ runMetadata: null, study: "My study", kept: false });
+  });
+
+  it("a file with CroCoDeEL's run header brings its own, even carried over", () => {
+    const rerun = { ...run, filtering_ab_thr_factor: "None", study: "Rerun" };
+    expect(replacedRunMetadata(rerun, run, true)).toEqual({
+      runMetadata: { "crocodeel version": "1.2.1", filtering_ab_thr_factor: "None", probability_cutoff: "0.5" },
+      study: "Rerun",
+      kept: false,
+    });
+    expect(replacedRunMetadata(null, null, true)).toEqual({ runMetadata: null, study: null, kept: false });
   });
 });
 

@@ -62,7 +62,7 @@ import {
 } from "./persistence.js";
 import { idbBackend, indexedDBSupported, readStoredSession } from "./storage.js";
 import { createAutosave } from "./autosave.js";
-import { curationSummary, replaceEvents, replaceReportLines } from "./carryOver.js";
+import { curationSummary, replaceEvents, replaceReportLines, replacedRunMetadata } from "./carryOver.js";
 import {
   FolderOpen,
   AlertCircle,
@@ -20179,7 +20179,7 @@ const HelpTab = ({ onStartTour }) => {
                 name="notes"
                 recognized
                 type="string"
-                desc="Curator notes, restored with the verdicts when the curated events TSV is reloaded."
+                desc="Curator notes, restored with the verdicts when the curated events TSV is reloaded — on one line: the TSV holds no line breaks or tabs (the session JSON keeps them)."
                 aliases={["note", "comment", "comments"]}
               />
               <HelpCol
@@ -20201,7 +20201,13 @@ const HelpTab = ({ onStartTour }) => {
             session gives back the same counts and the same curated
             abundance table. What the file does not hold — sample verdicts
             and sample notes set by hand, the action of a sample no event
-            targets — only the session JSON (Download session) keeps.
+            targets — only the session JSON (Download session) keeps. Its
+            first line,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}># study: …</code>,
+            names the study when the session has none yet. It has no
+            CroCoDeEL run header: carried over into its session, the
+            session keeps its own run parameters, and so the same
+            diagnostics, cutoffs and low-abundance setting.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Replacing the events
@@ -25826,19 +25832,39 @@ const defaultFilter = () => ({
     setRawEvents(next.events);
     setSampleCuration(next.sampleCuration);
     setEventsWarnings(Array.isArray(parsed.warnings) ? parsed.warnings : []);
+    // A curated export has no run header: carried over, the session
+    // keeps its own, and the diagnostics with it (replacedRunMetadata).
+    const run = replacedRunMetadata(parsed.runMetadata, runMetadata, carryOver);
     // Reset the filter so any scope / sliders / sample-verdict
     // selection from a previous study don't silently hide every
-    // event in the new file.
-    setFilter(withRunCutoffs(defaultFilter(), parsed.runMetadata));
-    setRunMetadata(parsed.runMetadata);
+    // event in the new file. Carried over, the study is the same: the
+    // curator's low-abundance toggle stays, and so do their cutoffs when
+    // the run header is the session's.
+    const base = withRunCutoffs(defaultFilter(), run.runMetadata);
+    setFilter(
+      carryOver
+        ? {
+            ...base,
+            lowAbFilter: filter.lowAbFilter !== false,
+            ...(run.kept ? { minScore: filter.minScore, minRate: filter.minRate } : {}),
+          }
+        : base,
+    );
+    setRunMetadata(run.runMetadata);
     // The ids are the new file's: the old selection would point at
     // another event.
     setSelId(null);
-    // Default the study label (the events filename, without extension,
-    // for a file) so the curator gets some context immediately. They can
-    // rename it inline from the upload bar.
-    if (!analysisTitle && title) setAnalysisTitle(title);
+    // Default the study label (the file's "# study:" title, else the
+    // events filename without extension) so the curator gets some
+    // context immediately. They can rename it inline from the upload bar.
+    const fileTitle = run.study || title;
+    if (!analysisTitle && fileTitle) setAnalysisTitle(fileTitle);
     const lines = replaceReportLines(next.report);
+    if (run.kept) {
+      lines.push(
+        "The new file has no CroCoDeEL run header: your session's run parameters are kept (Overview › Run parameters), and the diagnostics with them.",
+      );
+    }
     setNotice(
       lines.length > 0
         ? { title: hadEvents ? "Events file replaced." : "Events file loaded.", lines }

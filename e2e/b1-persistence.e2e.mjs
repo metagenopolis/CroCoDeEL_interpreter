@@ -531,6 +531,77 @@ try {
     await fresh.close();
   });
 
+  /* B1.1 The curated events TSV carries the study title, not CroCoDeEL's
+     run header: reloaded into the session it came from (Carry over), the
+     session's run header — and so the diagnostics — used to be replaced
+     by { study }. */
+  await scenario("B1.1 curated export keeps the run header", async (page, ctx) => {
+    await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv").replace("filtering_ab_thr_factor: None", "filtering_ab_thr_factor: 20.0"));
+    await mark(page, "true positive", 0);
+    await mark(page, "false positive", 1);
+    await saved(page);
+    const toggle = page.getByRole("checkbox", { name: /low-abundance filter to the diagnostics/i });
+    const runParams = async () => {
+      await openTab(page, "Overview");
+      const text = await page.locator("body").innerText();
+      return /Low-abundance filter 20×/.test(text) && /applied to diagnostics, as in CroCoDeEL/.test(text);
+    };
+    const diagnostics = async (pair) => {
+      await openTab(page, "Validate");
+      const re = new RegExp(`^${pair.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[0-9.]+%`);
+      await page.locator("button").filter({ hasText: re }).first().click();
+      await page.waitForTimeout(600);
+      const text = await page.locator("body").innerText();
+      const i = text.indexOf("DIAGNOSTIC CHECKS");
+      return i < 0 ? "" : text.slice(i, i + 700).replace(/\s+/g, " ");
+    };
+    const before = await diagnostics("83D88 → NC3");
+    check((await runParams()) && /low-abundance filter \(20×\), as in the run/.test(before), "B1.1 a session whose run applied a low-abundance filter (20×)", before.slice(0, 200));
+    const tsv = await exportEventsTSV(page);
+    await upload(page, 0, "contamination_events_curated.tsv", tsv || "");
+    await dialog(page, "Replace the events file?").getByRole("button", { name: "Carry over" }).click();
+    await saved(page);
+    // (Should the export carry the run header one day, it is the file's.)
+    const fileHasRunHeader = /^#.*crocodeel version/im.test(tsv || "");
+    const notice = (await page.locator("[data-notice]").innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(
+      fileHasRunHeader || /The new file has no CroCoDeEL run header: your session's run parameters are kept/.test(notice),
+      "B1.1 its curated export, carried over, says that the session's run parameters are kept",
+      notice.slice(0, 300),
+    );
+    check(await runParams(), "B1.1 …the run parameters are still the run's (low-abundance filter 20×, applied)");
+    const after = await diagnostics("83D88 → NC3");
+    check(after === before, "B1.1 …and the diagnostics of an event are unchanged", after.slice(0, 200));
+    const stored = (await storedRecords(page)).events.runMetadata;
+    check(stored?.filtering_ab_thr_factor === "20.0" && !("study" in stored), "B1.1 …the stored run header is the run's, without the study title", JSON.stringify(stored).slice(0, 200));
+    // The curator's low-abundance toggle, switched off, stays off.
+    await openTab(page, "Overview");
+    await toggle.uncheck();
+    await page.waitForTimeout(1500);
+    await upload(page, 0, "contamination_events_curated.tsv", tsv || "");
+    await dialog(page, "Replace the events file?").getByRole("button", { name: "Carry over" }).click();
+    await openTab(page, "Overview");
+    check(!(await toggle.isChecked()), "B1.1 …and the curator's low-abundance toggle stays off");
+
+    // In a session without a title, the file's "# study:" line names it.
+    const other = await ctx.browser().newContext({ viewport: { width: 1500, height: 1000 } });
+    const p2 = await other.newPage();
+    await p2.addInitScript(() => localStorage.setItem("crocodeel-tutorial-seen", "1"));
+    await p2.goto(BASE, { waitUntil: "networkidle" });
+    await upload(p2, 0, "contamination_events_curated.tsv", tsv || "");
+    await saved(p2);
+    const r2 = await storedRecords(p2);
+    const run2 = r2.events?.runMetadata;
+    check(
+      /^# study: Demo — Lou et al\. 2023/m.test(tsv || "") &&
+        r2.curation?.analysisTitle === "Demo — Lou et al. 2023 (early-life metagenomes, plate 3)" &&
+        (fileHasRunHeader ? run2?.filtering_ab_thr_factor === "20.0" && !("study" in run2) : run2 === null),
+      "B1.1 loaded into a session without a title, the curated export's study names it, and is no run parameter",
+      JSON.stringify([r2.curation?.analysisTitle, run2]),
+    );
+    await other.close();
+  });
+
   /* B1.1 The question says, before the choice, what carrying over drops —
      also for a curated file, such as a filtered curated export. */
   await scenario("B1.1 the question counts what is dropped", async (page) => {

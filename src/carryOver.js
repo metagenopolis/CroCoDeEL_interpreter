@@ -123,6 +123,7 @@ export function replaceEvents({
     keptNotes: 0,
     fileVerdicts: 0,
     fileNotes: 0,
+    notesFromFile: 0,
     replacedVerdicts: 0,
     replacedNotes: 0,
     keptSampleEntries: 0,
@@ -153,6 +154,7 @@ export function replaceEvents({
     if (fileVerdict || fileNotes || ne.fileAction) report.fileHasCuration = true;
     let verdict = fileVerdict || "pending";
     let notes = fileNotes;
+    let notesFromFile = !!fileNotes;
     const old = carryOver ? queues.get(pairKey(ne))?.shift() : undefined;
     if (old) {
       report.matched++;
@@ -169,6 +171,7 @@ export function replaceEvents({
         // same note on one line: the session's own is kept.
         if (!fileNotes || asCell(old.notes) === asCell(fileNotes)) {
           notes = old.notes;
+          notesFromFile = false;
           if (!fileNotes) report.keptNotes++;
         } else {
           report.replacedNotes++;
@@ -177,6 +180,7 @@ export function replaceEvents({
     } else if (carryOver) {
       report.added++;
     }
+    if (notesFromFile) report.notesFromFile++;
     return { ...base, verdict, notes };
   });
   // The current events the new file has no pair for: dropped, except the
@@ -242,6 +246,29 @@ export function replaceEvents({
   if (report.fileActions > 0 || report.conflictingActions > 0) report.fileHasCuration = true;
 
   return { events, sampleCuration, report };
+}
+
+/** The run header after another events file replaced the current one:
+    { runMetadata, study, kept }.
+
+    The curated events TSV of the Export tab starts with "# study: …",
+    which parseEvents reads with the run parameters: it is the study's
+    title (`study`), not a parameter of the run. Such a file has no
+    CroCoDeEL run header at all. Carried over — the same study — the
+    session keeps its own (`kept`), and with it the low-abundance filter
+    factor the diagnostics apply and the cutoffs: it used to be replaced
+    by { study }, which changed the diagnostics of a curated export
+    reloaded into the session it came from. A file with a run header (a
+    rerun) brings its own. */
+export function replacedRunMetadata(fileRunMetadata, sessionRunMetadata, carryOver) {
+  const { study, ...runKeys } = fileRunMetadata || {};
+  const fileRun = Object.keys(runKeys).length > 0 ? runKeys : null;
+  const kept = !!(carryOver && !fileRun && sessionRunMetadata);
+  return {
+    runMetadata: kept ? sessionRunMetadata : fileRun,
+    study: typeof study === "string" && study.trim() ? study.trim() : null,
+    kept,
+  };
 }
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -312,6 +339,11 @@ export function replaceReportLines(report) {
       lines.push(
         `${plural(r.conflictingActions, "target")} whose rows give different actions ` +
           `${r.conflictingActions === 1 ? "was" : "were"} left to the automatic rule.`,
+      );
+    }
+    if (r.notesFromFile > 0) {
+      lines.push(
+        "Notes read from the file are on one line, as the events TSV holds them (line breaks and tabs became spaces).",
       );
     }
     lines.push(
