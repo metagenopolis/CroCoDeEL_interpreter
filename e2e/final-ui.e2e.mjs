@@ -12,12 +12,14 @@
             decisions;
      - F.3  without storage the header says nothing is auto-saved;
      - F.4  in the dark theme, the Not saved banner, the load errors and
-            the buttons of a tab that crashed are readable.
+            the buttons of a tab that crashed are readable;
+     - F.5  a warning quoting a long word wraps inside its banner.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
            E2E_ONLY=<regex> runs only the matching scenarios) */
 
+import { readFileSync } from "node:fs";
 import {
   BASE,
   startServer,
@@ -27,9 +29,23 @@ import {
   trackErrors,
   loadDemo,
   openTab,
+  tsvInput,
   check,
   finish,
 } from "./harness.mjs";
+
+const demo = (name) => readFileSync(`public/demo/${name}`, "utf8");
+
+/** Upload `text` through the i-th file card (0 events, 1 abundance,
+    2 metadata, 3 plate map). */
+async function upload(page, i, name, text) {
+  await tsvInput(page, i).setInputFiles({
+    name,
+    mimeType: "text/tab-separated-values",
+    buffer: Buffer.from(text),
+  });
+  await page.waitForTimeout(1500);
+}
 
 /** The text of the Help section whose title is `title`, spaces folded. */
 const helpSection = (page, title) =>
@@ -308,6 +324,43 @@ try {
       ratios.join(", "),
     );
   }, { expectedErrors: /Cannot read properties of null|the Plate tab failed|The above error occurred/ });
+
+  /* F.5 — a warning that quotes a long word wraps inside its banner. The
+     "match NOTHING" warning quotes the events' first introduced species:
+     a GTDB taxon name has nothing to break a line on, and ran past the
+     banner. */
+  await scenario(
+    "F.5 long words in the banners",
+    async (page) => {
+      const taxon =
+        "d__Bacteria;p__Firmicutes_A;c__Clostridia;o__Oscillospirales;f__Ruminococcaceae;" +
+        "g__Faecalibacterium;s__Faecalibacterium_prausnitzii_GCF_000162015.1_ASM16201v1_genomic_sequence_v2";
+      const events = demo("contamination_events.tsv")
+        .split("\n")
+        .map((l) => {
+          if (!l || l.startsWith("#") || l.startsWith("source\t")) return l;
+          const cells = l.split("\t");
+          cells[4] = taxon;
+          return cells.join("\t");
+        })
+        .join("\n");
+      await upload(page, 0, "contamination_events.tsv", events);
+      await upload(page, 1, "species_abundance.tsv", demo("species_abundance.tsv"));
+      const fit = await page.evaluate(() => {
+        const li = [...document.querySelectorAll("li")].find((e) => /match NOTHING/.test(e.textContent));
+        if (!li) return null;
+        const box = li.closest("div.rounded-sm").getBoundingClientRect();
+        const right = Math.max(...[...li.getClientRects()].map((r) => r.right));
+        return { past: Math.round(right - box.right), quoted: li.textContent.includes("GCF_000162015") };
+      });
+      check(
+        fit && fit.quoted && fit.past <= 0,
+        "F.5 the data-warnings banner wraps a long taxon name inside its box",
+        JSON.stringify(fit),
+      );
+    },
+    { contextOptions: { viewport: { width: 1024, height: 900 } } },
+  );
 
   /* F.1 — the events TSV's column is "verdict": the Export card and the
      guided tour told to filter on an "evaluation" column. */

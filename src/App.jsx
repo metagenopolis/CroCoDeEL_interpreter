@@ -23914,7 +23914,7 @@ const StorageBanner = ({ status, onDownload }) => {
         }}
       >
         <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0" style={{ overflowWrap: "anywhere" }}>
           <strong>{title}</strong>
           <div style={{ marginTop: 2 }}>{body}</div>
           <div className="flex gap-2 flex-wrap" style={{ marginTop: 6 }}>
@@ -23948,7 +23948,7 @@ const NoticeBanner = ({ title, lines, onDismiss }) => (
       }}
     >
       <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" style={{ color: "#00a3a6" }} />
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0" style={{ overflowWrap: "anywhere" }}>
         <strong>{title}</strong>
         <ul className="list-disc" style={{ paddingLeft: 18, marginTop: 3 }}>
           {lines.map((line, i) => (
@@ -28922,15 +28922,18 @@ const defaultFilter = () => ({
                   "Objects are not valid as a React child" and took the whole
                   app down — so a session file that failed to parse blanked
                   the page instead of reporting the parse failure. */}
+              {/* A message can quote an id or a header with nothing to
+                  break a line on: it wraps anywhere rather than run past
+                  the banner. */}
               {err && typeof err === "object" ? (
-                <div>
+                <div className="min-w-0" style={{ overflowWrap: "anywhere" }}>
                   <strong>{err.title}</strong>
                   {err.body ? (
                     <div style={{ marginTop: 2 }}>{err.body}</div>
                   ) : null}
                 </div>
               ) : (
-                <div>{err}</div>
+                <div className="min-w-0" style={{ overflowWrap: "anywhere" }}>{err}</div>
               )}
             </div>
           </div>
@@ -28990,7 +28993,10 @@ const defaultFilter = () => ({
               }}
             >
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div>
+              {/* A warning quotes what it found: a taxon name such as
+                  "d__Bacteria;p__Firmicutes_A;…" has nothing to break a
+                  line on, and ran past the banner. */}
+              <div className="min-w-0" style={{ overflowWrap: "anywhere" }}>
                 <strong>Check the input files.</strong>
                 <ul
                   className="list-disc"
