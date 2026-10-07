@@ -54,7 +54,12 @@ import {
   buildEffectiveSampleCuration,
   sampleActionCounts,
 } from "./curation.js";
-import { restoreFilter, restoreSort } from "./persistence.js";
+import {
+  restoreFilter,
+  restoreSort,
+  sessionFromPayload,
+  sessionToJSON,
+} from "./persistence.js";
 import { idbBackend, indexedDBSupported, readStoredSession } from "./storage.js";
 import { createAutosave } from "./autosave.js";
 import { curationSummary, replaceEvents, replaceReportLines } from "./carryOver.js";
@@ -23926,9 +23931,8 @@ function AppMain({ initial, storage }) {
   // `version` is the SAMPLE_CURATION_VERSION the session was saved with:
   // the clean-up of an earlier model (stamped defaults, cleared actions)
   // only applies to a session saved before it, never to one curated with
-  // this version.
-  const migrateLegacyAction = (rawEv, existingSC, version) =>
-    migrateSampleCuration(rawEv, existingSC, version);
+  // this version. (An imported session JSON is migrated the same way, by
+  // sessionFromPayload in src/persistence.js.)
   // Once, on the session this component was mounted with (it only
   // seeds the useState initialisers below).
   const initialMigration = useMemo(
@@ -26591,71 +26595,62 @@ const defaultFilter = () => ({
     downloadFile(html, "crocodeel_samples_report.html", "text/html");
   };
 
-  /** Restore the entire session from a JSON file produced by exportJSON.
-      Reverses the field-name changes done at export time, then writes
-      directly to the App-level setters. Best-effort: missing fields
-      are left as-is, malformed JSON throws which the caller surfaces. */
+  /** Restore the entire session from a JSON file produced by exportJSON
+      (any version). The WHOLE file is checked first (sessionFromPayload,
+      src/persistence.js): events, sample curation, abundance table —
+      firstHeader / colSums / integerCols / species order included —
+      metadata, plate map and UI state, the filter merged over the
+      defaults. A file that fails throws, which the caller reports, and
+      the current session stays as it is: the import used to clear the
+      browser's storage first, and a file whose filter had no `q` then
+      crashed the render — the previous session was gone either way.
+      When the current session holds curation, the curator is asked
+      first. Storage is never cleared: the autosave writes the imported
+      session over the stored one. */
   const importSessionFromJSON = (json) => {
-    if (!json || typeof json !== "object") {
-      throw new Error("Not a valid session JSON.");
-    }
-    if (!Array.isArray(json.events)) {
-      throw new Error('Missing "events" array in the session JSON.');
-    }
-    const restoredEventsWithLegacyAction = json.events.map((e, i) => ({
-      id: e.id != null ? e.id : i,
-      source: e.source,
-      target: e.target,
-      rate: e.contamination_rate,
-      score: e.probability,
-      introduced: e.introduced_species || [],
-      verdict: e.verdict || "pending",
-      action: e.action || undefined,
-      notes: e.notes || "",
-      cascade: e.cascade || undefined,
-    }));
-    // Preferred: a top-level sample_curation map. Fall back to migrating
-    // any legacy per-event `action` fields when the JSON predates the
-    // sample-level model.
-    const restoredSampleCuration =
-      json.sample_curation && typeof json.sample_curation === "object"
-        ? { ...json.sample_curation }
-        : {};
-    const migratedFromEvents = migrateLegacyAction(
-      restoredEventsWithLegacyAction,
-      restoredSampleCuration,
-      json.sample_curation_version,
-    );
-    const restoredEvents = restoredEventsWithLegacyAction.map((e) => {
-      if (!e.action) return e;
-      const { action: _drop, ...rest } = e;
-      return rest;
+    const read = sessionFromPayload(json, {
+      defaults: defaultFilter(),
+      tabs: [...new Set(Object.values(TAB_HASH_ALIASES))],
     });
-    // Storage is not cleared first: the autosave writes the imported
-    // session over the stored one, and a page closed before that is
-    // saved when it goes (src/autosave.js).
-    setRawEvents(restoredEvents);
-    setSampleCuration(migratedFromEvents.sampleCuration);
-    setEventsWarnings([]);
-    setNotice(null);
-    setRunMetadata(json.run_metadata || null);
-    setMetadata(remapMetadata(json.metadata) || null);
-    setPlateMap(json.plate_map || null);
-    setAb(json.abundance || null);
-    setAnalysisTitle(json.analysis_title || "");
-    if (json.ui_state) {
-      if (typeof json.ui_state.tab === "string") setTab(json.ui_state.tab);
-      if (json.ui_state.sel_id !== undefined) setSelId(json.ui_state.sel_id);
-      if (json.ui_state.filter && typeof json.ui_state.filter === "object")
-        setFilter(json.ui_state.filter);
-      if (json.ui_state.sort && typeof json.ui_state.sort === "object")
-        setSort(json.ui_state.sort);
+    if (!read.ok) throw new Error(read.errors.join(" "));
+    const s = read.session;
+    const apply = () => {
+      rawEventsRef.current = s.rawEvents;
+      setRawEvents(s.rawEvents);
+      setSampleCuration(s.sampleCuration);
+      setEventsWarnings(s.eventsWarnings);
+      setRunMetadata(s.runMetadata);
+      setMetadata(remapMetadata(s.metadata) || null);
+      setPlateMap(s.plateMap);
+      setAb(s.ab);
+      setAnalysisTitle(s.analysisTitle);
+      if (s.tab) setTab(s.tab);
+      setSelId(s.selId);
+      setFilter(s.filter);
+      setSort(s.sort);
+      setErr(null);
+      setNotice(null);
+      // A session saved by an earlier version: say what its migration
+      // changed in the curated output.
+      const migration = sessionMigrationNotice(read.changes);
+      if (migration) setBulkConfirm(migration);
+    };
+    const summary = curationSummary(rawEventsRef.current, sampleCurationRef.current);
+    if (!summary.any) {
+      apply();
+      return;
     }
-    setErr(null);
-    // A session saved by an earlier version: say what its migration
-    // changed in the curated output.
-    const notice = sessionMigrationNotice(migratedFromEvents.changes);
-    if (notice) setBulkConfirm(notice);
+    const evaluated = s.rawEvents.filter((e) => e.verdict && e.verdict !== "pending").length;
+    setBulkConfirm({
+      kind: "confirm",
+      title: "Replace your session with the imported one?",
+      body:
+        `Your current session holds ${curationPhrase(summary)}: importing replaces it, and that curation is lost unless you download the session first (Download session, on the files bar).\n\n` +
+        `The imported session has ${s.rawEvents.length} event${s.rawEvents.length === 1 ? "" : "s"}, ${evaluated} evaluated.`,
+      confirmLabel: "Replace session",
+      destructive: true,
+      onConfirm: apply,
+    });
   };
 
   const exportJSON = () => {
@@ -26663,55 +26658,41 @@ const defaultFilter = () => ({
     // file (run metadata, sample metadata, plate map, abundance table).
     // Aim is "everything you need to reproduce or re-import this
     // session". Abundance can be large; we serialize the parsed
-    // structure as-is rather than the raw text.
-    const payload = {
-      generated: new Date().toISOString(),
-      schema_version: 2,
-      counts: {
-        total: counts.total,
-        true_positive: counts.tp,
-        false_positive: counts.fp,
-        uncertain: counts.uncertain,
-        pending: counts.pending,
-      },
-      analysis_title: analysisTitle || null,
-      has_metadata: !!metadata,
-      has_plate_map: !!plateMap,
-      has_abundance: !!ab,
-      run_metadata: runMetadata || null,
-      metadata: metadata || null,
-      plate_map: plateMap || null,
-      abundance: ab || null,
-      // UI state — let the importer drop the user back exactly where
-      // they were (active tab, selected event, filters, sort).
-      ui_state: {
+    // structure as-is rather than the raw text. The format is
+    // sessionToJSON's (src/persistence.js), which the error screen also
+    // uses for what the browser stored.
+    const payload = sessionToJSON(
+      {
+        rawEvents,
+        sampleCuration,
+        sampleCurationVersion: SAMPLE_CURATION_VERSION,
+        runMetadata,
+        eventsWarnings,
+        metadata,
+        plateMap,
+        ab,
+        analysisTitle,
         tab,
-        sel_id: selId,
+        selId,
         filter,
         sort,
       },
-      // Sample-level curation: verdict / action / notes per sample.
-      // Action lives here (not on the event) since the curator's
-      // downstream decision is bound to the sample, not to a single
-      // flagged event touching it. Its version tells the importer which
-      // model the map follows (src/curation.js).
-      sample_curation: sampleCuration,
-      sample_curation_version: SAMPLE_CURATION_VERSION,
-      events: events.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        contamination_rate: e.rate,
-        probability: e.score,
-        introduced_species: e.introduced,
-        verdict: e.verdict,
-        action: sampleCuration[e.target]?.action || null,
-        notes: e.notes,
-        relatedness: areRelated(metadata, e.source, e.target),
-        plate_distance: plateDistance(plateMap, e.source, e.target),
-        cascade: e.cascade,
-      })),
-    };
+      {
+        events,
+        counts: {
+          total: counts.total,
+          true_positive: counts.tp,
+          false_positive: counts.fp,
+          uncertain: counts.uncertain,
+          pending: counts.pending,
+        },
+        eventFields: (e) => ({
+          relatedness: areRelated(metadata, e.source, e.target),
+          plate_distance: plateDistance(plateMap, e.source, e.target),
+          cascade: e.cascade,
+        }),
+      },
+    );
     downloadFile(
       JSON.stringify(payload, null, 2),
       "crocodeel_curation_session.json",

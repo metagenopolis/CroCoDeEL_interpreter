@@ -33,7 +33,14 @@
 
      { rawEvents, sampleCuration, sampleCurationVersion, runMetadata,
        eventsWarnings, metadata, plateMap, ab, analysisTitle,
-       tab, selId, filter, sort } */
+       tab, selId, filter, sort }
+
+   The session JSON (Download / Import session) is the same session under
+   the field names exportJSON has always written (sessionToJSON), read
+   back by sessionFromPayload, which validates the whole file before
+   anything replaces the current session. */
+
+import { migrateSampleCuration, SAMPLE_CURATION_VERSION } from "./curation.js";
 
 export const LAYOUT_VERSION = 2;
 
@@ -368,4 +375,374 @@ export function restoreSort(saved) {
     (saved.dir === "asc" || saved.dir === "desc")
     ? { by: saved.by, dir: saved.dir }
     : { ...DEFAULT_SORT };
+}
+
+/* ------------------------------------------------------- session JSON */
+
+/** Verdict counts of a list of events, as the session JSON writes them. */
+export function verdictCounts(events) {
+  const c = { total: 0, true_positive: 0, false_positive: 0, uncertain: 0, pending: 0 };
+  for (const e of events || []) {
+    c.total++;
+    if (e.verdict === "true_positive") c.true_positive++;
+    else if (e.verdict === "false_positive") c.false_positive++;
+    else if (e.verdict === "uncertain") c.uncertain++;
+    else c.pending++;
+  }
+  return c;
+}
+
+/** The session JSON of a session (Download session; also offered by the
+    error screen from what the browser stored). `events` defaults to the
+    session's own; `eventFields(e)` adds per-event fields (relatedness,
+    plate distance, cascade) that the importer ignores. The model version
+    of the sample curation is the session's: one that has none was saved
+    by an earlier version, and the importer then migrates it. */
+export function sessionToJSON(s, { events = s.rawEvents || [], counts, eventFields } = {}) {
+  const sc = s.sampleCuration || {};
+  return {
+    generated: new Date().toISOString(),
+    schema_version: 2,
+    counts: counts || verdictCounts(events),
+    analysis_title: s.analysisTitle || null,
+    has_metadata: !!s.metadata,
+    has_plate_map: !!s.plateMap,
+    has_abundance: !!s.ab,
+    run_metadata: s.runMetadata || null,
+    metadata: s.metadata || null,
+    plate_map: s.plateMap || null,
+    abundance: s.ab || null,
+    // UI state — let the importer drop the user back exactly where
+    // they were (active tab, selected event, filters, sort).
+    ui_state: {
+      tab: s.tab,
+      sel_id: s.selId,
+      filter: s.filter,
+      sort: s.sort,
+    },
+    // Sample-level curation: verdict / action / notes per sample. Its
+    // version tells the importer which model the map follows.
+    sample_curation: sc,
+    sample_curation_version: s.sampleCurationVersion ?? null,
+    // What the events parser reported about the file, shown again with
+    // the other data warnings.
+    events_warnings: Array.isArray(s.eventsWarnings) ? s.eventsWarnings : [],
+    events: events.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      contamination_rate: e.rate,
+      probability: e.score,
+      introduced_species: e.introduced,
+      verdict: e.verdict,
+      action: sc[e.target]?.action || null,
+      notes: e.notes,
+      ...(eventFields ? eventFields(e) : {}),
+    })),
+  };
+}
+
+const EVENT_VERDICTS = new Set(["pending", "true_positive", "false_positive", "uncertain"]);
+const SAMPLE_VERDICTS = new Set(["contaminated", "correct", "uncertain", "pending"]);
+const SAMPLE_ACTIONS = new Set(["keep", "suppress"]);
+const MAX_LISTED = 6;
+
+/** A sample / event id read from a session file: a string, or a finite
+    number written without quotes; null otherwise. */
+function idOf(v) {
+  if (typeof v === "string") return v;
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return null;
+}
+
+/** Warnings as a list of strings (a hand-edited file may hold a single
+    string, or anything). */
+function warningList(v) {
+  if (typeof v === "string") return v ? [v] : [];
+  return Array.isArray(v) ? v.filter((w) => typeof w === "string" && w) : [];
+}
+
+/** The events of a session file, as the app keeps them, and whether their
+    ids had to be renumbered. */
+function readEvents(list, errors) {
+  if (!Array.isArray(list)) {
+    errors.push('"events" must be a list of events.');
+    return { events: [], renumbered: false };
+  }
+  const out = [];
+  list.forEach((e, i) => {
+    if (errors.length > 50) return;
+    const where = `event ${i + 1}`;
+    if (!isObj(e)) {
+      errors.push(`${where} is not an object.`);
+      return;
+    }
+    const source = idOf(e.source);
+    const target = idOf(e.target);
+    if (!source || !target) {
+      errors.push(`${where} has no source or no target.`);
+      return;
+    }
+    const number = (v, name) => {
+      if (v == null) return 0;
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      errors.push(`${where} (${source} → ${target}): ${name} is not a number.`);
+      return 0;
+    };
+    const rate = number(e.contamination_rate ?? e.rate, "contamination_rate");
+    const score = number(e.probability ?? e.score, "probability");
+    const species = e.introduced_species ?? e.introduced ?? [];
+    let introduced = [];
+    if (Array.isArray(species) && species.every((sp) => idOf(sp) != null)) {
+      introduced = species.map(idOf);
+    } else {
+      errors.push(`${where} (${source} → ${target}): introduced_species is not a list of names.`);
+    }
+    const verdict = e.verdict == null || e.verdict === "" ? "pending" : e.verdict;
+    if (!EVENT_VERDICTS.has(verdict)) {
+      errors.push(`${where} (${source} → ${target}): unknown verdict "${String(verdict).slice(0, 40)}".`);
+    }
+    let notes = "";
+    if (typeof e.notes === "string") notes = e.notes;
+    else if (e.notes != null) {
+      errors.push(`${where} (${source} → ${target}): notes are not text.`);
+    }
+    const id = e.id == null ? i : e.id;
+    if (idOf(id) == null) errors.push(`${where}: its id is neither text nor a number.`);
+    const ev = { id, source, target, rate, score, introduced, verdict, notes };
+    // A session saved before the sample-level model kept the action on
+    // its events: migrateSampleCuration moves it to the target sample.
+    if (SAMPLE_ACTIONS.has(e.action)) ev.action = e.action;
+    out.push(ev);
+  });
+  // Ids key the curation record, the selection and the per-event caches:
+  // a hand-edited file with repeated ids gets them renumbered.
+  const ids = new Set(out.map((e) => String(e.id)));
+  const renumbered = ids.size !== out.length;
+  return { events: renumbered ? out.map((e, i) => ({ ...e, id: i })) : out, renumbered };
+}
+
+function readSampleCuration(sc, errors) {
+  if (sc == null) return {};
+  if (!isObj(sc)) {
+    errors.push('"sample_curation" must map sample ids to their verdict / action / notes.');
+    return {};
+  }
+  const out = {};
+  for (const [id, entry] of Object.entries(sc)) {
+    if (!isObj(entry)) {
+      errors.push(`sample_curation of ${id} is not an object.`);
+      continue;
+    }
+    if (entry.verdict != null && !SAMPLE_VERDICTS.has(entry.verdict)) {
+      errors.push(`sample_curation of ${id}: unknown verdict "${String(entry.verdict).slice(0, 40)}".`);
+    }
+    if (entry.action != null && entry.action !== "" && !SAMPLE_ACTIONS.has(entry.action)) {
+      errors.push(`sample_curation of ${id}: unknown action "${String(entry.action).slice(0, 40)}".`);
+    }
+    if (entry.notes != null && typeof entry.notes !== "string") {
+      errors.push(`sample_curation of ${id}: notes are not text.`);
+    }
+    out[id] = entry;
+  }
+  return out;
+}
+
+function readAbundance(ab, errors) {
+  if (ab == null) return null;
+  const bad = (msg) => {
+    errors.push(`abundance: ${msg}`);
+    return null;
+  };
+  if (!isObj(ab)) return bad("not a species × sample table.");
+  const { samples, matrix } = ab;
+  if (!Array.isArray(samples) || samples.length === 0 || samples.some((s) => typeof s !== "string" || !s)) {
+    return bad('"samples" must be a list of sample names.');
+  }
+  if (new Set(samples).size !== samples.length) return bad("a sample appears twice.");
+  if (!isObj(matrix)) return bad('"matrix" (species → sample → abundance) is missing.');
+  const species = ab.species == null ? Object.keys(matrix) : ab.species;
+  if (!Array.isArray(species) || species.some((sp) => typeof sp !== "string" || !sp)) {
+    return bad('"species" must be a list of species names.');
+  }
+  if (new Set(species).size !== species.length) return bad("a species appears twice.");
+  let min = Infinity;
+  let max = -Infinity;
+  for (const sp of species) {
+    const row = matrix[sp];
+    if (!isObj(row)) return bad(`species "${sp.slice(0, 60)}" has no row in the matrix.`);
+    for (const s in row) {
+      const v = row[s];
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+        return bad(`the value of "${sp.slice(0, 60)}" in "${s.slice(0, 60)}" is not an abundance.`);
+      }
+      if (v > 0) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+  }
+  const out = { ...ab, samples, species, matrix, warnings: warningList(ab.warnings) };
+  const lr = ab.logRange;
+  if (!(isObj(lr) && Number.isFinite(lr.min) && Number.isFinite(lr.max))) {
+    out.logRange = Number.isFinite(min)
+      ? { min: Math.floor(Math.log10(min)), max: Math.min(0, Math.ceil(Math.log10(max))) }
+      : { min: -8, max: 0 };
+  }
+  // What an export needs to give the user's own values back (see
+  // parseAbundance): optional — a session saved before they existed has
+  // none — but read as written when present.
+  if (ab.firstHeader != null && typeof ab.firstHeader !== "string") {
+    return bad('"firstHeader" is not text.');
+  }
+  if (ab.colSums != null) {
+    if (!isObj(ab.colSums) || Object.values(ab.colSums).some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0)) {
+      return bad('"colSums" must map samples to their column sums.');
+    }
+  }
+  if (ab.integerCols != null) {
+    if (!isObj(ab.integerCols) || Object.values(ab.integerCols).some((v) => typeof v !== "boolean")) {
+      return bad('"integerCols" must map samples to true / false.');
+    }
+  }
+  return out;
+}
+
+function readMetadata(md, errors) {
+  if (md == null) return null;
+  if (!isObj(md) || !isObj(md.bySample)) {
+    errors.push('metadata: "bySample" (the per-sample annotations) is missing.');
+    return null;
+  }
+  for (const [id, m] of Object.entries(md.bySample)) {
+    if (!isObj(m) || (m.extra != null && !isObj(m.extra))) {
+      errors.push(`metadata: the annotations of ${id} are not an object.`);
+      return null;
+    }
+  }
+  const out = { ...md, warnings: warningList(md.warnings) };
+  if (md.cols != null && !isObj(md.cols)) delete out.cols;
+  if (typeof md.nSamples !== "number") out.nSamples = Object.keys(md.bySample).length;
+  return out;
+}
+
+function readPlateMap(pm, errors) {
+  if (pm == null) return null;
+  if (!isObj(pm) || !isObj(pm.bySample)) {
+    errors.push('plate_map: "bySample" (the sample → well placement) is missing.');
+    return null;
+  }
+  let maxRow = 7;
+  let maxCol = 11;
+  for (const [id, p] of Object.entries(pm.bySample)) {
+    const okWell =
+      isObj(p) &&
+      Number.isInteger(p.row) &&
+      Number.isInteger(p.col) &&
+      p.row >= 0 &&
+      p.row <= 15 &&
+      p.col >= 0 &&
+      p.col <= 23 &&
+      (p.plate == null || typeof p.plate === "string" || typeof p.plate === "number");
+    if (!okWell) {
+      errors.push(`plate_map: ${id} has no valid well.`);
+      return null;
+    }
+    maxRow = Math.max(maxRow, p.row);
+    maxCol = Math.max(maxCol, p.col);
+  }
+  const big = maxRow > 7 || maxCol > 11;
+  const f = pm.format;
+  const formatOk =
+    isObj(f) &&
+    ((f.rows === 8 && f.cols === 12 && !big) || (f.rows === 16 && f.cols === 24));
+  const out = { ...pm, warnings: warningList(pm.warnings) };
+  if (!formatOk) out.format = big ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 };
+  if (pm.cols != null && !isObj(pm.cols)) delete out.cols;
+  return out;
+}
+
+/** Read a session JSON (exportJSON's format, any version) into a session,
+    checking the WHOLE file first: nothing replaces the current session
+    unless every part of the file can be shown.
+
+    `defaults` is AppMain's defaultFilter() (the imported filter is merged
+    over it), `tabs` the tab ids the app knows.
+
+    Returns { ok: false, errors } (the first few problems, each naming
+    where it is), or { ok: true, session, changes }: `session` has the
+    shape every reader of this module uses, its sample curation brought
+    up to date with the current model (migrateSampleCuration), and
+    `changes` what that migration changed in the curated output (null:
+    nothing to tell). */
+export function sessionFromPayload(json, { defaults, tabs } = {}) {
+  if (!isObj(json)) {
+    return {
+      ok: false,
+      errors: ['This is not a session file: expected a JSON object with an "events" list.'],
+    };
+  }
+  const errors = [];
+  if (!("events" in json)) errors.push('Missing "events" list.');
+  const { events, renumbered } =
+    "events" in json ? readEvents(json.events, errors) : { events: [], renumbered: false };
+  const sampleCuration = readSampleCuration(json.sample_curation, errors);
+  const ab = readAbundance(json.abundance, errors);
+  const metadata = readMetadata(json.metadata, errors);
+  const plateMap = readPlateMap(json.plate_map, errors);
+  const runMetadata = json.run_metadata == null ? null : json.run_metadata;
+  if (runMetadata !== null && !isObj(runMetadata)) {
+    errors.push('"run_metadata" must be an object.');
+  }
+  const ui = json.ui_state == null ? {} : json.ui_state;
+  if (!isObj(ui)) errors.push('"ui_state" must be an object.');
+  if (errors.length > 0) {
+    const more = errors.length - MAX_LISTED;
+    return {
+      ok: false,
+      errors:
+        more > 0
+          ? [...errors.slice(0, MAX_LISTED), `… and ${more} more problem${more > 1 ? "s" : ""}.`]
+          : errors,
+    };
+  }
+  if (events.length === 0 && !ab && !metadata && !plateMap) {
+    return {
+      ok: false,
+      errors: ["The session holds no events and no file: there is nothing to import."],
+    };
+  }
+  const version = typeof json.sample_curation_version === "number" ? json.sample_curation_version : undefined;
+  const migrated = migrateSampleCuration(events, sampleCuration, version);
+  const rawEvents = events.map((e) => {
+    if (!e.action) return e;
+    const { action: _drop, ...rest } = e;
+    return rest;
+  });
+  const tab = typeof ui.tab === "string" && (!tabs || tabs.includes(ui.tab)) ? ui.tab : undefined;
+  const selId = renumbered
+    ? null
+    : typeof ui.sel_id === "string" || typeof ui.sel_id === "number"
+      ? ui.sel_id
+      : null;
+  return {
+    ok: true,
+    changes: migrated.changes,
+    session: {
+      rawEvents,
+      // Brought up to date by the migration above.
+      sampleCuration: migrated.sampleCuration,
+      sampleCurationVersion: SAMPLE_CURATION_VERSION,
+      runMetadata,
+      eventsWarnings: warningList(json.events_warnings),
+      metadata,
+      plateMap,
+      ab,
+      analysisTitle: typeof json.analysis_title === "string" ? json.analysis_title : "",
+      tab,
+      selId,
+      filter: defaults ? restoreFilter(ui.filter, defaults) : undefined,
+      sort: restoreSort(ui.sort),
+    },
+  };
 }

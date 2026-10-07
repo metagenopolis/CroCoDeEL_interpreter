@@ -267,8 +267,9 @@ async function takeSessionNotice(page) {
   return text;
 }
 
-/** Import a session JSON through the files bar. Returns the text of the
-    notice it opened (closed here), or null. */
+/** Import a session JSON through the files bar — over a session that
+    holds curation, the import asks first and is confirmed here. Returns
+    the text of the notice it opened (closed here), or null. */
 async function importSession(page, session) {
   await page
     .locator('input[accept*="json"]')
@@ -279,6 +280,11 @@ async function importSession(page, session) {
       buffer: Buffer.from(JSON.stringify(session)),
     });
   await page.waitForTimeout(1500);
+  const ask = page.getByRole("dialog", { name: "Replace your session with the imported one?" });
+  if ((await ask.count()) > 0) {
+    await ask.getByRole("button", { name: "Replace session" }).click();
+    await page.waitForTimeout(1000);
+  }
   return takeSessionNotice(page);
 }
 

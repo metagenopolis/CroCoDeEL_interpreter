@@ -18,8 +18,12 @@
        is kept;
      - a failed write shows "Not saved"; without IndexedDB the app runs in
        memory and says so;
+     - a malformed session JSON is refused and the previous session stays,
+       across a reload; the error screen says what is really stored;
      - clearing the events file keeps the abundance table and the metadata
-       across a reload.
+       across a reload;
+     - the fields of the first wave of fixes survive a reload and the
+       session JSON round trip.
 
    The stored state is read from IndexedDB, rebuilt the way the app reads
    it (src/persistence.js).
@@ -87,6 +91,32 @@ async function storedSession(page) {
   return { records: r, rawEvents, sampleCuration: cur.sampleCuration || {} };
 }
 
+/** Rewrite one stored record, as a damaged profile could leave it. */
+function editRecord(page, key, edit) {
+  return page.evaluate(
+    ([key, edit]) =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open("crocodeel-interpreter");
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction("kv", "readwrite");
+          const store = tx.objectStore("kv");
+          const get = store.get(key);
+          get.onsuccess = () => {
+            store.put(new Function("r", edit)(get.result), key);
+          };
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onabort = () => reject(tx.error);
+        };
+      }),
+    [key, edit],
+  );
+}
+
 /** Let the autosave (0.3 s after the last change) write. */
 const saved = (page) => page.waitForTimeout(1200);
 
@@ -98,6 +128,19 @@ async function upload(page, i, name, text) {
     mimeType: "text/tab-separated-values",
     buffer: Buffer.from(text),
   });
+  await page.waitForTimeout(1500);
+}
+
+/** Import a session JSON through the files bar. */
+async function importSession(page, json) {
+  await page
+    .locator('input[accept*="json"]')
+    .first()
+    .setInputFiles({
+      name: "session.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(typeof json === "string" ? json : JSON.stringify(json)),
+    });
   await page.waitForTimeout(1500);
 }
 
@@ -657,8 +700,168 @@ try {
     );
   }
 
+  /* B1.4 Importing a malformed session JSON. */
+  await scenario("B1.4 malformed import", async (page) => {
+    await mark(page, "true positive", 0);
+    await mark(page, "true positive", 1);
+    await saved(page);
+    const good = JSON.parse(await exportSession(page));
+    const alert = async () => (await page.locator('[role="alert"]').allInnerTexts()).join(" ");
+    for (const [what, edit, re] of [
+      ["an abundance table that is not one", (j) => (j.abundance.matrix = "oops"), /abundance: "matrix"/],
+      ["an event without a target", (j) => delete j.events[3].target, /event 4 has no source or no target/],
+      ["metadata without its samples", (j) => (j.metadata = { nSamples: 3 }), /metadata: "bySample"/],
+    ]) {
+      const json = structuredClone(good);
+      edit(json);
+      await importSession(page, json);
+      const text = await alert();
+      check(/Failed to import session/.test(text) && re.test(text), `B1.4 ${what} is refused, saying where`, text.slice(0, 200));
+      check((await dialog(page, "Replace your session with the imported one?").count()) === 0, `B1.4 …before anything is asked or replaced`);
+    }
+    check((await overviewStats(page)).tp === 2, "B1.4 the current session is untouched");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    check((await overviewStats(page)).tp === 2, "B1.4 …and still there after a reload");
+
+    // A filter without q (it crashed every render): imported, after asking.
+    const noQ = structuredClone(good);
+    noQ.ui_state.filter = { minScore: 0 };
+    noQ.ui_state.tab = "table";
+    noQ.events.forEach((e) => (e.verdict = "pending"));
+    noQ.sample_curation = {};
+    await importSession(page, noQ);
+    const ask = dialog(page, "Replace your session with the imported one?");
+    check(/Your current session holds 2 evaluations/.test((await ask.count()) ? await ask.innerText() : ""), "B1.4 importing over a curated session asks first");
+    await ask.getByRole("button", { name: "Cancel" }).click();
+    check((await overviewStats(page)).tp === 2, "B1.4 Cancel keeps the session");
+    await importSession(page, noQ);
+    await dialog(page, "Replace your session with the imported one?").getByRole("button", { name: "Replace session" }).click();
+    await saved(page);
+    const body = await page.locator("body").innerText();
+    check(!/Something went wrong/.test(body) && (await overviewStats(page)).tp === 0, "B1.4 a session whose filter has no q imports without crashing");
+    const ui = (await storedRecords(page)).ui;
+    check(ui?.filter?.q === "" && ui.filter.lowAbFilter === true, "B1.4 …its filter merged over the defaults (lowAbFilter on)", JSON.stringify(ui?.filter));
+  });
+
+  /* B1.4 The error screen says what is really stored, and offers it. */
+  await scenario(
+    "B1.4 error screen",
+    async (page, ctx) => {
+      await mark(page, "true positive", 0);
+      await saved(page);
+      // A plate map stored without its format: the plate card cannot
+      // render, outside any tab — the whole app stops.
+      await editRecord(page, "plate", "r.format = null; return r;");
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(1500);
+      const text = await page.locator("[data-stored-session]").innerText().catch(() => "");
+      check(
+        /This browser has the last saved version of your session: 24 events \(1 evaluated\), the abundance table, the metadata, the plate map/.test(text),
+        "B1.4 the error screen says what this browser has stored",
+        text.slice(0, 200),
+      );
+      const json = await download(page, page.getByRole("button", { name: "Download the saved session (JSON)" }));
+      check(!!json && JSON.parse(json).events.filter((e) => e.verdict === "true_positive").length === 1, "B1.4 …and downloads it as a session JSON");
+      // That file imports in a fresh session (its plate format repaired).
+      const p2 = await (await ctx.browser().newContext()).newPage();
+      await p2.addInitScript(() => localStorage.setItem("crocodeel-tutorial-seen", "1"));
+      await p2.goto(BASE, { waitUntil: "networkidle" });
+      await importSession(p2, json || "{}");
+      check((await overviewStats(p2)).tp === 1, "B1.4 the downloaded session imports, with its TP");
+      await p2.context().close();
+    },
+    { expectedErrors: /Cannot read properties of null|render error|The above error occurred/ },
+  );
 
 
+  /* B1.7 The first wave's fields, across a reload and a session JSON
+     round trip. */
+  await scenario(
+    "B1.7 fields",
+    async (page, ctx) => {
+      const events = demo("contamination_events.tsv")
+        .replace("filtering_ab_thr_factor: None", "filtering_ab_thr_factor: 20.0")
+        .split("\n")
+        .map((l) => (l.startsWith("63D29\t63D40\t") ? l.replace("\t6.75e-01\t", "\t1.5\t") : l))
+        .join("\n");
+      // Counts, so that colSums / integerCols mean something.
+      const ab = demo("species_abundance.tsv")
+        .split("\n")
+        .map((l, i) => (i === 0 || !l ? l : l.split("\t").map((c, j) => (j === 0 ? c : String(Math.round(Number(c) * 1e7)))).join("\t")))
+        .join("\n");
+      const md = demo("metadata.tsv").split("\n").filter((l) => l);
+      await upload(page, 0, "contamination_events.tsv", events);
+      await upload(page, 1, "species_abundance.tsv", ab);
+      await upload(page, 2, "metadata.tsv", [...md, md.find((l) => l.startsWith("58M\t"))].join("\n"));
+      await upload(page, 3, "plate_map.tsv", [...demo("plate_map.tsv").split("\n").filter((l) => l), "83D239\tP3\tZ99"].join("\n"));
+      await openTab(page, "Overview");
+      const toggle = page.getByRole("checkbox", { name: /low-abundance filter to the diagnostics/i });
+      await toggle.uncheck();
+      await mark(page, "true positive", 0);
+      await saved(page);
+      const fields = (s) => ({
+        firstHeader: s.ab?.firstHeader,
+        colSums: JSON.stringify(s.ab?.colSums),
+        integer: Object.values(s.ab?.integerCols || {}).every((v) => v === true),
+        species: (s.ab?.species || []).join(","),
+        lowAbFilter: s.filter?.lowAbFilter,
+        version: s.version,
+        metadata: JSON.stringify([s.metadata?.cols, s.metadata?.warnings]),
+        plate: JSON.stringify([s.plate?.cols, s.plate?.warnings]),
+        eventsWarnings: JSON.stringify(s.eventsWarnings),
+      });
+      const fromStorage = async () => {
+        const r = await storedRecords(page);
+        return fields({
+          ab: r.ab,
+          filter: r.ui?.filter,
+          version: r.curation?.sampleCurationVersion,
+          metadata: r.metadata,
+          plate: r.plate,
+          eventsWarnings: r.events?.warnings,
+        });
+      };
+      const stored = await fromStorage();
+      check(
+        stored.firstHeader === "id_mgs" && stored.integer && stored.lowAbFilter === false && stored.version === 2 &&
+          /more than one row/.test(stored.metadata) && /no readable well/.test(stored.plate) && /outside \(0, 1\]/.test(stored.eventsWarnings),
+        "B1.7 the first wave's fields are stored",
+        JSON.stringify(stored).slice(0, 300),
+      );
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(1500);
+      await openTab(page, "Overview");
+      await saved(page);
+      check(JSON.stringify(await fromStorage()) === JSON.stringify(stored), "B1.7 …unchanged after a reload");
+      check(!(await toggle.isChecked()), "B1.7 the low-abundance filter is still off after a reload");
+      check(/Events file: 1 event has a rate outside/.test(await warningsBanner(page)), "B1.7 the events parser's warning is still shown after a reload");
+
+      const fromJSON = (j) =>
+        fields({
+          ab: j.abundance,
+          filter: j.ui_state?.filter,
+          version: j.sample_curation_version,
+          metadata: j.metadata,
+          plate: j.plate_map,
+          eventsWarnings: j.events_warnings,
+        });
+      const text = await exportSession(page);
+      const first = text ? fromJSON(JSON.parse(text)) : null;
+      check(JSON.stringify(first) === JSON.stringify(stored), "B1.7 the session JSON carries them", JSON.stringify(first).slice(0, 300));
+      // Imported in a fresh profile, then downloaded again.
+      const other = await ctx.browser().newContext({ viewport: { width: 1500, height: 1000 } });
+      const p2 = await other.newPage();
+      await p2.addInitScript(() => localStorage.setItem("crocodeel-tutorial-seen", "1"));
+      await p2.goto(BASE, { waitUntil: "networkidle" });
+      await importSession(p2, text || "{}");
+      await p2.waitForTimeout(1500);
+      const again = await exportSession(p2);
+      check(!!again && JSON.stringify(fromJSON(JSON.parse(again))) === JSON.stringify(stored), "B1.7 …and get through an import and a second download unchanged");
+      await other.close();
+    },
+    { demo: false },
+  );
 } finally {
   await browser.close();
   stopServer();

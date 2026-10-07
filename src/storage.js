@@ -354,3 +354,38 @@ export const idbBackend = {
   writeUi,
   openChannel: openSessionChannel,
 };
+
+/** What this browser has stored, read without migrating anything — for
+    the error screen, which offers it as a session JSON. Null when
+    nothing is stored or storage cannot be read. */
+export async function readStoredSessionForRescue() {
+  if (!indexedDBSupported()) return null;
+  try {
+    const db = await openDB();
+    const records = await readRecords(db);
+    return records.curation
+      ? sessionFromRecords(records)
+      : sessionFromLegacyMain(records[LEGACY_MAIN_KEY], records.ab);
+  } catch {
+    return null;
+  }
+}
+
+/** Delete the whole database (the error screen's last resort). */
+export function deleteStoredSession() {
+  return new Promise((resolve) => {
+    try {
+      if (dbHandle) dbHandle.close();
+    } catch {
+      // ignore
+    }
+    dbHandle = null;
+    dbHandlePromise = null;
+    try {
+      const req = window.indexedDB.deleteDatabase(DB_NAME);
+      req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
