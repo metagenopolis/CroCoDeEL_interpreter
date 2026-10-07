@@ -17683,7 +17683,11 @@ const ValidateTab = ({
                             ? `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)} — cascade explains)`
                             : `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)})`
                       : pairOk && scatter.logC == null
-                        ? "No contamination line — the event's rate is 0"
+                        ? // parseEvents keeps a rate out of (0, 1] as read,
+                          // with a warning: a negative one is not "0".
+                          sel.rate < 0
+                          ? `No contamination line — the event's rate (${(sel.rate * 100).toFixed(1)}%) is below 0`
+                          : "No contamination line — the event's rate is 0"
                         : naValue
                   }
                   summary={summaryFor("above")}

@@ -12,7 +12,7 @@
              long sample name, which gives way first;
      - B3.2  the criterion cards say why a value is missing when the table
              is loaded (too few species on the line or in the pair, no
-             rate), and the scatter's error box describes
+             rate, a negative one), and the scatter's error box describes
              the sample-name matching that is actually done (case and
              blanks ignored);
      - B3.3  a cascade is found when the events file spells the shared
@@ -754,6 +754,28 @@ try {
       errBox && errBox.box <= errBox.column + 1,
       "B3.1 the scatter error box stays inside its column",
       JSON.stringify(errBox),
+    );
+  });
+
+  /* B3.2 — a negative rate, which parseEvents keeps with a warning. The
+     rate filter (at least 0) leaves the event out of the lists, but Guided
+     validation opens on it, the first event, and card 05 said "the
+     event's rate is 0". */
+  await scenario("B3.2 a negative rate on card 05", async (page) => {
+    await upload(page, 0, "events.tsv", tsv([EVENTS_HEADER, ["S1", "S2", "-0.2", "0.9", "sp1"]]));
+    await upload(
+      page,
+      1,
+      "species_abundance.tsv",
+      tsv([["species", "S1", "S2"], ["sp1", "50", "5"], ["sp2", "50", "95"], ["sp3", "10", "1"]]),
+    );
+    await openTab(page, "Validate");
+    const cards = await criterionCards(page);
+    const c05 = cards.find((c) => c.startsWith("05")) || "";
+    check(
+      c05 === "05 No contamination line — the event's rate (-20.0%) is below 0",
+      "B3.2 card 05 gives a negative rate as it is",
+      c05 || cards.join(" | "),
     );
   });
 
