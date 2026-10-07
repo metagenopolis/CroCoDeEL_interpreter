@@ -20211,10 +20211,15 @@ const HelpTab = ({ onStartTour }) => {
             into a session that holds curation asks first.{" "}
             <em>Carry over</em> (the default) keeps the evaluation and notes
             of every event whose source and target are in the new file
-            (repeated pairs are matched in file order), and the sample
+            (repeated pairs are matched in file order), the events you
+            added by hand (Explore new pairs: no CroCoDeEL file holds them)
+            whose pair the new file does not have, and the sample
             verdicts, actions and notes you set for the samples still
             present (in the new events or the abundance table); the
-            automatic sample values are then recomputed from the new events.{" "}
+            automatic sample values are then recomputed from the new events.
+            Your other events that the new file does not have are dropped:
+            the question says beforehand how many, and how many of them are
+            evaluated or annotated.{" "}
             <em>Start fresh</em> drops all of it; <em>Cancel</em> keeps the
             session as it is. When the new file has its own evaluations,
             notes or actions (a curated events TSV), they win over yours; an
@@ -25850,16 +25855,52 @@ const defaultFilter = () => ({
       return;
     }
     const fileHasCuration = !!parsed.curation;
+    // What carrying over would drop, counted before the choice — whatever
+    // the file holds (a filtered curated export is a subset).
+    const preview = replaceEvents({
+      oldEvents: rawEventsRef.current,
+      oldSampleCuration: sampleCurationRef.current,
+      newEvents: parsed.events,
+      sampleIds: ab?.samples,
+      carryOver: true,
+      fileHasCuration,
+    }).report;
+    const { dropped, droppedCurated, keptManual, manual } = preview;
+    const carried = [];
+    if (fileHasCuration) {
+      carried.push("The new file has its own evaluations: where it gives one, the file's value is used.");
+    }
+    if (dropped > 0) {
+      carried.push(
+        `${dropped} event${dropped === 1 ? " of yours is" : "s of yours are"} not in the new file and will be dropped` +
+          (droppedCurated > 0
+            ? `, with the evaluations and notes of ${droppedCurated} of them.`
+            : ` (none of ${dropped === 1 ? "it" : "them"} evaluated or annotated).`),
+      );
+    }
+    if (keptManual > 0) {
+      carried.push(
+        keptManual === 1
+          ? "The event you added by hand (Explore new pairs), which no CroCoDeEL file holds, is kept with its evaluation and notes."
+          : `The ${keptManual} events you added by hand (Explore new pairs), which no CroCoDeEL file holds, are kept with their evaluations and notes.`,
+      );
+    }
+    if (dropped === 0) {
+      carried.push(`Every ${keptManual > 0 ? "other " : ""}event of yours is in the new file.`);
+    }
     setBulkConfirm({
       kind: "confirm",
       title: "Replace the events file?",
       body:
         `Your session holds ${curationPhrase(summary)} on the current events.\n\n` +
         "Carry over (recommended): each event of the new file with the same source and target as one of yours keeps its evaluation and notes, and the sample verdicts, actions and notes you set stay for the samples still present. " +
-        (fileHasCuration
-          ? "The new file has its own evaluations: where it gives one, the file's value is used."
-          : "Events that are not in the new file are dropped.") +
+        carried.join(" ") +
         "\n\nStart fresh: all of it is dropped" +
+        (manual === 1
+          ? ", the event you added by hand included,"
+          : manual > 1
+            ? `, the ${manual} events you added by hand included,`
+            : "") +
         (fileHasCuration
           ? " and only the file's own evaluations, notes and actions are used."
           : " and every event starts pending.") +

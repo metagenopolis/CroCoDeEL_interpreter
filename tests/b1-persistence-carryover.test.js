@@ -112,6 +112,53 @@ describe("replaceEvents — carry over", () => {
   });
 });
 
+describe("replaceEvents — events added by hand", () => {
+  // Scatter › Explore new pairs: a false negative CroCoDeEL missed, which
+  // no CroCoDeEL file holds.
+  const old = [
+    ev(0, "A", "B", "true_positive"),
+    ev("manual-1", "C", "D", "true_positive", "missed by CroCoDeEL"),
+    ev("manual-2", "E", "F", "uncertain", "a later run found it"),
+    ev("manual-3", "G", "H", "false_positive", "checked"),
+  ];
+
+  it("carried over: kept after the file's events, renumbered, unless the file has their pair", () => {
+    const { events, sampleCuration, report } = replaceEvents({
+      oldEvents: old,
+      oldSampleCuration: syncSampleCuration({}, old),
+      newEvents: file([["A", "B"], ["E", "F"]]),
+      carryOver: true,
+    });
+    expect(events.map((e) => [e.id, e.source, e.target, e.verdict, e.notes])).toEqual([
+      [0, "A", "B", "true_positive", ""],
+      [1, "E", "F", "uncertain", "a later run found it"],
+      ["manual-1", "C", "D", "true_positive", "missed by CroCoDeEL"],
+      ["manual-2", "G", "H", "false_positive", "checked"],
+    ]);
+    // Their targets follow them, with the shared rule.
+    expect(sampleCuration.D).toEqual({ verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true });
+    expect(sampleCuration.H).toEqual({ verdict: "correct", verdictAuto: true });
+    expect(report).toMatchObject({ matched: 2, added: 0, dropped: 0, keptManual: 2, manual: 3 });
+    expect(replaceReportLines(report).join(" ")).toMatch(
+      /2 events you added by hand \(Explore new pairs\) are not in the new file: kept, with their evaluations and notes\./,
+    );
+  });
+
+  it("started fresh: dropped with the rest, and the banner counts them", () => {
+    const { events, report } = replaceEvents({
+      oldEvents: old,
+      oldSampleCuration: {},
+      newEvents: file([["A", "B"]]),
+      carryOver: false,
+    });
+    expect(events.map((e) => e.id)).toEqual([0]);
+    expect(report).toMatchObject({ keptManual: 0, manual: 3 });
+    expect(replaceReportLines(report)[0]).toMatch(
+      /Started fresh: your previous curation \(4 evaluations, 3 notes, 3 events added by hand\) was dropped\./,
+    );
+  });
+});
+
 describe("replaceEvents — start fresh", () => {
   it("keeps nothing of the session, and reads the file's own curation", () => {
     const old = [ev(0, "A", "B", "true_positive", "mine")];

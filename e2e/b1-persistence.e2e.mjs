@@ -531,6 +531,84 @@ try {
     await fresh.close();
   });
 
+  /* B1.1 The question says, before the choice, what carrying over drops —
+     also for a curated file, such as a filtered curated export. */
+  await scenario("B1.1 the question counts what is dropped", async (page) => {
+    await mark(page, "true positive", 0);
+    await mark(page, "false positive", 1);
+    await mark(page, "false positive", 2);
+    await saved(page);
+    const tsv = await exportEventsTSV(page);
+    const lines = (tsv || "").split("\n");
+    const header = lines.findIndex((l) => l.startsWith("source\t"));
+    const verdictCol = lines[header].split("\t").indexOf("verdict");
+    const onlyTP = [...lines.slice(0, header + 1), ...lines.slice(header + 1).filter((l) => l.split("\t")[verdictCol] === "true_positive")];
+    await upload(page, 0, "contamination_events_curated.tsv", onlyTP.join("\n"));
+    const ask = dialog(page, "Replace the events file?");
+    const text = ((await ask.count()) ? await ask.innerText() : "").replace(/\s+/g, " ");
+    check(
+      onlyTP.length === header + 2 &&
+        /The new file has its own evaluations/.test(text) &&
+        /23 events of yours are not in the new file and will be dropped, with the evaluations and notes of 2 of them\./.test(text),
+      "B1.1 a curated file holding one event: the question says that 23 events, 2 of them evaluated, will be dropped",
+      text.slice(0, 500),
+    );
+    await ask.getByRole("button", { name: "Cancel" }).click();
+    await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+    const again = ((await ask.count()) ? await ask.innerText() : "").replace(/\s+/g, " ");
+    check(/Every event of yours is in the new file\./.test(again), "B1.1 …and that none is when the new file holds them all", again.slice(0, 400));
+    await ask.getByRole("button", { name: "Cancel" }).click();
+    check((await overviewStats(page)).fp === 2, "B1.1 …and Cancel keeps the session");
+  });
+
+  /* B1.1 An event added by hand (Scatter › Explore new pairs: a false
+     negative CroCoDeEL missed) is in no CroCoDeEL file: carrying the
+     curation over to a rerun used to drop it, every time. */
+  await scenario("B1.1 events added by hand", async (page) => {
+    const json = JSON.parse(await exportSession(page));
+    json.events.push({
+      id: "manual-1",
+      source: "40D89",
+      target: "40M",
+      contamination_rate: 0.05,
+      probability: 0.9,
+      introduced_species: [],
+      verdict: "true_positive",
+      action: null,
+      notes: "missed by CroCoDeEL, added by hand",
+    });
+    await importSession(page, json);
+    await saved(page);
+    check(/25 events loaded/.test(await card(page, "contamination_events.tsv").innerText()), "B1.1 a session with an event added by hand");
+    await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+    const ask = dialog(page, "Replace the events file?");
+    const text = ((await ask.count()) ? await ask.innerText() : "").replace(/\s+/g, " ");
+    check(
+      /The event you added by hand \(Explore new pairs\), which no CroCoDeEL file holds, is kept with its evaluation and notes\./.test(text) &&
+        /Start fresh: all of it is dropped, the event you added by hand included,/.test(text),
+      "B1.1 replacing the events says that Carry over keeps the event added by hand, and Start fresh drops it",
+      text.slice(0, 600),
+    );
+    await ask.getByRole("button", { name: "Carry over" }).click();
+    await saved(page);
+    const notice = (await page.locator("[data-notice]").innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(
+      /1 event you added by hand \(Explore new pairs\) is not in the new file: kept, with its evaluation and notes\./.test(notice),
+      "B1.1 Carry over keeps it, and the banner says so",
+      notice.slice(0, 400),
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    const kept = (await storedSession(page)).rawEvents.find((e) => e.source === "40D89" && e.target === "40M");
+    check(
+      kept?.id === "manual-1" && kept.verdict === "true_positive" && kept.notes === "missed by CroCoDeEL, added by hand" &&
+        /25 events loaded/.test(await card(page, "contamination_events.tsv").innerText()) &&
+        (await overviewStats(page)).tp === 1,
+      "B1.1 …with its evaluation and note, across a reload",
+      JSON.stringify(kept),
+    );
+  });
+
   /* B1.1(e) + B1.5 Clearing the events file. */
   await scenario("B1.5 clear events", async (page) => {
     const events = card(page, "contamination_events.tsv");

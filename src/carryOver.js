@@ -8,7 +8,10 @@
 
      carry over   an event of the new file that has the same source and
                   target as a current one takes its evaluation and notes
-                  (duplicate pairs are matched in file order); the
+                  (duplicate pairs are matched in file order); an event
+                  the curator added by hand (Explore new pairs: a false
+                  negative CroCoDeEL missed, which no rerun can hold) is
+                  kept when the new file does not have its pair; the
                   sample verdicts, actions and notes the curator set by
                   hand stay for every sample still present — in the new
                   events or in the abundance table;
@@ -41,6 +44,8 @@ import {
 
 const isSet = (v) => v != null && v !== "" && v !== "pending";
 const pairKey = (e) => `${e.source}\u0000${e.target}`;
+/** An event the curator added by hand (addManualEvent: ids "manual-N"). */
+export const isManualEvent = (e) => typeof e?.id === "string" && e.id.startsWith("manual-");
 /** A note as a TSV cell holds it: one line (tsvCell, src/parsing.js),
     trimmed like every cell parseEvents reads. */
 const asCell = (notes) => String(notes || "").replace(/[\t\r\n]+/g, " ").trim();
@@ -93,8 +98,10 @@ function manualPart(entry) {
 
     Returns { events, sampleCuration, report }. `events` are the new
     file's, in its order and with its ids, `fileAction` removed (it now
-    lives in the sample curation). `report` counts what happened, for
-    replaceReportLines. */
+    lives in the sample curation), then — carried over — the events added
+    by hand whose pair the file does not have, renumbered manual-1, …
+    `report` counts what happened, for replaceReportLines (and, computed
+    before the choice, for the question that offers it). */
 export function replaceEvents({
   oldEvents,
   oldSampleCuration,
@@ -110,6 +117,8 @@ export function replaceEvents({
     added: 0,
     dropped: 0,
     droppedCurated: 0,
+    keptManual: 0,
+    manual: (oldEvents || []).filter(isManualEvent).length,
     keptVerdicts: 0,
     keptNotes: 0,
     fileVerdicts: 0,
@@ -170,11 +179,19 @@ export function replaceEvents({
     }
     return { ...base, verdict, notes };
   });
-  for (const left of queues.values()) {
-    for (const e of left) {
-      report.dropped++;
-      if (isSet(e.verdict) || e.notes) report.droppedCurated++;
+  // The current events the new file has no pair for: dropped, except the
+  // ones added by hand, kept after the file's events in their order.
+  const unmatched = new Set();
+  for (const left of queues.values()) left.forEach((e) => unmatched.add(e));
+  for (const e of oldEvents || []) {
+    if (!unmatched.has(e)) continue;
+    if (isManualEvent(e)) {
+      report.keptManual++;
+      events.push({ ...e, id: `manual-${report.keptManual}` });
+      continue;
     }
+    report.dropped++;
+    if (isSet(e.verdict) || e.notes) report.droppedCurated++;
   }
 
   // The curator's own sample values, for the samples still present.
@@ -249,6 +266,13 @@ export function replaceReportLines(report) {
             : "."),
       );
     }
+    if (r.keptManual > 0) {
+      lines.push(
+        `${plural(r.keptManual, "event")} you added by hand (Explore new pairs) ` +
+          `${r.keptManual === 1 ? "is" : "are"} not in the new file: kept, with ` +
+          `${r.keptManual === 1 ? "its evaluation and notes" : "their evaluations and notes"}.`,
+      );
+    }
     const kept = [];
     if (r.keptVerdicts) kept.push(plural(r.keptVerdicts, "evaluation"));
     if (r.keptNotes) kept.push(plural(r.keptNotes, "note"));
@@ -265,6 +289,7 @@ export function replaceReportLines(report) {
     if (prev.evaluations) lost.push(plural(prev.evaluations, "evaluation"));
     if (prev.notes) lost.push(plural(prev.notes, "note"));
     if (prev.sampleEntries) lost.push(plural(prev.sampleEntries, "sample decision"));
+    if (r.manual) lost.push(`${plural(r.manual, "event")} added by hand`);
     lines.push(`Started fresh: your previous curation (${lost.join(", ")}) was dropped.`);
   }
   if (r.fileHasCuration) {
