@@ -10,7 +10,8 @@
      2. the exported events HTML report prints a cascade's upstream rate,
         not "(NaN%)";
      3. species ids that CroCoDeEL rewrote as integers ("1" for the table's
-        "001") still land on the contamination line;
+        "001") still land on the contamination line, and pinning one from
+        its chip rings the plotted point;
      4. a target written in another case than the table's column ("tgt"
         for "TGT") gets its introduced % in the exported events TSV;
      5. a run whose header declares `filtering_ab_thr_factor: 20.0` shows
@@ -336,6 +337,21 @@ try {
     const text = await page.locator("body").innerText();
     check(/\b20 species on line\b/i.test(text), "the 20 introduced species are on the line", (text.match(/\d+ species on line|Only \d+ species on line/i) || ["none"])[0]);
     check(!/match NOTHING/i.test(text), "no unresolved-species warning");
+
+    // Pinning "1" from the introduced-species chips rings the plotted
+    // "001" (a violet ring labelled with the table's name).
+    await page.getByRole("button", { name: /Introduced species \(20\)/ }).first().click();
+    await page.waitForTimeout(300);
+    await page.getByRole("button", { name: /^1$/ }).first().click();
+    await page.waitForTimeout(500);
+    const rings = await page.locator('svg circle[stroke="#423089"]').count();
+    const ringLabel = await page
+      .locator("svg text")
+      .filter({ hasText: /tgt .* src / })
+      .first()
+      .textContent()
+      .catch(() => "");
+    check(rings === 1 && /^001\b/.test(ringLabel || ""), "pinning the chip “1” rings the table's species 001", `${rings} ring(s), label ${JSON.stringify(ringLabel)}`);
     check(errors.length === 0, "no JS error with integer species ids", errors[0] || "");
     await ctx.close();
   }
