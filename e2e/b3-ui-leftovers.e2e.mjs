@@ -95,23 +95,68 @@ const longId = (id) => {
   while (t.length < 150) t += FILL;
   return t.slice(0, 150);
 };
-/** `text` (a demo TSV) with the sample ids of `columns` made long. */
-function withLongIds(text, columns) {
+/** `text` (a demo TSV) with the sample ids of `columns` renamed by
+    `rename` (made long by default). */
+function withLongIds(text, columns, rename = longId) {
   return text
     .split("\n")
     .map((line, i) => {
       if (!line || line.startsWith("#") || i === 0 || /^source\t/.test(line)) return line;
       const cells = line.split("\t");
-      for (const c of columns) cells[c] = longId(cells[c]);
+      for (const c of columns) cells[c] = rename(cells[c]);
       return cells.join("\t");
     })
     .join("\n");
 }
-function longAbundance() {
+function longAbundance(rename = longId) {
   const [header, ...rows] = demo("species_abundance.tsv").split("\n");
   const cells = header.split("\t");
-  return [[cells[0], ...cells.slice(1).map(longId)].join("\t"), ...rows].join("\n");
+  return [[cells[0], ...cells.slice(1).map(rename)].join("\t"), ...rows].join("\n");
 }
+
+/** The sample ids of the Samples tab (`tab` "Samples") or of the Events
+    table (source and target of each row), the first `limit` rows: the id,
+    whether it is cut, and the text shown (its characters inside the box,
+    an ellipsis where they stop). */
+const tableIds = (page, tab, limit = Infinity) =>
+  page.evaluate(
+    ({ tab, limit }) => {
+      // The characters drawn before the ellipsis: those that end, with
+      // room for an ellipsis after them, inside the box.
+      const shown = (el) => {
+        const probe = document.createElement("span");
+        probe.textContent = "…";
+        probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${getComputedStyle(el).font}`;
+        document.body.append(probe);
+        const right = el.getBoundingClientRect().right - probe.getBoundingClientRect().width;
+        probe.remove();
+        const range = document.createRange();
+        const text = el.firstChild;
+        let out = "";
+        for (let i = 0; i < text.length; i++) {
+          range.setStart(text, i);
+          range.setEnd(text, i + 1);
+          if (range.getBoundingClientRect().right <= right + 0.5) out += text.data[i];
+          else break;
+        }
+        return `${out}…`;
+      };
+      const state = (el) => {
+        const cut = el.scrollWidth > el.clientWidth + 1;
+        return { text: el.textContent, cut, shown: cut ? shown(el) : el.textContent };
+      };
+      const rows =
+        tab === "Samples"
+          ? [...document.querySelectorAll('tr[id^="samplerow-"]')]
+          : [...document.querySelectorAll("tr[data-event-row]")];
+      return rows.slice(0, limit).map((tr) => {
+        const td = tr.querySelectorAll("td");
+        const id = (cell) => state(cell.querySelector("span.truncate"));
+        return tab === "Samples" ? id(td[0]) : { source: id(td[0]), target: id(td[2]) };
+      });
+    },
+    { tab, limit },
+  );
 
 /** How far the page scrolls sideways, and how far the tabs' content
     runs past its column (the box around the tab bar): ≤ 0 when it does
@@ -521,6 +566,50 @@ try {
     { demo: true },
   );
 
+  /* B3.1 — ids of 13 to 23 characters are shown whole where the base
+     build showed them whole: the previous round cut every id longer than 12
+     characters to the room its column shared with the columns that wrap.
+     With every demo id prefixed "COHORT2024_STOOL_" (21 to 23 characters),
+     the Samples tab read "COHORT2024_ST…" on all 91 rows and the Events
+     table showed 8 different texts on its 24 rows; ids lengthened to 13
+     characters were cut on all 91 rows of the Samples tab and on 24 of 48
+     cells of the Events table. */
+  await scenario("B3.1 ids of 13 to 23 characters stay whole", async (page) => {
+    const prefixed = (id) => `COHORT2024_STOOL_${id}`;
+    await upload(page, 0, "contamination_events.tsv", withLongIds(demo("contamination_events.tsv"), [0, 1], prefixed));
+    await upload(page, 1, "species_abundance.tsv", longAbundance(prefixed));
+    await upload(page, 2, "metadata.tsv", withLongIds(demo("metadata.tsv"), [0], prefixed));
+    await upload(page, 3, "plate_map.tsv", withLongIds(demo("plate_map.tsv"), [0], prefixed));
+    const wholeAndApart = async (what) => {
+      await openTab(page, "Samples");
+      const samples = await tableIds(page, "Samples");
+      let over = await pageOverflow(page);
+      check(
+        samples.length === 91 && samples.every((i) => !i.cut) &&
+          new Set(samples.map((i) => i.shown)).size === 91 && over.page <= 0,
+        `B3.1 Samples tab, ${what}: every id whole, no two the same, no page scroll`,
+        `${samples.filter((i) => i.cut).length} of ${samples.length} cut ("${samples.find((i) => i.cut)?.shown ?? ""}"); page ${over.page} px`,
+      );
+      await openTab(page, "Events");
+      const rows = await tableIds(page, "Events");
+      const cut = rows.flatMap((r) => [r.source, r.target]).filter((c) => c.cut);
+      over = await pageOverflow(page);
+      check(
+        rows.length === 24 && cut.length === 0 &&
+          new Set(rows.map((r) => `${r.source.shown} → ${r.target.shown}`)).size === 24 && over.page <= 0,
+        `B3.1 Events table, ${what}: every id whole, every row's text its own, no page scroll`,
+        `${cut.length} of ${rows.length * 2} cut ("${cut[0]?.shown ?? ""}"); page ${over.page} px`,
+      );
+    };
+    await wholeAndApart("ids sharing a 17-character prefix");
+    const thirteen = (id) => `${id}_STOOL_PLATE3_RUN2024`.slice(0, 13);
+    await upload(page, 0, "contamination_events.tsv", withLongIds(demo("contamination_events.tsv"), [0, 1], thirteen));
+    await upload(page, 1, "species_abundance.tsv", longAbundance(thirteen));
+    await upload(page, 2, "metadata.tsv", withLongIds(demo("metadata.tsv"), [0], thirteen));
+    await upload(page, 3, "plate_map.tsv", withLongIds(demo("plate_map.tsv"), [0], thirteen));
+    await wholeAndApart("13-character ids");
+  });
+
   /* B3.1 — a pair that fits its line is shown whole. The first version cut
      the event queue's pairs to 30 characters whatever the column's width:
      on the bundled PRJEB6337 study it cut 83 of the 197 rows, such as
@@ -541,6 +630,18 @@ try {
       whole >= 170 && queue.every((q) => q.targetShown > 0),
       "B3.1 Validate queue: most of the study's pairs whole, every row shows its target",
       `${whole} of ${queue.length} whole`,
+    );
+    // The Samples tab shows every id whole, as the base build did: the
+    // previous round cut the four 29-character ones ("ERS475274_ERS475275_
+    // ERS475276") to 148 of their 227 px, the table having room for them.
+    await openTab(page, "Samples");
+    const ids = await tableIds(page, "Samples");
+    const longest = ids.filter((i) => i.text.length === 29);
+    const over = await pageOverflow(page);
+    check(
+      ids.length >= 100 && longest.length >= 4 && ids.every((i) => !i.cut) && over.page <= 0 && over.column <= 0,
+      "B3.1 Samples tab: every id whole, the 29-character ones too, the table within the column",
+      `${ids.filter((i) => i.cut).length} of ${ids.length} cut (${longest.map((i) => i.shown).join(", ")}); page ${over.page} px, column ${over.column} px`,
     );
   });
 
@@ -572,6 +673,28 @@ try {
       list.length === 12 && list.every((p) => !p.sourceCut && p.targetShown > 0) && distinct(list) >= 3,
       "B3.1 gallery: every caption's source whole, its target shown",
       `${list.filter((p) => p.sourceCut).length} sources cut, ${distinct(list)} distinct; "${list[0]?.text}"`,
+    );
+    // (Before Validate: from there, on this dataset, a click on a tab
+    // waits about 40 s for the page to settle, on the base build too.)
+    // The Events table: two 40-character ids do not fit beside its other
+    // columns at 1500 px (the base build scrolled the page by 48 px), and
+    // they are cut, but its 27- and 28-character ids are whole and no two
+    // rows read the same. The previous round cut every id to the room it
+    // shared with the columns that wrap: "conta_target_case_010_0.5_1" and
+    // "…_0.5_10" both read "conta_target_case_010_0.…", 92 different texts
+    // on the first 100 rows.
+    await openTab(page, "Events");
+    const rows = await tableIds(page, "Events", 100);
+    const cells = rows.flatMap((r) => [r.source, r.target]);
+    const short = cells.filter((c) => c.text.length <= 28);
+    const texts = new Set(rows.map((r) => `${r.source.shown} → ${r.target.shown}`));
+    const over = await pageOverflow(page);
+    check(
+      rows.length === 100 && short.length >= 50 && short.every((c) => !c.cut) && texts.size === 100 &&
+        over.page <= 0 && over.column <= 0,
+      "B3.1 Events table: the 27- and 28-character ids whole, every row's text its own, within the column",
+      `${short.filter((c) => c.cut).length} of ${short.length} short ids cut, ${texts.size} different texts; ` +
+        `"${rows[0]?.source.shown} → ${rows[0]?.target.shown}"; page ${over.page} px, column ${over.column} px`,
     );
     await openTab(page, "Validate");
     const hd = await page.locator("h2 [data-sample-id]").evaluateAll((els) =>

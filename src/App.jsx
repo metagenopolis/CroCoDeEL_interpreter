@@ -718,32 +718,89 @@ export function plateDistance(plateMap, source, target) {
    tooltip. The page still holds the whole id: selecting it (double- or
    triple-click) and copying gives all of it. */
 
-/** Ids up to this many characters are never cut (SampleId): the demo's
-    and every bundled study's fit, and at a narrow window a table that
-    cannot fit anyway scrolls rather than cuts them. */
-const SHORT_ID_CHARS = 12;
+/* The width of `text` in `font` (a CSS font shorthand), measured on a
+   canvas; null where there is none (jsdom). */
+let textCanvas; // undefined until first used, null without a canvas
+let textCanvasFont = ""; // the font last set on it
+function textWidth(text, font) {
+  if (textCanvas === undefined) {
+    try {
+      textCanvas = document.createElement("canvas").getContext("2d") || null;
+    } catch {
+      textCanvas = null;
+    }
+  }
+  if (!textCanvas) return null;
+  if (font !== textCanvasFont) {
+    textCanvas.font = font;
+    textCanvasFont = font;
+  }
+  return textCanvas.measureText(text).width;
+}
+
+/** The width of `text` in `font`, counted in that font's `ch` (the width
+    of its "0", the unit of SampleId's floor), or its number of characters
+    where nothing can measure it. */
+function widthInCh(text, font) {
+  const px = textWidth(text, font);
+  const ch = px == null ? null : textWidth("0", font);
+  return ch ? px / ch : text.length;
+}
+
+/** The Events table's id font — the app's body font (AppMain), semibold,
+    13 px — to measure its ids in. */
+const EVENTS_ID_FONT = '600 13px "Avenir Next", "Nunito Sans", system-ui, -apple-system, sans-serif';
+
+/** How wide an id may be and still never be cut by SampleId, in `ch`: a
+    table widens for it, as it did for every id before long ids were cut.
+    The Samples tab shows one id a row, in a monospace font: up to 32
+    characters (the bundled PRJEB6337 study's ids reach 29,
+    "ERS475274_ERS475275_ERS475276"). The Events table shows two, source
+    and target, beside seven to nine other columns: up to 25ch, about 23
+    characters in capitals and digits ("COHORT2024_STOOL_58D256" is
+    24.3ch) or 29 in lower case (the benchmarks' 28-character
+    "conta_target_case_010_0.5_10" is 23.6ch). At a 1500 px window two
+    such ids still fit beside the context column without scrolling the
+    page; two 29-character ids in capitals do not
+    (the base build scrolled it by 47 px on PRJEB6337, by 48 px on the
+    Meteor benchmark's 41-character ids). A sample's name, under its id,
+    is never cut up to 12 characters. */
+const WHOLE_ID_CH = { alone: 32, pair: 25, name: 12 };
+
+/** A longer id is cut to what its table has left, but never below this
+    many characters (`ch`). */
+const ID_FLOOR_CH = 12;
 
 /** One sample id, cut to the width it is given. The one-track grid around
     it is what lets a table column or a flex row narrow it: an auto-layout
     table never makes a column narrower than the min-content width of its
-    cells, which for one line of text is the whole text. A long id's
-    track, minmax(12ch, 1fr), adds 12 characters to the min-content width
-    and its full width to the max-content one, so it is cut only as far
-    as the row has to, never below 12 characters. A short id's track
-    starts at its own width (max-content): it is never cut — narrowed to
-    the minimum, the first version cut the demo's 6-character ids by 2 px
-    at a 1024 px window, where the Samples table scrolls anyway.
-    `className` and `style` go on the grid, so its `ch` is the id's. */
-const SampleId = ({ id, title, className = "", style }) => {
+    cells, which for one line of text is the whole text. An id at most
+    `whole` ch wide (WHOLE_ID_CH; measured in `font` when given, else
+    counted in characters) keeps that: its track starts at its own width
+    (max-content), so it is never cut. A longer id's track, minmax(12ch,
+    1fr), adds 12 characters to the min-content width and its full width
+    to the max-content one, so it is cut only as far as the row has to,
+    never below 12 characters.
+
+    The first version left whole only ids of up to 12 characters. An auto
+    table shares its width between its columns' min-content and
+    max-content widths in proportion, so a 13-to-40-character id was cut
+    though the table had room for it, the room going to columns that wrap:
+    "COHORT2024_STOOL_58D28" read "COHORT2024_ST…" on every row of the
+    Samples tab, and the PRJEB6337 study's 29-character ids were cut where
+    the base build showed them whole. `className` and `style` go on the
+    grid, so its `ch` is the id's. */
+const SampleId = ({ id, title, whole = WHOLE_ID_CH.pair, font, className = "", style }) => {
   const text = String(id ?? "");
+  const width = font ? widthInCh(text, font) : text.length;
   return (
     <span
       className={`grid ${className}`}
       style={{
         gridTemplateColumns:
-          text.length <= SHORT_ID_CHARS
+          width <= whole
             ? "minmax(max-content, 1fr)"
-            : `minmax(${SHORT_ID_CHARS}ch, 1fr)`,
+            : `minmax(${Math.min(ID_FLOOR_CH, whole)}ch, 1fr)`,
         ...style,
       }}
     >
@@ -882,18 +939,8 @@ function clipId(id, max) {
 
 /* The width of a text in the scatter's axis-title font (11 px Raleway,
    `weight`), measured on a canvas; null where there is none (jsdom). */
-let titleCanvas; // undefined until first used, null without a canvas
 function axisTitleWidth(text, weight) {
-  if (titleCanvas === undefined) {
-    try {
-      titleCanvas = document.createElement("canvas").getContext("2d") || null;
-    } catch {
-      titleCanvas = null;
-    }
-  }
-  if (!titleCanvas) return null;
-  titleCanvas.font = `${weight} 11px Raleway, sans-serif`;
-  return titleCanvas.measureText(text).width;
+  return textWidth(text, `${weight} 11px Raleway, sans-serif`);
 }
 
 /** A ref for an axis title's <text>, `title` being { key, idStart, id,
@@ -6805,10 +6852,11 @@ const EventsTable = ({
                     onClick={() => onPick(e.id)}
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
-                    <SampleId id={e.source} />
+                    <SampleId id={e.source} font={EVENTS_ID_FONT} />
                     {sampleName(metadata, e.source) && (
                       <SampleId
                         id={sampleName(metadata, e.source)}
+                        whole={WHOLE_ID_CH.name}
                         className="text-[11px]"
                         style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
                       />
@@ -6828,10 +6876,11 @@ const EventsTable = ({
                     onClick={() => onPick(e.id)}
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
-                    <SampleId id={e.target} />
+                    <SampleId id={e.target} font={EVENTS_ID_FONT} />
                     {sampleName(metadata, e.target) && (
                       <SampleId
                         id={sampleName(metadata, e.target)}
+                        whole={WHOLE_ID_CH.name}
                         className="text-[11px]"
                         style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
                       />
@@ -9866,6 +9915,7 @@ const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
   <>
     <SampleId
       id={row.id}
+      whole={WHOLE_ID_CH.alone}
       style={{
         fontFamily: "ui-monospace, monospace",
         color: "var(--ink)",
@@ -9877,6 +9927,7 @@ const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
     {row.name && (
       <SampleId
         id={row.name}
+        whole={WHOLE_ID_CH.name}
         className="text-[11px]"
         style={{
           color: "var(--ink-muted)",
@@ -20449,7 +20500,11 @@ const HelpTab = ({ onStartTour }) => {
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
               Sample ids are shown as your files write them. An id too
               long for its place — a 150-character LIMS id, say — is cut
-              with an ellipsis: hover it to read it whole. On a{" "}
+              with an ellipsis: hover it to read it whole. The tables cut
+              only long ids: the Samples tab widens for an id of up to 32
+              characters, the Events table, two ids a row, for one of up to
+              about 23 (29 in lower case); a longer one is cut to the room
+              its table has left, never below 12 characters. On a{" "}
               <em>source → target</em> line, the source keeps its width as
               long as the target keeps a few characters; a sample's name is
               cut before its id. The Guided validation header puts the
