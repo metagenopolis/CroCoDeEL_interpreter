@@ -17,7 +17,8 @@
         a reload; a run with "None" shows no toggle;
      6. the bulk dialog's "Biological similarity" pass / fail picks select
         the events Guided validation ticks / crosses: high ρ between
-        unrelated samples passes, high ρ within a subject or a group fails.
+        unrelated samples passes, high ρ within a subject or a group fails;
+     7. the in-browser runner describes --filter-low-ab as the filter it is.
 
    Runs on its own (`node e2e/a2-diagnostics.e2e.mjs`, which starts a
    preview server unless BASE_URL is set) or through e2e/run-all.mjs. */
@@ -444,6 +445,33 @@ try {
     );
     await closeBulk(page);
     check(errors.length === 0, "no JS error in the bulk dialog", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* ------------- 7. the in-browser runner's --filter-low-ab description
+     Next to the factor it read "Drop species with median abundance below
+     20× LOD", which is not what CroCoDeEL does (its tooltip, the Help and
+     ab_table_utils.filter_low_ab agree on the per-sample rule). */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    // The runner shows its parameters once it has a table to run on.
+    await tsvInput(page, 1).setInputFiles(tsvFile("species_abundance.tsv", abundanceLines()));
+    await page.waitForTimeout(1500);
+    await page.getByRole("button", { name: /Run CroCoDeEL in your browser/i }).first().click();
+    const factor = page
+      .locator('div[title^="Equivalent to the --filter-low-ab CLI flag"] input[type="number"]')
+      .first();
+    await factor.waitFor({ timeout: 20000 });
+    await factor.fill("20");
+    await page.waitForTimeout(300);
+    const text = await page.locator("body").innerText();
+    check(
+      /In each sample, set to 0 every abundance up to 20× the sample's smallest one\./.test(text) &&
+        !/median abundance/i.test(text),
+      "the runner describes the per-sample low-abundance filter",
+      (text.match(/[^\n]*20×[^\n]*/) || [""])[0],
+    );
+    check(errors.length === 0, "no JS error on the runner page", errors[0] || "");
     await ctx.close();
   }
 } finally {

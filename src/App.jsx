@@ -30618,11 +30618,11 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
               >
                 {filterLowAb > 0 ? (
                   <>
-                    Drop species with median abundance below{" "}
+                    In each sample, set to 0 every abundance up to{" "}
                     <strong style={{ color: "var(--ink)" }}>
-                      {filterLowAb}× LOD
-                    </strong>
-                    .
+                      {filterLowAb}×
+                    </strong>{" "}
+                    the sample's smallest one.{" "}
                   </>
                 ) : (
                   <>0 = disabled. </>
