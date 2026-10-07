@@ -4,7 +4,7 @@
      - an event's scatter (buildScatter) and its line diagnostics: the line
        fit, Spearman ρ, points above the line, the missing-species test;
      - automaticScore and its grade, and the bulk dialog's view of it;
-     - cascade explanations;
+     - cascade detection and its explanations;
      - matching the events file's names to the abundance table (samples,
        and species ids CroCoDeEL rewrote as integers);
      - CroCoDeEL's low-abundance filter, applied to a parsed table.
@@ -14,7 +14,8 @@
    costs Fast Refresh its granularity (react-refresh/only-export-components).
    Nothing in this module touches React, the DOM or App.jsx — inputs are
    parsed tables (parseAbundance), events, and the relatedness record of
-   App.jsx's areRelated (which reads the metadata index).
+   App.jsx's areRelated (which reads the metadata index) — or, for
+   detectCascades, areRelated itself, bound to the metadata.
    ============================================================================ */
 
 /* ---- The scatter of an event, and its line diagnostics ---- */
@@ -659,6 +660,51 @@ export function cascadeExplanations(scatter, upstream, ab) {
     }
   }
   return explained;
+}
+
+/** Every event with its `cascade`: null, or { points_above, explained }
+    when A → B has more than three points above its line and an upstream
+    event C → A explains some of them (cascadeExplanations).
+
+    `relatedness(source, target)` is App.jsx's areRelated on the metadata,
+    or null without metadata. A pair of related samples (same subject or
+    group) is skipped: an apparent multi-source signal there is more
+    parsimoniously explained by biological similarity than by a cascade,
+    so cascade detection is only meaningful between unrelated samples.
+
+    The upstream events of A → B are those whose target is A in the
+    abundance table: both names go through resolveSample, as the scatter
+    finds its samples. Keyed by the names as the events file spells them,
+    the lookup missed C → "a " for A → B — the scatter of either event
+    resolves "a " to the table's "A" — and with it the cascade. It is a
+    Map: a sample named "constructor" read Object's own property off a
+    plain object, and the events derivation threw. */
+export function detectCascades(events, ab, relatedness) {
+  if (!ab) return events.map((e) => ({ ...e, cascade: null }));
+  const incoming = new Map();
+  for (const e of events) {
+    const target = resolveSample(ab, e.target);
+    if (target == null) continue;
+    if (!incoming.has(target)) incoming.set(target, []);
+    incoming.get(target).push(e);
+  }
+  return events.map((e) => {
+    if (relatedness) {
+      const r = relatedness(e.source, e.target);
+      if (r && r.related === true) return { ...e, cascade: null };
+    }
+    const scatter = buildScatter(ab, e);
+    const aboveInfo = pointsAboveLine(scatter);
+    if (aboveInfo == null || aboveInfo.count <= 3) return { ...e, cascade: null };
+    const upstream = incoming.get(resolveSample(ab, e.source)) || [];
+    if (upstream.length === 0) return { ...e, cascade: null };
+    const explained = cascadeExplanations(scatter, upstream, ab);
+    if (explained.length === 0) return { ...e, cascade: null };
+    return {
+      ...e,
+      cascade: { points_above: aboveInfo.count, explained },
+    };
+  });
 }
 
 /* ---- Species names CroCoDeEL rewrote as integers ----

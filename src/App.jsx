@@ -18,7 +18,7 @@ import {
   applyLowAbundanceFilter,
   automaticScore,
   buildScatter,
-  cascadeExplanations,
+  detectCascades,
   eventBulkCriteria,
   introducedPercent,
   lineDiagnostics,
@@ -583,41 +583,8 @@ function downloadText(content, filename) {
 // resolveSample, matchSpeciesName and automaticScore: pure functions that
 // the unit tests can call, together with whatever is built on them,
 // without this file exporting more (see the re-export at the top).
-
-/** A cascade is suspected when event A→B has many points above the line AND
-    A is itself flagged as contaminated (C→A).  The points above A→B's line
-    can then be explained as species introduced into B via A through C. */
-function detectCascades(events, abundance, metadata) {
-  const incoming = {};
-  events.forEach((e) => {
-    if (!incoming[e.target]) incoming[e.target] = [];
-    incoming[e.target].push(e);
-  });
-
-  return events.map((e) => {
-    if (!abundance) return { ...e, cascade: null };
-    // Skip pairs whose source and target are related (same subject or
-    // related group): an apparent multi-source signal there is more
-    // parsimoniously explained by biological similarity than by a
-    // cascade. Cascade detection is only meaningful between unrelated
-    // samples.
-    if (metadata) {
-      const r = areRelated(metadata, e.source, e.target);
-      if (r && r.related === true) return { ...e, cascade: null };
-    }
-    const scatter = buildScatter(abundance, e);
-    const aboveInfo = pointsAboveLine(scatter);
-    if (aboveInfo == null || aboveInfo.count <= 3) return { ...e, cascade: null };
-    const upstream = incoming[e.source] || [];
-    if (upstream.length === 0) return { ...e, cascade: null };
-    const explained = cascadeExplanations(scatter, upstream, abundance);
-    if (explained.length === 0) return { ...e, cascade: null };
-    return {
-      ...e,
-      cascade: { points_above: aboveInfo.count, explained },
-    };
-  });
-}
+// Cascade detection (detectCascades) lives there too; AppMain hands it
+// areRelated, below, bound to the metadata.
 
 /** Are source and target from the same subject? */
 /** Returns null if not enough metadata, otherwise an object describing
@@ -652,6 +619,303 @@ export function plateDistance(plateMap, source, target) {
 /* ============================================================================
    4. UI PRIMITIVES
    ============================================================================ */
+
+/* ---------- long sample ids ----------
+   A sample id is whatever the abundance table's header says, and a LIMS
+   export can make it 150 characters long with nothing to break a line on.
+   Written out whole it pushed the page sideways (by 1,600 px on the
+   Events table at a 1500 px window) or ran over its neighbours. Wherever
+   an id may not fit, it is cut with an ellipsis and the whole id is its
+   tooltip. The page still holds the whole id: selecting it (double- or
+   triple-click) and copying gives all of it. */
+
+/* The width of `text` in `font` (a CSS font shorthand), measured on a
+   canvas; null where there is none (jsdom). */
+let textCanvas; // undefined until first used, null without a canvas
+let textCanvasFont = ""; // the font last set on it
+function textWidth(text, font) {
+  if (textCanvas === undefined) {
+    try {
+      textCanvas = document.createElement("canvas").getContext("2d") || null;
+    } catch {
+      textCanvas = null;
+    }
+  }
+  if (!textCanvas) return null;
+  if (font !== textCanvasFont) {
+    textCanvas.font = font;
+    textCanvasFont = font;
+  }
+  return textCanvas.measureText(text).width;
+}
+
+/** The width of `text` in `font`, counted in that font's `ch` (the width
+    of its "0", the unit of SampleId's floor), or its number of characters
+    where nothing can measure it. */
+function widthInCh(text, font) {
+  const px = textWidth(text, font);
+  const ch = px == null ? null : textWidth("0", font);
+  return ch ? px / ch : text.length;
+}
+
+/** The Events table's id font — the app's body font (AppMain), semibold,
+    13 px — to measure its ids in. */
+const EVENTS_ID_FONT = '600 13px "Avenir Next", "Nunito Sans", system-ui, -apple-system, sans-serif';
+
+/** How wide an id may be and still never be cut by SampleId, in `ch`: a
+    table widens for it, as it did for every id before long ids were cut.
+    The Samples tab shows one id a row, in a monospace font: up to 32
+    characters (the bundled PRJEB6337 study's ids reach 29,
+    "ERS475274_ERS475275_ERS475276"). The Events table shows two, source
+    and target, beside seven to nine other columns: up to 25ch, about 23
+    characters in capitals and digits ("COHORT2024_STOOL_58D256" is
+    24.3ch) or 29 in lower case (the benchmarks' 28-character
+    "conta_target_case_010_0.5_10" is 23.6ch). At a 1500 px window two
+    such ids still fit beside the context column without scrolling the
+    page; two 29-character ids in capitals do not
+    (the base build scrolled it by 47 px on PRJEB6337, by 48 px on the
+    Meteor benchmark's 41-character ids). A sample's name, under its id,
+    is never cut up to 12 characters. */
+const WHOLE_ID_CH = { alone: 32, pair: 25, name: 12 };
+
+/** A longer id is cut to what its table has left, but never below this
+    many characters (`ch`). */
+const ID_FLOOR_CH = 12;
+
+/** One sample id, cut to the width it is given. The one-track grid around
+    it is what lets a table column or a flex row narrow it: an auto-layout
+    table never makes a column narrower than the min-content width of its
+    cells, which for one line of text is the whole text. An id at most
+    `whole` ch wide (WHOLE_ID_CH; measured in `font` when given, else
+    counted in characters) keeps that: its track starts at its own width
+    (max-content), so it is never cut. A longer id's track, minmax(12ch,
+    1fr), adds 12 characters to the min-content width and its full width
+    to the max-content one, so it is cut only as far as the row has to,
+    never below 12 characters.
+
+    The first version left whole only ids of up to 12 characters. An auto
+    table shares its width between its columns' min-content and
+    max-content widths in proportion, so a 13-to-40-character id was cut
+    though the table had room for it, the room going to columns that wrap:
+    "COHORT2024_STOOL_58D28" read "COHORT2024_ST…" on every row of the
+    Samples tab, and the PRJEB6337 study's 29-character ids were cut where
+    the base build showed them whole. `className` and `style` go on the
+    grid, so its `ch` is the id's. */
+const SampleId = ({ id, title, whole = WHOLE_ID_CH.pair, font, className = "", style }) => {
+  const text = String(id ?? "");
+  const width = font ? widthInCh(text, font) : text.length;
+  return (
+    <span
+      className={`grid ${className}`}
+      style={{
+        gridTemplateColumns:
+          width <= whole
+            ? "minmax(max-content, 1fr)"
+            : `minmax(${Math.min(ID_FLOOR_CH, whole)}ch, 1fr)`,
+        ...style,
+      }}
+    >
+      <span className="truncate" title={title === undefined ? text : title || undefined}>
+        {id}
+      </span>
+    </span>
+  );
+};
+
+/** A sample id and, after it, its metadata name in brackets, on one line:
+    the id keeps its width (minmax(0, max-content)) and the name takes what
+    is left (minmax(0, 1fr)), so the name is cut first and the id only once
+    the name has no room left. In a flex row they used to shrink together,
+    in proportion to their widths: a 6-character id before a 60-character
+    name showed "63D…". Each has its tooltip; `idProps` go on the id's
+    span. */
+const SampleIdName = ({
+  id,
+  name,
+  className = "",
+  style,
+  idStyle,
+  idProps,
+  nameClassName = "",
+  nameStyle,
+}) => (
+  <span
+    className={`grid items-baseline ${className}`}
+    style={{
+      gridTemplateColumns: name ? "minmax(0, max-content) minmax(0, 1fr)" : "minmax(0, max-content)",
+      columnGap: "0.4em",
+      ...style,
+    }}
+  >
+    <span className="truncate" style={idStyle} title={String(id ?? "")} {...idProps}>
+      {id}
+    </span>
+    {name && (
+      <span className={`truncate ${nameClassName}`} style={nameStyle} title={name}>
+        ({name})
+      </span>
+    )}
+  </span>
+);
+
+/** The room a SamplePair keeps for its target when the source is too long
+    to leave it more: all of a short target (" → 63D9"), and the arrow and
+    two or three characters of a longer one, which is cut anyway — the
+    source keeps the rest, as much as the one line of text used to give
+    it. */
+function pairTargetMin(target) {
+  return String(target ?? "").length <= 6 ? "5.5em" : "3.5em";
+}
+
+/** "source → target" on one line. When the pair does not fit, it is cut
+    at the end, in the target, as one line of text always was, but the
+    target keeps at least pairTargetMin: past that, the source is cut on
+    its own, so a long source no longer hides the target behind its
+    ellipsis. The tooltip (`title`, null for none) is the whole pair;
+    `arrow` is a text or an inline element.
+
+    The reserve is the target's min-width and the source's cap is
+    calc(100% - reserve), not a share of the line: in a box as wide as its
+    content (a gallery card's caption) the line is then always wide enough
+    for the source, which a percentage share would cut.
+
+    The first version cut both ids to equal shares (two minmax(0,
+    max-content) grid tracks): ids sharing a long prefix — the benchmark
+    datasets' "conta_target_case_010_0.5_1" and its target — then read the
+    same on every gallery card and Overview row, where the source used to
+    be whole; and its 'auto' arrow track took the line's free space,
+    pushing a short target to the far end of the line. */
+const SamplePair = ({ source, target, arrow = "→", title, className = "", style }) => {
+  const reserve = pairTargetMin(target);
+  return (
+    <span
+      className={`flex items-baseline min-w-0 ${className}`}
+      style={style}
+      title={title === undefined ? `${source} → ${target}` : title || undefined}
+    >
+      <span
+        className="truncate"
+        style={{ flex: "none", maxWidth: `calc(100% - ${reserve})` }}
+        data-pair-source=""
+      >
+        {source}
+      </span>
+      <span className="truncate" style={{ flex: "0 1 auto", minWidth: reserve }}>
+        {typeof arrow === "string" ? `\u00a0${arrow} ` : arrow}
+        <span data-pair-target="">{target}</span>
+      </span>
+    </span>
+  );
+};
+
+/** SamplePair for a line as wide as its column whatever its text (the
+    event queue's rows): the same cut with two boxes less per row. The
+    source is an inline block capped at calc(100% - reserve) and the line's
+    own ellipsis cuts the target — a percentage cap needs a line whose
+    width does not come from its text. The queue renders every event
+    (16,555 on the Meteor benchmark), where SamplePair's flex row took
+    ~200 ms more to render when Guided validation opens. */
+const SamplePairLine = ({ source, target, className = "", style }) => (
+  <div className={`truncate ${className}`} style={style} title={`${source} → ${target}`}>
+    <span
+      className={`inline-block truncate align-bottom ${
+        pairTargetMin(target) === "5.5em" ? "max-w-[calc(100%-5.5em)]" : "max-w-[calc(100%-3.5em)]"
+      }`}
+      data-pair-source=""
+    >
+      {source}
+    </span>
+    {` → ${target}`}
+  </div>
+);
+
+/** A sample id inside running text: cut at the width of the line. */
+const InlineSampleId = ({ id, className = "", style }) => (
+  <span
+    className={`inline-block max-w-full truncate align-bottom ${className}`}
+    style={style}
+    title={String(id ?? "")}
+  >
+    {id}
+  </span>
+);
+
+/** An id for an SVG label, which has no ellipsis: cut to `max`
+    characters, the last one an ellipsis. The caller puts the whole id in
+    a <title>. */
+function clipId(id, max) {
+  const s = String(id ?? "");
+  return s.length > max ? `${s.slice(0, Math.max(1, max - 1))}…` : s;
+}
+
+/* The width of a text in the scatter's axis-title font (11 px Raleway,
+   `weight`), measured on a canvas; null where there is none (jsdom). */
+function axisTitleWidth(text, weight) {
+  return textWidth(text, `${weight} 11px Raleway, sans-serif`);
+}
+
+/** A ref for an axis title's <text>, `title` being { key, idStart, id,
+    shown, room } (the id as written and as shown, from character
+    `idStart` of the title): once drawn, when the title is longer than
+    `room`, `onCut(key, kept)` gets the number of the id's characters that
+    fit before an ellipsis, measured on the text as laid out. A ref
+    callback runs on every commit, before the browser paints. */
+function axisTitleFit(title, onCut) {
+  return (el) => {
+    if (!el || typeof el.getComputedTextLength !== "function") return;
+    const over = el.getComputedTextLength() - title.room;
+    if (!(over > 0.5)) return;
+    const clipped = title.shown !== title.id;
+    let shownChars = clipped ? title.shown.length - 1 : title.shown.length;
+    try {
+      // An ellipsis to add is about one character wide; one already there
+      // stays where it is.
+      let need = over + (clipped ? 0 : el.getSubStringLength(title.idStart + shownChars - 1, 1));
+      while (shownChars > 1 && need > 0) {
+        shownChars--;
+        need -= el.getSubStringLength(title.idStart + shownChars, 1);
+      }
+    } catch {
+      // Runs of blanks inside the id collapse, and the characters as laid
+      // out no longer line up with the id's: keep what the canvas fitted.
+      return;
+    }
+    onCut(title.key, shownChars);
+  };
+}
+
+/** The id of a scatter axis title — `before` (weight 600), the id (600),
+    `after` (weight 500, its runs of spaces collapsed as SVG shows them) —
+    cut with an ellipsis (clipId's way) so that the whole title fits in
+    `room` units, measured on a canvas in the title's font. The first
+    version estimated the widths per character, and a 150-character id
+    still ran 15 to 20 px past the plot's edge, over the richness after
+    it. Without a canvas, that estimate is kept. The SVG lays its text out
+    at its rendered size, a few percent wider than a canvas measures it
+    (487 against 476 units at 1500 px): Scatterplot checks the title once
+    drawn and cuts further (axisTitleFit). */
+function fitAxisTitleId(id, before, after, room, kept) {
+  const text = String(id ?? "");
+  if (kept != null && kept < text.length) return `${text.slice(0, kept)}…`;
+  const fixed = axisTitleWidth(before, 600);
+  if (fixed == null) {
+    return clipId(
+      text,
+      Math.max(8, Math.floor((room - before.length * 5.5 - after.length * 4.5) / 6.4)),
+    );
+  }
+  const used = fixed + axisTitleWidth(after.replace(/\s+/g, " "), 500);
+  if (used + axisTitleWidth(text, 600) <= room) return text;
+  // The most characters of the id that fit before an ellipsis, at least one.
+  let lo = 1;
+  let hi = text.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (used + axisTitleWidth(`${text.slice(0, mid)}…`, 600) <= room) lo = mid;
+    else hi = mid - 1;
+  }
+  return `${text.slice(0, lo)}…`;
+}
 
 const Pill = ({ children, tone = "neutral", className = "" }) => {
   // Backgrounds use rgba overlays so they tint whatever surface sits
@@ -1088,12 +1352,19 @@ const Scatterplot = ({
   showRichness = true,
 }) => {
   const [hover, setHover] = useState(null);
+  // How many characters of each axis title's id fit, once measured as
+  // drawn (axisTitleFit), for the title it was measured on.
+  const [axisCut, setAxisCut] = useState({});
   if (!scatter) return null;
   if (scatter.error) {
     return (
       <div
         style={{
           width,
+          // In a column narrower than the plot (Guided validation's, at
+          // 1500 px), the box ran under the card beside it, hiding the
+          // end of each line of a wrapped long id.
+          maxWidth: "100%",
           height,
           background: "var(--bg-alert)",
           border: "1px solid #ed6e6c",
@@ -1109,10 +1380,14 @@ const Scatterplot = ({
         }}
       >
         <AlertCircle className="w-5 h-5" />
-        <div style={{ fontSize: 13, fontWeight: 600 }}>{scatter.error}</div>
+        {/* The message names the sample: a long id wraps inside the box. */}
+        <div style={{ fontSize: 13, fontWeight: 600, overflowWrap: "anywhere" }}>
+          {scatter.error}
+        </div>
         <div style={{ fontSize: 11, color: "#8a2422", opacity: 0.8, maxWidth: 380 }}>
-          Check that sample IDs in contamination_events.tsv exactly match the
-          column names in species_abundance.tsv (case-sensitive).
+          Check that the sample IDs in contamination_events.tsv match the
+          column names in species_abundance.tsv. Letter case and spaces
+          around an ID are ignored; any other difference is not.
         </div>
       </div>
     );
@@ -1120,6 +1395,34 @@ const Scatterplot = ({
   const pad = { l: 56, r: 20, t: 20, b: 50 };
   const w = width - pad.l - pad.r;
   const h = height - pad.t - pad.b;
+
+  // The axis titles name the samples. SVG text has no ellipsis, and a
+  // long id ran off the plot on both sides of its centred title: it is
+  // cut (fitAxisTitleId) so that the title fits along its axis and the
+  // padding on the narrower side, both sides of a centred title getting
+  // half of it, less 4 units of margin. The whole title is its tooltip.
+  const xRichness =
+    showRichness && typeof scatter.targetRichness === "number"
+      ? `  ·  ${scatter.targetRichness} species`
+      : "";
+  const yRichness =
+    showRichness && typeof scatter.sourceRichness === "number"
+      ? `  ·  ${scatter.sourceRichness} species`
+      : "";
+  const xTitle = "Target (contaminated) — ";
+  const yTitle = "Source — ";
+  const axisTitle = (axis, id, before, after, room) => {
+    const key = `${id}\u0000${after}\u0000${room}`;
+    const kept = axisCut[axis]?.key === key ? axisCut[axis].kept : undefined;
+    return { axis, key, id: String(id ?? ""), idStart: before.length, room,
+      shown: fitAxisTitleId(id, before, after, room, kept) };
+  };
+  const onAxisCut = (axis) => (key, kept) =>
+    setAxisCut((cut) =>
+      cut[axis]?.key === key && cut[axis].kept <= kept ? cut : { ...cut, [axis]: { key, kept } },
+    );
+  const xAxis = axisTitle("x", scatter.target, xTitle, xRichness, w + 2 * Math.min(pad.l, pad.r) - 4);
+  const yAxis = axisTitle("y", scatter.source, yTitle, yRichness, h + 2 * Math.min(pad.t, pad.b) - 4);
 
   // Use the per-dataset log10 range when the scatter object carries one
   // (parseAbundance attaches it to ab.logRange and buildScatter forwards
@@ -1228,6 +1531,7 @@ const Scatterplot = ({
         <line x1={pad.l} y1={pad.t + h} x2={pad.l + w} y2={pad.t + h} stroke="#275662" strokeWidth="1" />
         <line x1={pad.l} y1={pad.t} x2={pad.l} y2={pad.t + h} stroke="#275662" strokeWidth="1" />
         <text
+          ref={axisTitleFit(xAxis, onAxisCut("x"))}
           x={pad.l + w / 2}
           y={height - 10}
           textAnchor="middle"
@@ -1236,15 +1540,17 @@ const Scatterplot = ({
           fontWeight="600"
           fill="#275662"
         >
-          Target (contaminated) — {scatter.target}
-          {showRichness && typeof scatter.targetRichness === "number" && (
+          <title>{`${xTitle}${scatter.target}${xRichness}`}</title>
+          {xTitle}
+          {xAxis.shown}
+          {xRichness && (
             <tspan fill="#797870" fontWeight="500">
-              {"  ·  "}
-              {scatter.targetRichness} species
+              {xRichness}
             </tspan>
           )}
         </text>
         <text
+          ref={axisTitleFit(yAxis, onAxisCut("y"))}
           x={-(pad.t + h / 2)}
           y={14}
           transform="rotate(-90)"
@@ -1254,11 +1560,12 @@ const Scatterplot = ({
           fontWeight="600"
           fill="#275662"
         >
-          Source — {scatter.source}
-          {showRichness && typeof scatter.sourceRichness === "number" && (
+          <title>{`${yTitle}${scatter.source}${yRichness}`}</title>
+          {yTitle}
+          {yAxis.shown}
+          {yRichness && (
             <tspan fill="#797870" fontWeight="500">
-              {"  ·  "}
-              {scatter.sourceRichness} species
+              {yRichness}
             </tspan>
           )}
         </text>
@@ -1523,6 +1830,12 @@ function layoutComponent(comp, cellWidth, cellHeight) {
     edges,
   };
 }
+
+/** Longest node label of the network, in characters (clipId): ids up to
+    this length — those of every study dataset bundled here — are written
+    whole under their node; longer ones (the benchmark runs' 41- to
+    52-character ids, a LIMS export's 150) are cut. */
+const NETWORK_LABEL_CHARS = 32;
 
 const NetworkGraph = ({
   events,
@@ -2397,6 +2710,7 @@ const NetworkGraph = ({
               }}
               style={{ cursor: "pointer" }}
             >
+              <title>{n.id}</title>
               <circle
                 cx={n.x}
                 cy={n.y}
@@ -2410,7 +2724,10 @@ const NetworkGraph = ({
                 }
               />
               {/* External label below node — white halo for readability over
-                  edges. Hidden in dense components when not zoomed/hovered. */}
+                  edges. Hidden in dense components when not zoomed/hovered.
+                  A long id is cut (NETWORK_LABEL_CHARS): written whole, a
+                  150-character id ran across the whole graph. The node's
+                  tooltip and the hover line below give it whole. */}
               {showLabel && (
                 <text
                   x={n.x}
@@ -2426,7 +2743,7 @@ const NetworkGraph = ({
                   paintOrder="stroke fill"
                   style={{ pointerEvents: "none" }}
                 >
-                  {n.id}
+                  {clipId(n.id, NETWORK_LABEL_CHARS)}
                 </text>
               )}
             </g>
@@ -2474,6 +2791,8 @@ const NetworkGraph = ({
         </g>
       </svg>
 
+      {/* These lines give a hovered node's or edge's ids whole: a long
+          id wraps rather than run past the graph. */}
       {hover?.kind === "node" && (
         <div
           className="px-3 py-2 text-[12px]"
@@ -2481,6 +2800,7 @@ const NetworkGraph = ({
             borderTop: "1px solid var(--border)",
             background: "var(--bg-soft)",
             color: "var(--ink)",
+            overflowWrap: "anywhere",
           }}
         >
           <span style={{ color: "var(--ink-muted)" }}>sample:</span>{" "}
@@ -2504,6 +2824,7 @@ const NetworkGraph = ({
             borderTop: "1px solid var(--border)",
             background: "var(--bg-soft)",
             color: "var(--ink)",
+            overflowWrap: "anywhere",
           }}
         >
           <span className="font-semibold" style={{ color: "var(--ink)" }}>
@@ -2873,17 +3194,13 @@ const NodeBulkPopover = ({
             style={{ color: "var(--ink)", fontWeight: 700 }}
             title={name ? `${sampleId} (${name})` : sampleId}
           >
-            <span>
-              {sampleId}
-              {name && (
-                <span
-                  className="ml-1.5 text-[12px]"
-                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                >
-                  ({name})
-                </span>
-              )}
-            </span>
+            <SampleIdName
+              id={sampleId}
+              name={name}
+              className="min-w-0 max-w-full"
+              nameClassName="text-[12px]"
+              nameStyle={{ color: "var(--ink-muted)", fontWeight: 500 }}
+            />
             {onScopeToSamples && (
               <span
                 className="flex items-center gap-1"
@@ -2969,13 +3286,21 @@ const NodeBulkPopover = ({
       >
         Updates the <strong>{counts.asTarget}</strong> event
         {counts.asTarget === 1 ? "" : "s"} where{" "}
-        <code style={{ fontFamily: "ui-monospace, monospace" }}>
-          {sampleId}
-        </code>{" "}
-        is the target (the contaminations flowing into it). With{" "}
-        <em>Automatic</em>, the sample's verdict and action follow those
-        events as when clicking each one; pick a value to set it as your
-        own decision.
+        <InlineSampleId id={sampleId} style={{ fontFamily: "ui-monospace, monospace" }} />{" "}
+        is the target (the contaminations flowing into it).{" "}
+        {counts.asTarget === 0 ? (
+          <>
+            No event targets it: there is nothing to update here. Without
+            a verdict of your own (set in the Samples tab), it is Not
+            contaminated by default.
+          </>
+        ) : (
+          <>
+            With <em>Automatic</em>, the sample's verdict and action follow
+            those events as when clicking each one; pick a value to set it
+            as your own decision.
+          </>
+        )}
       </div>
 
       <label
@@ -3076,11 +3401,18 @@ const NodeBulkPopover = ({
                 cursor: "pointer",
               }}
               title={
+                // A node no event targets (a source only) has no events
+                // for its verdict to follow: it is the default Not
+                // contaminated, as the Samples tab says of it.
                 opt.id === "pending"
-                  ? `Remove the verdict you set by hand on ${sampleId}: it then follows its events automatically`
+                  ? counts.asTarget === 0
+                    ? `Remove the verdict you set by hand on ${sampleId}: no event targets it, so it goes back to the default Not contaminated`
+                    : `Remove the verdict you set by hand on ${sampleId}: it then follows its events automatically`
                   : opt.id
                     ? `Set ${sampleId}'s sample-level verdict to ${opt.lbl} as your own decision`
-                    : `Same as clicking each event: ${sampleId}'s verdict is recomputed from every event that targets it (a verdict you set by hand is kept)`
+                    : counts.asTarget === 0
+                      ? `No event targets ${sampleId}: its verdict is the default Not contaminated (a verdict you set by hand is kept)`
+                      : `Same as clicking each event: ${sampleId}'s verdict is recomputed from every event that targets it (a verdict you set by hand is kept)`
               }
             >
               {opt.lbl}
@@ -3768,15 +4100,16 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
           <div style={{ fontWeight: 700, marginBottom: 4 }}>
             Sample-to-well placement (TSV)
           </div>
-          Three columns:{" "}
+          Columns{" "}
           <code style={{ fontFamily: "ui-monospace, monospace" }}>
             sample_id
           </code>
           ,{" "}
-          <code style={{ fontFamily: "ui-monospace, monospace" }}>plate</code>
-          ,{" "}
-          <code style={{ fontFamily: "ui-monospace, monospace" }}>well</code>
-          . Wells use letter-then-number coordinates (A01–H12 for 96-well,
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>well</code>{" "}
+          and, optionally,{" "}
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>plate</code>{" "}
+          (without it every sample is on one plate, P1). Wells use
+          letter-then-number coordinates (A01–H12 for 96-well,
           A01–P24 for 384-well), or come as two columns,{" "}
           <code style={{ fontFamily: "ui-monospace, monospace" }}>row</code>{" "}
           (A–P or 1–16) and{" "}
@@ -3849,7 +4182,11 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
             key={e.id}
             ref={active ? activeRef : null}
             onClick={() => onSelect(e.id)}
-            className="w-full text-left px-3 py-2 text-[12px] flex items-start gap-2"
+            // The queue lists every event (16,555 on the Meteor
+            // benchmark): a row out of view skips layout and paint until
+            // it scrolls in, sized meanwhile as a row is (55 px). Opening
+            // Guided validation there went from ~1.7 s to ~0.9 s.
+            className="w-full text-left px-3 py-2 text-[12px] flex items-start gap-2 [content-visibility:auto] [contain-intrinsic-size:auto_55px]"
             style={{
               borderBottom: "1px solid var(--border-soft)",
               background: active ? "#275662" : "var(--bg-card)",
@@ -3865,9 +4202,14 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
               />
             )}
             <div className="flex-1 min-w-0">
-              <div className="truncate" style={{ fontWeight: 600 }}>
-                {e.source} → {e.target}
-              </div>
+              {/* One run of text, cut where the row ends, as it always
+                  was: an id is cut only when the pair does not fit, and a
+                  long source leaves the target a few characters
+                  (SamplePairLine). The first version cut both ids to a fixed
+                  30-character budget, which cut pairs that fit (PRJEB6337's
+                  "ERS475320_ERS475321 → ERS475349") and reduced the
+                  benchmark datasets' rows to one text. */}
+              <SamplePairLine source={e.source} target={e.target} style={{ fontWeight: 600 }} />
               <div
                 className="flex mt-0.5 tabular gap-2"
                 style={{
@@ -3918,7 +4260,7 @@ const CascadeBanner = ({ cascade, onJumpToUpstream }) => {
           className="w-4 h-4 shrink-0 mt-0.5"
           style={{ color: "#9c8be8" }}
         />
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <div
             className="text-[12px] tracking-[0.1em] uppercase mb-1"
             style={{
@@ -3936,8 +4278,9 @@ const CascadeBanner = ({ cascade, onJumpToUpstream }) => {
               onClick={() =>
                 onJumpToUpstream && onJumpToUpstream(upstream.upstream_event_id)
               }
-              className="font-semibold underline"
+              className="font-semibold underline inline-block max-w-full truncate align-bottom"
               style={{ color: "#9c8be8", background: "transparent", border: 0, cursor: "pointer", padding: 0 }}
+              title={upstream.upstream_source}
             >
               {upstream.upstream_source}
             </button>
@@ -4575,11 +4918,13 @@ const TopList = ({ title, items, onOpen, fmt }) => (
           >
             {String(i + 1).padStart(2, "0")}
           </span>
-          <span className="text-[13px] flex-1 truncate" style={{ color: "var(--ink)" }}>
-            <span style={{ fontWeight: 600 }}>{e.source}</span>
-            <ArrowRight className="inline w-3 h-3 mx-1.5" style={{ color: "#00a3a6" }} />
-            <span style={{ fontWeight: 600 }}>{e.target}</span>
-          </span>
+          <SamplePair
+            source={e.source}
+            target={e.target}
+            arrow={<ArrowRight className="inline w-3 h-3 mx-1.5" style={{ color: "#00a3a6" }} />}
+            className="text-[13px] flex-1 min-w-0"
+            style={{ color: "var(--ink)", fontWeight: 600 }}
+          />
           <span
             className="text-[13px] tabular"
             style={{
@@ -6430,15 +6775,14 @@ const EventsTable = ({
                     onClick={() => onPick(e.id)}
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
-                    {e.source}
+                    <SampleId id={e.source} font={EVENTS_ID_FONT} />
                     {sampleName(metadata, e.source) && (
-                      <div
-                        className="text-[11px] truncate"
+                      <SampleId
+                        id={sampleName(metadata, e.source)}
+                        whole={WHOLE_ID_CH.name}
+                        className="text-[11px]"
                         style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
-                        title={sampleName(metadata, e.source)}
-                      >
-                        {sampleName(metadata, e.source)}
-                      </div>
+                      />
                     )}
                     {metadata && (
                       <div className="mt-1">
@@ -6455,15 +6799,14 @@ const EventsTable = ({
                     onClick={() => onPick(e.id)}
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
-                    {e.target}
+                    <SampleId id={e.target} font={EVENTS_ID_FONT} />
                     {sampleName(metadata, e.target) && (
-                      <div
-                        className="text-[11px] truncate"
+                      <SampleId
+                        id={sampleName(metadata, e.target)}
+                        whole={WHOLE_ID_CH.name}
+                        className="text-[11px]"
                         style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
-                        title={sampleName(metadata, e.target)}
-                      >
-                        {sampleName(metadata, e.target)}
-                      </div>
+                      />
                     )}
                     {metadata && (
                       <div className="mt-1">
@@ -7450,28 +7793,31 @@ const GalleryCard = React.memo(function GalleryCard({
               return `${event.source}${s ? ` (${s})` : ""} → ${event.target}${t ? ` (${t})` : ""}`;
             })()}
           >
-            <div
-              className="text-[11px] truncate"
+            {/* One line cut as a whole lost the target behind a long
+                source: each id is cut on its own. */}
+            <SamplePair
+              source={event.source}
+              target={event.target}
+              title={null}
+              className="text-[11px]"
               style={{
                 color: "var(--ink)",
                 fontWeight: 700,
                 fontFamily: '"Raleway", sans-serif',
               }}
-            >
-              {event.source} → {event.target}
-            </div>
+            />
             {(sampleName(metadata, event.source) ||
               sampleName(metadata, event.target)) && (
-              <div
-                className="text-[10px] truncate"
+              <SamplePair
+                source={sampleName(metadata, event.source) || event.source}
+                target={sampleName(metadata, event.target) || event.target}
+                title={null}
+                className="text-[10px]"
                 style={{
                   color: "var(--ink-muted)",
                   fontFamily: '"Raleway", sans-serif',
                 }}
-              >
-                {sampleName(metadata, event.source) || event.source} →{" "}
-                {sampleName(metadata, event.target) || event.target}
-              </div>
+              />
             )}
           </div>
         </div>
@@ -7741,6 +8087,7 @@ const SampleCombobox = ({
                         selectSample(s);
                       }}
                       onMouseEnter={() => setHighlightIdx(flatIdx)}
+                      className="truncate"
                       style={{
                         padding: "6px 12px",
                         fontSize: 12,
@@ -7749,6 +8096,7 @@ const SampleCombobox = ({
                         background: isHi ? "var(--bg-info)" : "transparent",
                         cursor: "pointer",
                       }}
+                      title={s}
                     >
                       {s}
                     </div>
@@ -8344,7 +8692,11 @@ const ExplorePairs = ({
               This pair is already in your events list.
             </span>
           ) : (
-            <span className="text-[11px]" style={{ color: "var(--ink-muted)" }}>
+            // These two lines name the target: a long id wraps.
+            <span
+              className="text-[11px]"
+              style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+            >
               {introducedFromLine.length} species fall on the line you placed
               {(() => {
                 if (!ab || !tgt) return null;
@@ -8367,6 +8719,7 @@ const ExplorePairs = ({
                 background: "#d8f0f1",
                 color: "#00787a",
                 fontWeight: 600,
+                overflowWrap: "anywhere",
               }}
             >
               ✓ {feedback.message}
@@ -8489,14 +8842,17 @@ const ExplorePairs = ({
                 }}
               >
                 <div
-                  className="text-[10px] tracking-[0.1em] uppercase"
+                  className="text-[10px] tracking-[0.1em] uppercase flex gap-[0.4em]"
                   style={{
                     color: "var(--ink-muted)",
                     fontWeight: 700,
                     fontFamily: '"Raleway", sans-serif',
                   }}
+                  title={`% of ${tgt || "target"} species`}
                 >
-                  % of {tgt || "target"} species
+                  <span className="shrink-0">% of</span>
+                  <span className="truncate">{tgt || "target"}</span>
+                  <span className="shrink-0">species</span>
                 </div>
                 <div
                   className="tabular mt-1"
@@ -9480,7 +9836,9 @@ const SampleContextCell = ({
     the Events table) so it doesn't need a dedicated column. */
 const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
   <>
-    <div
+    <SampleId
+      id={row.id}
+      whole={WHOLE_ID_CH.alone}
       style={{
         fontFamily: "ui-monospace, monospace",
         color: "var(--ink)",
@@ -9488,22 +9846,19 @@ const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
         fontSize: 13,
         lineHeight: 1.2,
       }}
-    >
-      {row.id}
-    </div>
+    />
     {row.name && (
-      <div
-        className="text-[11px] truncate"
+      <SampleId
+        id={row.name}
+        whole={WHOLE_ID_CH.name}
+        className="text-[11px]"
         style={{
           color: "var(--ink-muted)",
           fontWeight: 400,
           maxWidth: 220,
           marginTop: 2,
         }}
-        title={row.name}
-      >
-        {row.name}
-      </div>
+      />
     )}
     <button
       type="button"
@@ -9963,7 +10318,13 @@ function sampleVerdictChip(sampleId, entry, chip, { neverTargeted = false } = {}
         ? `Remove your verdict on ${sampleId}: no event targets it, so it goes back to the default Not contaminated`
         : `Remove your verdict on ${sampleId}: its verdict then follows the events that target it (automatic)`;
     else if (!state.active)
-      title = `Pending changes nothing here: ${sampleId}'s verdict is automatic (${SAMPLE_VERDICT_TONE[entry.verdict]?.label || entry.verdict}: ${autoVerdictReason(entry.verdict, neverTargeted)}). Evaluate its events to change it, or pick a verdict to set your own`;
+      // A sample no event targets has no events to evaluate: its verdict
+      // is the default, and only a verdict of the curator's replaces it.
+      title = `Pending changes nothing here: ${sampleId}'s verdict is automatic (${SAMPLE_VERDICT_TONE[entry.verdict]?.label || entry.verdict}: ${autoVerdictReason(entry.verdict, neverTargeted)}). ${
+        neverTargeted
+          ? "Pick a verdict to set your own"
+          : "Evaluate its events to change it, or pick a verdict to set your own"
+      }`;
     else
       title = `No verdict on ${sampleId}: none of the events that target it is evaluated yet`;
   } else if (state.auto) {
@@ -13398,26 +13759,30 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
               >
                 <button
                   onClick={() => setSelectedSample(isSelected ? null : s)}
-                  className="flex-1 text-left"
+                  className="flex-1 min-w-0 truncate text-left"
                   style={{ fontWeight: 600 }}
+                  title={s}
                 >
                   {s}
                 </button>
                 {pos ? (
                   <>
-                    <Pill tone={isSelected ? "ink" : "primary"}>
+                    <Pill tone={isSelected ? "ink" : "primary"} className="shrink-0">
                       {pos.plate} · {wellLabel(pos.row, pos.col)}
                     </Pill>
                     <button
                       onClick={() => clearWell(s)}
                       title="remove"
+                      className="shrink-0"
                       style={{ color: isSelected ? "#fff" : "#797870" }}
                     >
                       <X className="w-3 h-3" />
                     </button>
                   </>
                 ) : (
-                  <Pill tone={isSelected ? "ink" : "neutral"}>to place</Pill>
+                  <Pill tone={isSelected ? "ink" : "neutral"} className="shrink-0">
+                    to place
+                  </Pill>
                 )}
               </div>
             );
@@ -14320,13 +14685,16 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
                       )}
                     </div>
                     <div
-                      className="text-[11px] mt-0.5"
+                      className="text-[11px] mt-0.5 flex items-baseline gap-1"
                       style={{ color: "var(--ink-muted)" }}
                     >
-                      {e.source} → {e.target} · probability {e.score.toFixed(2)}
-                      {e.introducedPct != null && (
-                        <> · introduced {formatIntroducedPct(e.introducedPct)}</>
-                      )}
+                      <SamplePair source={e.source} target={e.target} className="min-w-0" />
+                      <span className="shrink-0">
+                        · probability {e.score.toFixed(2)}
+                        {e.introducedPct != null && (
+                          <> · introduced {formatIntroducedPct(e.introducedPct)}</>
+                        )}
+                      </span>
                     </div>
                   </button>
                 );
@@ -14821,20 +15189,16 @@ const BulkPreviewOverlay = ({
                     }}
                   >
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div
+                      <SamplePair
+                        source={e.source}
+                        target={e.target}
                         style={{
                           fontSize: 12,
                           color: "var(--ink)",
                           fontWeight: 700,
                           fontFamily: '"Raleway", sans-serif',
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
                         }}
-                        title={`${e.source} → ${e.target}`}
-                      >
-                        {e.source} → {e.target}
-                      </div>
+                      />
                       <div style={{ marginTop: 2 }}>
                         <RowMeta e={e} />
                       </div>
@@ -16459,7 +16823,11 @@ const ValidateTab = ({
           </div>
         </EventFilterBar>
       )}
-      <div className="grid lg:grid-cols-[260px_1fr] gap-8">
+      {/* minmax(0, 1fr), not 1fr: a 1fr column is at least as wide as its
+          content's longest unbreakable line, and the cascade banner's
+          150-character upstream id pushed the panel out of the page's
+          column. */}
+      <div className="grid lg:grid-cols-[260px_minmax(0,1fr)] gap-8">
       <aside>
         <div
           className="text-[10px] tracking-[0.15em] uppercase mb-3 flex items-center justify-between"
@@ -16718,27 +17086,35 @@ const ValidateTab = ({
         <SectionTitle
           eyebrow={`Event ${idx + 1} of ${events.length}`}
           title={
-            <>
-              {sel.source}
-              {sampleName(metadata, sel.source) && (
-                <span
-                  className="text-[18px] ml-2"
-                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                >
-                  ({sampleName(metadata, sel.source)})
+            // The pair is this page's subject. When it does not fit on
+            // one line the target goes to the next, as the heading's text
+            // always wrapped there, and an id is cut only when it alone is
+            // wider than the line — the first version kept the pair on one
+            // line and cut the benchmark datasets' ids that used to wrap
+            // whole. Each id keeps its width before its name (SampleIdName),
+            // has its whole self in its tooltip, and stays whole in the
+            // page: a double-click selects all of it, a copy copies it.
+            <span className="flex flex-wrap items-baseline" style={{ columnGap: "0.3em" }}>
+              {[sel.source, sel.target].map((id, i) => (
+                <span key={i} className="flex items-baseline min-w-0 max-w-full">
+                  <SampleIdName
+                    id={id}
+                    name={sampleName(metadata, id)}
+                    className="min-w-0"
+                    idProps={{ "data-sample-id": id }}
+                    nameClassName="text-[18px]"
+                    nameStyle={{ color: "var(--ink-muted)", fontWeight: 500 }}
+                  />
+                  {i === 0 && (
+                    // The spaces do not show (they start and end their
+                    // box) but keep the heading's text "source → target".
+                    <span className="shrink-0" style={{ marginLeft: "0.3em" }}>
+                      {" → "}
+                    </span>
+                  )}
                 </span>
-              )}
-              {" → "}
-              {sel.target}
-              {sampleName(metadata, sel.target) && (
-                <span
-                  className="text-[18px] ml-2"
-                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                >
-                  ({sampleName(metadata, sel.target)})
-                </span>
-              )}
-            </>
+              ))}
+            </span>
           }
         />
 
@@ -17080,7 +17456,10 @@ const ValidateTab = ({
                 </div>
               )}
               {autoScore.reasons.length === 0 && (
-                <div className="text-[12px]" style={{ color: "var(--ink-muted)" }}>
+                <div
+                  className="text-[12px]"
+                  style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+                >
                   {scatter?.error
                     ? `${scatter.error}, so none of the checks below can be computed for this pair — it is neither a pass nor a fail. Expected after a CroCoDeEL -s2 run when only one of its two abundance tables is loaded.`
                     : "Open the abundance table to compute."}
@@ -17155,6 +17534,17 @@ const ValidateTab = ({
                 const naValue = scatter?.error
                   ? "not evaluable — sample missing from the abundance table"
                   : "abundance table required";
+                // With the table loaded and both samples in it, a value can
+                // still be missing: R² and the spread need two species on
+                // the line, ρ three species in the pair, the points above
+                // the line a line to measure from (a rate above 0). These
+                // cards read "abundance table required", as if the table
+                // were not loaded; they now say what is missing.
+                const pairOk = !!scatter && !scatter.error;
+                const lineNaValue =
+                  pairOk && diag && diag.n < 2
+                    ? `${diag.n === 1 ? "Only 1 species" : "No species"} on the line — at least 2 needed`
+                    : naValue;
                 return (
               <div className="mt-4">
                 <Criterion
@@ -17165,7 +17555,7 @@ const ValidateTab = ({
                   value={
                     diag?.r2 != null
                       ? `R² = ${diag.r2.toFixed(3)}`
-                      : naValue
+                      : lineNaValue
                   }
                   summary={summaryFor("r2")}
                 />
@@ -17187,7 +17577,7 @@ const ValidateTab = ({
                   value={
                     diag?.decadeRange != null
                       ? `${diag.decadeRange.toFixed(1)} decades`
-                      : naValue
+                      : lineNaValue
                   }
                   summary={summaryFor("decade")}
                 />
@@ -17283,7 +17673,13 @@ const ValidateTab = ({
                           : sel?.cascade
                             ? `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)} — cascade explains)`
                             : `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)})`
-                      : naValue
+                      : pairOk && scatter.logC == null
+                        ? // parseEvents keeps a rate out of (0, 1] as read,
+                          // with a warning: a negative one is not "0".
+                          sel.rate < 0
+                          ? `No contamination line — the event's rate (${(sel.rate * 100).toFixed(1)}%) is below 0`
+                          : "No contamination line — the event's rate is 0"
+                        : naValue
                   }
                   summary={summaryFor("above")}
                 />
@@ -17293,7 +17689,14 @@ const ValidateTab = ({
                   wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects that share no group passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
                   pass={passFor("biosim")}
                   value={(() => {
-                    if (diag?.spearman == null) return naValue;
+                    if (diag?.spearman == null) {
+                      // ρ is computed over the species present in either
+                      // sample (every point of the scatter).
+                      const n = scatter?.points?.length ?? 0;
+                      return pairOk
+                        ? `${n === 1 ? "Only 1 species" : n === 0 ? "No species" : `Only ${n} species`} in source and target — ρ needs at least 3`
+                        : naValue;
+                    }
                     const rhoText = `ρ = ${diag.spearman.toFixed(2)}`;
                     const high = diag.spearman >= 0.7;
                     const isRelated =
@@ -17453,66 +17856,60 @@ const ValidateTab = ({
                           <div>
                             <div className="flex items-center gap-2 mb-1">
                               <span
-                                className="w-2 h-2 rounded-full"
+                                className="w-2 h-2 rounded-full shrink-0"
                                 style={{ background: "#00a3a6" }}
                               />
-                              <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>
+                              <span
+                                className="shrink-0"
+                                style={{ color: "var(--ink-muted)", fontSize: 11 }}
+                              >
                                 source
                               </span>
-                              <span
-                                style={{
+                              <SampleIdName
+                                id={sel.source}
+                                name={sampleName(metadata, sel.source)}
+                                className="min-w-0"
+                                idStyle={{
                                   color: "var(--ink)",
                                   fontWeight: 600,
                                   fontFamily: '"Raleway", sans-serif',
                                 }}
-                              >
-                                {sel.source}
-                              </span>
-                              {sampleName(metadata, sel.source) && (
-                                <span
-                                  style={{
-                                    color: "var(--ink-muted)",
-                                    fontSize: 11,
-                                    fontFamily: '"Raleway", sans-serif',
-                                  }}
-                                  title={sampleName(metadata, sel.source)}
-                                >
-                                  ({sampleName(metadata, sel.source)})
-                                </span>
-                              )}
+                                nameStyle={{
+                                  color: "var(--ink-muted)",
+                                  fontSize: 11,
+                                  fontFamily: '"Raleway", sans-serif',
+                                }}
+                              />
                             </div>
                             <SampleFlags flags={flagSample(sel.source, metadata)} />
                           </div>
                           <div>
                             <div className="flex items-center gap-2 mb-1">
                               <span
-                                className="w-2 h-2 rounded-full"
+                                className="w-2 h-2 rounded-full shrink-0"
                                 style={{ background: "#ed6e6c" }}
                               />
-                              <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>
+                              <span
+                                className="shrink-0"
+                                style={{ color: "var(--ink-muted)", fontSize: 11 }}
+                              >
                                 target
                               </span>
-                              <span
-                                style={{
+                              <SampleIdName
+                                id={sel.target}
+                                name={sampleName(metadata, sel.target)}
+                                className="min-w-0"
+                                idStyle={{
                                   color: "var(--ink)",
                                   fontWeight: 600,
                                   fontFamily: '"Raleway", sans-serif',
                                 }}
-                              >
-                                {sel.target}
-                              </span>
-                              {sampleName(metadata, sel.target) && (
-                                <span
-                                  style={{
-                                    color: "var(--ink-muted)",
-                                    fontSize: 11,
-                                    fontFamily: '"Raleway", sans-serif',
-                                  }}
-                                  title={sampleName(metadata, sel.target)}
-                                >
-                                  ({sampleName(metadata, sel.target)})
-                                </span>
-                              )}
+                                nameStyle={{
+                                  color: "var(--ink-muted)",
+                                  fontSize: 11,
+                                  fontFamily: '"Raleway", sans-serif',
+                                }}
+                              />
                             </div>
                             <SampleFlags flags={flagSample(sel.target, metadata)} />
                           </div>
@@ -19982,6 +20379,61 @@ const HelpTab = ({ onStartTour }) => {
               An empty cell, or NA / N/A / NaN / null / None / -, means "no
               value".
             </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              Lines starting with{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              are comments, as in CroCoDeEL: above the header, and below it
+              too (a row commented out). The header line itself must not
+              start with one. When the line read as the header is not one —
+              a row of numbers in the abundance table, no sample id column in
+              the metadata or the plate map — and a{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line above it is, as in a table written by{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>biom convert</code>{" "}
+              (<code style={{ fontFamily: "ui-monospace, monospace" }}>#OTU ID</code>),
+              mOTUs (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#consensus_taxonomy</code>
+              ) or a QIIME mapping file (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#SampleID</code>
+              ), the file is refused, naming the line to fix. CroCoDeEL skips
+              that line too and takes the first data row for the header, so
+              remove the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              before running CroCoDeEL on the table and loading it here.
+              An abundance header whose sample ids are numbers reads as a
+              row of numbers too: when its first cell names the species
+              column (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>species</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>OTU_ID</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>clade_name</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>id_mgs</code>
+              …, or the first cell of the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line), the table is read as CroCoDeEL reads it and the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line is named in a warning; otherwise the message also says
+              to delete the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line if the line under it is the header.
+              Empty cells at the end of the header line are ignored; an
+              empty header cell between two named ones is named{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>Unnamed: N</code>{" "}
+              (N its column, counted from 0), as CroCoDeEL names it.
+            </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              Sample ids are shown as your files write them. An id too
+              long for its place — a 150-character LIMS id, say — is cut
+              with an ellipsis: hover it to read it whole. The tables cut
+              only long ids: the Samples tab widens for an id of up to 32
+              characters, the Events table, two ids a row, for one of up to
+              about 23 (29 in lower case); a longer one is cut to the room
+              its table has left, never below 12 characters. On a{" "}
+              <em>source → target</em> line, the source keeps its width as
+              long as the target keeps a few characters; a sample's name is
+              cut before its id. The Guided validation header puts the
+              target on a second line rather than cut it, and selecting an
+              id there copies all of it.
+            </p>
             <p style={{ color: "var(--ink-muted)" }}>
               Files are parsed entirely in your browser. Nothing is sent
               to any server.
@@ -20413,8 +20865,10 @@ const HelpTab = ({ onStartTour }) => {
           title="plate_map.tsv"
         >
           <p>
-            Three columns: sample id, plate name, well coordinate — or,
-            instead of the well, its row and column in two columns. Headers
+            Two columns are mandatory: sample id and well coordinate — or,
+            instead of the well, its row and column in two columns. A plate
+            name column is optional: without it every sample is placed on
+            one plate, P1. Headers
             are matched like the metadata's: exactly, ignoring case, spaces,
             underscores, hyphens and dots. A sample placed on more than one
             row keeps its first well; the plate map card names the repeated
@@ -20636,7 +21090,10 @@ const HelpTab = ({ onStartTour }) => {
                 picker (both <em>Automatic</em> by default, as when
                 clicking each event), and three
                 drill-ins → Scatter / → Events / → Samples that scope
-                to that sample and switch tabs.
+                to that sample and switch tabs. A sample no event targets
+                (a source only) has nothing to apply: its verdict is the
+                default Not contaminated unless you set one in the
+                Samples tab.
               </p>
             </div>
             <div>
@@ -21131,7 +21588,9 @@ const HelpTab = ({ onStartTour }) => {
             <em>Keep</em>. <em>Pending</em> changes nothing on an
             automatic verdict, since the events still call for it (its
             tooltip says why): evaluate the events instead, or pick a
-            verdict of your own.
+            verdict of your own. On a sample no event targets, the
+            default Not contaminated has no events behind it: only a
+            verdict of your own replaces it.
           </p>
           <p style={{ marginTop: 6 }}>
             <strong>Sessions saved by an earlier version</strong> are
@@ -21218,6 +21677,12 @@ const HelpTab = ({ onStartTour }) => {
             scored at all. It is shown as <em>not evaluable</em>, in the
             panel as in the HTML report: neither a pass nor a fail, and
             the bulk dialog's pass / fail filters match it with neither.
+            A pair that is in the table can still leave a criterion
+            uncomputed: the line's shape (01) and spread (03) need at
+            least two species on the line, ρ (06) three species in
+            source and target, the points above the line (05) a rate
+            above 0. Its card then says which is missing, and it counts
+            neither way.
           </p>
           <p style={{ marginTop: 6 }}>
             <strong>Low-abundance filter.</strong> A CroCoDeEL run made
@@ -25037,7 +25502,11 @@ const defaultFilter = () => ({
     ) {
       cascadeMap = cascadeCacheRef.current.byId;
     } else {
-      const cascaded = detectCascades(rawEvents, diagAb, metadata);
+      const cascaded = detectCascades(
+        rawEvents,
+        diagAb,
+        metadata ? (source, target) => areRelated(metadata, source, target) : null,
+      );
       cascadeMap = new Map(cascaded.map((e) => [e.id, e.cascade || null]));
       cascadeCacheRef.current = { ab: diagAb, metadata, sig, byId: cascadeMap };
     }
@@ -28459,7 +28928,7 @@ const defaultFilter = () => ({
                     {sampleMismatches.missingCount > 1 ? "s are" : " is"}{" "}
                     missing — scatterplots will show an error for those events.
                     First few:{" "}
-                    <code style={{ fontFamily: "system-ui, monospace" }}>
+                    <code style={{ fontFamily: "system-ui, monospace", overflowWrap: "anywhere" }}>
                       {sampleMismatches.missing.join(", ")}
                       {sampleMismatches.missingCount > 10 ? " …" : ""}
                     </code>
@@ -28922,6 +29391,8 @@ const defaultFilter = () => ({
                 color: "var(--ink-soft)",
                 lineHeight: 1.6,
                 whiteSpace: "pre-wrap",
+                // The body can list sample ids: a long one wraps.
+                overflowWrap: "anywhere",
                 marginBottom: 20,
               }}
             >
@@ -29557,7 +30028,10 @@ const defaultFilter = () => ({
               />
               Back to {label}
               {sampleHint && (
+                // Cut, like every long sample id; the button's title
+                // has it whole.
                 <span
+                  className="truncate"
                   style={{
                     fontFamily: "ui-monospace, monospace",
                     fontWeight: 600,
@@ -29565,6 +30039,7 @@ const defaultFilter = () => ({
                     marginLeft: 2,
                     textTransform: "none",
                     letterSpacing: 0,
+                    maxWidth: 240,
                   }}
                 >
                   {sampleHint}

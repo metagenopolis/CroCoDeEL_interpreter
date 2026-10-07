@@ -44,12 +44,25 @@ export function tsvCell(v) {
 /** Split a TSV text into its header cells, its rows (objects keyed by
     header cell) and the `#` lines before the header. `lineNumbers[i]` is
     the 1-based file line of `rows[i]`, so a message can point the user at
-    the cell to fix. */
+    the cell to fix. `headerLine` is the file line of the header,
+    `headerCells` its cells as written (before the cleaning below), and
+    `commentLines` the `#` lines above it, as { line, cells }: what
+    commentedHeaderError reads.
+
+    A line that starts with "#" is a comment wherever it is, as in
+    CroCoDeEL, which reads its tables with pandas, comment="#": above the
+    header, run metadata or notes; below it, a row commented out. That row
+    used to be read as data: a species "#sp2" in the abundance table's
+    column sums, which CroCoDeEL leaves out, or a sample "#q2:types" in a
+    QIIME 2 metadata file. */
 export function parseTSV(text) {
   const allLines = text.replace(/\r/g, "").split("\n");
   // Separate hash-prefixed header lines (e.g. CroCoDeEL run params) from data
   const headerComments = [];
+  const commentLines = [];
   let header = null;
+  let headerCells = [];
+  let headerLine = 0;
   const rows = [];
   const lineNumbers = [];
   for (let n = 0; n < allLines.length; n++) {
@@ -58,19 +71,25 @@ export function parseTSV(text) {
     // only — what a spreadsheet leaves of a cleared row, which used to
     // become an event with an empty source or a sample named "  ".
     if (!/\S/.test(line)) continue;
-    if (header === null) {
-      if (line.startsWith("#")) {
+    if (line.startsWith("#")) {
+      if (header === null) {
         headerComments.push(line.replace(/^#\s*/, ""));
-      } else {
-        header = line.split("\t").map(unquoteCell);
-        // Trailing tabs on the header line (cleared trailing columns) made
-        // phantom "" columns: an empty sample in the abundance table, a ""
-        // key in every metadata row. Drop the empty trailing header cells;
-        // the row cells under them are then ignored like any cell past
-        // the last column.
-        while (header.length > 0 && header[header.length - 1].trim() === "") {
-          header.pop();
-        }
+        commentLines.push({ line: n + 1, cells: line.split("\t").map(unquoteCell) });
+      }
+      continue;
+    }
+    if (header === null) {
+      headerCells = line.split("\t").map(unquoteCell);
+      headerLine = n + 1;
+      header = withoutTrailingBlanks(headerCells);
+      // An empty (or blank) header cell between two named ones made a ""
+      // column — a sample without a name, a "" key in every metadata
+      // row. pandas, so CroCoDeEL, names it "Unnamed: <0-based column>",
+      // the name CroCoDeEL's events give that sample: so does this. The
+      // first cell is left as it is: R's write.table writes "" above the
+      // row names, the species column here.
+      for (let i = 1; i < header.length; i++) {
+        if (header[i].trim() === "") header[i] = `Unnamed: ${i}`;
       }
       continue;
     }
@@ -80,7 +99,184 @@ export function parseTSV(text) {
     rows.push(obj);
     lineNumbers.push(n + 1);
   }
-  return { header: header || [], rows, headerComments, lineNumbers };
+  return {
+    header: header || [],
+    rows,
+    headerComments,
+    lineNumbers,
+    headerLine,
+    headerCells,
+    commentLines,
+  };
+}
+
+/** The cells of a header line without its empty trailing ones. Trailing
+    tabs on the header line (cleared trailing columns) made phantom ""
+    columns: an empty sample in the abundance table, a "" key in every
+    metadata row. Dropped, the row cells under them are ignored like any
+    cell past the last column. */
+function withoutTrailingBlanks(cells) {
+  const out = [...cells];
+  while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+  return out;
+}
+
+/* ---------- a header written as a comment ----------
+   `biom convert --to-tsv` writes its header as "#OTU ID\tS1\tS2…", a QIIME
+   mapping file as "#SampleID\t…" (QIIME 2 may add a "#q2:types" line under
+   it), mOTUs as "#consensus_taxonomy\t…". A "#" line is a comment, so that
+   line was skipped and the first data row read as the header: the species
+   of that row vanished and the samples were named after its values, or a
+   metadata file failed on "sample_id column not found" listing a row of
+   values. CroCoDeEL reads the abundance table with pandas, comment="#",
+   and misreads it the same way, so the file is refused, naming the line
+   to fix, rather than read otherwise than CroCoDeEL read it.
+
+   Refused only when the line read as the header is not one for this file
+   (each parser says when: a row of numbers in the abundance table, no
+   sample id column in the metadata or the plate map, no source and target
+   in the events) AND a "#" line above it is. A "#" line above a header
+   that is one is a comment, whatever it holds — "#group\tcase\tcase…" or
+   "#unit\trelab\t…" above "species\tS1\tS2…", as CroCoDeEL reads it. */
+
+/** The "#" line above the header whose cells (its "#" taken off) name
+    this file's columns — `isHeader(cells)` says whether they do — as
+    { line, cells }, or null. The lines are tried from the closest one up,
+    QIIME 2 directives ("#q2:types") aside. */
+function headerAsComment(tsv, isHeader) {
+  for (let k = tsv.commentLines.length - 1; k >= 0; k--) {
+    const { cells } = tsv.commentLines[k];
+    const first = cells[0].replace(/^#\s*/, "");
+    if (/^q2:/i.test(first)) continue;
+    if (isHeader([first, ...cells.slice(1)])) return tsv.commentLines[k];
+  }
+  return null;
+}
+
+/** The first three cells of a line, quoted, for a message. */
+function showCells(cells) {
+  return cells.slice(0, 3).map((c) => `"${clip(c, 30)}"`).join(", ") + (cells.length > 3 ? ", …" : "");
+}
+
+/** The error for a header line written as a comment, or null (see
+    headerAsComment for `isHeader`). `after` ends the advice, `otherwise`
+    follows it. */
+function commentedHeaderError(tsv, isHeader, after = "", otherwise = () => "") {
+  const found = headerAsComment(tsv, isHeader);
+  if (!found) return null;
+  const { line, cells } = found;
+  return (
+    `Line ${line} looks like the header (${showCells(cells)}) but starts with "#", ` +
+    `which marks a comment line, here as in CroCoDeEL: it would be skipped, and ` +
+    `line ${tsv.headerLine} (${showCells(tsv.headerCells)}) read as the header. ` +
+    `Remove the "#" at the start of line ${line} and load the file again${after}.${otherwise(line)}`
+  );
+}
+
+/** True when the cells after the first are mostly numbers (or empty /
+    NA), at least one a number: a data row of the abundance table, not its
+    header — a biom table may end its rows with a taxonomy text. (A table
+    whose sample ids are numbers reads so too: see namesSpeciesColumn.) */
+function looksLikeAbundanceRow(cells) {
+  let numbers = 0;
+  let blanks = 0;
+  let texts = 0;
+  for (const c of withoutTrailingBlanks(cells).slice(1)) {
+    const v = parseStrictNumber(c);
+    if (Number.isNaN(v)) texts++;
+    else if (v === null) blanks++;
+    else numbers++;
+  }
+  return numbers > 0 && texts <= numbers + blanks;
+}
+
+/* Words of the species column's title in the usual abundance tables:
+   id_mgs and id_msp (Meteor), species_name (CroCoDeEL's README),
+   clade_name (MetaPhlAn), gtdb_classification (sylph), OTU ID (biom),
+   Feature ID (QIIME 2), consensus_taxonomy (mOTUs), OTU_ID, Taxon, … */
+const SPECIES_TITLE_WORDS = new Set([
+  "species", "strain", "taxon", "taxa", "taxonomy", "otu", "asv", "feature", "clade",
+  "lineage", "classification", "msp", "mgs", "motu", "sgb", "genome", "mag", "organism",
+  "name", "id",
+]);
+
+/** True when `cell`, the first cell of the line read as the header, names
+    the species column, so that the line is the header and its sample ids
+    are numbers ("species\t1\t2\t3", Qiita's "OTU_ID\t10317.000001\t…"):
+    the cell is empty (R's write.table writes "" above the row names), or
+    words without a digit, one of them a usual title word, or it repeats
+    the first cell of a "#" line above (an old header commented out above
+    the renamed one). A data row starts with a species or an OTU instead:
+    "sp1", "otu1", a hash, "k__Bacteria", "Bacteroides vulgatus". */
+function namesSpeciesColumn(cell, tsv) {
+  const t = cell.trim().toLowerCase();
+  if (t === "") return true;
+  const commented = (cells) => cells[0].replace(/^#\s*/, "").trim().toLowerCase();
+  if (tsv.commentLines.some(({ cells }) => commented(cells) === t)) return true;
+  // Words split on what is not a letter and inside camel case
+  // ("FeatureID"); no lookbehind, which Safari reads only from 16.4.
+  return (
+    !/\d/.test(t) &&
+    cell
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .split(/[^A-Za-z]+/)
+      .some((w) => SPECIES_TITLE_WORDS.has(w.toLowerCase()))
+  );
+}
+
+/** The commented-header check of an abundance table: { error } when its
+    header line reads as a data row and a "#" line above has a column name
+    for each of that row's cells — every one after the first named, none
+    twice, as many as the row's cells up to its last value or as all of
+    them (a MetaPhlAn row ends with an empty cell); { warning } when such a
+    "#" line is above a header whose sample ids are numbers
+    (namesSpeciesColumn), which CroCoDeEL reads as it is, so this reads it
+    so too; else null.
+
+    The first version refused such a header as well, and its advice,
+    removing the "#", would have made the comment the header: "#species\tS1
+    \tS2\tS3" above "species\t1\t2\t3", an old header commented out above
+    the renamed one, or a "#sample_name" line of Qiita sample names above
+    "OTU_ID\t10317.000001\t…". The refusal now also says how to load the
+    table when the line read as the header is one after all. */
+function abundanceHeaderCheck(tsv) {
+  if (!looksLikeAbundanceRow(tsv.headerCells)) return null;
+  const width = withoutTrailingBlanks(tsv.headerCells).length;
+  const linesUp = (cells) => {
+    const named = withoutTrailingBlanks(cells);
+    if (named.length < 2 || named.length < width || named.length > tsv.headerCells.length) {
+      return false;
+    }
+    const samples = named.slice(1);
+    return samples.every((c) => c.trim() !== "") && new Set(samples).size === samples.length;
+  };
+  const header = tsv.headerLine;
+  if (namesSpeciesColumn(tsv.headerCells[0], tsv)) {
+    const found = headerAsComment(tsv, linesUp);
+    if (!found) return null;
+    return {
+      warning:
+        `Line ${found.line} (${showCells(found.cells)}) starts with "#": it is read as a comment, ` +
+        `as CroCoDeEL reads it, and line ${header} (${showCells(tsv.headerCells)}) as the header ` +
+        `(its sample ids are numbers). If line ${found.line} is the header, remove its "#", ` +
+        `load the file again and run CroCoDeEL again on the fixed table.`,
+    };
+  }
+  const error = commentedHeaderError(
+    tsv,
+    linesUp,
+    " (if CroCoDeEL ran on this table, run it again on the fixed one: it misread it the same way)",
+    (line) => ` If line ${header} is the header after all (its sample ids are numbers), delete line ${line} instead.`,
+  );
+  return error ? { error } : null;
+}
+
+/** The commented-header error of a file keyed by a column the header line
+    does not name and a "#" line above does (pickColExact on `aliases`;
+    every list of `aliases` must be found), or null. */
+function missingColumnsHeaderError(tsv, ...aliases) {
+  const names = (cells) => aliases.every((a) => pickColExact(cells, a));
+  return names(tsv.header) ? null : commentedHeaderError(tsv, names);
 }
 
 /** Parse a CroCoDeEL-style "key: value | key: value | ..." metadata header. */
@@ -360,7 +556,10 @@ function normalizeEvent(raw, cols, idx, rate, score) {
 }
 
 export function parseEvents(text) {
-  const { header, rows, headerComments, lineNumbers } = parseTSV(text);
+  const tsv = parseTSV(text);
+  const { header, rows, headerComments, lineNumbers } = tsv;
+  const commented = missingColumnsHeaderError(tsv, EVENT_COLS.source, EVENT_COLS.target);
+  if (commented) throw new Error(commented);
   if (rows.length === 0) throw new Error("Empty file or no rows");
   const csv = notTabSeparated(header);
   if (csv) throw new Error(csv);
@@ -554,7 +753,10 @@ export function parseEvents(text) {
                    integer-like names ("1", "2", …) first.
     Cells read as 0 (empty, NA, not a number, negative) come back as 0. */
 export function parseAbundance(text) {
-  const { header, rows } = parseTSV(text);
+  const tsv = parseTSV(text);
+  const { header, rows } = tsv;
+  const commented = abundanceHeaderCheck(tsv);
+  if (commented?.error) throw new Error(commented.error);
   if (header.length < 2) {
     const csv = notTabSeparated(header);
     if (csv) throw new Error(csv);
@@ -680,7 +882,7 @@ export function parseAbundance(text) {
   // "successfully" into a near-empty matrix with the right species and
   // sample counts and blank plots everywhere, so surface the tally instead
   // of failing silently — and say when the cells look like decimal commas.
-  const warnings = [];
+  const warnings = commented?.warning ? [commented.warning] : [];
   if (emptySamples === samples.length) {
     warnings.push(
       `Every sample column sums to 0 — no abundance could be read. ` +
@@ -864,7 +1066,10 @@ function metadataResult(cols, bySample, warnings) {
 }
 
 export function parseMetadata(text) {
-  const { header, rows } = parseTSV(text);
+  const tsv = parseTSV(text);
+  const { header, rows } = tsv;
+  const commented = missingColumnsHeaderError(tsv, METADATA_COLS.sample);
+  if (commented) throw new Error(commented);
   if (header.length < 2) {
     throw new Error(
       notTabSeparated(header) || "At least 2 columns required (sample_id and subject_id)",
@@ -1125,7 +1330,10 @@ export function wellLabel(row, col) {
 }
 
 export function parsePlateMap(text) {
-  const { header, rows, lineNumbers } = parseTSV(text);
+  const tsv = parseTSV(text);
+  const { header, rows, lineNumbers } = tsv;
+  const commented = missingColumnsHeaderError(tsv, PLATE_COLS.sample);
+  if (commented) throw new Error(commented);
   const csv = notTabSeparated(header);
   if (csv) throw new Error(csv);
   // Returned as `cols`, like the metadata's, for the upload card.
