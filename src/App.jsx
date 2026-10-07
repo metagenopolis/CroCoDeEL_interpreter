@@ -24196,6 +24196,13 @@ function AppMain({ initial, storage }) {
     () => curationSummary(rawEvents, sampleCuration),
     [rawEvents, sampleCuration],
   );
+  // The other files, which clearing the events file leaves loaded — for
+  // its question, which named all three whether loaded or not.
+  const otherFiles = [ab && "abundance table", metadata && "metadata", plateMap && "plate map"].filter(Boolean);
+  const stayLoadedPhrase =
+    otherFiles.length === 0
+      ? ""
+      : `The ${otherFiles.length > 1 ? `${otherFiles.slice(0, -1).join(", ")} and ${otherFiles[otherFiles.length - 1]}` : otherFiles[0]} ${otherFiles.length > 1 ? "stay" : "stays"} loaded. `;
   // Tab can be deep-linked via the URL fragment: `#learn`, `#help`,
   // `#scatter`, etc. all land the curator on the matching tab. Lets
   // README sections cite the in-app interpretation guide directly,
@@ -26214,11 +26221,16 @@ const defaultFilter = () => ({
       setTutorialOpen(true);
       return;
     }
+    // Say plainly what would be lost, as loadDataset does.
+    const summary = curationTotals;
     setBulkConfirm({
       kind: "confirm",
       title: "Replace your session with the demo dataset?",
       body:
-        "The guided tour walks through the bundled Lou et al. 2023 P3 demo dataset. To run it, your currently-loaded events, abundance, metadata, plate map and evaluations will be replaced.\n\n" +
+        "The guided tour walks through the bundled Lou et al. 2023 P3 demo dataset. To run it, your currently-loaded events, abundance table, metadata and plate map will be replaced" +
+        (summary.any
+          ? `, and your curation will be lost: ${curationPhrase(summary)}. Download the session first (Download session, on the files bar) to keep it.\n\n`
+          : ".\n\n") +
         "The original files on disk are not affected — you can re-open them after the tour.",
       confirmLabel: "Replace and start tour",
       destructive: true,
@@ -28285,7 +28297,8 @@ const defaultFilter = () => ({
                       title: "Remove the events file and your curation?",
                       body:
                         `Your curation of these events will be lost: ${curationPhrase(curationTotals)}. Download the session first (Download session, on the files bar) to keep it.\n\n` +
-                        "The abundance table, metadata and plate map stay loaded. Your original file on disk is untouched.",
+                        stayLoadedPhrase +
+                        "Your original file on disk is untouched.",
                       confirmLabel: "Remove and lose the curation",
                     }
                   : undefined

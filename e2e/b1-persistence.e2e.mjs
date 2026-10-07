@@ -799,6 +799,30 @@ try {
     );
   });
 
+  /* B1.1(e) The questions say what is lost, and what is not. */
+  await scenario("B1.1 the questions name what is lost", async (page) => {
+    await mark(page, "true positive", 0);
+    // The guided tour replaces the session with the demo's.
+    await openTab(page, "Help");
+    await page.getByRole("button", { name: /Restart guided tour/ }).first().click();
+    const tour = dialog(page, "Replace your session with the demo dataset?");
+    const tourText = ((await tour.count()) ? await tour.innerText() : "").replace(/\s+/g, " ");
+    check(/your curation will be lost: 1 evaluation\./.test(tourText), "B1.1(e) the guided tour's question names the curation it would lose", tourText.slice(0, 300));
+    await tour.getByRole("button", { name: "Cancel" }).click();
+    // Clearing the events names the files that stay loaded — only those.
+    await card(page, "plate_map.tsv").getByRole("button", { name: /^Clear$/ }).click();
+    await dialog(page, "Remove the loaded plate_map.tsv?").getByRole("button", { name: "Remove" }).click();
+    await card(page, "contamination_events.tsv").getByRole("button", { name: /^Clear$/ }).click();
+    const ask = dialog(page, "Remove the events file and your curation?");
+    const text = ((await ask.count()) ? await ask.innerText() : "").replace(/\s+/g, " ");
+    check(
+      /The abundance table and metadata stay loaded\./.test(text) && !/plate map/.test(text),
+      "B1.1(e) clearing the events names the files that stay loaded, not a plate map that is not",
+      text.slice(0, 300),
+    );
+    await ask.getByRole("button", { name: "Cancel" }).click();
+  });
+
   /* B1.2 The parsers' warnings, in the banner, across a reload. */
   await scenario(
     "B1.2 warnings",
