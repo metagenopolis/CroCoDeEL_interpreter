@@ -6,8 +6,8 @@ import {
   applyLowAbundanceFilter,
   automaticScore,
   buildScatter,
-  bulkCriteria,
   cascadeExplanations,
+  eventBulkCriteria,
   introducedPercent,
   lineDiagnostics,
   lowAbundanceFilterFactor,
@@ -14699,8 +14699,8 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
    a per-criterion pass/fail filter. The 6 criteria ARE the data-driven
    checks displayed inline in the Guided validation panel: computed on
    demand for every event using the abundance table, and read off the
-   same automaticScore evaluation (bulkCriteria), so a "pass" here is a
-   ✓ there.
+   same automaticScore evaluation (eventBulkCriteria), so a "pass" here
+   is a ✓ there.
 
    Comment behaviour: if the textarea is empty, existing notes on each
    matched event are preserved untouched. If non-empty, the comment is
@@ -15393,24 +15393,19 @@ const BulkApplyByCriteriaDialog = ({
   // { shape, nOnLine, decade, missing, above, spearman } where each value
   // is true (pass), false (fail), or null (not evaluable).
   //
-  // The values are read off automaticScore (bulkCriteria), the evaluation
-  // the Validate panel draws its ✓ / ✗ from, instead of being re-derived
-  // here. Two re-derivations had already drifted: "missing" once tested
+  // The values are read off automaticScore (eventBulkCriteria, in
+  // src/diagnostics.js, where the unit tests call it), the evaluation the
+  // Validate panel draws its ✓ / ✗ from — never re-derived here. Two
+  // re-derivations had already drifted: "missing" once tested
   // `count <= 2`, and "spearman" tested ρ < 0.7 alone, failing the high-ρ
   // pairs from different subjects that the panel (and the Help) pass as
   // strong contamination — so "✓ pass" here skipped events the panel
-  // ticked.
+  // ticked. Keep this a plain map of eventBulkCriteria.
   const eventCriteria = useMemo(() => {
     if (!ab || !critActive) return null;
     return events.map((e) => {
       try {
-        const sc = buildScatter(ab, e);
-        if (!sc || sc.error) return null;
-        const di = lineDiagnostics(sc);
-        const ab2 = pointsAboveLine(sc);
-        const mi = missingAbundantFromSource(ab, e.source, e.target, e.rate);
-        const rel = areRelated(metadata, e.source, e.target);
-        return bulkCriteria(automaticScore(di, ab2, mi, e.cascade, rel));
+        return eventBulkCriteria(ab, e, areRelated(metadata, e.source, e.target));
       } catch {
         return null;
       }

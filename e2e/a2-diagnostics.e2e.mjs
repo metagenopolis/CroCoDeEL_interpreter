@@ -14,7 +14,10 @@
      5. a run whose header declares `filtering_ab_thr_factor: 20.0` shows
         the low-abundance filter and its toggle, the diagnostics follow
         the filter, switching it off changes them, and the choice survives
-        a reload; a run with "None" shows no toggle.
+        a reload; a run with "None" shows no toggle;
+     6. the bulk dialog's "Biological similarity" pass / fail picks select
+        the events Guided validation ticks / crosses: high ρ between
+        unrelated samples passes, high ρ within a subject or a group fails.
 
    Runs on its own (`node e2e/a2-diagnostics.e2e.mjs`, which starts a
    preview server unless BASE_URL is set) or through e2e/run-all.mjs. */
@@ -67,8 +70,31 @@ function cascadeLines() {
   return lines;
 }
 
-/** Load an events file and an abundance file through the upload cards. */
-async function loadFiles(page, events, abundance) {
+/** SRC spans four decades; the HIGH_* targets hold 10 % of SRC on every
+    species, so they rank exactly like SRC (ρ ≈ 1); LOW holds the same
+    species in reverse order (ρ ≈ −1). Only the metadata tells the HIGH_*
+    pairs apart. */
+const BIOSIM_TARGETS = [
+  "HIGH_UNRELATED",
+  "HIGH_SAME_SUBJECT",
+  "HIGH_SAME_GROUP",
+  "HIGH_NO_METADATA",
+  "LOW",
+];
+function biosimLines() {
+  const lines = [["species", "SRC", ...BIOSIM_TARGETS].join("\t")];
+  for (let i = 0; i < 30; i++) {
+    const src = 10 ** (-4 * (i / 29));
+    const low = 0.1 * 10 ** (-4 * ((29 - i) / 29));
+    const cols = [src, 0.1 * src, 0.1 * src, 0.1 * src, 0.1 * src, low];
+    lines.push([`sp_${i}`, ...cols.map((v) => v.toPrecision(8))].join("\t"));
+  }
+  return lines;
+}
+
+/** Load an events file and an abundance file through the upload cards,
+    and a metadata file if given. */
+async function loadFiles(page, events, abundance, metadata) {
   await tsvInput(page, 0).setInputFiles(events);
   await page
     .getByRole("button", { name: /^Validate$/ })
@@ -76,6 +102,52 @@ async function loadFiles(page, events, abundance) {
     .waitFor({ state: "visible", timeout: 60000 });
   await tsvInput(page, 1).setInputFiles(abundance);
   await page.waitForTimeout(2000);
+  if (metadata) {
+    await tsvInput(page, 2).setInputFiles(metadata);
+    await page.waitForTimeout(1000);
+  }
+}
+
+/* ------------------------------------------------ bulk dialog helpers */
+const applyButton = (page) =>
+  page.getByRole("button", { name: /^Apply to \d+ events?$/ }).first();
+
+/** Open "Bulk apply" from the Events tab. */
+async function openBulk(page) {
+  await openTab(page, "Events");
+  await page.locator('button[aria-label="Bulk apply evaluation"]').first().click();
+  await applyButton(page).waitFor({ timeout: 20000 });
+}
+
+/** Pick "any", "pass" or "fail" for the criterion whose label starts with
+    `label`, and return how many events the dialog would apply to — or
+    null if the criterion row is not there. */
+async function bulkPick(page, label, pick) {
+  const text = { any: "any", pass: "✓ pass", fail: "✗ fail" }[pick];
+  const found = await page.evaluate(
+    ({ label, text }) => {
+      const span = [...document.querySelectorAll("span")].find((el) =>
+        el.textContent.startsWith(label),
+      );
+      const button = span
+        ? [...span.parentElement.querySelectorAll("button")].find(
+            (b) => b.textContent.trim() === text,
+          )
+        : null;
+      button?.click();
+      return !!button;
+    },
+    { label, text },
+  );
+  if (!found) return null;
+  await page.waitForTimeout(400);
+  const name = await applyButton(page).innerText();
+  return Number(name.match(/\d+/)[0]);
+}
+
+async function closeBulk(page) {
+  await page.getByRole("button", { name: /^Cancel$/ }).first().click();
+  await page.waitForTimeout(300);
 }
 
 await startServer();
@@ -308,6 +380,54 @@ try {
     const text = await page.locator("body").innerText();
     check(!/Low-abundance filter/i.test(text), "a run with filtering_ab_thr_factor None shows no filter toggle");
     check(errors.length === 0, "no JS error on the demo", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* ------- 6. bulk dialog: biological similarity as Guided validation
+     The dialog re-derived criterion 06 as ρ < 0.7 alone, so "✓ pass"
+     skipped the strong cross-subject contaminations the panel ticks, and
+     "✗ fail" took every high-ρ pair. It now reads the panel's own
+     evaluation: high ρ passes between unrelated samples, fails within a
+     subject or a group (a household), and is inconclusive — matched by
+     neither pick — without metadata. */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    const introduced = Array.from({ length: 20 }, (_, i) => `sp_${i}`).join(",");
+    await loadFiles(
+      page,
+      tsvFile("contamination_events.tsv", [
+        "source\ttarget\trate\tprobability\tcontamination_specific_species",
+        ...BIOSIM_TARGETS.map((t, i) => `SRC\t${t}\t0.1\t${(0.95 - i * 0.05).toFixed(2)}\t${introduced}`),
+      ]),
+      tsvFile("species_abundance.tsv", biosimLines()),
+      tsvFile("metadata.tsv", [
+        "sample_id\tsubject_id\tgroup_id",
+        "SRC\talice\tfamily1",
+        "HIGH_UNRELATED\tbob\t",
+        "HIGH_SAME_SUBJECT\talice\t",
+        "HIGH_SAME_GROUP\tdave\tfamily1",
+        "LOW\tcarol\t",
+      ]),
+    );
+    // Guided validation opens on SRC → HIGH_UNRELATED (highest
+    // probability) and ticks criterion 06.
+    await openTab(page, "Validate");
+    const text = await page.locator("body").innerText();
+    check(
+      /despite different subjects — consistent with strong contamination/i.test(text),
+      "the panel passes high ρ between different subjects",
+    );
+
+    await openBulk(page);
+    const label = "Biological similarity";
+    const pass = await bulkPick(page, label, "pass");
+    check(pass === 2, "bulk “✓ pass” selects the unrelated high-ρ pair and the low-ρ pair", `Apply to ${pass}`);
+    const fail = await bulkPick(page, label, "fail");
+    check(fail === 2, "bulk “✗ fail” selects the same-subject and same-group high-ρ pairs", `Apply to ${fail}`);
+    const all = await bulkPick(page, label, "any");
+    check(all === 5, "“any” keeps all five events", `Apply to ${all}`);
+    await closeBulk(page);
+    check(errors.length === 0, "no JS error in the bulk dialog", errors[0] || "");
     await ctx.close();
   }
 } finally {
