@@ -45,7 +45,9 @@ describe("a header line written as a comment", () => {
     expect(message).toContain('starts with "#"');
     expect(message).toContain('line 3 ("sp1", "10", "20", …) read as the header');
     expect(message).toContain("which marks a comment line, here as in CroCoDeEL");
-    expect(message).toMatch(/Remove the "#" at the start of line 2 and load the file again\.$/);
+    expect(message).toMatch(
+      /Remove the "#" at the start of line 2 and load the file again \(if CroCoDeEL ran on this table, run it again on the fixed one: it misread it the same way\)\.$/,
+    );
   });
 
   it("loads the same table once the # is removed", () => {
@@ -123,6 +125,127 @@ describe("a header line written as a comment", () => {
     expect(t.header).toEqual(["OTU ID", "S1", "S2"]);
     expect(t.rows).toEqual([{ "OTU ID": "sp", S1: "1", S2: "2" }]);
     expect(t.headerComments).toEqual(["OTU ID\tS1\tS2"]);
+  });
+});
+
+/* Round 1 of the review: the first version refused any "#" line above
+   the header as wide as it, all cells named — a comment above a real
+   header too, which CroCoDeEL reads as a comment (crocodeel.ab_table_utils
+   .read on "#group\tcase\tcase\tcontrol" above "species\tS1\tS2\tS3":
+   columns ['S1', 'S2', 'S3']), and its advice, removing the "#", would
+   have made that comment the header. A file is now refused only when the
+   line read as its header is not one (a row of numbers in the abundance
+   table, no sample id column in the metadata or the plate map, no source
+   and target in the events) and a "#" line above it is. */
+describe("a '#' line above a header that is one", () => {
+  it("loads an abundance table with a comment as wide as its header, as CroCoDeEL does", () => {
+    const rows = ["sp1\t1\t2\t3", "sp2\t4\t5\t6"];
+    for (const comment of ["#group\tcase\tcase\tcontrol", "#unit\trelab\trelab\trelab", "#a\tb\tc\td"]) {
+      const ab = parseAbundance([comment, "species\tS1\tS2\tS3", ...rows].join("\n"));
+      expect(ab.samples).toEqual(["S1", "S2", "S3"]);
+      expect(ab.species).toEqual(["sp1", "sp2"]);
+      expect(ab.colSums).toEqual({ S1: 5, S2: 7, S3: 9 });
+    }
+    // An old header commented out above the renamed one.
+    const renamed = parseAbundance("#OTU ID\tS1\tS2\nOTU_ID\tS1\tS2\nsp1\t1\t2\nsp2\t3\t4");
+    expect(renamed.firstHeader).toBe("OTU_ID");
+    expect(renamed.samples).toEqual(["S1", "S2"]);
+  });
+
+  it("loads a table whose sample ids are numbers when no '#' line lines up with them", () => {
+    const ab = parseAbundance("# made by hand\nspecies\t1001\t1002\nsp1\t1\t2\nsp2\t3\t4");
+    expect(ab.samples).toEqual(["1001", "1002"]);
+    expect(ab.species).toEqual(["sp1", "sp2"]);
+  });
+
+  it("loads a metadata file, a plate map and an events file under a two-cell comment", () => {
+    const md = parseMetadata("#exported by\tLIMS v2\nsample_id\tsubject_id\nS1\tP1\nS2\tP2");
+    expect(Object.keys(md.bySample)).toEqual(["S1", "S2"]);
+    const pm = parsePlateMap("#plate\tP1\nsample_id\twell\nS1\tA01\nS2\tA02");
+    expect(Object.keys(pm.bySample)).toEqual(["S1", "S2"]);
+    const { events } = parseEvents(
+      "#note\tby\tthe\tlab\tteam\nsource\ttarget\trate\tprobability\tcontamination_specific_species\nS1\tS2\t0.1\t0.9\tsp1",
+    );
+    expect(events.map((e) => [e.source, e.target])).toEqual([["S1", "S2"]]);
+  });
+});
+
+describe("a header written as a comment, in the layouts the review found", () => {
+  it("refuses a header whose first cell is only '#', naming that line", () => {
+    // pandas reads it like the biom table: columns ['10', '20', '5'].
+    expect(() => parseAbundance("#\tS1\tS2\tS3\nsp1\t10\t20\t5\nsp2\t30\t40\t6\nsp3\t1\t0\t7")).toThrow(
+      /^Line 1 looks like the header \("#", "S1", "S2", …\) but starts with "#".* line 2 \("sp1", "10", "20", …\) read as the header/,
+    );
+    // Without the "#", the first cell is empty, as R's write.table writes it.
+    const ab = parseAbundance("\tS1\tS2\tS3\nsp1\t10\t20\t5\nsp2\t30\t40\t6\nsp3\t1\t0\t7");
+    expect(ab.samples).toEqual(["S1", "S2", "S3"]);
+    expect(ab.species).toEqual(["sp1", "sp2", "sp3"]);
+  });
+
+  it("names the '#SampleID' line of a QIIME 2 metadata file, not its '#q2:types' line", () => {
+    const qiime2 = [
+      "#SampleID\tsubject_id\tbody-site",
+      "#q2:types\tcategorical\tcategorical",
+      "L1S8\tP1\tgut",
+      "L1S57\tP2\tgut",
+    ].join("\n");
+    expect(() => parseMetadata(qiime2)).toThrow(
+      /^Line 1 looks like the header \("#SampleID", "subject_id", "body-site"\) but starts with "#".* line 3 \("L1S8", "P1", "gut"\) read as the header\. Remove the "#" at the start of line 1 and load the file again\.$/,
+    );
+    // Fixed as the message says: the "#q2:types" line under the header is
+    // a comment, not a sample.
+    const md = parseMetadata(qiime2.replace(/^#SampleID/, "SampleID"));
+    expect(Object.keys(md.bySample)).toEqual(["L1S8", "L1S57"]);
+    expect(md.cols.sample).toBe("SampleID");
+    expect(md.bySample.L1S57.subject).toBe("P2");
+  });
+
+  it("names the header of a QIIME 1 mapping file with a comment under it", () => {
+    // The layout of QIIME 1's tutorial Fasting_Map.txt.
+    const qiime1 = [
+      "#SampleID\tBarcodeSequence\tLinkerPrimerSequence\tTreatment\tDOB\tDescription",
+      "#Example mapping file for the QIIME analysis package.  These 9 samples are from a study.",
+      "PC.354\tAGCACGAGCCTA\tYATGCTGCCTCCCGTAGGAGT\tControl\t20061218\tControl_mouse_I.D._354",
+      "PC.355\tAACTCGTCGATG\tYATGCTGCCTCCCGTAGGAGT\tControl\t20061218\tControl_mouse_I.D._355",
+    ].join("\n");
+    expect(() => parseMetadata(qiime1)).toThrow(
+      /^Line 1 looks like the header \("#SampleID", "BarcodeSequence", "LinkerPrimerSequence", …\).* line 3 \("PC\.354", "AGCACGAGCCTA", "YATGCTGCCTCCCGTAGGAGT", …\) read as the header/,
+    );
+    // Fixed, the file is read with its own headers: it has no subject
+    // column, and the message now lists the right ones.
+    expect(() => parseMetadata(qiime1.replace(/^#SampleID/, "SampleID"))).toThrow(
+      /^subject_id column not found: .* this file has: SampleID, BarcodeSequence, LinkerPrimerSequence, Treatment, DOB, Description\.$/,
+    );
+    const md = parseMetadata(
+      qiime1.replace(/^#SampleID/, "SampleID").replace("\tDescription", "\tsubject_id"),
+    );
+    expect(Object.keys(md.bySample)).toEqual(["PC.354", "PC.355"]);
+  });
+});
+
+/* pandas (comment="#") skips a "#" line wherever it is; parseTSV skipped
+   it above the header only, and read one below it as a row. */
+describe("a '#' line under the header", () => {
+  it("is a comment in the abundance table, as in CroCoDeEL: no species, no share of the sums", () => {
+    // crocodeel.ab_table_utils.read: index ['sp1', 'sp3'].
+    const ab = parseAbundance("species\tS1\tS2\nsp1\t1\t2\n#sp2\t3\t4\nsp3\t5\t6");
+    expect(ab.species).toEqual(["sp1", "sp3"]);
+    expect(ab.colSums).toEqual({ S1: 6, S2: 8 });
+  });
+
+  it("is a comment in the other inputs too", () => {
+    const md = parseMetadata("sample_id\tsubject_id\nS1\tP1\n#S2\tP2\nS3\tP3");
+    expect(Object.keys(md.bySample)).toEqual(["S1", "S3"]);
+    const { events } = parseEvents(
+      "source\ttarget\trate\tprobability\nS1\tS2\t0.1\t0.9\n# S3\tS4\t0.2\t0.8\nS5\tS6\t0.3\t0.7",
+    );
+    expect(events.map((e) => e.source)).toEqual(["S1", "S5"]);
+    const { rows, lineNumbers } = parseTSV("a\tb\n1\t2\n#x\ty\n3\t4");
+    expect(rows).toEqual([
+      { a: "1", b: "2" },
+      { a: "3", b: "4" },
+    ]);
+    expect(lineNumbers).toEqual([2, 4]);
   });
 });
 

@@ -11,7 +11,9 @@
      - B3.3  a cascade is found when the events file spells the shared
              sample differently from the abundance table;
      - B3.4  a biom-style table, whose header line starts with "#", is
-             refused with the line to fix, and loads once it is fixed;
+             refused with the line to fix, and loads once it is fixed; a
+             "#" line above a real header stays a comment; a QIIME 2
+             metadata file is refused naming its "#SampleID" line;
      - B3.5  the Pending chip of a sample no event targets does not send
              the curator to its events, and the Help does not count the
              plate among the plate map's required columns.
@@ -570,7 +572,7 @@ try {
     check(
       body.includes(
         `Abundance file: Line 2 looks like the header ("#OTU ID", "${header[1]}", "${header[2]}", …) but starts with "#", which marks a comment line, here as in CroCoDeEL`,
-      ) && body.includes('Remove the "#" at the start of line 2 and load the file again.'),
+      ) && body.includes('Remove the "#" at the start of line 2 and load the file again (if CroCoDeEL ran on this table'),
       "B3.4 a biom-style table is refused with the line to fix",
       body.match(/Abundance file:[^\n]*/)?.[0] || "(no error)",
     );
@@ -585,6 +587,50 @@ try {
       /91 samples × 927 species/.test(body) && !/Abundance file:/.test(body),
       "B3.4 the same table loads once the # is removed",
       body.match(/\d+ samples × \d+ species/)?.[0] || "(not loaded)",
+    );
+  });
+
+  /* B3.4 — "#" lines that are not the header. A comment as wide as the
+     abundance table's header, above it, stays a comment, as CroCoDeEL
+     reads it (the first version refused the table and advised removing
+     the "#", which would have made the comment the header). A QIIME 2
+     metadata file is refused naming its "#SampleID" line, not the
+     "#q2:types" line under it, and once fixed loads without a sample named
+     after that line. */
+  await scenario("B3.4 comment lines that are not the header", async (page) => {
+    const lines = demo("species_abundance.tsv").split("\n");
+    const samples = lines[0].split("\t").slice(1);
+    const annotated = [["#unit", ...samples.map(() => "relab")].join("\t"), ...lines].join("\n");
+    await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+    await upload(page, 1, "species_abundance.tsv", annotated);
+    let body = await page.locator("body").innerText();
+    check(
+      /91 samples × 927 species/.test(body) && !/Abundance file:/.test(body),
+      "B3.4 a comment as wide as the header, above it, is read as a comment",
+      body.match(/Abundance file:[^\n]*/)?.[0] || body.match(/\d+ samples × \d+ species/)?.[0] || "",
+    );
+    const md = demo("metadata.tsv").split("\n");
+    const cols = md[0].split("\t").slice(1);
+    const qiime2 = [
+      ["#SampleID", ...cols].join("\t"),
+      ["#q2:types", ...cols.map(() => "categorical")].join("\t"),
+      ...md.slice(1),
+    ].join("\n");
+    await upload(page, 2, "metadata.tsv", qiime2);
+    body = await page.locator("body").innerText();
+    check(
+      body.includes(
+        `Metadata: Line 1 looks like the header ("#SampleID", "${cols[0]}", "${cols[1]}", …) but starts with "#"`,
+      ) && body.includes('Remove the "#" at the start of line 1 and load the file again.'),
+      "B3.4 a QIIME 2 metadata file is refused naming its #SampleID line",
+      body.match(/Metadata:[^\n]*/)?.[0] || "(no error)",
+    );
+    await upload(page, 2, "metadata.tsv", qiime2.replace(/^#SampleID/, "SampleID"));
+    body = await page.locator("body").innerText();
+    check(
+      /\b91 samples annotated/.test(body) && !/Metadata:/.test(body),
+      "B3.4 fixed, the QIIME 2 file loads its 91 samples, the #q2:types line a comment",
+      body.match(/\d+ samples annotated/)?.[0] || body.match(/Metadata:[^\n]*/)?.[0] || "(not loaded)",
     );
   });
 } finally {
