@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseAbundance, parseMetadata } from "../src/parsing.js";
-import { sparsifyAbundance } from "../src/persistence.js";
+import { parseAbundance, parseEvents, parseMetadata } from "../src/parsing.js";
+import { sessionFromPayload, sparsifyAbundance } from "../src/persistence.js";
 import {
   abundanceToTSV,
   buildCuratedAbundance,
@@ -147,5 +147,34 @@ describe("abundanceToTSV from the input's own rows", () => {
     const { colSums: _drop, ...old } = t;
     expect(abundanceToTSV(old).split("\n")[2]).toBe(`b\t0\t${String(t.matrix.b.F)}\t0`);
     expect(abundanceToTSV(old).split("\n")[1]).toBe(`a\t${String(t.matrix.a.C)}\t${t.matrix.a.F.toExponential()}\t${String(t.matrix.a.B)}`);
+  });
+});
+
+/* Could a rate or a probability that is not a number reach the events
+   TSVs, which write it as an empty cell that CroCoDeEL's float() refuses?
+   Not through any path: parseEvents refuses a cell that is not a number,
+   the session import refuses an event whose rate or probability is not a
+   finite number (1e999 in a JSON file reads as Infinity), main's stored
+   sessions read such a cell as 0 (parseFloat(...) || 0), and a manual
+   event takes its rate from a slider. */
+describe("a rate that is not a number", () => {
+  const event = (extra) => ({
+    events: [{ id: 0, source: "S1", target: "S2", contamination_rate: 0.1, probability: 0.9, ...extra }],
+  });
+
+  it("is refused by the session import", () => {
+    for (const extra of [{ contamination_rate: "x" }, { probability: "0,5" }, { contamination_rate: {} }]) {
+      const r = sessionFromPayload(event(extra));
+      expect(r.ok, JSON.stringify(extra)).toBe(false);
+      expect(r.errors[0]).toMatch(/is not a number/);
+    }
+    const inf = sessionFromPayload(JSON.parse('{"events":[{"id":0,"source":"S1","target":"S2","contamination_rate":1e999,"probability":0.9}]}'));
+    expect(inf.ok).toBe(false);
+    expect(inf.errors[0]).toMatch(/contamination_rate is not a number/);
+  });
+
+  it("is refused by the events parser", () => {
+    expect(() => parseEvents("source\ttarget\trate\tprobability\nS1\tS2\tx\t0.9")).toThrow(/"x" is not a number/);
+    expect(() => parseEvents("source\ttarget\trate\tprobability\nS1\tS2\t1e999\t0.9")).toThrow(/is not a number/);
   });
 });
