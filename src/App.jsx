@@ -8,6 +8,7 @@ import {
   withManualVerdict,
   withManualAction,
   actionChipState,
+  verdictChipState,
   applyTargetSideEffects,
   migrateSampleCuration,
   SAMPLE_CURATION_VERSION,
@@ -7560,12 +7561,13 @@ const EventsTable = ({
                       event's target sample. Editable inline (writes
                       via setSampleVerdict), so curating from the
                       events table no longer requires a hop to the
-                      Samples tab. */}
+                      Samples tab. An automatic verdict is drawn and
+                      tagged as on the Samples tab (sampleVerdictChip). */}
                   <td
                     className="px-3 py-2.5"
                     style={{ borderLeft: "1px solid var(--border)" }}
                   >
-                    <div className="flex gap-0.5">
+                    <div className="flex gap-0.5 items-center">
                       {[
                         {
                           id: "pending",
@@ -7588,9 +7590,11 @@ const EventsTable = ({
                           tone: SAMPLE_VERDICT_TONE.uncertain,
                         },
                       ].map((opt) => {
-                        const cur =
-                          sampleCuration?.[e.target]?.verdict || "pending";
-                        const active = cur === opt.id;
+                        const chip = sampleVerdictChip(
+                          e.target,
+                          sampleCuration?.[e.target],
+                          opt.id,
+                        );
                         const Icon = opt.Icon;
                         return (
                           <button
@@ -7601,18 +7605,18 @@ const EventsTable = ({
                               if (setSampleVerdict)
                                 setSampleVerdict(e.target, opt.id);
                             }}
-                            title={`Set ${e.target}'s sample-level verdict to ${opt.tone.label}`}
+                            data-verdict-chip={opt.id}
+                            title={
+                              chip.title ||
+                              `Set ${e.target}'s sample-level verdict to ${opt.tone.label}`
+                            }
                             className="flex items-center justify-center"
                             style={{
                               width: 24,
                               height: 24,
                               padding: 0,
                               borderRadius: 12,
-                              background: active
-                                ? opt.tone.bg
-                                : "var(--bg-card)",
-                              color: active ? "#fff" : opt.tone.bg,
-                              border: `1px solid ${active ? opt.tone.bg : "var(--border)"}`,
+                              ...sampleChipColors(opt.tone.bg, chip.active, chip.auto),
                               cursor: "pointer",
                             }}
                           >
@@ -7620,6 +7624,10 @@ const EventsTable = ({
                           </button>
                         );
                       })}
+                      {sampleCuration?.[e.target]?.verdict &&
+                        sampleCuration[e.target].verdictAuto && (
+                          <SampleAutoMark title={AUTO_VERDICT_MARK_TITLE} />
+                        )}
                     </div>
                   </td>
                   {actionEnabled && (
@@ -7938,6 +7946,7 @@ const GalleryCard = React.memo(function GalleryCard({
   sampleAction,
   sampleActionAuto = false,
   sampleVerdict,
+  sampleVerdictAuto = false,
   setSampleVerdict,
   onPopoverOpen,
   onPopoverClose,
@@ -8294,7 +8303,14 @@ const GalleryCard = React.memo(function GalleryCard({
                     { id: "correct", k: SAMPLE_VERDICT_TONE.correct },
                     { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
                   ].map((opt) => {
-                    const active = (sampleVerdict || "pending") === opt.id;
+                    // Drawn and labelled as on the Samples tab: an
+                    // automatic verdict is lighter, dashed, "auto".
+                    const chip = sampleVerdictChip(
+                      event.target,
+                      { verdict: sampleVerdict, verdictAuto: sampleVerdictAuto },
+                      opt.id,
+                    );
+                    const active = chip.active;
                     return (
                       <button
                         key={opt.id}
@@ -8303,6 +8319,7 @@ const GalleryCard = React.memo(function GalleryCard({
                           ev.stopPropagation();
                           setSampleVerdict(event.target, opt.id);
                         }}
+                        data-verdict-chip={opt.id}
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
@@ -8310,9 +8327,8 @@ const GalleryCard = React.memo(function GalleryCard({
                           height: 22,
                           padding: "0 8px",
                           borderRadius: 11,
-                          background: active ? opt.k.bg : "var(--bg-card)",
+                          ...sampleChipColors(opt.k.bg, active, chip.auto),
                           color: active ? "#fff" : "var(--ink)",
-                          border: `1px solid ${active ? opt.k.bg : "var(--border)"}`,
                           cursor: "pointer",
                           fontWeight: 700,
                           letterSpacing: "0.04em",
@@ -8320,7 +8336,7 @@ const GalleryCard = React.memo(function GalleryCard({
                           fontFamily: '"Raleway", sans-serif',
                           fontSize: 10,
                         }}
-                        title={`Set target verdict to "${opt.k.label}"`}
+                        title={chip.title || `Set target verdict to "${opt.k.label}"`}
                       >
                         <span
                           style={{
@@ -8331,6 +8347,7 @@ const GalleryCard = React.memo(function GalleryCard({
                           }}
                         />
                         {opt.k.label}
+                        {chip.auto ? " · auto" : ""}
                       </button>
                     );
                   })}
@@ -9984,6 +10001,12 @@ const ScatterTabInner = ({
               )
             }
             sampleVerdict={sampleCuration?.[e.target]?.verdict || null}
+            sampleVerdictAuto={
+              !!(
+                sampleCuration?.[e.target]?.verdict &&
+                sampleCuration[e.target].verdictAuto
+              )
+            }
             setSampleVerdict={setSampleVerdict}
             onPopoverOpen={onPopoverOpen}
             onPopoverClose={onPopoverClose}
@@ -10864,8 +10887,9 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
     the textual label so the row width stays compact. An automatic
     verdict (derived from the events, or the Not contaminated default of
     a sample no event targets) is drawn lighter, with a dashed rim, and
-    marked "auto"; clicking it makes it the curator's own, Pending hands
-    the sample back to the rule. Memoised. */
+    marked "auto"; clicking it makes it the curator's own, Pending on the
+    curator's own verdict hands the sample back to the rule
+    (sampleVerdictChip). Memoised. */
 const SAMPLE_VERDICT_ICON = {
   pending: Circle,
   contaminated: ThumbsDown,
@@ -10898,7 +10922,51 @@ const SampleAutoMark = ({ title }) => (
     auto
   </span>
 );
+/** Tooltip of the "auto" tag next to an automatic sample verdict. */
+const AUTO_VERDICT_MARK_TITLE =
+  "Automatic verdict: derived from the events that target this sample. Click a verdict to set it yourself; Pending removes a verdict you set, handing the sample back to this rule.";
+
+/** Why an automatic sample verdict is what it is: the rule of
+    src/curation.js, in the words of the chips' tooltips. */
+function autoVerdictReason(verdict, neverTargeted) {
+  if (neverTargeted) return "no event targets it";
+  if (verdict === "contaminated") return "an event that targets it is TP";
+  if (verdict === "uncertain")
+    return "an event that targets it is Uncertain, none is TP";
+  return "an event that targets it is FP, none is TP or Uncertain";
+}
+
+/** The verdict chips of a sample (Pending / Contaminated / Not
+    contaminated / Uncertain), as the Samples tab, the Events table, the
+    gallery cards and Guided validation show them: which one is active,
+    whether that verdict is automatic (drawn lighter, dashed, tagged
+    auto) and, where a click would not do what the chip's name says, a
+    title that tells what it does (verdictChipState in src/curation.js):
+    an automatic verdict has no Pending to go back to — the events still
+    call for it — while Pending on the curator's own verdict hands the
+    sample back to the rule. `title` is null where the view's own
+    "set … to …" wording is right. */
+function sampleVerdictChip(sampleId, entry, chip, { neverTargeted = false } = {}) {
+  const state = verdictChipState(entry, chip);
+  const label = SAMPLE_VERDICT_TONE[chip]?.label || chip;
+  let title = null;
+  if (chip === "pending") {
+    if (state.changes)
+      title = neverTargeted
+        ? `Remove your verdict on ${sampleId}: no event targets it, so it goes back to the default Not contaminated`
+        : `Remove your verdict on ${sampleId}: its verdict then follows the events that target it (automatic)`;
+    else if (!state.active)
+      title = `Pending changes nothing here: ${sampleId}'s verdict is automatic (${SAMPLE_VERDICT_TONE[entry.verdict]?.label || entry.verdict}: ${autoVerdictReason(entry.verdict, neverTargeted)}). Evaluate its events to change it, or pick a verdict to set your own`;
+    else
+      title = `No verdict on ${sampleId}: none of the events that target it is evaluated yet`;
+  } else if (state.auto) {
+    title = `${label}, automatic: ${autoVerdictReason(chip, neverTargeted)}. Click to make it your own decision`;
+  }
+  return { ...state, title };
+}
+
 const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSampleVerdict }) {
+  const entry = { verdict: row.verdict, verdictAuto: row.verdictAuto };
   return (
   <div className="flex gap-1">
     {[
@@ -10907,13 +10975,16 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
       { id: "correct", k: SAMPLE_VERDICT_TONE.correct },
       { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
     ].map((opt) => {
-      const active = row.verdict === opt.id;
+      const chip = sampleVerdictChip(row.id, entry, opt.id, {
+        neverTargeted: row.neverTargeted,
+      });
       const Icon = SAMPLE_VERDICT_ICON[opt.id];
       return (
         <button
           key={opt.id}
           type="button"
           onClick={() => setSampleVerdict(row.id, opt.id)}
+          data-verdict-chip={opt.id}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -10922,10 +10993,10 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
             height: 24,
             padding: 0,
             borderRadius: 12,
-            ...sampleChipColors(opt.k.bg, active, row.verdictAuto),
+            ...sampleChipColors(opt.k.bg, chip.active, chip.auto),
             cursor: "pointer",
           }}
-          title={`Verdict: ${opt.k.label}`}
+          title={chip.title || `Verdict: ${opt.k.label}`}
           aria-label={`Set verdict to ${opt.k.label}`}
         >
           <Icon className="w-3.5 h-3.5" />
@@ -10933,7 +11004,7 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
       );
     })}
     {row.verdictAuto && (
-      <SampleAutoMark title="Automatic verdict: derived from the events that target this sample (Not contaminated when no event targets it). Click a verdict to set it yourself; Pending hands the sample back to the automatic rule." />
+      <SampleAutoMark title="Automatic verdict: derived from the events that target this sample (Not contaminated when no event targets it). Click a verdict to set it yourself; Pending removes a verdict you set, handing the sample back to this rule." />
     )}
   </div>
   );
@@ -21699,10 +21770,13 @@ const HelpTab = ({ onStartTour }) => {
             Automatic values are drawn lighter, with a dashed rim, and
             tagged <em>auto</em> (Samples tab, Events table, scatter card
             popover). Clicking a sample-level verdict or action makes it
-            yours; choosing <em>Pending</em>, or clearing your action,
-            hands the sample back to the automatic rule. On a
-            Contaminated sample that means Suppress again: to keep it in
-            the curated table, pick <em>Keep</em>.
+            yours; choosing <em>Pending</em> on a verdict you set, or
+            clearing your action, hands the sample back to the automatic
+            rule. On a Contaminated sample that means Suppress again: to
+            keep it in the curated table, pick <em>Keep</em>.{" "}
+            <em>Pending</em> changes nothing on an automatic verdict, since
+            the events still call for it (its tooltip says why): evaluate
+            the events instead, or pick a verdict of your own.
           </p>
           <p style={{ marginTop: 6 }}>
             <strong>Sessions saved by an earlier version</strong> are

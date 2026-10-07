@@ -31,9 +31,10 @@
    both presets, the Network node popover, a reset.
 
    The module also holds what the readers share: the default of a sample
-   no event targets (buildEffectiveSampleCuration), the keep / suppress
-   counts (sampleActionCounts) and the migration of stored sessions
-   (migrateSampleCuration). */
+   no event targets (buildEffectiveSampleCuration), what a click on a
+   sample's verdict or action chip does in every view (verdictChipState,
+   actionChipState), the keep / suppress counts (sampleActionCounts) and
+   the migration of stored sessions (migrateSampleCuration). */
 
 /** A stored verdict / action that counts as set. "pending" is how the
     pickers spell "no verdict" and is never stored on purpose, but older
@@ -247,6 +248,29 @@ export function actionChipState(entry, chip, { neverTargeted = false } = {}) {
     next: null,
     returnsTo: automaticAction(entry.verdict, neverTargeted),
   };
+}
+
+/** What a click on one of the verdict chips of a sample (`chip`:
+    "pending", "contaminated", "correct" or "uncertain") does, given its
+    effective entry — the same in every view:
+
+      a verdict  → that verdict, set by hand (on the automatic one: the
+                   same verdict, made the curator's own);
+      Pending    → the curator's verdict is removed and the rule's
+                   applies again. An automatic verdict has nothing to
+                   remove: the events still call for it, so it stays.
+
+    Returns { active, auto, next, changes }: `next` is the verdict to
+    write with withManualVerdict ("pending" removes the curator's), and
+    `changes` is false when the click leaves the sample as it is — the
+    chip must then say why instead of promising a change. */
+export function verdictChipState(entry, chip) {
+  const verdict = isSet(entry?.verdict) ? entry.verdict : "pending";
+  const manual = hasManualVerdict(entry);
+  const active = verdict === chip;
+  const auto = active && verdict !== "pending" && !manual;
+  const changes = chip === "pending" ? manual : !(active && manual);
+  return { active, auto, next: chip, changes };
 }
 
 /** The sample side of a bulk evaluation: for each target of the matched

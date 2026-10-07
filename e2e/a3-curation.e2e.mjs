@@ -960,6 +960,66 @@ try {
     check(s.suppress === 2, "Overview: 63D9 and NC3 to suppress", `suppress=${s.suppress}`);
   });
 
+  /* The verdict chips, likewise. Outside the Samples tab an automatic
+     verdict looked like one set by hand, and its Pending chip — "Set
+     63D9's sample-level verdict to Pending" — did nothing, without a
+     word: the events still call for that verdict. The Events table and
+     the gallery cards now draw and tag it as the Samples tab does, and
+     Pending says what it does. */
+  await scenario("verdict chips", async (page) => {
+    const vchip = (where, id) => where.locator(`button[data-verdict-chip="${id}"]`);
+    const dashed = async (chip) =>
+      (await chip.count()) === 1 &&
+      (await chip.evaluate((b) => getComputedStyle(b).borderStyle)) === "dashed";
+    const title = async (chip) => ((await chip.count()) === 1 ? (await chip.getAttribute("title")) || "" : "");
+
+    await openTab(page, "Events");
+    await clickEvent(page, "63D250", "63D9", "tp"); // 63D9: automatic Contaminated + Suppress
+    const row = page.locator('tr[data-event-row="0"]'); // 63D250 → 63D9
+    check(
+      (await dashed(vchip(row, "contaminated"))) && (await row.locator("[data-auto-mark]").count()) === 2,
+      "Events table: 63D9's automatic Contaminated is drawn dashed, verdict and action tagged auto",
+    );
+    let t = await title(vchip(row, "pending"));
+    check(/changes nothing/.test(t) && /automatic/.test(t), "Events table: Pending says it changes nothing on an automatic verdict", t);
+    await vchip(row, "pending").click();
+    await page.waitForTimeout(300);
+    let sc = await storedCuration(page);
+    check(isAutoContaminated(sc["63D9"]), "…and it does not change 63D9", show(sc["63D9"]));
+    await vchip(row, "contaminated").click(); // the automatic verdict, made the curator's own
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(
+      sc["63D9"]?.verdict === "contaminated" && !sc["63D9"].verdictAuto && !(await dashed(vchip(row, "contaminated"))),
+      "Events table: a click on the automatic Contaminated makes it the curator's own, drawn solid",
+      show(sc["63D9"]),
+    );
+    t = await title(vchip(row, "pending"));
+    check(/Remove your verdict/.test(t), "Events table: Pending then offers to remove the curator's verdict", t);
+    await vchip(row, "pending").click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(isAutoContaminated(sc["63D9"]), "…which hands 63D9 back to the rule", show(sc["63D9"]));
+
+    await openTab(page, "Scatter");
+    const card = page.locator('[data-event-card="5"]'); // 83D88 → NC3
+    await card.waitFor({ timeout: 20000 });
+    await card.locator('button[title="mark as true positive"]').click();
+    await page.waitForTimeout(500);
+    const contaminated = vchip(card, "contaminated");
+    check(
+      (await dashed(contaminated)) && /auto/i.test(await contaminated.innerText()),
+      "gallery: NC3's automatic Contaminated is drawn dashed and tagged auto",
+      await contaminated.innerText(),
+    );
+    t = await title(vchip(card, "pending"));
+    check(/changes nothing/.test(t), "gallery: Pending says it changes nothing on an automatic verdict", t);
+    await vchip(card, "pending").click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(isAutoContaminated(sc.NC3), "…and it does not change NC3", show(sc.NC3));
+  });
+
   /* A3.7 A legacy session (actions stored on the events) whose events
      disagree about one target migrates to Suppress, as the legacy app
      read it. */

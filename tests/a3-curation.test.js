@@ -10,6 +10,7 @@ import {
   hasManualVerdict,
   hasManualAction,
   actionChipState,
+  verdictChipState,
   automaticAction,
   buildEffectiveSampleCuration,
 } from "../src/curation.js";
@@ -509,5 +510,76 @@ describe("actionChipState — what a cleared action gives way to", () => {
       }
     }
     expect(checked).toBe(64);
+  });
+});
+
+/* The verdict chips follow one click semantics too, in the Samples tab,
+   the Events table, the gallery cards and Guided validation. Outside the
+   Samples tab an automatic verdict used to look like one set by hand, and
+   its Pending chip read "Set 63D9's sample-level verdict to Pending"
+   although a click could not change anything: the events still call for
+   that verdict. */
+describe("verdictChipState — what a click on a verdict chip does", () => {
+  const events = [{ id: 0, source: "S", target: "T", verdict: TP }];
+  const auto = syncSampleCuration({}, events); // T: automatic Contaminated
+  const click = (sc, chip) =>
+    withManualVerdict(sc, "T", verdictChipState(sc.T, chip).next, events);
+
+  it("marks an automatic verdict, and leaves it alone on Pending", () => {
+    expect(verdictChipState(auto.T, "contaminated")).toMatchObject({ active: true, auto: true });
+    expect(verdictChipState(auto.T, "pending")).toMatchObject({
+      active: false,
+      auto: false,
+      next: "pending",
+      changes: false,
+    });
+    expect(click(auto, "pending")).toBe(auto);
+  });
+
+  it("makes the automatic verdict the curator's own on a click", () => {
+    expect(verdictChipState(auto.T, "contaminated").changes).toBe(true);
+    const t = click(auto, "contaminated").T;
+    expect(t.verdict).toBe("contaminated");
+    expect(t.verdictAuto).toBeUndefined();
+  });
+
+  it("removes the curator's own verdict on Pending: the rule's comes back", () => {
+    const own = withManualVerdict(auto, "T", "correct", events);
+    expect(verdictChipState(own.T, "correct")).toMatchObject({ active: true, auto: false, changes: false });
+    expect(verdictChipState(own.T, "pending")).toMatchObject({ active: false, changes: true });
+    expect(click(own, "pending").T).toEqual(auto.T);
+  });
+
+  it("shows Pending active when there is no verdict", () => {
+    expect(verdictChipState(undefined, "pending")).toMatchObject({ active: true, auto: false, changes: false });
+    expect(verdictChipState({ verdict: "pending" }, "pending").active).toBe(true); // older sessions
+    expect(verdictChipState({ action: "keep" }, "contaminated")).toMatchObject({ active: false, changes: true });
+  });
+
+  it("says whether the click changes anything, on every kind of sample", () => {
+    // T is targeted by one event from A; A is targeted by none (its
+    // effective verdict is the default Not contaminated).
+    let checked = 0;
+    for (const evaluation of VERDICTS) {
+      const events = [{ id: 0, source: "A", target: "T", verdict: evaluation }];
+      const never = new Set(["A"]);
+      for (const id of ["T", "A"]) {
+        for (const verdict of [null, "contaminated", "correct", "uncertain"]) {
+          let raw = syncSampleCuration({}, events);
+          if (verdict) raw = withManualVerdict(raw, id, verdict, events);
+          const entry = buildEffectiveSampleCuration(raw, never)[id];
+          for (const chip of ["pending", "contaminated", "correct", "uncertain"]) {
+            const state = verdictChipState(entry, chip);
+            const what = `${id} ${evaluation} ${verdict} ${chip}`;
+            const after = withManualVerdict(raw, id, state.next, events);
+            expect(after !== raw, what).toBe(state.changes);
+            expect(state.active, what).toBe((entry?.verdict || "pending") === chip);
+            expect(state.auto, what).toBe(state.active && chip !== "pending" && !verdict);
+            checked++;
+          }
+        }
+      }
+    }
+    expect(checked).toBe(128);
   });
 });
