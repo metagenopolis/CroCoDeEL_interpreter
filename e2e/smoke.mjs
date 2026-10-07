@@ -14,94 +14,31 @@
    Deliberately plain `playwright` and a node script rather than
    @playwright/test: no extra config, no extra runner, and the script owns
    its own server so `npm run test:e2e` behaves identically on a laptop and
-   in CI.
+   in CI. The server, the browser and the checks are e2e/harness.mjs's, as
+   in every other suite.
 
    Usage:  npm run build && npm run test:e2e
            BASE_URL=http://host/path/ npm run test:e2e   (skip the server) */
 
-import { chromium } from "playwright";
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { setTimeout as sleep } from "node:timers/promises";
-
-const PORT = Number(process.env.E2E_PORT || 4173);
-const BASE = process.env.BASE_URL || `http://127.0.0.1:${PORT}/CroCoDeEL_interpreter/`;
-const HEADFUL = process.env.E2E_HEADFUL === "1";
-
-const results = [];
-function check(ok, name, detail = "") {
-  results.push({ ok, name, detail });
-  console.log(`${ok ? "  ok  " : " FAIL "} ${name}${detail ? " — " + detail : ""}`);
-}
-
-/* ---------------------------------------------------------------- server */
-let server = null;
-async function startServer() {
-  if (process.env.BASE_URL) return; // caller provides one
-  server = spawn(
-    process.execPath,
-    [
-      "node_modules/vite/bin/vite.js",
-      "preview",
-      "--port",
-      String(PORT),
-      "--strictPort",
-      "--host",
-      "127.0.0.1",
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  server.stdout.on("data", () => {});
-  server.stderr.on("data", (d) => process.stderr.write(d));
-  // Poll rather than parse stdout: the banner format is not a contract.
-  for (let i = 0; i < 60; i++) {
-    try {
-      const res = await fetch(BASE);
-      if (res.ok) return;
-    } catch {
-      // not up yet
-    }
-    await sleep(500);
-  }
-  throw new Error(`vite preview did not answer on ${BASE} within 30 s`);
-}
-function stopServer() {
-  if (server && !server.killed) server.kill("SIGTERM");
-}
+import {
+  startServer,
+  stopServer,
+  launchBrowser,
+  newPage as openPage,
+  loadDemo,
+  tsvInput,
+  check,
+  finish,
+} from "./harness.mjs";
 
 /* ------------------------------------------------------------------ main */
 await startServer();
-const browser = await chromium.launch({ headless: !HEADFUL });
+const browser = await launchBrowser();
 
-/** A fresh context that records every page error and console error. The
-    tutorial is marked seen so it does not sit over the UI. */
-async function newPage() {
-  const ctx = await browser.newContext({ viewport: { width: 1500, height: 1000 } });
-  const page = await ctx.newPage();
-  const errors = [];
-  page.on("pageerror", (e) => errors.push(String(e)));
-  page.on("console", (m) => {
-    if (m.type() === "error") errors.push("[console] " + m.text().slice(0, 300));
-  });
-  await page.addInitScript(() =>
-    localStorage.setItem("crocodeel-tutorial-seen", "1"),
-  );
-  await page.goto(BASE, { waitUntil: "networkidle" });
-  return { ctx, page, errors };
-}
-
-const tsvInput = (page, i) => page.locator('input[accept*=".tsv"]').nth(i);
-
-async function loadDemo(page) {
-  await page.getByRole("button", { name: /load demo/i }).first().click();
-  // The demo pulls four files and parses them; wait for a tab that only
-  // lights up once events are in.
-  await page
-    .getByRole("button", { name: /^Validate$/ })
-    .first()
-    .waitFor({ state: "visible", timeout: 60000 });
-  await page.waitForTimeout(2500);
-}
+/** A fresh context that records every page error and console error
+    (harness.mjs). */
+const newPage = () => openPage(browser);
 
 try {
   /* ---------------------------------------- 1. boot + every tab renders */
@@ -223,34 +160,107 @@ try {
       );
     }
 
-    const [download] = await Promise.all([
-      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
-      page
-        .getByRole("button", { name: /Download curated abundance TSV/i })
-        .first()
-        .click(),
-    ]);
-    check(!!download, "the curated abundance TSV downloads");
-    if (download) {
-      const text = readFileSync(await download.path(), "utf8");
-      const lines = text.split("\n").filter((l) => l.length);
-      const comments = lines.filter((l) => l.startsWith("#"));
-      const data = lines.filter((l) => !l.startsWith("#"));
-      const cols = data[0].split("\t");
+    // One click, two files: the table and its provenance.
+    const files = {};
+    const both = new Promise((resolve) => {
+      const onDownload = async (d) => {
+        files[d.suggestedFilename()] = readFileSync(await d.path(), "utf8");
+        if (Object.keys(files).length === 2) {
+          page.off("download", onDownload);
+          resolve();
+        }
+      };
+      page.on("download", onDownload);
+    });
+    await page
+      .getByRole("button", { name: /Download curated abundance TSV/i })
+      .first()
+      .click();
+    await Promise.race([both, page.waitForTimeout(30000)]);
+    const download = files["species_abundance_curated.tsv"];
+    check(download != null, "the curated abundance TSV downloads");
+    let missing = [];
+    if (download != null) {
+      const text = download;
+      const rows = text
+        .split("\n")
+        .filter((l) => l.length)
+        .map((l) => l.split("\t"));
+      // The table holds the data only: a "#" line is a data row to pandas'
+      // read_csv(sep="\t", index_col=0) and to R's read.delim.
+      check(!rows.some((r) => r[0].startsWith("#")), "the curated table has no # line");
+      // Each remaining column is the input's column: the same first header,
+      // the species in the input's order, the input's own values — no
+      // fractions, no renormalisation.
+      const input = readFileSync("public/demo/species_abundance.tsv", "utf8")
+        .split("\n")
+        .filter((l) => l && !l.startsWith("#"))
+        .map((l) => l.split("\t"));
+      const inCol = new Map(input[0].map((h, j) => [h, j]));
+      const inRow = new Map(input.slice(1).map((r) => [r[0], r]));
+      const pos = new Map(input.slice(1).map((r, i) => [r[0], i]));
+      const header = rows[0];
+      missing = input[0].slice(1).filter((s) => !header.includes(s));
+      const idx = rows.slice(1).map((r) => pos.get(r[0]));
       check(
-        comments.some((c) => /^# suppressed samples \(2\):/.test(c)),
-        "the file header records the suppressed ids",
+        header[0] === input[0][0] &&
+          missing.length === 2 &&
+          idx.every((p, i) => p !== undefined && (i === 0 || p > idx[i - 1])),
+        "it keeps the input's first header and species order, without the 2 suppressed columns",
+        `${header[0]}; without ${missing.join(", ")}`,
       );
-      // The point of not renormalising: dropping a column cannot change
-      // the others, so every remaining column must still sum to 1.
-      const sums = new Array(cols.length - 1).fill(0);
-      for (const line of data.slice(1)) {
-        const cells = line.split("\t");
-        for (let i = 1; i < cells.length; i++) sums[i - 1] += parseFloat(cells[i]) || 0;
+      let exact = 0;
+      let long = 0;
+      let worst = 0;
+      let worstSteps = 0;
+      let bad = null;
+      // How many doubles apart two positive numbers are (1: neighbours).
+      const bits = (x) => new BigInt64Array(new Float64Array([x]).buffer)[0];
+      const doublesApart = (a, b) => {
+        const d = bits(a) - bits(b);
+        return Number(d < 0n ? -d : d);
+      };
+      for (const r of rows.slice(1)) {
+        const src = inRow.get(r[0]);
+        for (let j = 1; j < header.length; j++) {
+          const raw = src[inCol.get(header[j])];
+          const v = Number(raw);
+          const w = Number(r[j]);
+          const digits = v === 0 ? 0 : v.toExponential().split("e")[0].replace(".", "").length;
+          if (digits <= 15) {
+            if (w === v) exact++;
+            else bad = bad || `${r[0]} / ${header[j]}: ${r[j]} for ${raw}`;
+          } else {
+            long++;
+            worst = Math.max(worst, Math.abs(w - v) / v);
+            worstSteps = Math.max(worstSteps, doublesApart(w, v));
+          }
+        }
       }
-      const worst = Math.max(...sums.map((s) => Math.abs(s - 1)));
-      check(worst < 1e-9, "every remaining column still sums to 1", `max deviation ${worst.toExponential(2)}`);
+      check(
+        !bad && exact > 0,
+        "every remaining column equals the input column: each value up to 15 significant digits exactly",
+        bad || `${exact} values`,
+      );
+      // Rebuilt from the parser's fractions: when two neighbouring doubles
+      // make the same fraction, a value written with 16 or 17 digits comes
+      // back as the one next to it (relative difference about 2e-16).
+      check(
+        worstSteps <= 1 && worst < 2.3e-16,
+        "and each value written with 16 or 17 significant digits as the same double or the next one",
+        `${long} values, at most ${worstSteps} double apart, worst relative difference ${worst.toExponential(2)}`,
+      );
     }
+    // The provenance left the table for a text file of its own, written
+    // by the same click.
+    const provenanceText = files["species_abundance_curated.provenance.txt"] || "";
+    check(
+      /^Suppressed samples \(2\)/m.test(provenanceText) &&
+        missing.length === 2 &&
+        missing.every((s) => provenanceText.split("\n").includes(s)),
+      "the same click writes the provenance file, which records the suppressed ids",
+      provenanceText.split("\n").find((l) => l.startsWith("Suppressed")) || "no provenance file",
+    );
     check(errors.length === 0, "no JS error across the export flow", errors[0] || "");
     await ctx.close();
   }
@@ -466,11 +476,4 @@ try {
   await browser.close();
   stopServer();
 }
-
-const failed = results.filter((r) => !r.ok);
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-if (failed.length) {
-  console.log("\nFailures:");
-  failed.forEach((f) => console.log(`  - ${f.name}${f.detail ? " — " + f.detail : ""}`));
-  process.exit(1);
-}
+finish();

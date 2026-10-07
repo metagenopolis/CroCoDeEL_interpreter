@@ -1,0 +1,377 @@
+import { describe, it, expect } from "vitest";
+import { restoreFilter, restoreSort, sessionFromPayload, sessionToJSON } from "../src/persistence.js";
+import { parseAbundance, parseEvents, parseMetadata, parsePlateMap } from "../src/parsing.js";
+import { SAMPLE_CURATION_VERSION } from "../src/curation.js";
+
+/* Importing a session JSON used to clear the browser's storage first and
+   apply the file as it was: a filter without `q` then crashed every
+   render (filter.q.trim), a wrong-shaped abundance table or metadata
+   crashed too, and the previous session was gone. sessionFromPayload
+   checks the whole file before anything is replaced. */
+
+const defaults = () => ({
+  q: "",
+  minScore: 0,
+  minRate: 0,
+  minIntroduced: 0,
+  verdicts: ["pending", "true_positive", "false_positive", "uncertain"],
+  sampleVerdicts: ["pending", "contaminated", "correct", "uncertain"],
+  sampleVerdictsSide: "either",
+  subject: "any",
+  group: "any",
+  adjacent: "any",
+  scopeSamples: null,
+  scopeSide: "either",
+  lowAbFilter: true,
+});
+const TABS = ["overview", "samples", "table", "scatter", "validate", "network", "plate", "export", "datasets", "learn", "help"];
+const read = (json) => sessionFromPayload(json, { defaults: defaults(), tabs: TABS });
+
+const parsed = parseEvents(
+  [
+    "# crocodeel version: 1.2.1 | probability_cutoff: 0.5",
+    "source\ttarget\trate\tprobability\tcontamination_specific_species",
+    "S1\tT1\t0.1\t0.9\t10,sp_a",
+    "S2\tT1\t0.2\t0.8\tsp_a",
+    "S3\tT2\t1.5\t0.7\t2",
+  ].join("\n"),
+);
+const ab = parseAbundance(
+  ["id_mgs\tS1\tS2\tS3\tT1\tT2", "10\t5\t0\t1\t3\t0", "2\t0\t7\t1\t0\t4", "sp_a\t1\t1\t0\t1\t1"].join("\n"),
+);
+const metadata = parseMetadata(["sample_id\tsubject_id", "S1\tP1", "T1\tP1", "T1\tP2"].join("\n"));
+const plateMap = parsePlateMap(["sample_id\tplate\twell", "S1\tP1\tA01", "T1\tP1\tA02"].join("\n"));
+
+function session() {
+  return {
+    rawEvents: parsed.events.map((e, i) => (i === 0 ? { ...e, verdict: "true_positive", notes: "n" } : e)),
+    sampleCuration: {
+      T1: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true },
+      S2: { action: "keep" },
+    },
+    sampleCurationVersion: SAMPLE_CURATION_VERSION,
+    runMetadata: parsed.runMetadata,
+    eventsWarnings: parsed.warnings,
+    metadata,
+    plateMap,
+    ab,
+    analysisTitle: "Study",
+    tab: "validate",
+    selId: 1,
+    filter: { ...defaults(), q: "S1", lowAbFilter: false },
+    sort: { by: "rate", dir: "asc" },
+  };
+}
+/** What exportJSON writes, through a JSON text. */
+const exported = (s = session()) => JSON.parse(JSON.stringify(sessionToJSON(s)));
+
+describe("sessionFromPayload — a session JSON round trip (B1.7)", () => {
+  it("gives the exported session back", () => {
+    const s = session();
+    const r = read(exported(s));
+    expect(r.ok).toBe(true);
+    const back = r.session;
+    expect(back.rawEvents).toEqual(s.rawEvents);
+    expect(back.sampleCuration).toEqual(s.sampleCuration);
+    expect(back.sampleCurationVersion).toBe(SAMPLE_CURATION_VERSION);
+    expect(back.runMetadata).toEqual(s.runMetadata);
+    expect(back.analysisTitle).toBe("Study");
+    expect([back.tab, back.selId, back.sort]).toEqual(["validate", 1, { by: "rate", dir: "asc" }]);
+    expect(back.filter).toEqual(s.filter);
+    expect(r.changes).toBeNull();
+  });
+
+  it("keeps the abundance table's first header, column sums, integer flags and species order", () => {
+    const back = read(exported()).session.ab;
+    expect(back.firstHeader).toBe("id_mgs");
+    expect(back.colSums).toEqual(ab.colSums);
+    expect(back.integerCols).toEqual(ab.integerCols);
+    expect(back.species).toEqual(["10", "2", "sp_a"]);
+    expect(back.matrix).toEqual(ab.matrix);
+    // Through JSON: -0 comes back as 0, the same bound.
+    expect(JSON.stringify(back.logRange)).toBe(JSON.stringify(ab.logRange));
+  });
+
+  it("keeps the metadata and plate-map mappings and warnings, the events parser's warnings and the curation version", () => {
+    const json = exported();
+    expect(json.sample_curation_version).toBe(SAMPLE_CURATION_VERSION);
+    expect(json.events_warnings).toEqual(parsed.warnings);
+    const back = read(json).session;
+    expect(back.metadata.cols).toEqual(metadata.cols);
+    expect(back.metadata.warnings).toEqual(metadata.warnings);
+    expect(back.plateMap.cols).toEqual(plateMap.cols);
+    expect(back.plateMap.warnings).toEqual(plateMap.warnings);
+    expect(back.eventsWarnings).toEqual(parsed.warnings);
+  });
+
+  it("reads a file of an earlier version: no warnings, no version, legacy per-event actions", () => {
+    const json = exported();
+    delete json.events_warnings;
+    delete json.sample_curation_version;
+    delete json.sample_curation;
+    json.events[2].action = "keep";
+    const r = read(json);
+    expect(r.ok).toBe(true);
+    expect(r.session.eventsWarnings).toEqual([]);
+    // The legacy action moved to its target sample, then off the event.
+    expect(r.session.sampleCuration.T2).toEqual({ action: "keep" });
+    expect(r.session.rawEvents.every((e) => !("action" in e))).toBe(true);
+    // T1's TP: automatic Contaminated + Suppress, recomputed.
+    expect(r.session.sampleCuration.T1).toMatchObject({ verdict: "contaminated", action: "suppress" });
+  });
+});
+
+/* The session JSON is read by the previous version too (a colleague, an
+   older deployment), and this version reads the previous one's: the
+   fields keep their names and shapes, the only addition
+   (events_warnings) is optional both ways. */
+describe("the session JSON stays readable both ways", () => {
+  // exportJSON at commit 23cc74a, the version before the stored records.
+  const PREVIOUS_KEYS = [
+    "generated", "schema_version", "counts", "analysis_title", "has_metadata", "has_plate_map",
+    "has_abundance", "run_metadata", "metadata", "plate_map", "abundance", "ui_state",
+    "sample_curation", "sample_curation_version", "events",
+  ];
+
+  it("a file this version writes has what the previous version's importer reads", () => {
+    const s = session();
+    const json = exported(s);
+    expect(Object.keys(json).sort()).toEqual([...PREVIOUS_KEYS, "events_warnings"].sort());
+    expect(json.schema_version).toBe(2);
+    expect(Object.keys(json.ui_state).sort()).toEqual(["filter", "sel_id", "sort", "tab"]);
+    // The previous importer applied ui_state.filter as it was: it needs q.
+    expect(typeof json.ui_state.filter.q).toBe("string");
+    // Its reading of the events (importSessionFromJSON at 23cc74a).
+    const previous = json.events.map((e, i) => ({
+      id: e.id != null ? e.id : i,
+      source: e.source,
+      target: e.target,
+      rate: e.contamination_rate,
+      score: e.probability,
+      introduced: e.introduced_species || [],
+      verdict: e.verdict || "pending",
+      notes: e.notes || "",
+    }));
+    expect(previous).toEqual(s.rawEvents.map(({ id, source, target, rate, score, introduced, verdict, notes }) => ({ id, source, target, rate, score, introduced, verdict, notes })));
+    expect(json.sample_curation).toEqual(s.sampleCuration);
+    expect(json.abundance.matrix).toEqual(s.ab.matrix);
+    expect(json.metadata.bySample).toEqual(s.metadata.bySample);
+    expect(json.plate_map.bySample).toEqual(s.plateMap.bySample);
+  });
+
+  it("a file the previous version wrote is read whole", () => {
+    const s = session();
+    // What the previous exportJSON wrote: no events_warnings, and three
+    // per-event fields the importer ignores.
+    const json = exported(s);
+    delete json.events_warnings;
+    json.events.forEach((e) => Object.assign(e, { relatedness: { related: false }, plate_distance: null, cascade: null }));
+    const r = read(json);
+    expect(r.ok).toBe(true);
+    expect(r.session.rawEvents).toEqual(s.rawEvents);
+    expect(r.session.sampleCuration).toEqual(s.sampleCuration);
+    expect(r.session.ab.matrix).toEqual(s.ab.matrix);
+    expect(r.session.metadata.bySample).toEqual(s.metadata.bySample);
+    expect(r.session.plateMap.bySample).toEqual(s.plateMap.bySample);
+    expect(r.session.eventsWarnings).toEqual([]);
+    expect(r.changes).toBeNull();
+  });
+});
+
+describe("sessionFromPayload — the UI state is merged over the defaults", () => {
+  it("a filter without q gets the defaults, lowAbFilter on included", () => {
+    const json = exported();
+    json.ui_state.filter = { minScore: 0.5 };
+    const f = read(json).session.filter;
+    expect(f.q).toBe("");
+    expect(f.minScore).toBe(0.5);
+    expect(f.lowAbFilter).toBe(true);
+    expect(f.verdicts).toEqual(defaults().verdicts);
+  });
+
+  it("wrong types and unknown tabs fall back; no ui_state at all is fine", () => {
+    const json = exported();
+    json.ui_state = { tab: "nowhere", sel_id: { x: 1 }, filter: { q: 3, verdicts: "tp", scopeSamples: [1, 2] }, sort: { by: 3 } };
+    const s = read(json).session;
+    expect(s.tab).toBeUndefined();
+    expect(s.selId).toBeNull();
+    expect(s.filter.q).toBe("");
+    expect(s.filter.verdicts).toEqual(defaults().verdicts);
+    expect(s.filter.scopeSamples).toBeNull();
+    expect(s.sort).toEqual({ by: "score", dir: "desc" });
+    delete json.ui_state;
+    expect(read(json).ok).toBe(true);
+  });
+
+  it("restoreFilter promotes the earlier shapes, restoreSort keeps a valid sort", () => {
+    const f = restoreFilter({ verdict: "pending", hideRelated: true, adjacentOnly: true }, defaults());
+    expect([f.verdicts, f.subject, f.adjacent]).toEqual([["pending"], "different", "adjacent"]);
+    expect(restoreSort({ by: "rate", dir: "asc" })).toEqual({ by: "rate", dir: "asc" });
+    expect(restoreSort(null)).toEqual({ by: "score", dir: "desc" });
+  });
+});
+
+describe("sessionFromPayload — a malformed file is refused whole (B1.4)", () => {
+  const refused = (mutate, re) => {
+    const json = exported();
+    mutate(json);
+    const r = read(json);
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(" ")).toMatch(re);
+  };
+
+  it("events", () => {
+    refused((j) => (j.events = "x"), /"events" must be a list/);
+    refused((j) => delete j.events, /Missing "events"/);
+    refused((j) => (j.events[1] = 3), /event 2 is not an object/);
+    // An event without a source or a target, and a species list kept as
+    // one text, are what the previous version's parser left in a session:
+    // repaired, not refused (tests/final-state-session-read.test.js).
+    refused((j) => (j.events[0].target = { id: "T1" }), /event 1: its source or its target is neither text nor a number/);
+    refused((j) => (j.events.forEach((e) => (e.source = ""))), /No event has both a source and a target/);
+    refused((j) => (j.events[0].verdict = "maybe"), /unknown verdict "maybe"/);
+    refused((j) => (j.events[0].contamination_rate = "0,1"), /contamination_rate is not a number/);
+    refused((j) => (j.events[0].introduced_species = { sp_a: 1 }), /introduced_species is not a list/);
+    refused((j) => (j.events[0].notes = { a: 1 }), /notes are not text/);
+  });
+
+  it("sample curation", () => {
+    refused((j) => (j.sample_curation = []), /"sample_curation" must map/);
+    refused((j) => (j.sample_curation.T1 = "contaminated"), /sample_curation of T1 is not an object/);
+    refused((j) => (j.sample_curation.T1.action = "drop"), /unknown action "drop"/);
+  });
+
+  it("abundance table", () => {
+    refused((j) => (j.abundance = "table"), /abundance: not a species × sample table/);
+    refused((j) => delete j.abundance.matrix, /abundance: "matrix"/);
+    refused((j) => (j.abundance.samples = ["S1", "S1"]), /abundance: a sample appears twice/);
+    refused((j) => (j.abundance.samples = "S1"), /abundance: "samples" must be a list/);
+    refused((j) => (j.abundance.matrix["10"].S1 = "0.5"), /abundance: the value of "10" in "S1" is not an abundance/);
+    refused((j) => (j.abundance.species = ["10", "nope"]), /abundance: species "nope" has no row/);
+    refused((j) => (j.abundance.colSums = { S1: "5" }), /"colSums"/);
+    refused((j) => (j.abundance.integerCols = { S1: 1 }), /"integerCols"/);
+    refused((j) => (j.abundance.firstHeader = 3), /"firstHeader"/);
+  });
+
+  it("metadata, plate map, run metadata, UI state", () => {
+    refused((j) => (j.metadata = { nSamples: 3 }), /metadata: "bySample"/);
+    refused((j) => (j.metadata.bySample.S1 = "P1"), /metadata: the annotations of S1/);
+    refused((j) => (j.plate_map = { format: { rows: 8, cols: 12 } }), /plate_map: "bySample"/);
+    refused((j) => (j.plate_map.bySample.S1.row = 40), /plate_map: S1 has no valid well/);
+    refused((j) => (j.run_metadata = "1.2.1"), /"run_metadata" must be an object/);
+    refused((j) => (j.ui_state = 4), /"ui_state" must be an object/);
+  });
+
+  /* Shapes that passed the check and then broke a tab at every visit. */
+  it("an abundance matrix that is not an object, or has a row its species list does not name", () => {
+    refused((j) => (j.abundance.matrix = "oops"), /abundance: "matrix" \(species → sample → abundance\) is missing or is not an object/);
+    refused((j) => (j.abundance.matrix.__ghost = null), /abundance: "matrix" has a row for "__ghost", which "species" does not list/);
+    refused((j) => (j.abundance.matrix.__ghost = { S1: 0.5 }), /"matrix" has a row for "__ghost"/);
+  });
+
+  it("metadata fields that are not text, flags that are not true / false", () => {
+    refused((j) => (j.metadata.bySample.S1.subject = { id: "P1" }), /metadata: the subject of S1 is not text/);
+    refused((j) => (j.metadata.bySample.S1.sampleName = ["S1"]), /metadata: the sampleName of S1 is not text/);
+    refused((j) => (j.metadata.bySample.S1.groupId = true), /metadata: the groupId of S1 is not text/);
+    refused((j) => (j.metadata.bySample.S1.isControl = "yes"), /metadata: isControl of S1 is neither true nor false/);
+    refused((j) => (j.metadata.bySample.S1.lowBiomassExplicit = 1), /metadata: lowBiomassExplicit of S1 is neither true nor false/);
+    refused((j) => (j.metadata.bySample.S1.extra.subject_id = { x: 1 }), /metadata: the "subject_id" cell of S1 is not text/);
+  });
+
+  it("run metadata values that are not text", () => {
+    refused((j) => (j.run_metadata = { datetime: { a: 1 } }), /run_metadata: "datetime" is not text/);
+    refused((j) => (j.run_metadata = { probability_cutoff: [0.5] }), /run_metadata: "probability_cutoff" is not text/);
+  });
+
+  it("not an object, or nothing to import", () => {
+    expect(read(null).ok).toBe(false);
+    expect(read([]).ok).toBe(false);
+    expect(read("x").errors[0]).toMatch(/not a session file/);
+    expect(read({ events: [] }).errors[0]).toMatch(/nothing to import/);
+  });
+
+  it("lists a few problems, not thousands", () => {
+    const json = exported();
+    json.events = Array.from({ length: 500 }, () => ({ source: "A", target: "B", verdict: "maybe" }));
+    const r = read(json);
+    expect(r.ok).toBe(false);
+    expect(r.errors.length).toBeLessThanOrEqual(7);
+    expect(r.errors[r.errors.length - 1]).toMatch(/more problems/);
+  });
+});
+
+describe("sessionFromPayload — what is repaired rather than refused", () => {
+  it("a plate map without its format gets one from its wells", () => {
+    const json = exported();
+    delete json.plate_map.format;
+    expect(read(json).session.plateMap.format).toEqual({ rows: 8, cols: 12 });
+    json.plate_map.bySample.T1 = { plate: "P1", row: 12, col: 20 };
+    expect(read(json).session.plateMap.format).toEqual({ rows: 16, cols: 24 });
+  });
+
+  it("an abundance table without logRange, or without its species list (older sessions)", () => {
+    const json = exported();
+    delete json.abundance.logRange;
+    delete json.abundance.species;
+    const back = read(json).session.ab;
+    expect(back.logRange).toEqual(ab.logRange);
+    expect(new Set(back.species)).toEqual(new Set(ab.species));
+  });
+
+  it("metadata fields written as numbers, or missing, are read as text", () => {
+    const json = exported();
+    for (const m of Object.values(json.metadata.bySample)) {
+      delete m.extra;
+      delete m.timepoint;
+      delete m.isControl;
+    }
+    json.metadata.bySample.S1.subject = 12;
+    json.metadata.bySample.T1.sampleName = 7;
+    const md = read(json).session.metadata;
+    expect(md.bySample.S1).toMatchObject({ subject: "12", timepoint: "", isControl: false, lowBiomassExplicit: null });
+    expect(md.bySample.T1.sampleName).toBe("7");
+    // What the tabs do with them now works (it threw on a number).
+    for (const m of Object.values(md.bySample)) {
+      expect((m.sampleName || "").trim()).toBeTypeOf("string");
+      expect(m.subject.localeCompare("P1")).toBeTypeOf("number");
+    }
+    // Run metadata written as numbers are kept.
+    json.run_metadata = { probability_cutoff: 0.5, rate_cutoff: null };
+    expect(read(json).session.runMetadata).toEqual({ probability_cutoff: 0.5, rate_cutoff: null });
+  });
+
+  it("a plate named by a number, or not named, is read as parsePlateMap names it", () => {
+    const json = exported();
+    json.plate_map.bySample.S1.plate = 3;
+    json.plate_map.bySample.T1.plate = null;
+    const pm = read(json).session.plateMap;
+    expect(pm.bySample.S1).toEqual({ plate: "3", row: 0, col: 0 });
+    expect(pm.bySample.T1.plate).toBe("P1");
+  });
+
+  it("metadata warnings that are not a list, or no nSamples", () => {
+    const json = exported();
+    json.metadata.warnings = "2 sample ids appear twice";
+    delete json.metadata.nSamples;
+    const md = read(json).session.metadata;
+    expect(md.warnings).toEqual(["2 sample ids appear twice"]);
+    expect(md.nSamples).toBe(2);
+  });
+
+  it("repeated event ids are renumbered, and the selection dropped", () => {
+    const json = exported();
+    json.events.forEach((e) => (e.id = 7));
+    const s = read(json).session;
+    expect(s.rawEvents.map((e) => e.id)).toEqual([0, 1, 2]);
+    expect(s.selId).toBeNull();
+  });
+
+  it("numeric sample ids and species names are read as text", () => {
+    const json = exported();
+    json.events[0].source = 101;
+    json.events[0].introduced_species = [10, "sp_a"];
+    const e = read(json).session.rawEvents[0];
+    expect(e.source).toBe("101");
+    expect(e.introduced).toEqual(["10", "sp_a"]);
+  });
+});

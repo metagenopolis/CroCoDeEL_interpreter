@@ -1,7 +1,81 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as d3 from "d3";
 import { Range, getTrackBackground } from "react-range";
-import LZString from "lz-string";
+import {
+  tsvCell,
+  parseEvents,
+  parseAbundance,
+  parseMetadata,
+  remapMetadata,
+  metadataToTSV,
+  parsePlateMap,
+  plateMapToTSV,
+  wellLabel,
+  metadataColumnsLine,
+  plateColumnsLine,
+  abundanceColumnsLine,
+} from "./parsing.js";
+import {
+  applyLowAbundanceFilter,
+  buildScatter,
+  detectCascades,
+  eventBulkCriteria,
+  eventScore,
+  introducedPercent,
+  lowAbundanceFilterFactor,
+  matchesBulkCriteria,
+  matchSpeciesName,
+  resolveSample,
+  spearmanRho,
+  speciesCountsBySample,
+} from "./diagnostics.js";
+import {
+  autoVerdictFromCounts,
+  syncSampleCuration,
+  withManualVerdict,
+  withManualAction,
+  actionChipState,
+  verdictChipState,
+  applyTargetSideEffects,
+  migrateSampleCuration,
+  SAMPLE_CURATION_VERSION,
+  neverTargetedSamples,
+  buildEffectiveSampleCuration,
+  sampleActionCounts,
+  sampleCurationKeys,
+} from "./curation.js";
+// The text of the exported files (src/exports.js).
+import {
+  eventsToTSV,
+  curatedEventsToTSV,
+  abundanceToTSV,
+  buildCuratedAbundance,
+  curatedAbundanceProvenance,
+  hasInputValues,
+  curationOrigin,
+  escapeHTML,
+  samplesReportCuration,
+  samplesReportIndex,
+  reportFilterSummary,
+  sampleFlagCells,
+  rateCell,
+} from "./exports.js";
+import {
+  checkStoredSession,
+  restoreFilter,
+  restoreSort,
+  sessionFromPayload,
+  sessionToJSON,
+} from "./persistence.js";
+import { idbBackend, indexedDBSupported, readStoredSession } from "./storage.js";
+import { createAutosave } from "./autosave.js";
+import {
+  curationSummary,
+  isManualEvent,
+  replaceEvents,
+  replaceReportLines,
+  replacedRunMetadata,
+} from "./carryOver.js";
 import {
   FolderOpen,
   AlertCircle,
@@ -91,101 +165,7 @@ const RepubliqueFrancaise = ({ height = 46 }) => (
    2. TSV PARSING
    ============================================================================ */
 
-/** Strip a single layer of CSV/TSV-style surrounding double quotes from a
-    cell. Some upstream tools (notably R's write.table and Meteor's MSP
-    profiles) wrap every string cell in `"..."`; without unquoting, the
-    species name `"msp_0001"` parsed from the abundance file would never
-    match the bare `msp_0001` listed in contamination_events.tsv. */
-function unquoteCell(s) {
-  if (typeof s !== "string") return s;
-  if (s.length >= 2 && s.charCodeAt(0) === 34 && s.charCodeAt(s.length - 1) === 34) {
-    return s.slice(1, -1).replace(/""/g, '"');
-  }
-  return s;
-}
-
-/** Flatten a value into a single TSV cell.
-
-    Both curated exports used to strip only `\t` from free-text fields while
-    stripping `[\t\n\r]` from the study title. Curator notes are multi-line
-    textareas AND the bulk-apply actions prepend `${tag}\n\n${notes}`
-    themselves, so one event could emit three physical lines — enough to
-    make `pandas.read_csv(sep='\t')` either raise or invent rows. Every
-    field of every writer goes through here. */
-export function tsvCell(v) {
-  return String(v ?? "").replace(/[\t\r\n]+/g, " ");
-}
-
-function parseTSV(text) {
-  const allLines = text.replace(/\r/g, "").split("\n").filter((l) => l.length > 0);
-  // Separate hash-prefixed header lines (e.g. CroCoDeEL run params) from data
-  const headerComments = [];
-  let firstDataIdx = 0;
-  for (let i = 0; i < allLines.length; i++) {
-    if (allLines[i].startsWith("#")) {
-      headerComments.push(allLines[i].replace(/^#\s*/, ""));
-      firstDataIdx = i + 1;
-    } else {
-      break;
-    }
-  }
-  const lines = allLines.slice(firstDataIdx);
-  if (lines.length === 0) return { header: [], rows: [], headerComments };
-  const header = lines[0].split("\t").map(unquoteCell);
-  const rows = lines.slice(1).map((line) => {
-    const cells = line.split("\t");
-    const obj = {};
-    header.forEach((h, i) => (obj[h] = unquoteCell(cells[i] ?? "")));
-    return obj;
-  });
-  return { header, rows, headerComments };
-}
-
-/** Parse a CroCoDeEL-style "key: value | key: value | ..." metadata header. */
-function parseRunMetadata(headerComments) {
-  if (!headerComments || headerComments.length === 0) return null;
-  const meta = {};
-  headerComments.forEach((line) => {
-    line.split("|").forEach((kv) => {
-      const idx = kv.indexOf(":");
-      if (idx < 0) return;
-      const key = kv.slice(0, idx).trim();
-      const val = kv.slice(idx + 1).trim();
-      if (key) meta[key] = val;
-    });
-  });
-  return Object.keys(meta).length > 0 ? meta : null;
-}
-
-function pickCol(header, candidates) {
-  const lc = header.map((h) => h.toLowerCase());
-  for (const c of candidates) {
-    const i = lc.indexOf(c.toLowerCase());
-    if (i >= 0) return header[i];
-  }
-  for (const c of candidates) {
-    const i = lc.findIndex((h) => h.includes(c.toLowerCase()));
-    if (i >= 0) return header[i];
-  }
-  return null;
-}
-
-/* ---------- contamination_events.tsv ---------- */
-const EVENT_COLS = {
-  source: ["source", "contamination_source", "source_sample"],
-  target: ["target", "contaminated_sample", "target_sample", "contaminated"],
-  rate: ["rate", "contamination_rate", "estimated_rate"],
-  // Canonical column is `probability`. Older CroCoDeEL outputs write the
-  // model's probability into a column named `score` instead — accept it
-  // as a fallback alias. The value is shown as "probability" in the UI.
-  score: ["probability", "score", "rf_score", "proba"],
-  species: [
-    "contamination_specific_species",
-    "introduced_species",
-    "species_specifically_introduced",
-    "species",
-  ],
-};
+/* The input-file parsers live in src/parsing.js. */
 
 /* ---------- contamination-rate slider helpers ----------
    Rates span several orders of magnitude (0.01% to 50%+), so all rate
@@ -209,342 +189,6 @@ const formatRatePct = (rate) => {
   if (pct < 10) return `${pct.toFixed(1)}%`;
   return `${Math.round(pct)}%`;
 };
-
-/** Split the introduced-species cell into taxon names.
-
-    The separator is `,`. `;` used to be accepted as an alternative, but it
-    is ALSO the rank separator inside GTDB/SILVA-style lineages
-    (`d__Bacteria;p__Bacteroidota;...;s__Phocaeicola vulgatus`), and
-    splitting on it shreds every name into fragments that match nothing in
-    the abundance table — silently, since a shredded event simply ends up
-    with zero on-line points. So: split on `,` when the cell has one, and
-    only fall back to `;` for a cell that has neither a comma nor the
-    `x__` rank prefixes that mark a lineage. */
-export function splitSpeciesList(cell) {
-  const s = String(cell ?? "").trim();
-  if (!s) return [];
-  const isLineage = /[a-z]__/i.test(s);
-  const sep = s.includes(",") || isLineage ? /,\s*/ : /;\s*/;
-  return s
-    .split(sep)
-    .map((x) => x.trim())
-    .filter((x) => x.length > 0);
-}
-
-function normalizeEvent(raw, cols, idx) {
-  const species = splitSpeciesList(raw[cols.species]);
-  // Probability resolution: prefer the column pickCol actually resolved in
-  // this file's header (which matches case-insensitively), then fall back
-  // to the literal aliases for files that carry several score columns and
-  // leave the canonical one empty on some rows.
-  let probValue = "";
-  for (const key of [cols.score, ...EVENT_COLS.score]) {
-    if (!key) continue;
-    const v = raw[key];
-    if (v != null && String(v).trim() !== "") {
-      probValue = v;
-      break;
-    }
-  }
-  return {
-    id: idx,
-    source: raw[cols.source] || "",
-    target: raw[cols.target] || "",
-    rate: parseFloat(raw[cols.rate]) || 0,
-    score: parseFloat(probValue) || 0,
-    introduced: species,
-    verdict: "pending",
-    notes: "",
-  };
-}
-
-export function parseEvents(text) {
-  const { header, rows, headerComments } = parseTSV(text);
-  if (rows.length === 0) throw new Error("Empty file or no rows");
-  const cols = {
-    source: pickCol(header, EVENT_COLS.source),
-    target: pickCol(header, EVENT_COLS.target),
-    rate: pickCol(header, EVENT_COLS.rate),
-    score: pickCol(header, EVENT_COLS.score),
-    species: pickCol(header, EVENT_COLS.species),
-  };
-  if (!cols.source || !cols.target) {
-    throw new Error(
-      "Could not find source/target columns. Expected headers like 'source' and 'target' (or 'contaminated_sample').",
-    );
-  }
-  // A missing rate column is not fatal — source/target alone still make a
-  // browsable event list — but every rate silently becomes 0, which means
-  // no contamination line is drawn and several diagnostics quietly go
-  // uninformative. Say so rather than letting the user wonder.
-  const warnings = [];
-  if (!cols.rate) {
-    warnings.push(
-      "No contamination-rate column found (expected 'rate' or 'contamination_rate'). " +
-        "Every rate reads as 0, so no contamination line can be drawn.",
-    );
-  }
-  if (!cols.species) {
-    warnings.push(
-      "No introduced-species column found (expected 'contamination_specific_species'). " +
-        "Scatterplots will show no highlighted species.",
-    );
-  }
-  return {
-    events: rows.map((r, i) => normalizeEvent(r, cols, i)),
-    runMetadata: parseRunMetadata(headerComments),
-    warnings,
-  };
-}
-
-/* ---------- species_abundance.tsv ---------- */
-
-/** Report the first repeated entry in a list, or null. Duplicates are a
-    silent-corruption hazard here: parseTSV keys rows by header name, so a
-    repeated sample column makes two samples share one profile, and a
-    repeated species row makes the last one win while the lost row's counts
-    still leave the column total alone — which the renormalisation below
-    then spreads over every OTHER species. */
-function firstDuplicate(names) {
-  const seen = new Set();
-  for (const n of names) {
-    if (seen.has(n)) return n;
-    seen.add(n);
-  }
-  return null;
-}
-
-export function parseAbundance(text) {
-  const { header, rows } = parseTSV(text);
-  if (header.length < 2) return null;
-  const speciesCol = header[0];
-  const samples = header.slice(1);
-
-  const dupSample = firstDuplicate(samples);
-  if (dupSample) {
-    throw new Error(
-      `Duplicate sample column "${dupSample}" in the abundance table. ` +
-        `Each sample must appear exactly once — merge or rename the columns and reload.`,
-    );
-  }
-  const speciesNames = rows.map((r) => r[speciesCol]).filter(Boolean);
-  const dupSpecies = firstDuplicate(speciesNames);
-  if (dupSpecies) {
-    throw new Error(
-      `Duplicate species row "${dupSpecies}" in the abundance table. ` +
-        `Each species must appear exactly once — aggregate the rows and reload.`,
-    );
-  }
-
-  const matrix = {};
-  let nonNumericCells = 0;
-  rows.forEach((r) => {
-    const sp = r[speciesCol];
-    if (!sp) return;
-    const row = {};
-    samples.forEach((s) => {
-      const raw = r[s];
-      const v = parseFloat(raw);
-      if (!Number.isFinite(v) && raw != null && String(raw).trim() !== "") {
-        nonNumericCells++;
-      }
-      row[s] = Number.isFinite(v) ? v : 0;
-    });
-    matrix[sp] = row;
-  });
-
-  // Hoisted once: this used to rebuild Object.keys(matrix) twice per
-  // sample, which on a 2000 x 1000 table is the bulk of the parse time.
-  const speciesKeys = Object.keys(matrix);
-
-  // normalize to relative abundances per sample, and collect the log10
-  // extremes in the same pass
-  let minVal = Infinity;
-  let maxVal = -Infinity;
-  let emptySamples = 0;
-  samples.forEach((s) => {
-    let total = 0;
-    for (const sp of speciesKeys) total += matrix[sp][s] || 0;
-    if (total > 0) {
-      for (const sp of speciesKeys) {
-        const v = (matrix[sp][s] || 0) / total;
-        matrix[sp][s] = v;
-        if (v > 0) {
-          if (v < minVal) minVal = v;
-          if (v > maxVal) maxVal = v;
-        }
-      }
-    } else {
-      emptySamples++;
-    }
-  });
-
-  // Per-dataset log10 range, computed from non-zero relative abundances.
-  // Used as the axis bounds for every scatterplot in this dataset (gallery
-  // thumbnails AND the big validation/explore plots) so events are
-  // visually comparable and the points aren't squashed into a corner.
-  const logRange =
-    Number.isFinite(minVal) && Number.isFinite(maxVal)
-      ? {
-          min: Math.floor(Math.log10(minVal)),
-          // Clamp upper bound at 0: relative abundances are bounded by 1.
-          max: Math.min(0, Math.ceil(Math.log10(maxVal))),
-        }
-      : { min: -8, max: 0 };
-
-  // Non-numeric cells are coerced to 0 by design (NA / empty are legitimate
-  // in these tables). But a table whose decimal separator is a comma parses
-  // "successfully" into an all-zero matrix with the right species and sample
-  // counts and blank plots everywhere, so surface the tally instead of
-  // failing silently.
-  const warnings = [];
-  if (emptySamples === samples.length) {
-    warnings.push(
-      `Every sample column sums to 0 — no abundance could be read. ` +
-        `Check the decimal separator (a comma is not recognised) and that the ` +
-        `first column holds species names.`,
-    );
-  } else if (emptySamples > 0) {
-    warnings.push(
-      `${emptySamples} of ${samples.length} sample columns sum to 0 and were left empty.`,
-    );
-  }
-  if (nonNumericCells > 0) {
-    warnings.push(
-      `${nonNumericCells.toLocaleString()} non-empty cells were not numeric and were read as 0.`,
-    );
-  }
-
-  return { samples, species: speciesKeys, matrix, logRange, warnings };
-}
-
-/* ---------- metadata.tsv ---------- */
-const METADATA_COLS = {
-  sample: ["sample_id", "sample", "sampleid", "id"],
-  // Optional human-readable name for the sample. When present, the UI
-  // renders it as a muted secondary label next to the canonical
-  // sample_id (table rows, scatter plots, guided-validation header,
-  // network nodes, plate cells).
-  sampleName: [
-    "sample_name",
-    "name",
-    "display_name",
-    "displayname",
-    "label",
-    "alias",
-  ],
-  subject: [
-    "subject_id",
-    "subject",
-    "subjectid",
-    "patient_id",
-    "patient",
-    "host",
-    "individual",
-  ],
-  timepoint: [
-    "timepoint",
-    "time_point",
-    "time",
-    "day",
-    "week",
-    "visit",
-  ],
-  biome: [
-    "biome",
-    "body_site",
-    "bodysite",
-    "tissue",
-    "sample_site",
-  ],
-  lowBiomass: ["low_biomass", "is_low_biomass", "lowbiomass"],
-  lowSequencingDepth: [
-    "low_sequencing_depth",
-    "is_low_sequencing_depth",
-    "lowsequencingdepth",
-    "low_seq_depth",
-    "low_depth",
-  ],
-  groupId: [
-    // Canonical name first
-    "group_id",
-    "group",
-    // Aliases for various study contexts (humans, animal cages, etc.)
-    "related_group_id",
-    "related_group",
-    "family_id",
-    "family",
-    "cage_id",
-    "cage",
-    "household_id",
-    "household",
-  ],
-};
-
-/** Truthy-ish parsing: accepts true/false, 1/0, yes/no, t/f. Returns a
-    boolean or null if the value is empty/unrecognized. */
-function parseBool(v) {
-  if (v === undefined || v === null || v === "") return null;
-  const s = String(v).toLowerCase().trim();
-  if (["1", "true", "t", "yes", "y"].includes(s)) return true;
-  if (["0", "false", "f", "no", "n"].includes(s)) return false;
-  return null;
-}
-
-function parseMetadata(text) {
-  const { header, rows } = parseTSV(text);
-  if (header.length < 2) {
-    throw new Error("At least 2 columns required (sample_id and subject_id)");
-  }
-  const cols = {
-    sample: pickCol(header, METADATA_COLS.sample),
-    sampleName: pickCol(header, METADATA_COLS.sampleName),
-    subject: pickCol(header, METADATA_COLS.subject),
-    timepoint: pickCol(header, METADATA_COLS.timepoint),
-    biome: pickCol(header, METADATA_COLS.biome),
-    lowBiomass: pickCol(header, METADATA_COLS.lowBiomass),
-    lowSequencingDepth: pickCol(header, METADATA_COLS.lowSequencingDepth),
-    groupId: pickCol(header, METADATA_COLS.groupId),
-  };
-  if (!cols.sample) throw new Error("sample_id column not found");
-  if (!cols.subject) throw new Error("subject_id column not found");
-  const bySample = {};
-  rows.forEach((r) => {
-    const id = r[cols.sample];
-    if (!id) return;
-    const biomeVal = cols.biome ? r[cols.biome] || "" : "";
-    // Control detection: solely from the biome column. Any biome value
-    // matching "control", "blank" or "negative" (case-insensitive) flags
-    // the sample as a negative control.
-    const isControl = /control|blank|negative/i.test(biomeVal);
-    bySample[id] = {
-      sampleName: cols.sampleName ? r[cols.sampleName] || "" : "",
-      subject: r[cols.subject] || "",
-      timepoint: cols.timepoint ? r[cols.timepoint] || "" : "",
-      biome: biomeVal,
-      isControl,
-      lowBiomassExplicit: parseBool(
-        cols.lowBiomass ? r[cols.lowBiomass] : null,
-      ),
-      lowSequencingDepthExplicit: parseBool(
-        cols.lowSequencingDepth ? r[cols.lowSequencingDepth] : null,
-      ),
-      groupId: cols.groupId ? r[cols.groupId] || "" : "",
-      extra: { ...r },
-    };
-  });
-
-  return {
-    cols,
-    bySample,
-    nSamples: Object.keys(bySample).length,
-    hasSampleNameCol: !!cols.sampleName,
-    hasBiomeCol: !!cols.biome,
-    hasLowBiomassCol: !!cols.lowBiomass,
-    hasLowSequencingDepthCol: !!cols.lowSequencingDepth,
-    hasGroupIdCol: !!cols.groupId,
-  };
-}
 
 /** Collect every sample-level flag we can derive from explicit metadata
     columns. Returns { isControl, isLowBiomass, isLowSequencingDepth, biome,
@@ -572,8 +216,10 @@ export function flagSample(sampleId, metadata) {
   if (meta.timepoint) flags.timepoint = meta.timepoint;
   if (meta.groupId) flags.groupId = meta.groupId;
 
-  // Other extra columns the user provided that aren't in our standard set
-  if (meta.extra) {
+  // Other extra columns the user provided that aren't in our standard set.
+  // Only a plain object is a row: a hand-edited `extra` string listed its
+  // characters as "0: a", "1: b" pills.
+  if (meta.extra && typeof meta.extra === "object" && !Array.isArray(meta.extra)) {
     // `cols` records which header each standard field came from, so those
     // columns are not repeated in `other`. It is always present on a
     // parseMetadata result, but a hand-edited session JSON can carry a
@@ -647,194 +293,10 @@ export function sampleName(metadata, sampleId) {
   return n;
 }
 
-/* ---------- plate_map.tsv ---------- */
-const PLATE_COLS = {
-  sample: ["sample_id", "sample", "id"],
-  plate: ["plate", "plate_id", "plateid"],
-  well: ["well", "position", "well_id", "pos"],
-};
-
-/** "A01" / "A1" / "H12" / "P24" → {row: 0..15, col: 0..23} */
-function parseWell(w) {
-  if (!w) return null;
-  const s = String(w).trim().toUpperCase();
-  const m = s.match(/^([A-P])\s*(\d{1,2})$/);
-  if (!m) return null;
-  const row = m[1].charCodeAt(0) - 65;
-  const col = parseInt(m[2], 10) - 1;
-  if (row < 0 || row > 15 || col < 0 || col > 23) return null;
-  return { row, col };
-}
-
-function wellLabel(row, col) {
-  return String.fromCharCode(65 + row) + String(col + 1).padStart(2, "0");
-}
-
-function parsePlateMap(text) {
-  const { header, rows } = parseTSV(text);
-  const cols = {
-    sample: pickCol(header, PLATE_COLS.sample),
-    plate: pickCol(header, PLATE_COLS.plate),
-    well: pickCol(header, PLATE_COLS.well),
-  };
-  if (!cols.sample || !cols.well) {
-    throw new Error(
-      "Missing columns: sample_id and well are required (plate optional).",
-    );
-  }
-  const bySample = {};
-  let maxRow = 7;
-  let maxCol = 11;
-  rows.forEach((r) => {
-    const id = r[cols.sample];
-    if (!id) return;
-    const w = parseWell(r[cols.well]);
-    if (!w) return;
-    bySample[id] = {
-      plate: cols.plate ? r[cols.plate] || "P1" : "P1",
-      row: w.row,
-      col: w.col,
-    };
-    maxRow = Math.max(maxRow, w.row);
-    maxCol = Math.max(maxCol, w.col);
-  });
-  const format =
-    maxRow > 7 || maxCol > 11 ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 };
-  return { bySample, format };
-}
-
-function plateMapToTSV(plateMap) {
-  const lines = ["sample_id\tplate\twell"];
-  Object.entries(plateMap.bySample).forEach(([sid, p]) => {
-    lines.push(`${sid}\t${p.plate}\t${wellLabel(p.row, p.col)}`);
-  });
-  return lines.join("\n");
-}
-
-/** Serialize the loaded events back to a CroCoDeEL-compatible TSV.
-    Optionally prepend the original `# key: value | ...` header line if it
-    was captured at parse time. */
-function eventsToTSV(rawEvents, runMetadata) {
-  const lines = [];
-  if (runMetadata && Object.keys(runMetadata).length > 0) {
-    const parts = Object.entries(runMetadata).map(([k, v]) => `${k}: ${v}`);
-    lines.push(`# ${parts.join(" | ")}`);
-  }
-  // Canonical CroCoDeEL output header (5 columns).
-  lines.push(
-    [
-      "source",
-      "target",
-      "rate",
-      "probability",
-      "contamination_specific_species",
-    ].join("\t"),
-  );
-  rawEvents.forEach((e) => {
-    lines.push(
-      [
-        e.source,
-        e.target,
-        e.rate ?? "",
-        e.score ?? "",
-        Array.isArray(e.introduced) ? e.introduced.join(",") : (e.species ?? ""),
-      ].join("\t"),
-    );
-  });
-  return lines.join("\n");
-}
-
-/** Serialize the in-memory abundance matrix back to TSV. NOTE: the parser
-    normalizes columns to relative abundances per sample, so the output here
-    is RE-NORMALIZED relative abundances — not the exact original counts. */
-export function abundanceToTSV(ab) {
-  if (!ab) return "";
-  const header = ["species", ...ab.samples].join("\t");
-  const lines = [header];
-  ab.species.forEach((sp) => {
-    const row = [sp];
-    ab.samples.forEach((s) => {
-      const v = ab.matrix[sp]?.[s];
-      row.push(Number.isFinite(v) ? v : 0);
-    });
-    lines.push(row.join("\t"));
-  });
-  return lines.join("\n");
-}
-
-/** Apply the sample-level curation to the abundance table.
-
-    Samples the curator flagged `suppress` are removed entirely — that is
-    what the action means: the sample carries too much contamination to be
-    usable. Everything else passes through untouched, including samples
-    flagged `keep` and samples never reviewed.
-
-    No renormalisation happens, and none is needed: in a relative-abundance
-    table each column is closed independently, so removing a whole column
-    leaves every other column summing to exactly what it did before. (This
-    is the opposite of subtracting contamination WITHIN a column, which does
-    break the closure.)
-
-    `dropEmptySpecies` additionally removes species rows left at zero
-    everywhere once the suppressed columns are gone — taxa that were only
-    ever observed in a discarded sample. Off by default would keep the row
-    count comparable with the input; on by default keeps the output clean.
-    Both are defensible, so it is exposed to the user rather than decided
-    here. */
-export function buildCuratedAbundance(ab, sampleCuration, opts = {}) {
-  if (!ab) return null;
-  const dropEmptySpecies = opts.dropEmptySpecies ?? true;
-
-  // Curation is keyed by the sample names that appear in the events file;
-  // map them onto the abundance table's own keys the way every other join
-  // in this file does, so a case or whitespace difference does not silently
-  // fail to suppress a sample.
-  const suppressed = new Set();
-  if (sampleCuration) {
-    for (const name of Object.keys(sampleCuration)) {
-      if (sampleCuration[name]?.action !== "suppress") continue;
-      const key = resolveSample(ab, name);
-      if (key) suppressed.add(key);
-    }
-  }
-
-  const samples = ab.samples.filter((s) => !suppressed.has(s));
-  const droppedSamples = ab.samples.filter((s) => suppressed.has(s));
-
-  let species = ab.species;
-  const droppedSpecies = [];
-  if (dropEmptySpecies) {
-    const kept = [];
-    for (const sp of ab.species) {
-      let seen = false;
-      for (const s of samples) {
-        if ((ab.matrix[sp]?.[s] || 0) > 0) {
-          seen = true;
-          break;
-        }
-      }
-      if (seen) kept.push(sp);
-      else droppedSpecies.push(sp);
-    }
-    species = kept;
-  }
-
-  const matrix = {};
-  for (const sp of species) {
-    const row = {};
-    for (const s of samples) row[s] = ab.matrix[sp]?.[s] ?? 0;
-    matrix[sp] = row;
-  }
-
-  return {
-    samples,
-    species,
-    matrix,
-    logRange: ab.logRange,
-    droppedSamples,
-    droppedSpecies,
-  };
-}
+/* The export builders live in src/exports.js: eventsToTSV (the loaded
+   events written back as CroCoDeEL writes them), the curated events TSV,
+   and abundanceToTSV / buildCuratedAbundance (the abundance table with
+   the input's own values, without the suppressed samples). */
 
 /* ---------- contamination graph export ----------
    The Network tab already treats the events as a directed graph
@@ -852,7 +314,10 @@ export function buildCuratedAbundance(ab, sampleCuration, opts = {}) {
     column headers in Gephi's data laboratory and Cytoscape's table panel,
     so renaming them later would break saved styles. */
 export function buildContaminationGraph(events, opts = {}) {
-  const { sampleCuration, metadata, plateMap, ab } = opts;
+  // `neverTargeted`: the samples no event of the session targets (the
+  // AppMain set behind effectiveSampleCuration), which tells a default
+  // value from the rule's when the exported events are a filtered subset.
+  const { sampleCuration, metadata, plateMap, ab, neverTargeted } = opts;
   const list = events || [];
 
   const ids = new Set();
@@ -884,7 +349,7 @@ export function buildContaminationGraph(events, opts = {}) {
     else if (e.verdict === "false_positive") t.fp++;
     else if (e.verdict === "uncertain") t.uncertain++;
     else t.pending++;
-    if (typeof e.rate === "number") {
+    if (Number.isFinite(e.rate)) {
       if (t.maxIncomingRate == null || e.rate > t.maxIncomingRate) {
         t.maxIncomingRate = e.rate;
       }
@@ -911,11 +376,18 @@ export function buildContaminationGraph(events, opts = {}) {
           if ((ab.matrix[sp]?.[abKey] || 0) > 0) richness++;
         }
       }
+      // Where each value comes from, as the samples TSV says it
+      // (curationOrigin): manual, automatic, or default — the Not
+      // contaminated + Keep of a sample no event targets, which is not a
+      // decision. Without it the default read as a curated Keep.
+      const targeted = neverTargeted ? !neverTargeted.has(id) : a.asTarget > 0;
       return {
         id,
         label: sampleName(metadata, id) || id,
         sample_verdict: cur.verdict || "pending",
+        sample_verdict_origin: curationOrigin(cur, "verdict", targeted),
         sample_action: cur.action || "",
+        sample_action_origin: curationOrigin(cur, "action", targeted),
         notes: cur.notes || "",
         subject: flags.subject || "",
         timepoint: flags.timepoint || "",
@@ -935,8 +407,13 @@ export function buildContaminationGraph(events, opts = {}) {
         fp_as_target: a.fp,
         uncertain_as_target: a.uncertain,
         pending_as_target: a.pending,
-        max_incoming_rate: a.maxIncomingRate ?? 0,
-        max_introduced_pct: a.maxIntroducedPct ?? 0,
+        // -1 when no event targets the sample, where 0 read as a measured
+        // rate next to the -1 of max_introduced_pct.
+        max_incoming_rate: a.maxIncomingRate ?? -1,
+        // A percentage, like the edges' introduced_pct; -1 when unknown (no
+        // event targets the sample, or it is not in the abundance table),
+        // where 0 read as "no species introduced".
+        max_introduced_pct: a.maxIntroducedPct ?? -1,
         species_richness: richness ?? -1,
         in_abundance_table: !!abKey,
       };
@@ -945,15 +422,19 @@ export function buildContaminationGraph(events, opts = {}) {
   const edges = list.map((e, i) => {
     const rel = areRelated(metadata, e.source, e.target);
     const pd = plateDistance(plateMap, e.source, e.target);
+    // -1 for a rate or a probability that is not a number, as for every
+    // other unknown here (only a hand-edited session has one: the parser
+    // reads a missing cell as 0, with a warning).
+    const rate = Number.isFinite(e.rate) ? e.rate : -1;
     return {
       id: `e${e.id ?? i}`,
       source: e.source,
       target: e.target,
       // Gephi and Cytoscape both read `weight` for edge thickness by
       // convention; the contamination rate is the natural quantity.
-      weight: e.rate ?? 0,
-      rate: e.rate ?? 0,
-      probability: e.score ?? 0,
+      weight: rate,
+      rate,
+      probability: Number.isFinite(e.score) ? e.score : -1,
       introduced_pct: typeof e.introducedPct === "number" ? e.introducedPct : -1,
       n_introduced: e.introduced?.length ?? 0,
       event_verdict: e.verdict || "pending",
@@ -1090,35 +571,6 @@ export function graphToCSV(graph) {
   };
 }
 
-/** Serialize metadata back to TSV using whatever extra columns were present
-    in the original upload. */
-function metadataToTSV(metadata) {
-  if (!metadata) return "";
-  const sampleIds = Object.keys(metadata.bySample);
-  if (sampleIds.length === 0) return "";
-  // Collect the union of all extra keys from the original rows
-  const allKeys = new Set();
-  sampleIds.forEach((id) => {
-    const extras = metadata.bySample[id].extra || {};
-    Object.keys(extras).forEach((k) => allKeys.add(k));
-  });
-  // Ensure sample_id and subject_id are first if present
-  const ordered = ["sample_id", "subject_id"];
-  Array.from(allKeys).forEach((k) => {
-    if (!ordered.includes(k)) ordered.push(k);
-  });
-  const lines = [ordered.join("\t")];
-  sampleIds.forEach((id) => {
-    const extras = metadata.bySample[id].extra || {};
-    const cells = ordered.map((k) => {
-      if (k === "sample_id") return extras.sample_id || id;
-      return extras[k] ?? "";
-    });
-    lines.push(cells.join("\t"));
-  });
-  return lines.join("\n");
-}
-
 /** Trigger a browser download for the given text content. */
 function downloadText(content, filename) {
   const blob = new Blob([content], { type: "text/tab-separated-values" });
@@ -1134,589 +586,14 @@ function downloadText(content, filename) {
    3. DOMAIN LOGIC — scatter, diagnostics, cascade, relatedness, plate distance
    ============================================================================ */
 
-/** Resolve a sample name against the abundance table's known samples.
-    Tries exact, case-insensitive, then trimmed-match. Returns the canonical
-    key into ab.matrix[sp][...], or null if no reasonable match. */
-function resolveSample(ab, name) {
-  if (!ab || !name) return null;
-  if (ab.samples.includes(name)) return name;
-  const lc = String(name).toLowerCase().trim();
-  const hit = ab.samples.find((s) => s.toLowerCase().trim() === lc);
-  return hit || null;
-}
-
-export function buildScatter(ab, event) {
-  if (!ab) return null;
-  const { source, target, introduced, rate } = event;
-  const srcKey = resolveSample(ab, source);
-  const tgtKey = resolveSample(ab, target);
-  if (!srcKey || !tgtKey) {
-    return {
-      points: [],
-      logC: null,
-      source,
-      target,
-      error:
-        (!srcKey && !tgtKey)
-          ? `Neither "${source}" nor "${target}" found in abundance table`
-          : !srcKey
-            ? `Source sample "${source}" not found in abundance table`
-            : `Target sample "${target}" not found in abundance table`,
-    };
-  }
-  const introducedSet = new Set(introduced);
-  const points = [];
-  // Species richness = number of species observed (relative abundance > 0)
-  // in each sample. Counted independently of the both-zero skip below.
-  let sourceRichness = 0;
-  let targetRichness = 0;
-  ab.species.forEach((sp) => {
-    const xs = ab.matrix[sp][tgtKey] || 0;
-    const ys = ab.matrix[sp][srcKey] || 0;
-    if (xs > 0) targetRichness++;
-    if (ys > 0) sourceRichness++;
-    if (xs === 0 && ys === 0) return;
-    points.push({ species: sp, x: xs, y: ys, onLine: introducedSet.has(sp) });
-  });
-  const logC = rate > 0 ? Math.log10(rate) : null;
-  return {
-    points,
-    logC,
-    source,
-    target,
-    sourceRichness,
-    targetRichness,
-    logRange: ab.logRange || null,
-  };
-}
-
-/** Complementary error function — Numerical-Recipes rational
-    approximation (max abs error ~1.5e-7 over [0, ∞)). Used to convert
-    a normal-approximation Z-score to a one-sided p-value. */
-function erfc(x) {
-  const z = Math.abs(x);
-  const t = 1 / (1 + 0.5 * z);
-  const ans =
-    t *
-    Math.exp(
-      -z * z -
-        1.26551223 +
-        t *
-          (1.00002368 +
-            t *
-              (0.37409196 +
-                t *
-                  (0.09678418 +
-                    t *
-                      (-0.18628806 +
-                        t *
-                          (0.27886807 +
-                            t *
-                              (-1.13520398 +
-                                t *
-                                  (1.48851587 +
-                                    t * (-0.82215223 + t * 0.17087277))))))))
-    );
-  return x >= 0 ? ans : 2 - ans;
-}
-
-/** Average-rank ranking — handles ties by giving each tied entry the
-    mean of the rank positions they would have taken. Returns ranks in
-    the original input order. */
-function rankArray(arr) {
-  const indexed = arr.map((v, i) => ({ v, i }));
-  indexed.sort((a, b) => a.v - b.v);
-  const ranks = new Array(arr.length);
-  let i = 0;
-  while (i < indexed.length) {
-    let j = i;
-    while (j + 1 < indexed.length && indexed[j + 1].v === indexed[i].v) j++;
-    const avg = (i + j) / 2 + 1; // 1-based average rank
-    for (let k = i; k <= j; k++) ranks[indexed[k].i] = avg;
-    i = j + 1;
-  }
-  return ranks;
-}
-
-/** Spearman's rank correlation between source and target abundances
-    across every species present in at least one of the two samples.
-    A high ρ (≥ 0.7) means the two overall profiles are similar — typical
-    of longitudinal / same-subject pairs where the apparent contamination
-    line is biological persistence rather than mechanical transfer. */
-function spearmanRho(scatter) {
-  if (!scatter || !Array.isArray(scatter.points)) return null;
-  const xs = [];
-  const ys = [];
-  scatter.points.forEach((p) => {
-    if (p.x > 0 || p.y > 0) {
-      xs.push(p.x);
-      ys.push(p.y);
-    }
-  });
-  const n = xs.length;
-  if (n < 3) return null;
-  const rx = rankArray(xs);
-  const ry = rankArray(ys);
-  const mx = rx.reduce((s, v) => s + v, 0) / n;
-  const my = ry.reduce((s, v) => s + v, 0) / n;
-  let sxy = 0,
-    sxx = 0,
-    syy = 0;
-  for (let i = 0; i < n; i++) {
-    sxy += (rx[i] - mx) * (ry[i] - my);
-    sxx += (rx[i] - mx) ** 2;
-    syy += (ry[i] - my) ** 2;
-  }
-  return sxx * syy > 0 ? sxy / Math.sqrt(sxx * syy) : 0;
-}
-
-export function lineDiagnostics(scatter) {
-  if (!scatter) return null;
-  const spearman = spearmanRho(scatter);
-  const pts = scatter.points.filter((p) => p.onLine && p.x > 0 && p.y > 0);
-  const n = pts.length;
-  if (n < 2) return { n, r2: null, slope: null, decadeRange: null, spearman };
-  const logs = pts.map((p) => ({ x: Math.log10(p.x), y: Math.log10(p.y) }));
-  const mx = logs.reduce((s, p) => s + p.x, 0) / n;
-  const my = logs.reduce((s, p) => s + p.y, 0) / n;
-  let sxy = 0,
-    sxx = 0,
-    syy = 0;
-  logs.forEach((p) => {
-    sxy += (p.x - mx) * (p.y - my);
-    sxx += (p.x - mx) ** 2;
-    syy += (p.y - my) ** 2;
-  });
-  const slope = sxx > 0 ? sxy / sxx : 0;
-  const r2 = sxx * syy > 0 ? (sxy * sxy) / (sxx * syy) : 0;
-  // Spread of the line in log space — how many decades of source
-  // abundance the contamination line spans. A real (mechanical)
-  // contamination transfers ALL species proportionally, so the line is
-  // visible across many decades of abundance (typically 3+). Biological
-  // similarity tends to share only the abundant species, so the
-  // "apparent line" is concentrated within 1-2 decades. This is a
-  // strong discriminator between TP and FP that complements R² (which
-  // only measures linearity).
-  const xMin = Math.min(...logs.map((p) => p.x));
-  const xMax = Math.max(...logs.map((p) => p.x));
-  const decadeRange = xMax - xMin;
-  return { n, r2, slope, decadeRange, spearman };
-}
-
-export function pointsAboveLine(scatter) {
-  if (!scatter || scatter.logC == null) return null;
-  let above = 0;
-  let maxDist = 0;
-  let farAbove = 0; // points ≥ 0.5 decade above the line
-  scatter.points.forEach((p) => {
-    if (p.x <= 0 || p.y <= 0 || p.onLine) return;
-    const threshold = Math.log10(p.x) - scatter.logC;
-    const dist = Math.log10(p.y) - threshold;
-    // Threshold 0.1 decade (~1.26× the predicted target abundance) —
-    // matches what's visibly above the line by eye while still
-    // excluding the tight noise cluster sitting almost exactly on it.
-    if (dist > 0.1) {
-      above++;
-      if (dist > maxDist) maxDist = dist;
-      if (dist >= 0.5) farAbove++;
-    }
-  });
-  return { count: above, maxDist, farAbove };
-}
-
-/** Exact upper-tail probability P(X ≥ k) for a Poisson-binomial sum
-    X = Σ Bernoulli(p_i), by dynamic programming over the p_i.
-
-    Only one tail is ever materialised. Computing P(X ≥ k) directly as
-    1 − P(X ≤ k−1) needs k terms; the complement Y = n − X (a Poisson-
-    binomial on the 1 − p_i) gives P(X ≥ k) = P(Y ≤ n − k) and needs
-    n − k + 1 terms. We take whichever is shorter, so the cost is
-    O(n × min(k, n−k+1)) — at most n²/2, a few milliseconds for the few
-    thousand species these tables carry, and far less in the usual case
-    where the miss count is small.
-
-    Falls back to a continuity-corrected normal tail only if the DP would
-    be genuinely large, which real inputs do not reach. */
-export function poissonBinomialUpperTail(ps, k) {
-  const n = ps.length;
-  if (k <= 0) return 1;
-  if (n === 0) return 0;
-  if (k > n) return 0;
-
-  const useComplement = n - k + 1 < k;
-  const limit = useComplement ? n - k : k - 1;
-
-  if ((limit + 1) * n > 5e6) {
-    // Unreachable with realistic species counts; keeps the function total.
-    let mean = 0;
-    let variance = 0;
-    for (const p of ps) {
-      mean += p;
-      variance += p * (1 - p);
-    }
-    const sd = Math.sqrt(variance);
-    if (sd <= 0) return k <= mean ? 1 : 0;
-    return 0.5 * erfc((k - 0.5 - mean) / (sd * Math.SQRT2));
-  }
-
-  // dist[j] = P(exactly j successes), truncated above `limit` — the
-  // dropped mass is precisely the other tail, which we never read.
-  const dist = new Float64Array(limit + 1);
-  dist[0] = 1;
-  for (let i = 0; i < n; i++) {
-    const p = useComplement ? 1 - ps[i] : ps[i];
-    const q = 1 - p;
-    const top = Math.min(limit, i + 1);
-    for (let j = top; j >= 1; j--) {
-      dist[j] = dist[j] * q + dist[j - 1] * p;
-    }
-    dist[0] *= q;
-  }
-
-  let cum = 0;
-  for (let j = 0; j <= limit; j++) cum += dist[j];
-  // useComplement: cum is P(Y ≤ n−k) = P(X ≥ k) directly.
-  // otherwise:     cum is P(X ≤ k−1), so the upper tail is its complement.
-  const tail = useComplement ? cum : 1 - cum;
-  return Math.min(1, Math.max(0, tail));
-}
-
-/** Are the source species detected in the target as the contamination
-    model predicts? Poisson-binomial detection test over EVERY species
-    present in the source — no abundance pre-filter is needed because
-    the test self-regulates: rare species (low λ) contribute almost
-    nothing to the variance and roughly equal weight to expected and
-    observed missing counts, so they don't bias the Z-score. Including
-    the full source profile increases statistical power vs. the older
-    "top 80%" heuristic. */
-export function missingAbundantFromSource(ab, source, target, rate) {
-  if (!ab) return null;
-  const srcKey = resolveSample(ab, source);
-  const tgtKey = resolveSample(ab, target);
-  if (!srcKey || !tgtKey) return null;
-
-  // Adaptive empirical LOD for the target — the smallest non-zero
-  // abundance observed in this specific sample. Falls back to a
-  // conservative 1e-5 if the target has zero or one species.
-  const targetValues = [];
-  ab.species.forEach((sp) => {
-    const v = ab.matrix[sp][tgtKey] || 0;
-    if (v > 0) targetValues.push(v);
-  });
-  const targetLOD = targetValues.length > 0 ? Math.min(...targetValues) : 1e-5;
-
-  // Poisson-binomial detection test — we model the target as a count
-  // process with depth N ≈ 1 / target_LOD (since the LOD is roughly the
-  // smallest detectable relative abundance, ≈ 1 read out of N). For each
-  // source species the expected number of reads under H_real (genuine
-  // contamination at this rate) is λ = N × rate × source = expected /
-  // target_LOD. The probability the species is missed by Poisson sampling
-  // alone is e^(-λ); the probability of being detected is 1 - e^(-λ).
-  // Across all evaluable species the number of misses is a Poisson-
-  // binomial sum — its mean is Σ p_miss and its variance is
-  // Σ p_miss × p_detect. We compare the observed miss count to that
-  // expectation (one-sided normal approximation) and report a p-value.
-  let missing = 0;
-  let expectedMissing = 0;
-  let variance = 0;
-  let evaluated = 0;
-  let coreSize = 0;
-  const missProbs = [];
-  ab.species.forEach((sp) => {
-    const ys = ab.matrix[sp][srcKey] || 0;
-    if (ys <= 0) return;
-    coreSize++;
-    const xs = ab.matrix[sp][tgtKey] || 0;
-    const expected = (rate || 0) * ys;
-    if (expected <= 0) return;
-    const lambda = expected / targetLOD;
-    const pMiss = Math.exp(-lambda);
-    expectedMissing += pMiss;
-    variance += pMiss * (1 - pMiss);
-    missProbs.push(pMiss);
-    evaluated++;
-    if (xs < targetLOD) missing++;
-  });
-  const sigma = Math.sqrt(variance);
-  const zScore = sigma > 0 ? (missing - expectedMissing) / sigma : 0;
-  // One-sided p-value: P(X ≥ missing) under H_real. The normal
-  // approximation `0.5 × erfc(z/√2)` that used to stand here is badly
-  // wrong in exactly the regime this test lives in — most λ are ≪ 1, so
-  // the Poisson-binomial is heavily skewed and nowhere near normal. It
-  // reported p = 3.3e-167 where the exact value is 1.9e-23, and it flipped
-  // the 0.05 decision on real events. The exact DP is O(n × tail) with n a
-  // few hundred, so there is no reason to approximate.
-  const pValue = poissonBinomialUpperTail(missProbs, missing);
-  return {
-    count: missing,
-    evaluated,
-    targetLOD,
-    coreSize,
-    expectedMissing,
-    sigma,
-    zScore,
-    pValue,
-  };
-}
-
-function automaticScore(diag, aboveInfo, nMissing, cascade, relatedness) {
-  // Each reason carries a stable `key` so the Validate panel can pair
-  // the colloquial summary line with its matching Criterion card
-  // even when some entries are missing (no abundance loaded etc.).
-  // `ok` is true (pass), false (fail) or null (evaluated but inconclusive
-  // — counts for neither the numerator nor the denominator).
-  const reasons = [];
-  if (diag && diag.r2 != null) {
-    if (diag.r2 > 0.8) {
-      reasons.push({ key: "r2", ok: true, label: `Straight line (R² = ${diag.r2.toFixed(2)})` });
-    } else {
-      reasons.push({ key: "r2", ok: false, label: `Dispersed line (R² = ${diag.r2.toFixed(2)})` });
-    }
-  }
-  if (diag && diag.n != null) {
-    if (diag.n > 10) {
-      reasons.push({ key: "n", ok: true, label: `${diag.n} species on line (> 10)` });
-    } else {
-      reasons.push({ key: "n", ok: false, label: `Only ${diag.n} species on line` });
-    }
-  }
-  // Decade range of the contamination line — a real (mechanical)
-  // contamination transfers ALL species proportionally, so the line
-  // spans many decades of abundance (TP cases C and D in the paper:
-  // 4-5 decades). Biological similarity shares only the most abundant
-  // species, concentrating the apparent line in 1-1.5 decades. Threshold
-  // ≥ 1.5 decades is permissive enough not to penalise genuine low-rate
-  // TPs but flags the typical FP-by-shared-microbiota pattern.
-  if (diag && diag.decadeRange != null) {
-    const dr = diag.decadeRange;
-    if (dr >= 1.5) {
-      reasons.push({
-        key: "decade",
-        ok: true,
-        label: `Line spans ${dr.toFixed(1)} decades of abundance (≥ 1.5)`,
-      });
-    } else {
-      reasons.push({
-        key: "decade",
-        ok: false,
-        label: `Line concentrated in ${dr.toFixed(1)} decades — possibly only abundant species shared`,
-      });
-    }
-  }
-  if (nMissing != null) {
-    const {
-      count: missingCount,
-      evaluated,
-      expectedMissing,
-      pValue,
-    } = nMissing;
-    if (evaluated === 0) {
-      // No core species had any predictable contribution (rate ≈ 0 or
-      // empty source). Cannot inform the verdict — mark it inconclusive
-      // rather than passing it, which used to hand a free point to every
-      // event whose rate column failed to parse.
-      reasons.push({
-        key: "missing",
-        ok: null,
-        label: `Missing-species check not informative (no species expected in target given rate)`,
-      });
-    } else if (missingCount === 0) {
-      reasons.push({
-        key: "missing",
-        ok: true,
-        label: `All ${evaluated} expected source species present in target`,
-      });
-    } else if (pValue >= 0.05) {
-      // Observed misses are consistent with Poisson-binomial sampling
-      // noise under H_real — fold them into the "tolerable" bucket and
-      // keep the criterion as a pass. Headline stays short so the
-      // card row doesn't spill over; the p-value / expected count
-      // are surfaced in the dropdown's technical readout.
-      reasons.push({
-        key: "missing",
-        ok: true,
-        label: `${missingCount}/${evaluated} missing — within Poisson noise`,
-      });
-    } else {
-      reasons.push({
-        key: "missing",
-        ok: false,
-        label: `${missingCount}/${evaluated} expected species missing — beyond Poisson noise`,
-      });
-    }
-  }
-  // Above-line points. buildScatter puts TARGET on x and SOURCE on y, so
-  // pointsAboveLine's `dist > 0` is log10(rate × source / target) > 0,
-  // i.e. target < rate × source — the half-plane additive contamination
-  // cannot reach, since the target keeps its own natives on top of what
-  // it received. ANY such point is a signal, but the magnitude matters
-  // more than the count: a single point 3 decades off is much stronger
-  // evidence than 5 points slightly off. Threshold:
-  // PASS if no point is more than 0.5 decade above the line (tight
-  // tolerance — beyond that the target holds ≤ 1/3 of the delivered
-  // contamination, so either the rate is over-estimated or the line is
-  // shared biology rather than transfer); FAIL
-  // otherwise. The exception is cascade contamination — we soften the
-  // wording when a cascade has been detected upstream.
-  if (aboveInfo != null) {
-    const { count: nAbove, maxDist, farAbove } = aboveInfo;
-    if (nAbove === 0) {
-      reasons.push({ key: "above", ok: true, label: `No points above the line` });
-    } else if (maxDist < 0.5) {
-      reasons.push({
-        key: "above",
-        ok: true,
-        label: `${nAbove} points above the line, all within 0.5 decade (tolerable)`,
-      });
-    } else if (cascade) {
-      reasons.push({
-        key: "above",
-        ok: false,
-        label: `${nAbove} points above the line (${farAbove} ≥ 0.5 decade, max ${maxDist.toFixed(1)}) — explained by detected cascade`,
-      });
-    } else {
-      reasons.push({
-        key: "above",
-        ok: false,
-        label: `${nAbove} points above the line (${farAbove} ≥ 0.5 decade, max ${maxDist.toFixed(1)}) — strong biological signal, no cascade detected`,
-      });
-    }
-  }
-  // Joint "biological similarity" criterion — combines the Spearman
-  // correlation (ρ) with the metadata-driven relatedness check. ρ
-  // alone is ambiguous: high ρ can mean either longitudinal /
-  // same-subject persistence (FP) OR very strong contamination (TP).
-  // Reading the two signals together resolves the ambiguity:
-  //   • high ρ + samples NOT related   → strong contamination plausible → PASS (TP-leaning)
-  //   • high ρ + samples ARE related   → biological persistence  → FAIL (FP-leaning)
-  //   • low ρ                          → profiles distinct  → PASS
-  //   • high ρ + no metadata           → ambiguous, mark inconclusive (ok: null)
-  // Replaces the older separate Spearman + relatedness criteria.
-  if (diag && diag.spearman != null) {
-    const rho = diag.spearman;
-    const rhoText = `ρ = ${rho.toFixed(2)}`;
-    const high = rho >= 0.7;
-    const related =
-      relatedness && relatedness.related != null
-        ? relatedness.related
-        : null;
-    if (related === null) {
-      if (!high) {
-        reasons.push({
-          key: "biosim",
-          ok: true,
-          label: `Source / target profiles distinct (${rhoText})`,
-        });
-      } else {
-        // High ρ without metadata: can't tell longitudinal vs strong
-        // contamination. Surface as inconclusive (ok = null) so the
-        // curator sees it but it doesn't tilt the score.
-        reasons.push({
-          key: "biosim",
-          ok: null,
-          label: `Source / target profiles highly correlated (${rhoText}) — load metadata to know if same subject (FP) or strong contamination (TP)`,
-        });
-      }
-    } else if (related === false) {
-      if (high) {
-        reasons.push({
-          key: "biosim",
-          ok: true,
-          label: `Profiles highly correlated (${rhoText}) despite different subjects — consistent with strong contamination`,
-        });
-      } else {
-        reasons.push({
-          key: "biosim",
-          ok: true,
-          label: `Profiles distinct (${rhoText}) and from different subjects`,
-        });
-      }
-    } else {
-      // related === true
-      const kindText =
-        relatedness.kind === "group"
-          ? `same group (${relatedness.value})`
-          : `same subject (${relatedness.value})`;
-      if (high) {
-        reasons.push({
-          key: "biosim",
-          ok: false,
-          label: `Profiles highly correlated (${rhoText}) AND ${kindText} — biological persistence, likely FP`,
-        });
-      } else {
-        reasons.push({
-          key: "biosim",
-          ok: true,
-          label: `Profiles distinct (${rhoText}) despite ${kindText}`,
-        });
-      }
-    }
-  }
-  // Derive both counts from `reasons` rather than maintaining a `good++`
-  // alongside a hard-coded `total = 6`. Criteria are only pushed when
-  // their input exists, so `total` is now the number of criteria actually
-  // evaluated — 0 when no abundance table is loaded (the callers guard on
-  // `total > 0` and suppress the banner) instead of a red "0 / 6 —
-  // PROBABLY NOT CONTAMINATED" printed above "Open the abundance table to
-  // compute." And an `ok: null` abstention no longer silently consumes a
-  // point, which used to cap otherwise-perfect events at 5/6.
-  const total = reasons.filter((r) => r.ok !== null).length;
-  const good = reasons.filter((r) => r.ok === true).length;
-  return { good, total, reasons };
-}
-
-/** A cascade is suspected when event A→B has many points above the line AND
-    A is itself flagged as contaminated (C→A).  The points above A→B's line
-    can then be explained as species introduced into B via A through C. */
-function detectCascades(events, abundance, metadata) {
-  const incoming = {};
-  events.forEach((e) => {
-    if (!incoming[e.target]) incoming[e.target] = [];
-    incoming[e.target].push(e);
-  });
-
-  return events.map((e) => {
-    if (!abundance) return { ...e, cascade: null };
-    // Skip pairs whose source and target are related (same subject or
-    // related group): an apparent multi-source signal there is more
-    // parsimoniously explained by biological similarity than by a
-    // cascade. Cascade detection is only meaningful between unrelated
-    // samples.
-    if (metadata) {
-      const r = areRelated(metadata, e.source, e.target);
-      if (r && r.related === true) return { ...e, cascade: null };
-    }
-    const scatter = buildScatter(abundance, e);
-    const aboveInfo = pointsAboveLine(scatter);
-    if (aboveInfo == null || aboveInfo.count <= 3) return { ...e, cascade: null };
-    const upstream = incoming[e.source] || [];
-    if (upstream.length === 0) return { ...e, cascade: null };
-    const explained = [];
-    upstream.forEach((up) => {
-      const upIntroduced = new Set(up.introduced);
-      let count = 0;
-      scatter.points.forEach((p) => {
-        if (p.onLine || p.x <= 0 || p.y <= 0 || scatter.logC == null) return;
-        const threshold = Math.log10(p.x) - scatter.logC;
-        if (Math.log10(p.y) > threshold + 0.3 && upIntroduced.has(p.species)) {
-          count++;
-        }
-      });
-      if (count >= 2) {
-        explained.push({
-          upstream_source: up.source,
-          upstream_event_id: up.id,
-          species_explained: count,
-        });
-      }
-    });
-    if (explained.length === 0) return { ...e, cascade: null };
-    return {
-      ...e,
-      cascade: { points_above: aboveInfo.count, explained },
-    };
-  });
-}
+// The scatter of an event and its line diagnostics — buildScatter,
+// lineDiagnostics, pointsAboveLine, spearmanRho, poissonBinomialUpperTail,
+// missingAbundantFromSource — live in src/diagnostics.js with
+// resolveSample, matchSpeciesName and automaticScore: pure functions that
+// the unit tests can call, together with whatever is built on them,
+// without this file exporting more (see the re-export at the top).
+// Cascade detection (detectCascades) lives there too; AppMain hands it
+// areRelated, below, bound to the metadata.
 
 /** Are source and target from the same subject? */
 /** Returns null if not enough metadata, otherwise an object describing
@@ -1751,6 +628,439 @@ export function plateDistance(plateMap, source, target) {
 /* ============================================================================
    4. UI PRIMITIVES
    ============================================================================ */
+
+/* ---------- long sample ids ----------
+   A sample id is whatever the abundance table's header says, and a LIMS
+   export can make it 150 characters long with nothing to break a line on.
+   Written out whole it pushed the page sideways (by 1,600 px on the
+   Events table at a 1500 px window) or ran over its neighbours. Wherever
+   an id may not fit, it is cut with an ellipsis and the whole id is its
+   tooltip. The page still holds the whole id: selecting it (double- or
+   triple-click) and copying gives all of it. The two tables that list
+   ids, the Samples tab and the Events table, wrap a long id instead of
+   cutting it (SampleId, idColumnWidth). */
+
+/* The width of `text` in `font` (a CSS font shorthand), measured on a
+   canvas; null where there is none (jsdom). Measures are kept until a web
+   font finishes loading (fontEpoch): before that the canvas measured the
+   fallback font. */
+let textCanvas; // undefined until first used, null without a canvas
+let textCanvasFont = ""; // the font last set on it
+const textWidths = new Map(); // `${font}\u0000${text}` → px
+function textWidth(text, font) {
+  const key = `${font}\u0000${text}`;
+  const known = textWidths.get(key);
+  if (known !== undefined) return known;
+  if (textCanvas === undefined) {
+    try {
+      textCanvas = document.createElement("canvas").getContext("2d") || null;
+    } catch {
+      textCanvas = null;
+    }
+  }
+  if (!textCanvas) return null;
+  if (font !== textCanvasFont) {
+    textCanvas.font = font;
+    textCanvasFont = font;
+  }
+  const px = textCanvas.measureText(text).width;
+  if (textWidths.size > 50000) textWidths.clear();
+  textWidths.set(key, px);
+  return px;
+}
+
+/* Bumped each time the page's web fonts finish loading: what the canvas
+   measured before is dropped, and the components that size a column from
+   it (useFontEpoch) render again. A table drawn at startup — a session
+   reopened on the Events tab — was measured in the fallback font. */
+let fontEpoch = 0;
+const fontEpochListeners = new Set();
+if (typeof document !== "undefined" && document.fonts?.addEventListener) {
+  document.fonts.addEventListener("loadingdone", () => {
+    textWidths.clear();
+    fontEpoch += 1;
+    fontEpochListeners.forEach((listener) => listener());
+  });
+}
+function subscribeFontEpoch(listener) {
+  fontEpochListeners.add(listener);
+  return () => fontEpochListeners.delete(listener);
+}
+const useFontEpoch = () =>
+  React.useSyncExternalStore(subscribeFontEpoch, () => fontEpoch, () => 0);
+
+/** The width of `text` in `font`, counted in that font's `ch` (the width
+    of its "0", the unit of SampleId's floor), or its number of characters
+    where nothing can measure it. */
+function widthInCh(text, font) {
+  const px = textWidth(text, font);
+  const ch = px == null ? null : textWidth("0", font);
+  return ch ? px / ch : text.length;
+}
+
+/** The Events table's id font — the app's body font (AppMain), semibold,
+    13 px — to measure its ids in. */
+const EVENTS_ID_FONT = '600 13px "Avenir Next", "Nunito Sans", system-ui, -apple-system, sans-serif';
+/** The Samples tab's id font (SampleIdCell). */
+const SAMPLES_ID_FONT = "600 13px ui-monospace, monospace";
+/** The font of a sample's name under its id, in both tables. */
+const SAMPLE_NAME_FONT = '400 11px "Avenir Next", "Nunito Sans", system-ui, -apple-system, sans-serif';
+/** The widest a sample's name is drawn under its id before it is cut. */
+const SAMPLE_NAME_MAX_PX = 220;
+
+/** An id or a name is never narrowed below this many characters (`ch`).
+    A shorter one is never cut nor wrapped. */
+const ID_FLOOR_CH = 12;
+/** An id of up to this many characters is never cut in a table: it wraps
+    onto as many lines as its column needs (the bundled studies' longest,
+    the benchmarks', have 52). */
+const ID_WHOLE_MAX_CHARS = 64;
+/** The lines a longer id (a LIMS export's 150 characters) keeps before it
+    is cut. */
+const ID_MAX_LINES = 4;
+
+/** `text` split where a line may break: after "_", "-", "/", ":" and
+    "|", and before a "." followed by a letter (".metaphlan4"), not inside
+    "0.5". The pieces go between <wbr>s, so an id wraps at its own
+    separators ("conta_target_case_005_" / "0.5_1.metaphlan4"); a piece
+    longer than the line still breaks anywhere (overflow-wrap). No regex
+    lookbehind: Safari before 16.4 refuses the whole script. */
+function idPieces(text) {
+  const pieces = [];
+  let start = 0;
+  for (let i = 1; i < text.length; i++) {
+    const before = text[i - 1];
+    const breakAfter = before === "_" || before === "-" || before === "/" || before === ":" || before === "|";
+    const breakBefore = text[i] === "." && /[A-Za-z]/.test(text[i + 1] || "");
+    if (breakAfter || breakBefore) {
+      pieces.push(text.slice(start, i));
+      start = i;
+    }
+  }
+  pieces.push(text.slice(start));
+  return pieces;
+}
+
+/** One sample id in a table: the Samples tab and the Events table. An id
+    of up to ID_FLOOR_CH characters (measured in `font` when given, else
+    counted) is one line that never shrinks. A longer one wraps at its
+    separators when its column is narrower than it — never narrower than
+    ID_FLOOR_CH characters. Up to ID_WHOLE_MAX_CHARS characters it is
+    never cut, so two ids never read the same; a longer one is cut after
+    ID_MAX_LINES lines, with an ellipsis, its tooltip and the page keeping
+    it whole. Its column is as wide as its longest id whenever the table
+    has room (idColumnWidth), so it wraps only where the table would
+    otherwise run past the page.
+
+    It used to be cut on one line to the width an auto-layout table gave
+    its column. Such a table shares its width between its columns in
+    proportion to their content, the columns that wrap (Events as source /
+    target, Context, Target action) taking most of it, so ids were cut
+    though the table had room for them: at 1024 px the MetaPhlAn4
+    benchmark's 38-character ids read "conta_source_case_001_0.…" on every
+    row of the Samples tab (39 different texts for 100 ids), and at 1500 px
+    the Events table cut all of them (49 texts for 84 ids), "…_0.5_1" and
+    "…_0.5_1_before_conta" reading the same. */
+const SampleId = React.memo(function SampleId({ id, font, className = "", style }) {
+  const text = String(id ?? "");
+  const width = font ? widthInCh(text, font) : text.length;
+  if (width <= ID_FLOOR_CH) {
+    return (
+      <span
+        data-table-id=""
+        className={`block whitespace-nowrap ${className}`}
+        style={style}
+        title={text}
+      >
+        {text}
+      </span>
+    );
+  }
+  const clamp =
+    text.length > ID_WHOLE_MAX_CHARS
+      ? { display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: ID_MAX_LINES, overflow: "hidden" }
+      : { display: "block" };
+  return (
+    <span
+      data-table-id=""
+      className={className}
+      title={text}
+      style={{
+        ...clamp,
+        overflowWrap: "anywhere",
+        minWidth: `${ID_FLOOR_CH}ch`,
+        // May use half of its cell's right padding before it wraps: on the
+        // PRJEB6337 study at 1500 px the Samples tab has 0.2 px less than
+        // its 29-character ids, which wrapped for it.
+        marginRight: -6,
+        ...style,
+      }}
+    >
+      {idPieces(text).map((piece, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <wbr />}
+          {piece}
+        </React.Fragment>
+      ))}
+    </span>
+  );
+});
+
+/** A sample's metadata name under its id, on one line: whole up to
+    SAMPLE_NAME_MAX_PX, cut with an ellipsis past it or where its column
+    is narrower — never below ID_FLOOR_CH characters (the one-track grid
+    is what lets the column narrow it: an auto-layout table never makes a
+    column narrower than the min-content width of its cells, which for one
+    line of text is the whole text). Its column is as wide as its name
+    whenever the table has room (idColumnWidth). */
+const SampleNameLine = ({ name, className = "", style }) => {
+  const text = String(name ?? "");
+  return (
+    <span
+      className={`grid ${className}`}
+      style={{
+        gridTemplateColumns:
+          text.length <= ID_FLOOR_CH
+            ? "minmax(max-content, 1fr)"
+            : `minmax(${ID_FLOOR_CH}ch, 1fr)`,
+        maxWidth: SAMPLE_NAME_MAX_PX,
+        ...style,
+      }}
+    >
+      <span className="truncate" title={text}>
+        {text}
+      </span>
+    </span>
+  );
+};
+
+/** How a sample's name looks under its id in the Events table. */
+const SAMPLE_NAME_STYLE = { color: "var(--ink-muted)", fontWeight: 400 };
+
+/** The `width` a table's id column gets (px, on its header cell), or
+    undefined when every id and name in it is short enough never to wrap:
+    its widest id (in `idFont`) or name (cut at SAMPLE_NAME_MAX_PX), plus a
+    margin for rounding. A column with a width is "constrained": an
+    auto-layout table widens it to that width before it widens the columns
+    that wrap (Context, Events as source / target, Target action), and
+    narrows it only once those are at their narrowest — so an id wraps
+    only where the table would otherwise run past the page. Without it the
+    table gave its width to the columns in proportion to their content and
+    cut ids it had room for. `pairs` is [[id, name], …]; `padding` is the
+    cells' horizontal padding (px-3 on both sides): a header's width is
+    its border box (Tailwind's border-box sizing). */
+function idColumnWidth(pairs, idFont, padding = 24) {
+  let widest = 0;
+  let long = false;
+  for (const [id, name] of pairs) {
+    const text = String(id ?? "");
+    const px = textWidth(text, idFont);
+    if (px == null) return undefined;
+    widest = Math.max(widest, px);
+    if (widthInCh(text, idFont) > ID_FLOOR_CH) long = true;
+    if (name) {
+      const namePx = textWidth(String(name), SAMPLE_NAME_FONT) ?? 0;
+      widest = Math.max(widest, Math.min(namePx, SAMPLE_NAME_MAX_PX));
+      if (String(name).length > ID_FLOOR_CH) long = true;
+    }
+  }
+  return long ? Math.ceil(widest) + 2 + padding : undefined;
+}
+
+/** A sample id and, after it, its metadata name in brackets, on one line:
+    the id keeps its width (minmax(0, max-content)) and the name takes what
+    is left (minmax(0, 1fr)), so the name is cut first and the id only once
+    the name has no room left. In a flex row they used to shrink together,
+    in proportion to their widths: a 6-character id before a 60-character
+    name showed "63D…". Each has its tooltip; `idProps` go on the id's
+    span. */
+const SampleIdName = ({
+  id,
+  name,
+  className = "",
+  style,
+  idStyle,
+  idProps,
+  nameClassName = "",
+  nameStyle,
+}) => (
+  <span
+    className={`grid items-baseline ${className}`}
+    style={{
+      gridTemplateColumns: name ? "minmax(0, max-content) minmax(0, 1fr)" : "minmax(0, max-content)",
+      columnGap: "0.4em",
+      ...style,
+    }}
+  >
+    <span className="truncate" style={idStyle} title={String(id ?? "")} {...idProps}>
+      {id}
+    </span>
+    {name && (
+      <span className={`truncate ${nameClassName}`} style={nameStyle} title={name}>
+        ({name})
+      </span>
+    )}
+  </span>
+);
+
+/** The room a SamplePair keeps for its target when the source is too long
+    to leave it more: all of a short target (" → 63D9"), and the arrow and
+    two or three characters of a longer one, which is cut anyway — the
+    source keeps the rest, as much as the one line of text used to give
+    it. */
+function pairTargetMin(target) {
+  return String(target ?? "").length <= 6 ? "5.5em" : "3.5em";
+}
+
+/** "source → target" on one line. When the pair does not fit, it is cut
+    at the end, in the target, as one line of text always was, but the
+    target keeps at least pairTargetMin: past that, the source is cut on
+    its own, so a long source no longer hides the target behind its
+    ellipsis. The tooltip (`title`, null for none) is the whole pair;
+    `arrow` is a text or an inline element.
+
+    The reserve is the target's min-width and the source's cap is
+    calc(100% - reserve), not a share of the line: in a box as wide as its
+    content (a gallery card's caption) the line is then always wide enough
+    for the source, which a percentage share would cut.
+
+    The first version cut both ids to equal shares (two minmax(0,
+    max-content) grid tracks): ids sharing a long prefix — the benchmark
+    datasets' "conta_target_case_010_0.5_1" and its target — then read the
+    same on every gallery card and Overview row, where the source used to
+    be whole; and its 'auto' arrow track took the line's free space,
+    pushing a short target to the far end of the line. */
+const SamplePair = ({ source, target, arrow = "→", title, className = "", style }) => {
+  const reserve = pairTargetMin(target);
+  return (
+    <span
+      className={`flex items-baseline min-w-0 ${className}`}
+      style={style}
+      title={title === undefined ? `${source} → ${target}` : title || undefined}
+    >
+      <span
+        className="truncate"
+        style={{ flex: "none", maxWidth: `calc(100% - ${reserve})` }}
+        data-pair-source=""
+      >
+        {source}
+      </span>
+      <span className="truncate" style={{ flex: "0 1 auto", minWidth: reserve }}>
+        {typeof arrow === "string" ? `\u00a0${arrow} ` : arrow}
+        <span data-pair-target="">{target}</span>
+      </span>
+    </span>
+  );
+};
+
+/** SamplePair for a line as wide as its column whatever its text (the
+    event queue's rows): the same cut with two boxes less per row. The
+    source is an inline block capped at calc(100% - reserve) and the line's
+    own ellipsis cuts the target — a percentage cap needs a line whose
+    width does not come from its text. The queue renders every event
+    (16,555 on the Meteor benchmark), where SamplePair's flex row took
+    ~200 ms more to render when Guided validation opens. */
+const SamplePairLine = ({ source, target, className = "", style }) => (
+  <div className={`truncate ${className}`} style={style} title={`${source} → ${target}`}>
+    <span
+      className={`inline-block truncate align-bottom ${
+        pairTargetMin(target) === "5.5em" ? "max-w-[calc(100%-5.5em)]" : "max-w-[calc(100%-3.5em)]"
+      }`}
+      data-pair-source=""
+    >
+      {source}
+    </span>
+    {` → ${target}`}
+  </div>
+);
+
+/** A sample id inside running text: cut at the width of the line. */
+const InlineSampleId = ({ id, className = "", style }) => (
+  <span
+    className={`inline-block max-w-full truncate align-bottom ${className}`}
+    style={style}
+    title={String(id ?? "")}
+  >
+    {id}
+  </span>
+);
+
+/** An id for an SVG label, which has no ellipsis: cut to `max`
+    characters, the last one an ellipsis. The caller puts the whole id in
+    a <title>. */
+function clipId(id, max) {
+  const s = String(id ?? "");
+  return s.length > max ? `${s.slice(0, Math.max(1, max - 1))}…` : s;
+}
+
+/* The width of a text in the scatter's axis-title font (11 px Raleway,
+   `weight`), measured on a canvas; null where there is none (jsdom). */
+function axisTitleWidth(text, weight) {
+  return textWidth(text, `${weight} 11px Raleway, sans-serif`);
+}
+
+/** A ref for an axis title's <text>, `title` being { key, idStart, id,
+    shown, room } (the id as written and as shown, from character
+    `idStart` of the title): once drawn, when the title is longer than
+    `room`, `onCut(key, kept)` gets the number of the id's characters that
+    fit before an ellipsis, measured on the text as laid out. A ref
+    callback runs on every commit, before the browser paints. */
+function axisTitleFit(title, onCut) {
+  return (el) => {
+    if (!el || typeof el.getComputedTextLength !== "function") return;
+    const over = el.getComputedTextLength() - title.room;
+    if (!(over > 0.5)) return;
+    const clipped = title.shown !== title.id;
+    let shownChars = clipped ? title.shown.length - 1 : title.shown.length;
+    try {
+      // An ellipsis to add is about one character wide; one already there
+      // stays where it is.
+      let need = over + (clipped ? 0 : el.getSubStringLength(title.idStart + shownChars - 1, 1));
+      while (shownChars > 1 && need > 0) {
+        shownChars--;
+        need -= el.getSubStringLength(title.idStart + shownChars, 1);
+      }
+    } catch {
+      // Runs of blanks inside the id collapse, and the characters as laid
+      // out no longer line up with the id's: keep what the canvas fitted.
+      return;
+    }
+    onCut(title.key, shownChars);
+  };
+}
+
+/** The id of a scatter axis title — `before` (weight 600), the id (600),
+    `after` (weight 500, its runs of spaces collapsed as SVG shows them) —
+    cut with an ellipsis (clipId's way) so that the whole title fits in
+    `room` units, measured on a canvas in the title's font. The first
+    version estimated the widths per character, and a 150-character id
+    still ran 15 to 20 px past the plot's edge, over the richness after
+    it. Without a canvas, that estimate is kept. The SVG lays its text out
+    at its rendered size, a few percent wider than a canvas measures it
+    (487 against 476 units at 1500 px): Scatterplot checks the title once
+    drawn and cuts further (axisTitleFit). */
+function fitAxisTitleId(id, before, after, room, kept) {
+  const text = String(id ?? "");
+  if (kept != null && kept < text.length) return `${text.slice(0, kept)}…`;
+  const fixed = axisTitleWidth(before, 600);
+  if (fixed == null) {
+    return clipId(
+      text,
+      Math.max(8, Math.floor((room - before.length * 5.5 - after.length * 4.5) / 6.4)),
+    );
+  }
+  const used = fixed + axisTitleWidth(after.replace(/\s+/g, " "), 500);
+  if (used + axisTitleWidth(text, 600) <= room) return text;
+  // The most characters of the id that fit before an ellipsis, at least one.
+  let lo = 1;
+  let hi = text.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (used + axisTitleWidth(`${text.slice(0, mid)}…`, 600) <= room) lo = mid;
+    else hi = mid - 1;
+  }
+  return `${text.slice(0, lo)}…`;
+}
 
 const Pill = ({ children, tone = "neutral", className = "" }) => {
   // Backgrounds use rgba overlays so they tint whatever surface sits
@@ -2003,6 +1313,17 @@ const Chevron = ({ size = 16, color = "#00a3a6" }) => (
   </svg>
 );
 
+/* What the keep / suppress counters count, wherever they appear (Overview,
+   Samples, Export, HTML reports — all through sampleActionCounts). */
+const SAMPLES_TO_SUPPRESS_HINT =
+  "Samples whose action is Suppress, set by hand or paired automatically with Contaminated — exactly the samples the curated abundance table drops. Once an abundance table is loaded, a sample it does not contain is not counted: there is nothing to drop.";
+// Which samples the Samples tab's own counters cover: its rows before the
+// context filters narrow them.
+const SAMPLES_TAB_COUNT_SCOPE =
+  "Counted over this tab's samples before its context filters (subject, timepoint, control…): every sample of the abundance table, and those touched by the events the filter bar keeps.";
+const SAMPLES_TO_KEEP_HINT =
+  "Samples whose action is Keep. The automatic Keep of a sample no event targets is a default, not a decision, and is not counted. Once an abundance table is loaded, only its samples are counted.";
+
 const Stat = ({ label, value, tone = "neutral", hint }) => {
   const styles = {
     neutral: { background: "var(--bg-soft)", color: "var(--ink)" },
@@ -2176,12 +1497,19 @@ const Scatterplot = ({
   showRichness = true,
 }) => {
   const [hover, setHover] = useState(null);
+  // How many characters of each axis title's id fit, once measured as
+  // drawn (axisTitleFit), for the title it was measured on.
+  const [axisCut, setAxisCut] = useState({});
   if (!scatter) return null;
   if (scatter.error) {
     return (
       <div
         style={{
           width,
+          // In a column narrower than the plot (Guided validation's, at
+          // 1500 px), the box ran under the card beside it, hiding the
+          // end of each line of a wrapped long id.
+          maxWidth: "100%",
           height,
           background: "var(--bg-alert)",
           border: "1px solid #ed6e6c",
@@ -2191,16 +1519,20 @@ const Scatterplot = ({
           alignItems: "center",
           justifyContent: "center",
           padding: 16,
-          color: "#8a2422",
+          color: "var(--ink-alert)",
           textAlign: "center",
           gap: 8,
         }}
       >
         <AlertCircle className="w-5 h-5" />
-        <div style={{ fontSize: 13, fontWeight: 600 }}>{scatter.error}</div>
-        <div style={{ fontSize: 11, color: "#8a2422", opacity: 0.8, maxWidth: 380 }}>
-          Check that sample IDs in contamination_events.tsv exactly match the
-          column names in species_abundance.tsv (case-sensitive).
+        {/* The message names the sample: a long id wraps inside the box. */}
+        <div style={{ fontSize: 13, fontWeight: 600, overflowWrap: "anywhere" }}>
+          {scatter.error}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--ink-alert)", opacity: 0.8, maxWidth: 380 }}>
+          Check that the sample IDs in contamination_events.tsv match the
+          column names in species_abundance.tsv. Letter case and spaces
+          around an ID are ignored; any other difference is not.
         </div>
       </div>
     );
@@ -2208,6 +1540,34 @@ const Scatterplot = ({
   const pad = { l: 56, r: 20, t: 20, b: 50 };
   const w = width - pad.l - pad.r;
   const h = height - pad.t - pad.b;
+
+  // The axis titles name the samples. SVG text has no ellipsis, and a
+  // long id ran off the plot on both sides of its centred title: it is
+  // cut (fitAxisTitleId) so that the title fits along its axis and the
+  // padding on the narrower side, both sides of a centred title getting
+  // half of it, less 4 units of margin. The whole title is its tooltip.
+  const xRichness =
+    showRichness && typeof scatter.targetRichness === "number"
+      ? `  ·  ${scatter.targetRichness} species`
+      : "";
+  const yRichness =
+    showRichness && typeof scatter.sourceRichness === "number"
+      ? `  ·  ${scatter.sourceRichness} species`
+      : "";
+  const xTitle = "Target (contaminated) — ";
+  const yTitle = "Source — ";
+  const axisTitle = (axis, id, before, after, room) => {
+    const key = `${id}\u0000${after}\u0000${room}`;
+    const kept = axisCut[axis]?.key === key ? axisCut[axis].kept : undefined;
+    return { axis, key, id: String(id ?? ""), idStart: before.length, room,
+      shown: fitAxisTitleId(id, before, after, room, kept) };
+  };
+  const onAxisCut = (axis) => (key, kept) =>
+    setAxisCut((cut) =>
+      cut[axis]?.key === key && cut[axis].kept <= kept ? cut : { ...cut, [axis]: { key, kept } },
+    );
+  const xAxis = axisTitle("x", scatter.target, xTitle, xRichness, w + 2 * Math.min(pad.l, pad.r) - 4);
+  const yAxis = axisTitle("y", scatter.source, yTitle, yRichness, h + 2 * Math.min(pad.t, pad.b) - 4);
 
   // Use the per-dataset log10 range when the scatter object carries one
   // (parseAbundance attaches it to ab.logRange and buildScatter forwards
@@ -2316,6 +1676,7 @@ const Scatterplot = ({
         <line x1={pad.l} y1={pad.t + h} x2={pad.l + w} y2={pad.t + h} stroke="#275662" strokeWidth="1" />
         <line x1={pad.l} y1={pad.t} x2={pad.l} y2={pad.t + h} stroke="#275662" strokeWidth="1" />
         <text
+          ref={axisTitleFit(xAxis, onAxisCut("x"))}
           x={pad.l + w / 2}
           y={height - 10}
           textAnchor="middle"
@@ -2324,15 +1685,17 @@ const Scatterplot = ({
           fontWeight="600"
           fill="#275662"
         >
-          Target (contaminated) — {scatter.target}
-          {showRichness && typeof scatter.targetRichness === "number" && (
+          <title>{`${xTitle}${scatter.target}${xRichness}`}</title>
+          {xTitle}
+          {xAxis.shown}
+          {xRichness && (
             <tspan fill="#797870" fontWeight="500">
-              {"  ·  "}
-              {scatter.targetRichness} species
+              {xRichness}
             </tspan>
           )}
         </text>
         <text
+          ref={axisTitleFit(yAxis, onAxisCut("y"))}
           x={-(pad.t + h / 2)}
           y={14}
           transform="rotate(-90)"
@@ -2342,11 +1705,12 @@ const Scatterplot = ({
           fontWeight="600"
           fill="#275662"
         >
-          Source — {scatter.source}
-          {showRichness && typeof scatter.sourceRichness === "number" && (
+          <title>{`${yTitle}${scatter.source}${yRichness}`}</title>
+          {yTitle}
+          {yAxis.shown}
+          {yRichness && (
             <tspan fill="#797870" fontWeight="500">
-              {"  ·  "}
-              {scatter.sourceRichness} species
+              {yRichness}
             </tspan>
           )}
         </text>
@@ -2508,11 +1872,18 @@ const Scatterplot = ({
   );
 };
 
-/* ---------- NETWORK GRAPH ---------- */
+/* ---------- NETWORK GRAPH ----------
+   The network keys its maps by sample id, and an id is whatever the
+   abundance table's header says: a sample named "constructor" or
+   "toString" found the Object prototype's function in a {} map, so
+   buildComponents never registered it (parent[id] was not undefined)
+   and d3.forceLink threw "node not found: constructor"; one named
+   "__proto__" was never stored at all. Those maps have no prototype
+   (Object.create(null)). */
 /** Build connected components from a list of (source, target) edges,
     treating the graph as undirected for grouping purposes. */
 function buildComponents(events) {
-  const parent = {};
+  const parent = Object.create(null);
   const find = (x) => {
     if (parent[x] !== x) parent[x] = find(parent[x]);
     return parent[x];
@@ -2529,7 +1900,7 @@ function buildComponents(events) {
     union(e.source, e.target);
   });
 
-  const comps = {};
+  const comps = Object.create(null);
   Object.keys(parent).forEach((node) => {
     const root = find(node);
     if (!comps[root]) comps[root] = { nodes: new Set(), edges: [] };
@@ -2552,7 +1923,7 @@ function layoutComponent(comp, cellWidth, cellHeight) {
   const { nodes, edges } = comp;
   const cx = cellWidth / 2;
   const cy = cellHeight / 2;
-  const positions = {};
+  const positions = Object.create(null);
 
   if (nodes.length === 1) {
     positions[nodes[0]] = { x: cx, y: cy };
@@ -2612,6 +1983,12 @@ function layoutComponent(comp, cellWidth, cellHeight) {
   };
 }
 
+/** Longest node label of the network, in characters (clipId): ids up to
+    this length — those of every study dataset bundled here — are written
+    whole under their node; longer ones (the benchmark runs' 41- to
+    52-character ids, a LIMS export's 150) are cut. */
+const NETWORK_LABEL_CHARS = 32;
+
 const NetworkGraph = ({
   events,
   filteredIds,
@@ -2650,26 +2027,20 @@ const NetworkGraph = ({
   // target, or both.
   const [nodePopover, setNodePopover] = useState(null); // { id, x, y } | null
   const [popVerdict, setPopVerdict] = useState("true_positive");
-  const [popAction, setPopAction] = useState("suppress");
+  // The target sample's verdict and action default to Automatic (null),
+  // whatever the evaluation: the sample then follows the rule applied
+  // when clicking each event (src/curation.js) — after a TP, Contaminated
+  // + Suppress, both automatic, so rejecting the events later takes them
+  // back. A value picked here is written as the curator's own. Choosing
+  // another evaluation brings both back to Automatic.
+  const [popAction, setPopAction] = useState(null);
   const [popTargetVerdict, setPopTargetVerdict] = useState(null);
   const [popSkipDecided, setPopSkipDecided] = useState(true);
-  // Reset action / target-verdict defaults whenever the event
-  // evaluation changes — TP defaults the target sample's verdict to
-  // contaminated and the action to suppress; FP defaults the target
-  // verdict to correct (with no action). Other evaluations leave
-  // both alone.
-  useEffect(() => {
-    if (popVerdict === "true_positive") {
-      setPopAction("suppress");
-      setPopTargetVerdict("contaminated");
-    } else if (popVerdict === "false_positive") {
-      setPopAction(null);
-      setPopTargetVerdict("correct");
-    } else {
-      setPopAction(null);
-      setPopTargetVerdict(null);
-    }
-  }, [popVerdict]);
+  const choosePopVerdict = (v) => {
+    setPopVerdict(v);
+    setPopAction(null);
+    setPopTargetVerdict(null);
+  };
   // Close the popover on Escape and on outside click.
   useEffect(() => {
     if (!nodePopover) return undefined;
@@ -2714,7 +2085,7 @@ const NetworkGraph = ({
   // Mapped here as { sampleId: "keep" | "suppress" } so the SVG node
   // pass can read it in O(1).
   const sampleActionMap = useMemo(() => {
-    const m = {};
+    const m = Object.create(null);
     if (!sampleCuration) return m;
     for (const id of Object.keys(sampleCuration)) {
       const a = sampleCuration[id]?.action;
@@ -2835,7 +2206,7 @@ const NetworkGraph = ({
       const layout = layoutComponent(comp, cellWidth, cellHeight);
       const ox = col * cellWidth;
       const oy = 40 + row * cellHeight;
-      const positioned = {};
+      const positioned = Object.create(null);
       const componentSize = layout.nodes.length;
       layout.nodes.forEach((n) => {
         positioned[n.id] = { id: n.id, x: ox + n.x, y: oy + n.y, componentSize };
@@ -2883,12 +2254,12 @@ const NetworkGraph = ({
   }, [events, filteredIds]);
 
   const inDeg = useMemo(() => {
-    const d = {};
+    const d = Object.create(null);
     events.forEach((e) => (d[e.target] = (d[e.target] || 0) + 1));
     return d;
   }, [events]);
   const outDeg = useMemo(() => {
-    const d = {};
+    const d = Object.create(null);
     events.forEach((e) => (d[e.source] = (d[e.source] || 0) + 1));
     return d;
   }, [events]);
@@ -3491,6 +2862,7 @@ const NetworkGraph = ({
               }}
               style={{ cursor: "pointer" }}
             >
+              <title>{n.id}</title>
               <circle
                 cx={n.x}
                 cy={n.y}
@@ -3504,7 +2876,10 @@ const NetworkGraph = ({
                 }
               />
               {/* External label below node — white halo for readability over
-                  edges. Hidden in dense components when not zoomed/hovered. */}
+                  edges. Hidden in dense components when not zoomed/hovered.
+                  A long id is cut (NETWORK_LABEL_CHARS): written whole, a
+                  150-character id ran across the whole graph. The node's
+                  tooltip and the hover line below give it whole. */}
               {showLabel && (
                 <text
                   x={n.x}
@@ -3520,7 +2895,7 @@ const NetworkGraph = ({
                   paintOrder="stroke fill"
                   style={{ pointerEvents: "none" }}
                 >
-                  {n.id}
+                  {clipId(n.id, NETWORK_LABEL_CHARS)}
                 </text>
               )}
             </g>
@@ -3568,6 +2943,8 @@ const NetworkGraph = ({
         </g>
       </svg>
 
+      {/* These lines give a hovered node's or edge's ids whole: a long
+          id wraps rather than run past the graph. */}
       {hover?.kind === "node" && (
         <div
           className="px-3 py-2 text-[12px]"
@@ -3575,6 +2952,7 @@ const NetworkGraph = ({
             borderTop: "1px solid var(--border)",
             background: "var(--bg-soft)",
             color: "var(--ink)",
+            overflowWrap: "anywhere",
           }}
         >
           <span style={{ color: "var(--ink-muted)" }}>sample:</span>{" "}
@@ -3598,6 +2976,7 @@ const NetworkGraph = ({
             borderTop: "1px solid var(--border)",
             background: "var(--bg-soft)",
             color: "var(--ink)",
+            overflowWrap: "anywhere",
           }}
         >
           <span className="font-semibold" style={{ color: "var(--ink)" }}>
@@ -3801,7 +3180,7 @@ const NetworkGraph = ({
           onScopeToSamples={onScopeToSamples}
           sampleCuration={sampleCuration}
           verdict={popVerdict}
-          setVerdict={setPopVerdict}
+          setVerdict={choosePopVerdict}
           action={popAction}
           setAction={setPopAction}
           targetVerdict={popTargetVerdict}
@@ -3820,15 +3199,32 @@ const NetworkGraph = ({
             const note = `applied via Network → node ${nodePopover.id} (as target)`;
             // Event evaluation goes to the matched events; verdict
             // and action go to the clicked sample (always the target
-            // of the matched events here).
+            // of the matched events here). The action row is only
+            // offered while the target can end up Contaminated, so only
+            // then does its choice apply. "Automatic" (null / undefined)
+            // leaves the sample to the event-driven rule.
+            const targetAction =
+              actionEnabled &&
+              offersTargetAction(popTargetVerdict) &&
+              popAction
+                ? popAction
+                : undefined;
             if (ids.length > 0 && onApplyToEventIds) {
-              onApplyToEventIds(ids, popVerdict, note);
-            }
-            if (popTargetVerdict && onApplySampleVerdict) {
-              onApplySampleVerdict(nodePopover.id, popTargetVerdict);
-            }
-            if (popAction && onApplySampleAction) {
-              onApplySampleAction(nodePopover.id, popAction);
+              // The sample decisions ride with the events: written when
+              // the curator confirms the update, so cancelling it
+              // leaves the sample exactly as it was.
+              onApplyToEventIds(ids, popVerdict, note, {
+                targetVerdict: popTargetVerdict || null,
+                targetAction,
+              });
+            } else {
+              // No event update to confirm: apply them right away.
+              if (popTargetVerdict && onApplySampleVerdict) {
+                onApplySampleVerdict(nodePopover.id, popTargetVerdict);
+              }
+              if (targetAction && onApplySampleAction) {
+                onApplySampleAction(nodePopover.id, targetAction);
+              }
             }
             setNodePopover(null);
           }}
@@ -3837,6 +3233,13 @@ const NetworkGraph = ({
     </div>
   );
 };
+
+/** Whether a form that evaluates events (Network node popover, Explore
+    new pairs) offers — and applies — an action for their target: while
+    the target verdict picked can leave it Contaminated, i.e. Automatic
+    or Contaminated. A hidden action is never written. */
+const offersTargetAction = (targetVerdict) =>
+  targetVerdict == null || targetVerdict === "contaminated";
 
 /** Floating popover anchored at a clicked Network node. Lets the
     curator bulk-apply a verdict (and optional action) to every event
@@ -3943,17 +3346,13 @@ const NodeBulkPopover = ({
             style={{ color: "var(--ink)", fontWeight: 700 }}
             title={name ? `${sampleId} (${name})` : sampleId}
           >
-            <span>
-              {sampleId}
-              {name && (
-                <span
-                  className="ml-1.5 text-[12px]"
-                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                >
-                  ({name})
-                </span>
-              )}
-            </span>
+            <SampleIdName
+              id={sampleId}
+              name={name}
+              className="min-w-0 max-w-full"
+              nameClassName="text-[12px]"
+              nameStyle={{ color: "var(--ink-muted)", fontWeight: 500 }}
+            />
             {onScopeToSamples && (
               <span
                 className="flex items-center gap-1"
@@ -4039,11 +3438,21 @@ const NodeBulkPopover = ({
       >
         Updates the <strong>{counts.asTarget}</strong> event
         {counts.asTarget === 1 ? "" : "s"} where{" "}
-        <code style={{ fontFamily: "ui-monospace, monospace" }}>
-          {sampleId}
-        </code>{" "}
-        is the target (the contaminations flowing into it). Verdict and
-        action are recorded on the sample itself.
+        <InlineSampleId id={sampleId} style={{ fontFamily: "ui-monospace, monospace" }} />{" "}
+        is the target (the contaminations flowing into it).{" "}
+        {counts.asTarget === 0 ? (
+          <>
+            No event targets it: there is nothing to update here. Without
+            a verdict of your own (set in the Samples tab), it is Not
+            contaminated by default.
+          </>
+        ) : (
+          <>
+            With <em>Automatic</em>, the sample's verdict and action follow
+            those events as when clicking each one; pick a value to set it
+            as your own decision.
+          </>
+        )}
       </div>
 
       <label
@@ -4104,7 +3513,7 @@ const NodeBulkPopover = ({
       </div>
       <div className="flex gap-1.5 mb-3 flex-wrap">
         {[
-          { id: null, lbl: "(no change)", bg: "var(--bg-card)" },
+          { id: null, lbl: "Automatic", bg: "var(--bg-card)" },
           { id: "pending", lbl: "Pending", bg: SAMPLE_VERDICT_TONE.pending.bg },
           {
             id: "contaminated",
@@ -4144,9 +3553,18 @@ const NodeBulkPopover = ({
                 cursor: "pointer",
               }}
               title={
-                opt.id
-                  ? `Set ${sampleId}'s sample-level verdict to ${opt.lbl}`
-                  : "Don't touch the sample-level verdict"
+                // A node no event targets (a source only) has no events
+                // for its verdict to follow: it is the default Not
+                // contaminated, as the Samples tab says of it.
+                opt.id === "pending"
+                  ? counts.asTarget === 0
+                    ? `Remove the verdict you set by hand on ${sampleId}: no event targets it, so it goes back to the default Not contaminated`
+                    : `Remove the verdict you set by hand on ${sampleId}: it then follows its events automatically`
+                  : opt.id
+                    ? `Set ${sampleId}'s sample-level verdict to ${opt.lbl} as your own decision`
+                    : counts.asTarget === 0
+                      ? `No event targets ${sampleId}: its verdict is the default Not contaminated (a verdict you set by hand is kept)`
+                      : `Same as clicking each event: ${sampleId}'s verdict is recomputed from every event that targets it (a verdict you set by hand is kept)`
               }
             >
               {opt.lbl}
@@ -4155,7 +3573,7 @@ const NodeBulkPopover = ({
         })}
       </div>
 
-      {targetVerdict === "contaminated" && (
+      {actionEnabled && offersTargetAction(targetVerdict) && (
         <>
           <div
             className="text-[10px] uppercase tracking-[0.1em] mb-1"
@@ -4165,7 +3583,7 @@ const NodeBulkPopover = ({
           </div>
           <div className="flex gap-1.5 mb-3 flex-wrap">
             {[
-              { id: null, lbl: "(no change)", bg: "var(--bg-card)" },
+              { id: null, lbl: "Automatic", bg: "var(--bg-card)" },
               { id: "keep", lbl: "Keep", bg: "#e0b13a" },
               { id: "suppress", lbl: "Suppress", bg: "#ed6e6c" },
             ].map((opt) => {
@@ -4196,8 +3614,8 @@ const NodeBulkPopover = ({
                   }}
                   title={
                     opt.id
-                      ? `Set ${sampleId}'s sample-level action to ${opt.lbl}`
-                      : "Don't touch the sample-level action"
+                      ? `Set ${sampleId}'s sample-level action to ${opt.lbl} as your own decision`
+                      : "Suppress while the sample is Contaminated, unless you set an action by hand"
                   }
                 >
                   {opt.lbl}
@@ -4526,26 +3944,33 @@ const UploadCard = ({
   info,
   confirmDialog,
   emptyAction,
+  details,
+  clearConfirm,
 }) => {
   const [drag, setDrag] = useState(false);
   const loaded = !!filename;
 
+  // `clearConfirm` ({ title, body, confirmLabel }) replaces the default
+  // question when clearing loses more than the file (the events card:
+  // the curation done on them).
   const handleClear = () => {
     if (!onClear) return;
+    const title = clearConfirm?.title || `Remove the loaded ${label}?`;
     // Prefer the React-controlled modal when the parent provides one
     // (consistent UX across the app). Fall back to a plain native confirm
     // if not provided, so the component still works in isolation.
     if (confirmDialog) {
       confirmDialog({
         kind: "confirm",
-        title: `Remove the loaded ${label}?`,
+        title,
         body:
+          clearConfirm?.body ||
           "This only clears it from this browser session — your original file on disk is untouched.",
-        confirmLabel: "Remove",
+        confirmLabel: clearConfirm?.confirmLabel || "Remove",
         destructive: true,
         onConfirm: onClear,
       });
-    } else if (window.confirm(`Remove the loaded ${label}?`)) {
+    } else if (window.confirm(clearConfirm?.body ? `${title}\n\n${clearConfirm.body}` : title)) {
       onClear();
     }
   };
@@ -4609,13 +4034,27 @@ const UploadCard = ({
             ✓ {filename}
           </div>
         )}
+        {loaded && details && (
+          <div
+            className="text-[11px] mt-0.5"
+            style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+          >
+            {details}
+          </div>
+        )}
       </div>
       <input
         ref={inputRef}
         type="file"
         accept=".tsv,.txt,.csv,.tab"
         className="hidden"
-        onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          // Reset, so that picking the same file again — after cancelling
+          // its replacement, say — fires again.
+          e.target.value = "";
+          if (file) onFile(file);
+        }}
       />
       <div className="flex flex-col items-stretch gap-1.5 shrink-0">
         <button
@@ -4689,6 +4128,30 @@ const UploadCard = ({
 };
 
 /* ---------- metadata / plate specialized upload cards ---------- */
+
+/** The extra lines of the metadata and plate-map cards: which header was
+    read as which field, then the parser's warnings (repeated sample ids,
+    unreadable wells). A session saved before these existed has neither,
+    and a hand-edited session file can hold anything there: only a list
+    of strings is shown, rather than letting `.map` throw during render
+    and blank the app. */
+const uploadCardDetails = (columnsLine, warnings) => {
+  const list = Array.isArray(warnings)
+    ? warnings.filter((w) => typeof w === "string" && w)
+    : [];
+  const line = typeof columnsLine === "string" ? columnsLine : null;
+  return line || list.length ? (
+    <>
+      {line && <div>Columns: {line}</div>}
+      {list.map((w, i) => (
+        <div key={i} style={{ color: "#d97a3c", fontWeight: 600 }}>
+          ⚠ {w}
+        </div>
+      ))}
+    </>
+  ) : null;
+};
+
 const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) => {
   const inputRef = useRef(null);
   const onFile = async (file) => {
@@ -4700,6 +4163,9 @@ const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) =>
       setErr(`Metadata: ${e.message}`);
     }
   };
+  // Which header was read as which field: a column taken for the subject
+  // or the group decides which pairs of samples count as related.
+  const columnsLine = metadataColumnsLine(metadata);
   return (
     <UploadCard
       label="metadata.tsv"
@@ -4738,10 +4204,15 @@ const MetadataUploadCard = ({ metadata, setMetadata, setErr, confirmDialog }) =>
           <code style={{ fontFamily: "ui-monospace, monospace" }}>
             group_id
           </code>
-          . Any other column is shown as a generic key:value pill. See the
-          Help tab for accepted aliases (family_id, cage_id, host, etc.).
+          . Headers must match exactly, ignoring case, spaces, _ - and .
+          (so <code style={{ fontFamily: "ui-monospace, monospace" }}>Subject ID</code>{" "}
+          works, <code style={{ fontFamily: "ui-monospace, monospace" }}>age_group</code>{" "}
+          is not a group). Any other column is shown as a generic key:value
+          pill. See the Help tab for accepted aliases (family_id, cage_id,
+          patient, etc.).
         </>
       }
+      details={uploadCardDetails(columnsLine, metadata?.warnings)}
       onDownload={
         metadata
           ? () => downloadText(metadataToTSV(metadata), "metadata.tsv")
@@ -4764,6 +4235,7 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
       setErr(`Plate map: ${e.message}`);
     }
   };
+  const columnsLine = plateColumnsLine(plateMap);
   return (
     <UploadCard
       label="plate_map.tsv"
@@ -4780,19 +4252,25 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
           <div style={{ fontWeight: 700, marginBottom: 4 }}>
             Sample-to-well placement (TSV)
           </div>
-          Three columns:{" "}
+          Columns{" "}
           <code style={{ fontFamily: "ui-monospace, monospace" }}>
             sample_id
           </code>
           ,{" "}
-          <code style={{ fontFamily: "ui-monospace, monospace" }}>plate</code>
-          ,{" "}
-          <code style={{ fontFamily: "ui-monospace, monospace" }}>well</code>
-          . Wells use letter-then-number coordinates (A01–H12 for 96-well,
-          A01–P24 for 384-well). Plate format is auto-detected. Loading this
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>well</code>{" "}
+          and, optionally,{" "}
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>plate</code>{" "}
+          (without it every sample is on one plate, P1). Wells use
+          letter-then-number coordinates (A01–H12 for 96-well,
+          A01–P24 for 384-well), or come as two columns,{" "}
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>row</code>{" "}
+          (A–P or 1–16) and{" "}
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>column</code>{" "}
+          (1–24). Plate format is auto-detected. Loading this
           unlocks the Plate map tab and the "Proximity on plate" criterion.
         </>
       }
+      details={uploadCardDetails(columnsLine, plateMap?.warnings)}
       onDownload={
         plateMap
           ? () => downloadText(plateMapToTSV(plateMap), "plate_map.tsv")
@@ -4856,7 +4334,11 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
             key={e.id}
             ref={active ? activeRef : null}
             onClick={() => onSelect(e.id)}
-            className="w-full text-left px-3 py-2 text-[12px] flex items-start gap-2"
+            // The queue lists every event (16,555 on the Meteor
+            // benchmark): a row out of view skips layout and paint until
+            // it scrolls in, sized meanwhile as a row is (55 px). Opening
+            // Guided validation there went from ~1.7 s to ~0.9 s.
+            className="w-full text-left px-3 py-2 text-[12px] flex items-start gap-2 [content-visibility:auto] [contain-intrinsic-size:auto_55px]"
             style={{
               borderBottom: "1px solid var(--border-soft)",
               background: active ? "#275662" : "var(--bg-card)",
@@ -4872,9 +4354,14 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
               />
             )}
             <div className="flex-1 min-w-0">
-              <div className="truncate" style={{ fontWeight: 600 }}>
-                {e.source} → {e.target}
-              </div>
+              {/* One run of text, cut where the row ends, as it always
+                  was: an id is cut only when the pair does not fit, and a
+                  long source leaves the target a few characters
+                  (SamplePairLine). The first version cut both ids to a fixed
+                  30-character budget, which cut pairs that fit (PRJEB6337's
+                  "ERS475320_ERS475321 → ERS475349") and reduced the
+                  benchmark datasets' rows to one text. */}
+              <SamplePairLine source={e.source} target={e.target} style={{ fontWeight: 600 }} />
               <div
                 className="flex mt-0.5 tabular gap-2"
                 style={{
@@ -4925,7 +4412,7 @@ const CascadeBanner = ({ cascade, onJumpToUpstream }) => {
           className="w-4 h-4 shrink-0 mt-0.5"
           style={{ color: "#9c8be8" }}
         />
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <div
             className="text-[12px] tracking-[0.1em] uppercase mb-1"
             style={{
@@ -4943,8 +4430,9 @@ const CascadeBanner = ({ cascade, onJumpToUpstream }) => {
               onClick={() =>
                 onJumpToUpstream && onJumpToUpstream(upstream.upstream_event_id)
               }
-              className="font-semibold underline"
+              className="font-semibold underline inline-block max-w-full truncate align-bottom"
               style={{ color: "#9c8be8", background: "transparent", border: 0, cursor: "pointer", padding: 0 }}
+              title={upstream.upstream_source}
             >
               {upstream.upstream_source}
             </button>
@@ -5106,7 +4594,7 @@ const QuickBtn = ({ children, onClick, active, tone, title }) => {
   );
 };
 
-const Th = ({ children, right, onClick, title, divider }) => (
+const Th = ({ children, right, onClick, title, divider, width }) => (
   <th
     onClick={onClick}
     title={title}
@@ -5114,6 +4602,7 @@ const Th = ({ children, right, onClick, title, divider }) => (
       right ? "text-right" : "text-left"
     } ${onClick ? "cursor-pointer select-none" : ""}`}
     style={{
+      width,
       color: "var(--ink)",
       fontWeight: 800,
       fontFamily: '"Raleway", sans-serif',
@@ -5582,11 +5071,13 @@ const TopList = ({ title, items, onOpen, fmt }) => (
           >
             {String(i + 1).padStart(2, "0")}
           </span>
-          <span className="text-[13px] flex-1 truncate" style={{ color: "var(--ink)" }}>
-            <span style={{ fontWeight: 600 }}>{e.source}</span>
-            <ArrowRight className="inline w-3 h-3 mx-1.5" style={{ color: "#00a3a6" }} />
-            <span style={{ fontWeight: 600 }}>{e.target}</span>
-          </span>
+          <SamplePair
+            source={e.source}
+            target={e.target}
+            arrow={<ArrowRight className="inline w-3 h-3 mx-1.5" style={{ color: "#00a3a6" }} />}
+            className="text-[13px] flex-1 min-w-0"
+            style={{ color: "var(--ink)", fontWeight: 600 }}
+          />
           <span
             className="text-[13px] tabular"
             style={{
@@ -5613,10 +5104,28 @@ function shortenPath(v) {
   return v;
 }
 
-const RunMetadataBlock = ({ meta }) => {
+/** `lowAbFilter` — { factor, applied, setApplied } when the run declares a
+    --filter-low-ab factor (see diagAb in AppMain), else null. */
+const RunMetadataBlock = ({ meta, lowAbFilter }) => {
   // Run parameters are useful but not essential after first glance —
   // collapsible, but expanded by default so first-time viewers see them.
   const [open, setOpen] = useState(true);
+  // The low-abundance filter state just asked for, while the diagnostics
+  // are recomputed (null otherwise). Switching the filter rebuilds the
+  // filtered table and every event's cascade check in one synchronous
+  // render — one to two seconds on the largest bundled runs, the page
+  // frozen meanwhile — so the box flips and says so first, and the
+  // change is applied once that has been painted.
+  const [lowAbPending, setLowAbPending] = useState(null);
+  const switchLowAb = (on) => {
+    setLowAbPending(on);
+    requestAnimationFrame(() =>
+      setTimeout(() => {
+        lowAbFilter.setApplied(on);
+        setLowAbPending(null);
+      }, 0),
+    );
+  };
   // Choose which fields to show, in this order, with friendly labels.
   // Optional `format(value)` lets a field clean up the raw string (e.g.
   // strip a trailing ".0" so "25.0" → "25").
@@ -5731,11 +5240,48 @@ const RunMetadataBlock = ({ meta }) => {
         ))}
       </dl>
       )}
+      {/* The run filtered low abundances before fitting anything; the
+          diagnostics follow it unless the curator switches it off here
+          (stored in the filter state, so it is saved with the session). */}
+      {open && lowAbFilter && (
+        <div
+          className="mt-3 pt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[12px]"
+          style={{ borderTop: "1px solid var(--border)" }}
+        >
+          <label
+            className="inline-flex items-center gap-1.5"
+            title={`In each sample, CroCoDeEL set to 0 every abundance up to ${lowAbFilter.factor} times the sample's smallest one, then rescaled the rest to sum to 1, before fitting any contamination line. Untick to compute the diagnostics on the abundance table as loaded instead.`}
+            style={{
+              cursor: "pointer",
+              color: "var(--ink)",
+              fontWeight: 600,
+              fontFamily: '"Raleway", sans-serif',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={lowAbPending ?? lowAbFilter.applied}
+              disabled={lowAbPending != null}
+              onChange={(e) => switchLowAb(e.target.checked)}
+              aria-label="Apply CroCoDeEL's low-abundance filter to the diagnostics"
+              style={{ accentColor: "#00a3a6" }}
+            />
+            Low-abundance filter {lowAbFilter.factor}×
+          </label>
+          <span style={{ color: "var(--ink-muted)" }}>
+            {lowAbPending != null
+              ? "— recomputing the diagnostics…"
+              : lowAbFilter.applied
+                ? "— applied to diagnostics, as in CroCoDeEL"
+                : "— not applied: diagnostics use the abundance table as loaded, unlike the CroCoDeEL run"}
+          </span>
+        </div>
+      )}
     </div>
   );
 };
 
-const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOpen, onLoadDemo, demoLoading, actionEnabled, sampleCuration }) => {
+const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, lowAbFilter, onOpen, onLoadDemo, demoLoading, actionEnabled, actionTotals }) => {
   const topByScore = [...events].sort((a, b) => b.score - a.score).slice(0, 5);
   const topByRate = [...events].sort((a, b) => b.rate - a.rate).slice(0, 5);
   const bottomByScore = [...events].sort((a, b) => a.score - b.score).slice(0, 5);
@@ -5765,21 +5311,12 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
   const cascadeCount = events.filter((e) => e.cascade).length;
 
   // Suppress / keep counts. Action lives on the sample now — count
-  // distinct samples whose recorded sample-level action is set, so the
-  // overview cards reflect the curator's downstream decisions
-  // (independent of any specific event's evaluation).
-  const { keepCount, suppressCount } = useMemo(() => {
-    let keep = 0;
-    let supp = 0;
-    if (sampleCuration) {
-      for (const id of Object.keys(sampleCuration)) {
-        const a = sampleCuration[id]?.action;
-        if (a === "keep") keep++;
-        else if (a === "suppress") supp++;
-      }
-    }
-    return { keepCount: keep, suppressCount: supp };
-  }, [sampleCuration]);
+  // distinct samples by their sample-level action, so the overview
+  // cards reflect the curator's downstream decisions (independent of
+  // any specific event's evaluation). Counted once in AppMain
+  // (sampleActionCounts), like in the Export tab and the reports: the
+  // default Keep of a never-targeted sample is not a decision.
+  const { keep: keepCount, suppress: suppressCount } = actionTotals;
 
   // Number of connected components in the contamination network — gives
   // a sense of how clustered the events are.
@@ -5899,7 +5436,9 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
         </div>
       )}
 
-      {runMetadata && <RunMetadataBlock meta={runMetadata} />}
+      {runMetadata && (
+        <RunMetadataBlock meta={runMetadata} lowAbFilter={lowAbFilter} />
+      )}
 
       {!noData && (
         <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-3 mt-8 mb-4">
@@ -5933,11 +5472,13 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
             label="Samples to keep"
             value={keepCount}
             tone={keepCount > 0 ? "keep" : "neutral"}
+            hint={SAMPLES_TO_KEEP_HINT}
           />
           <Stat
             label="Samples to suppress"
             value={suppressCount}
             tone={suppressCount > 0 ? "suppress" : "neutral"}
+            hint={SAMPLES_TO_SUPPRESS_HINT}
           />
           {events.length > 0 && (
             <Stat
@@ -5992,7 +5533,7 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
       {!noData && !hasAb && (
         <div
           className="flex items-start gap-3 p-4 mb-8 rounded-sm"
-          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "#8a2422" }}
+          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "var(--ink-alert)" }}
         >
           <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
           <div className="text-[13px] leading-relaxed">
@@ -7212,6 +6753,18 @@ const EventsTable = ({
   const safePage = Math.min(Math.max(1, page), totalPages);
   const startIdx = (safePage - 1) * PAGE_SIZE;
   const visible = events.slice(startIdx, startIdx + PAGE_SIZE);
+  // Source and target columns as wide as their longest id or name on this
+  // page while the table has room (idColumnWidth); measured again once the
+  // web fonts have loaded.
+  useFontEpoch();
+  const sourceWidth = idColumnWidth(
+    visible.map((e) => [e.source, sampleName(metadata, e.source)]),
+    EVENTS_ID_FONT,
+  );
+  const targetWidth = idColumnWidth(
+    visible.map((e) => [e.target, sampleName(metadata, e.target)]),
+    EVENTS_ID_FONT,
+  );
 
   // On arrival back from another tab (typically Validate via the back
   // chip or browser Back), paginate to the row that was clicked
@@ -7285,6 +6838,7 @@ const EventsTable = ({
               <Th
                 onClick={() => toggleSort("source")}
                 title="Source sample — the contaminant. Click to sort alphabetically."
+                width={sourceWidth}
               >
                 Source <SortIcon col="source" />
               </Th>
@@ -7292,6 +6846,7 @@ const EventsTable = ({
               <Th
                 onClick={() => toggleSort("target")}
                 title="Target sample — the one that received the contamination. Click to sort alphabetically."
+                width={targetWidth}
               >
                 Target <SortIcon col="target" />
               </Th>
@@ -7338,7 +6893,7 @@ const EventsTable = ({
               <Th
                 divider
                 onClick={() => toggleSort("targetVerdict")}
-                title="Sample-level verdict recorded on the TARGET sample (contaminated / not contaminated / uncertain / pending). Set from the Samples tab. Click to sort."
+                title="Sample-level verdict recorded on the TARGET sample (contaminated / not contaminated / uncertain / pending). Its chips set it, as the Samples tab does. Click the header to sort."
               >
                 Target verdict <SortIcon col="targetVerdict" />
               </Th>
@@ -7346,7 +6901,7 @@ const EventsTable = ({
                 <Th
                   divider
                   onClick={() => toggleSort("action")}
-                  title="Suppress / keep — action recorded on the TARGET sample. Set from the Samples tab. Click to sort."
+                  title="Suppress / keep — action recorded on the TARGET sample. Its chips set it, as the Samples tab does. Click the header to sort."
                 >
                   Target action <SortIcon col="action" />
                 </Th>
@@ -7387,15 +6942,13 @@ const EventsTable = ({
                     onClick={() => onPick(e.id)}
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
-                    {e.source}
+                    <SampleId id={e.source} font={EVENTS_ID_FONT} />
                     {sampleName(metadata, e.source) && (
-                      <div
-                        className="text-[11px] truncate"
-                        style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
-                        title={sampleName(metadata, e.source)}
-                      >
-                        {sampleName(metadata, e.source)}
-                      </div>
+                      <SampleNameLine
+                        name={sampleName(metadata, e.source)}
+                        className="text-[11px]"
+                        style={SAMPLE_NAME_STYLE}
+                      />
                     )}
                     {metadata && (
                       <div className="mt-1">
@@ -7412,15 +6965,13 @@ const EventsTable = ({
                     onClick={() => onPick(e.id)}
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
-                    {e.target}
+                    <SampleId id={e.target} font={EVENTS_ID_FONT} />
                     {sampleName(metadata, e.target) && (
-                      <div
-                        className="text-[11px] truncate"
-                        style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
-                        title={sampleName(metadata, e.target)}
-                      >
-                        {sampleName(metadata, e.target)}
-                      </div>
+                      <SampleNameLine
+                        name={sampleName(metadata, e.target)}
+                        className="text-[11px]"
+                        style={SAMPLE_NAME_STYLE}
+                      />
                     )}
                     {metadata && (
                       <div className="mt-1">
@@ -7521,12 +7072,13 @@ const EventsTable = ({
                       event's target sample. Editable inline (writes
                       via setSampleVerdict), so curating from the
                       events table no longer requires a hop to the
-                      Samples tab. */}
+                      Samples tab. An automatic verdict is drawn and
+                      tagged as on the Samples tab (sampleVerdictChip). */}
                   <td
                     className="px-3 py-2.5"
                     style={{ borderLeft: "1px solid var(--border)" }}
                   >
-                    <div className="flex gap-0.5">
+                    <div className="flex gap-0.5 items-center">
                       {[
                         {
                           id: "pending",
@@ -7549,9 +7101,11 @@ const EventsTable = ({
                           tone: SAMPLE_VERDICT_TONE.uncertain,
                         },
                       ].map((opt) => {
-                        const cur =
-                          sampleCuration?.[e.target]?.verdict || "pending";
-                        const active = cur === opt.id;
+                        const chip = sampleVerdictChip(
+                          e.target,
+                          sampleCuration?.[e.target],
+                          opt.id,
+                        );
                         const Icon = opt.Icon;
                         return (
                           <button
@@ -7562,18 +7116,18 @@ const EventsTable = ({
                               if (setSampleVerdict)
                                 setSampleVerdict(e.target, opt.id);
                             }}
-                            title={`Set ${e.target}'s sample-level verdict to ${opt.tone.label}`}
+                            data-verdict-chip={opt.id}
+                            title={
+                              chip.title ||
+                              `Set ${e.target}'s sample-level verdict to ${opt.tone.label}`
+                            }
                             className="flex items-center justify-center"
                             style={{
                               width: 24,
                               height: 24,
                               padding: 0,
                               borderRadius: 12,
-                              background: active
-                                ? opt.tone.bg
-                                : "var(--bg-card)",
-                              color: active ? "#fff" : opt.tone.bg,
-                              border: `1px solid ${active ? opt.tone.bg : "var(--border)"}`,
+                              ...sampleChipColors(opt.tone.bg, chip.active, chip.auto),
                               cursor: "pointer",
                             }}
                           >
@@ -7582,6 +7136,11 @@ const EventsTable = ({
                         );
                       })}
                     </div>
+                    {/* Under the chips: no width added to the column. */}
+                    {sampleCuration?.[e.target]?.verdict &&
+                      sampleCuration[e.target].verdictAuto && (
+                        <SampleAutoMark title={AUTO_VERDICT_MARK_TITLE} />
+                      )}
                   </td>
                   {actionEnabled && (
                     <td
@@ -7591,60 +7150,56 @@ const EventsTable = ({
                         textAlign: "center",
                       }}
                     >
-                      {sampleCuration?.[e.target]?.verdict === "contaminated" ? (
-                        <div className="flex gap-0.5 justify-center">
-                          {[
-                            {
-                              id: "keep",
-                              Icon: Save,
-                              color: "#e0b13a",
-                              label: "Keep",
-                            },
-                            {
-                              id: "suppress",
-                              Icon: Trash2,
-                              color: "#ed6e6c",
-                              label: "Suppress",
-                            },
-                          ].map((opt) => {
-                            const cur = sampleCuration?.[e.target]?.action;
-                            const active = cur === opt.id;
-                            const Icon = opt.Icon;
-                            return (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                onClick={(ev) => {
-                                  ev.stopPropagation();
-                                  if (setAction)
-                                    setAction(
-                                      e.id,
-                                      active ? null : opt.id,
-                                    );
-                                }}
-                                title={
-                                  active
-                                    ? `Clear ${opt.label.toLowerCase()} on ${e.target}`
-                                    : `Mark ${e.target} as ${opt.label.toLowerCase()}`
-                                }
-                                className="flex items-center justify-center"
-                                style={{
-                                  width: 24,
-                                  height: 24,
-                                  padding: 0,
-                                  borderRadius: 12,
-                                  background: active
-                                    ? opt.color
-                                    : "var(--bg-card)",
-                                  color: active ? "#fff" : opt.color,
-                                  border: `1px solid ${active ? opt.color : "var(--border)"}`,
-                                  cursor: "pointer",
-                                }}
-                              >
-                                <Icon className="w-3.5 h-3.5" />
-                              </button>
-                            );
-                          })}
+                      {sampleCuration?.[e.target]?.verdict === "contaminated" ||
+                      sampleCuration?.[e.target]?.action ? (
+                        // Shown whenever an action is set: a Suppress
+                        // drops the sample from the curated table even
+                        // when it is not Contaminated (flagged).
+                        <div>
+                          <div className="flex gap-0.5 justify-center items-center">
+                            {[
+                              { id: "keep", Icon: Save, color: "#e0b13a" },
+                              { id: "suppress", Icon: Trash2, color: "#ed6e6c" },
+                            ].map((opt) => {
+                              const chip = sampleActionChip(
+                                e.target,
+                                sampleCuration[e.target],
+                                opt.id,
+                              );
+                              const Icon = opt.Icon;
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    if (setAction) setAction(e.id, chip.next);
+                                  }}
+                                  title={chip.title}
+                                  aria-label={chip.ariaLabel}
+                                  className="flex items-center justify-center"
+                                  style={{
+                                    width: 24,
+                                    height: 24,
+                                    padding: 0,
+                                    borderRadius: 12,
+                                    ...sampleChipColors(opt.color, chip.active, chip.auto),
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  <Icon className="w-3.5 h-3.5" />
+                                </button>
+                              );
+                            })}
+                            {sampleCuration[e.target].action === "suppress" &&
+                              sampleCuration[e.target].verdict !== "contaminated" && (
+                                <SuppressedNotContaminatedFlag />
+                              )}
+                          </div>
+                          {sampleCuration[e.target].action &&
+                            sampleCuration[e.target].actionAuto && (
+                              <SampleAutoMark title="Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick Keep to keep the sample in the curated table." />
+                            )}
                         </div>
                       ) : (
                         <span
@@ -7720,7 +7275,7 @@ const MiniScatter = React.memo(function MiniScatter({
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          color: "#8a2422",
+          color: "var(--ink-alert)",
           fontSize: 10,
           textAlign: "center",
           padding: 8,
@@ -7903,7 +7458,9 @@ const GalleryCard = React.memo(function GalleryCard({
   actionEnabled,
   setAction,
   sampleAction,
+  sampleActionAuto = false,
   sampleVerdict,
+  sampleVerdictAuto = false,
   setSampleVerdict,
   onPopoverOpen,
   onPopoverClose,
@@ -8260,7 +7817,14 @@ const GalleryCard = React.memo(function GalleryCard({
                     { id: "correct", k: SAMPLE_VERDICT_TONE.correct },
                     { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
                   ].map((opt) => {
-                    const active = (sampleVerdict || "pending") === opt.id;
+                    // Drawn and labelled as on the Samples tab: an
+                    // automatic verdict is lighter, dashed, "auto".
+                    const chip = sampleVerdictChip(
+                      event.target,
+                      { verdict: sampleVerdict, verdictAuto: sampleVerdictAuto },
+                      opt.id,
+                    );
+                    const active = chip.active;
                     return (
                       <button
                         key={opt.id}
@@ -8269,6 +7833,7 @@ const GalleryCard = React.memo(function GalleryCard({
                           ev.stopPropagation();
                           setSampleVerdict(event.target, opt.id);
                         }}
+                        data-verdict-chip={opt.id}
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
@@ -8276,9 +7841,8 @@ const GalleryCard = React.memo(function GalleryCard({
                           height: 22,
                           padding: "0 8px",
                           borderRadius: 11,
-                          background: active ? opt.k.bg : "var(--bg-card)",
+                          ...sampleChipColors(opt.k.bg, active, chip.auto),
                           color: active ? "#fff" : "var(--ink)",
-                          border: `1px solid ${active ? opt.k.bg : "var(--border)"}`,
                           cursor: "pointer",
                           fontWeight: 700,
                           letterSpacing: "0.04em",
@@ -8286,7 +7850,7 @@ const GalleryCard = React.memo(function GalleryCard({
                           fontFamily: '"Raleway", sans-serif',
                           fontSize: 10,
                         }}
-                        title={`Set target verdict to "${opt.k.label}"`}
+                        title={chip.title || `Set target verdict to "${opt.k.label}"`}
                       >
                         <span
                           style={{
@@ -8297,6 +7861,7 @@ const GalleryCard = React.memo(function GalleryCard({
                           }}
                         />
                         {opt.k.label}
+                        {chip.auto ? " · auto" : ""}
                       </button>
                     );
                   })}
@@ -8304,9 +7869,12 @@ const GalleryCard = React.memo(function GalleryCard({
               </>
             )}
 
-            {/* Section 3 — sample-level action on the target. Only
-                shown when the target sample is marked Contaminated. */}
-            {sampleVerdict === "contaminated" && (
+            {/* Section 3 — sample-level action on the target. Offered
+                once the target is Contaminated, and shown whenever an
+                action is set (a Suppress on a target that is not
+                Contaminated still drops it from the curated table:
+                flagged). */}
+            {(sampleVerdict === "contaminated" || sampleAction) && (
               <>
                 <div
                   className="text-[9px] tracking-[0.1em] uppercase mt-1 mb-0.5"
@@ -8319,12 +7887,20 @@ const GalleryCard = React.memo(function GalleryCard({
                 >
                   Action on target
                 </div>
-                <div className="flex gap-1">
+                <div className="flex gap-1 items-center">
                   {[
                     { id: "keep", Icon: Save, color: "#e0b13a", label: "Keep" },
                     { id: "suppress", Icon: Trash2, color: "#ed6e6c", label: "Suppress" },
                   ].map((opt) => {
-                    const active = sampleAction === opt.id;
+                    const chip = sampleActionChip(
+                      event.target,
+                      {
+                        verdict: sampleVerdict,
+                        action: sampleAction,
+                        actionAuto: sampleActionAuto,
+                      },
+                      opt.id,
+                    );
                     const Icon = opt.Icon;
                     return (
                       <button
@@ -8332,7 +7908,7 @@ const GalleryCard = React.memo(function GalleryCard({
                         type="button"
                         onClick={(ev) => {
                           ev.stopPropagation();
-                          setAction(event.id, active ? null : opt.id);
+                          setAction(event.id, chip.next);
                         }}
                         style={{
                           display: "inline-flex",
@@ -8341,9 +7917,8 @@ const GalleryCard = React.memo(function GalleryCard({
                           height: 22,
                           padding: "0 9px",
                           borderRadius: 11,
-                          background: active ? opt.color : "var(--bg-card)",
-                          color: active ? "#fff" : "var(--ink)",
-                          border: `1px solid ${active ? opt.color : "var(--border)"}`,
+                          ...sampleChipColors(opt.color, chip.active, chip.auto),
+                          color: chip.active ? "#fff" : "var(--ink)",
                           cursor: "pointer",
                           fontWeight: 700,
                           letterSpacing: "0.04em",
@@ -8351,17 +7926,19 @@ const GalleryCard = React.memo(function GalleryCard({
                           fontFamily: '"Raleway", sans-serif',
                           fontSize: 10,
                         }}
-                        title={
-                          active
-                            ? `Clear ${opt.label.toLowerCase()} on ${event.target}`
-                            : `Set target action to ${opt.label.toLowerCase()}`
-                        }
+                        title={chip.title}
+                        aria-label={chip.ariaLabel}
                       >
                         <Icon className="w-3 h-3" />
                         {opt.label}
+                        {chip.auto ? " · auto" : ""}
                       </button>
                     );
                   })}
+                  {sampleAction === "suppress" &&
+                    sampleVerdict !== "contaminated" && (
+                      <SuppressedNotContaminatedFlag />
+                    )}
                 </div>
               </>
             )}
@@ -8384,28 +7961,31 @@ const GalleryCard = React.memo(function GalleryCard({
               return `${event.source}${s ? ` (${s})` : ""} → ${event.target}${t ? ` (${t})` : ""}`;
             })()}
           >
-            <div
-              className="text-[11px] truncate"
+            {/* One line cut as a whole lost the target behind a long
+                source: each id is cut on its own. */}
+            <SamplePair
+              source={event.source}
+              target={event.target}
+              title={null}
+              className="text-[11px]"
               style={{
                 color: "var(--ink)",
                 fontWeight: 700,
                 fontFamily: '"Raleway", sans-serif',
               }}
-            >
-              {event.source} → {event.target}
-            </div>
+            />
             {(sampleName(metadata, event.source) ||
               sampleName(metadata, event.target)) && (
-              <div
-                className="text-[10px] truncate"
+              <SamplePair
+                source={sampleName(metadata, event.source) || event.source}
+                target={sampleName(metadata, event.target) || event.target}
+                title={null}
+                className="text-[10px]"
                 style={{
                   color: "var(--ink-muted)",
                   fontFamily: '"Raleway", sans-serif',
                 }}
-              >
-                {sampleName(metadata, event.source) || event.source} →{" "}
-                {sampleName(metadata, event.target) || event.target}
-              </div>
+              />
             )}
           </div>
         </div>
@@ -8675,6 +8255,7 @@ const SampleCombobox = ({
                         selectSample(s);
                       }}
                       onMouseEnter={() => setHighlightIdx(flatIdx)}
+                      className="truncate"
                       style={{
                         padding: "6px 12px",
                         fontSize: 12,
@@ -8683,6 +8264,7 @@ const SampleCombobox = ({
                         background: isHi ? "var(--bg-info)" : "transparent",
                         cursor: "pointer",
                       }}
+                      title={s}
                     >
                       {s}
                     </div>
@@ -8760,25 +8342,20 @@ const ExplorePairs = ({
   const setNotes = setField("notes");
   const [feedback, setFeedback] = useState(null);
 
-  // Sync the sample-level pickers to the event verdict — TP → suppress
-  // + contaminated, FP → no action + correct, Uncertain → no action +
-  // uncertain. These are smart defaults; the curator can still override
-  // either picker after picking the event verdict.
-  useEffect(() => {
-    if (verdict === "true_positive") {
-      setAction("suppress");
-      setTargetVerdict("contaminated");
-    } else if (verdict === "false_positive") {
-      setAction(null);
-      setTargetVerdict("correct");
-    } else {
-      setAction(null);
-      setTargetVerdict("uncertain");
-    }
-    // setAction / setTargetVerdict are recreated each render but write
-    // to the parent state, so we intentionally exclude them from deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [verdict]);
+  // The target sample's verdict and action default to Automatic (null):
+  // the new event is one more piece of evidence on its target, which
+  // then follows the same rule as after a click on any event
+  // (src/curation.js) — a TP makes it Contaminated + Suppress, both
+  // automatic, so rejecting the event later takes them back. A value
+  // picked below is written as the curator's own. Choosing another
+  // evaluation brings both back to Automatic.
+  const chooseVerdict = (v) =>
+    setFormState((prev) => ({
+      ...prev,
+      verdict: v,
+      targetVerdict: null,
+      action: null,
+    }));
 
   const rate = Math.pow(10, rateLog);
 
@@ -8890,7 +8467,8 @@ const ExplorePairs = ({
       verdict,
       targetVerdict,
       notes,
-      action,
+      // Only while its row is shown.
+      action: actionEnabled && offersTargetAction(targetVerdict) ? action : null,
     });
     const verdictLabel =
       verdict === "true_positive"
@@ -8909,7 +8487,8 @@ const ExplorePairs = ({
     setRateLog(-2);
     setProbability(0.9);
     setVerdict("true_positive");
-    setTargetVerdict("contaminated");
+    setTargetVerdict(null);
+    setAction(null);
     setNotes("Manually added by user");
   };
 
@@ -9087,7 +8666,7 @@ const ExplorePairs = ({
               return (
                 <button
                   key={v.id}
-                  onClick={() => setVerdict(v.id)}
+                  onClick={() => chooseVerdict(v.id)}
                   className="px-3 py-1.5 text-[11px] rounded-sm flex items-center gap-1.5"
                   style={{
                     background: active ? v.color : "var(--bg-card)",
@@ -9107,9 +8686,9 @@ const ExplorePairs = ({
         </div>
 
         {/* Verdict on target sample — sample-level layer that
-            cohabits with the event evaluation above. Defaults are
-            wired to the event verdict (TP → contaminated, FP →
-            correct, Uncertain → uncertain) but can be overridden. */}
+            cohabits with the event evaluation above. Automatic by
+            default: the target follows its events, as after a click on
+            any event; another value is written as the curator's own. */}
         <div className="mb-3">
           <label
             className="text-[10px] tracking-[0.1em] uppercase block mb-2"
@@ -9122,13 +8701,13 @@ const ExplorePairs = ({
             Verdict on target sample
           </label>
           <div className="flex gap-2 flex-wrap">
-            {SAMPLE_VERDICT_OPTIONS.map((v) => {
+            {[{ id: null, label: "automatic" }, ...SAMPLE_VERDICT_OPTIONS].map((v) => {
               const tone = SAMPLE_VERDICT_TONE[v.id] || {};
-              const accent = tone.bg || "var(--border-strong)";
-              const active = targetVerdict === v.id;
+              const accent = tone.bg || "#275662";
+              const active = (targetVerdict ?? null) === v.id;
               return (
                 <button
-                  key={v.id}
+                  key={v.id || "auto"}
                   type="button"
                   onClick={() => setTargetVerdict(v.id)}
                   className="px-3 py-1.5 text-[11px] rounded-sm flex items-center gap-1.5"
@@ -9141,7 +8720,13 @@ const ExplorePairs = ({
                     textTransform: "capitalize",
                     cursor: "pointer",
                   }}
-                  title={`Tag the target sample (${tgt || "—"}) as ${v.label}`}
+                  title={
+                    v.id == null
+                      ? `As after a click on any event: the target sample (${tgt || "—"}) follows every event that targets it (a verdict you set by hand is kept)`
+                      : v.id === "pending"
+                        ? `Remove the verdict you set by hand on the target sample (${tgt || "—"}): it then follows its events`
+                        : `Tag the target sample (${tgt || "—"}) as ${v.label}, as your own decision`
+                  }
                 >
                   {active && <CheckCircle2 className="w-3 h-3" />}
                   {v.label}
@@ -9151,9 +8736,9 @@ const ExplorePairs = ({
           </div>
         </div>
 
-        {/* Action on target sample — only when the curator has tagged
-            the target as Contaminated. */}
-        {targetVerdict === "contaminated" && (
+        {/* Action on target sample — offered while the target can end
+            up Contaminated: Automatic, or Contaminated picked by hand. */}
+        {actionEnabled && offersTargetAction(targetVerdict) && (
             <div className="mb-3">
               <label
                 className="text-[10px] tracking-[0.1em] uppercase block mb-2"
@@ -9167,6 +8752,13 @@ const ExplorePairs = ({
               </label>
               <div className="flex gap-2 flex-wrap">
                 {[
+                  {
+                    id: null,
+                    Icon: null,
+                    label: "Automatic",
+                    color: "#275662",
+                    title: "Suppress while the target is Contaminated, unless you set an action by hand.",
+                  },
                   {
                     id: "keep",
                     Icon: Save,
@@ -9182,11 +8774,11 @@ const ExplorePairs = ({
                     title: "Drop this contaminated sample from downstream analyses.",
                   },
                 ].map((opt) => {
-                  const active = action === opt.id;
+                  const active = (action ?? null) === opt.id;
                   const Icon = opt.Icon;
                   return (
                     <button
-                      key={opt.id}
+                      key={opt.id || "auto"}
                       type="button"
                       onClick={() => setAction(opt.id)}
                       title={opt.title}
@@ -9200,7 +8792,7 @@ const ExplorePairs = ({
                         cursor: "pointer",
                       }}
                     >
-                      <Icon className="w-3 h-3" />
+                      {Icon && <Icon className="w-3 h-3" />}
                       {opt.label}
                     </button>
                   );
@@ -9268,13 +8860,19 @@ const ExplorePairs = ({
               This pair is already in your events list.
             </span>
           ) : (
-            <span className="text-[11px]" style={{ color: "var(--ink-muted)" }}>
+            // These two lines name the target: a long id wraps.
+            <span
+              className="text-[11px]"
+              style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+            >
               {introducedFromLine.length} species fall on the line you placed
               {(() => {
                 if (!ab || !tgt) return null;
+                // Richness on the table as loaded, not the filtered copy.
+                const asLoaded = ab.unfiltered || ab;
                 let n = 0;
                 for (const sp of ab.species) {
-                  if ((ab.matrix[sp]?.[tgt] || 0) > 0) n++;
+                  if ((asLoaded.matrix[sp]?.[tgt] || 0) > 0) n++;
                 }
                 if (n === 0) return null;
                 const pct = (introducedFromLine.length / n) * 100;
@@ -9289,6 +8887,7 @@ const ExplorePairs = ({
                 background: "#d8f0f1",
                 color: "#00787a",
                 fontWeight: 600,
+                overflowWrap: "anywhere",
               }}
             >
               ✓ {feedback.message}
@@ -9324,7 +8923,7 @@ const ExplorePairs = ({
             style={{
               background: "var(--bg-alert)",
               border: "1px solid #ed6e6c",
-              color: "#8a2422",
+              color: "var(--ink-alert)",
             }}
           >
             {scatter.error}
@@ -9345,9 +8944,11 @@ const ExplorePairs = ({
         {(() => {
           const targetSpeciesCount = (() => {
             if (!ab || !tgt) return null;
+            // Richness on the table as loaded, not the filtered copy.
+            const asLoaded = ab.unfiltered || ab;
             let n = 0;
             for (const sp of ab.species) {
-              if ((ab.matrix[sp]?.[tgt] || 0) > 0) n++;
+              if ((asLoaded.matrix[sp]?.[tgt] || 0) > 0) n++;
             }
             return n;
           })();
@@ -9409,14 +9010,17 @@ const ExplorePairs = ({
                 }}
               >
                 <div
-                  className="text-[10px] tracking-[0.1em] uppercase"
+                  className="text-[10px] tracking-[0.1em] uppercase flex gap-[0.4em]"
                   style={{
                     color: "var(--ink-muted)",
                     fontWeight: 700,
                     fontFamily: '"Raleway", sans-serif',
                   }}
+                  title={`% of ${tgt || "target"} species`}
                 >
-                  % of {tgt || "target"} species
+                  <span className="shrink-0">% of</span>
+                  <span className="truncate">{tgt || "target"}</span>
+                  <span className="shrink-0">species</span>
                 </div>
                 <div
                   className="tabular mt-1"
@@ -9549,7 +9153,7 @@ const ScatterTab = (props) => {
         </SectionTitle>
         <div
           className="p-6 rounded-sm"
-          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "#8a2422" }}
+          style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "var(--ink-alert)" }}
         >
           <strong>Scatterplots require the abundance table.</strong> Drop{" "}
           <code>species_abundance.tsv</code> above to enable this view.
@@ -9921,7 +9525,19 @@ const ScatterTabInner = ({
             actionEnabled={actionEnabled}
             setAction={setAction}
             sampleAction={sampleCuration?.[e.target]?.action || null}
+            sampleActionAuto={
+              !!(
+                sampleCuration?.[e.target]?.action &&
+                sampleCuration[e.target].actionAuto
+              )
+            }
             sampleVerdict={sampleCuration?.[e.target]?.verdict || null}
+            sampleVerdictAuto={
+              !!(
+                sampleCuration?.[e.target]?.verdict &&
+                sampleCuration[e.target].verdictAuto
+              )
+            }
             setSampleVerdict={setSampleVerdict}
             onPopoverOpen={onPopoverOpen}
             onPopoverClose={onPopoverClose}
@@ -10037,36 +9653,6 @@ const NetworkTab = ({
    verdicts are edited and the primary place actions are edited.
    Read-only mirrors live in the events table, the network curation
    colour scheme, and the Validate-tab toolbar's keep/suppress chips. */
-
-/** Auto-derive a verdict suggestion for a sample from the evaluations
-    of the events touching it. The intuition is "a sample is contaminated
-    if at least one TP event reaches it as a target"; conversely, a
-    sample with only FP-targeted events is most likely correct. Mixed or
-    pending evidence yields "uncertain" (or no suggestion when nothing
-    has been evaluated yet). Sources without targets default to no
-    suggestion since the sample isn't itself a contamination victim. */
-const suggestSampleVerdict = (sampleId, events) => {
-  let tpAsTarget = 0;
-  let fpAsTarget = 0;
-  let uncertainAsTarget = 0;
-  let pendingAsTarget = 0;
-  let asTarget = 0;
-  for (const e of events) {
-    if (e.target !== sampleId) continue;
-    asTarget++;
-    if (e.verdict === "true_positive") tpAsTarget++;
-    else if (e.verdict === "false_positive") fpAsTarget++;
-    else if (e.verdict === "uncertain") uncertainAsTarget++;
-    else pendingAsTarget++;
-  }
-  if (asTarget === 0) return null; // sample only seen as source
-  if (tpAsTarget > 0) return "contaminated";
-  if (uncertainAsTarget > 0) return "uncertain";
-  if (pendingAsTarget > 0 && fpAsTarget === 0) return null; // not enough info yet
-  if (fpAsTarget > 0 && pendingAsTarget === 0 && uncertainAsTarget === 0)
-    return "correct";
-  return "uncertain";
-};
 
 const SAMPLE_VERDICT_TONE = {
   contaminated: { bg: "#ed6e6c", label: "Contaminated" },
@@ -10413,35 +9999,45 @@ const SampleContextCell = ({
   );
 };
 
+/** How the Samples tab draws a sample's id (SAMPLES_ID_FONT) and name. */
+const SAMPLE_CELL_ID_STYLE = {
+  fontFamily: "ui-monospace, monospace",
+  color: "var(--ink)",
+  fontWeight: 600,
+  fontSize: 13,
+  lineHeight: 1.2,
+};
+const SAMPLE_CELL_NAME_STYLE = {
+  color: "var(--ink-muted)",
+  fontWeight: 400,
+  marginTop: 2,
+};
 /** Sample id + optional sample_name + notes-toggle button rendered in
     the first column. The name is shown right below the id (matching
     the Events table) so it doesn't need a dedicated column. */
 const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
   <>
-    <div
-      style={{
-        fontFamily: "ui-monospace, monospace",
-        color: "var(--ink)",
-        fontWeight: 600,
-        fontSize: 13,
-        lineHeight: 1.2,
-      }}
-    >
-      {row.id}
-    </div>
+    {/* Monospace: its width in ch is its number of characters. */}
+    <SampleId id={row.id} style={SAMPLE_CELL_ID_STYLE} />
     {row.name && (
-      <div
-        className="text-[11px] truncate"
-        style={{
-          color: "var(--ink-muted)",
-          fontWeight: 400,
-          maxWidth: 220,
-          marginTop: 2,
-        }}
-        title={row.name}
+      <SampleNameLine
+        name={row.name}
+        className="text-[11px]"
+        style={SAMPLE_CELL_NAME_STYLE}
+      />
+    )}
+    {/* The events file's other spellings of this table sample. */}
+    {row.names?.length > 1 && (
+      <span
+        className="block text-[10px]"
+        style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+        title={`The events file writes this sample ${row.names
+          .slice(1)
+          .map((n) => `"${n}"`)
+          .join(", ")}: it is the abundance table's ${row.id} (the names differ only in case or spaces), as in the curated abundance table and the samples TSV.`}
       >
-        {row.name}
-      </div>
+        also {row.names.slice(1).map((n) => `“${n}”`).join(", ")}
+      </span>
     )}
     <button
       type="button"
@@ -10829,59 +10425,235 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
 
 /** Verdict picker — 4 icon-only chip buttons (pending / contaminated
     / correct / uncertain) wired to setSampleVerdict. Tooltip carries
-    the textual label so the row width stays compact. Memoised. */
+    the textual label so the row width stays compact. An automatic
+    verdict (derived from the events, or the Not contaminated default of
+    a sample no event targets) is drawn lighter, with a dashed rim, and
+    marked "auto" — "default" for that default; clicking it makes it the
+    curator's own, Pending on the curator's own verdict hands the sample
+    back to the rule (sampleVerdictChip). Memoised. */
 const SAMPLE_VERDICT_ICON = {
   pending: Circle,
   contaminated: ThumbsDown,
   correct: ThumbsUp,
   uncertain: HelpCircle,
 };
+/** Fill / border of a Samples-tab chip: solid for a value the curator
+    set, lighter with a dashed rim for an automatic one. */
+const sampleChipColors = (color, active, auto) => ({
+  background: active ? (auto ? `${color}b3` : color) : "var(--bg-card)",
+  color: active ? "#fff" : color,
+  border: `1px ${active && auto ? "dashed" : "solid"} ${active ? color : "var(--border)"}`,
+});
+/** The small tag under an automatic sample verdict / action: "auto" for
+    a value the rule set (`origin` "automatic"), "default" for the Not
+    contaminated + Keep of a sample no event targets (`origin` "default")
+    — the words the samples TSV and the samples HTML report use
+    (curationOrigin, src/exports.js). The Samples tab used to tag both
+    "auto" while both exports said "default".
+
+    It goes under the chips, not beside them, and its inline size is
+    contained, so it adds no width to its column: beside the chips it
+    widened the Samples tab's Verdict and Action columns from 133 / 69 to
+    165 / 109 px, enough to scroll the page at 1024 px. */
+const SampleAutoMark = ({ title, origin = "automatic" }) => (
+  <span
+    data-auto-mark={origin}
+    title={title}
+    style={{
+      display: "block",
+      contain: "inline-size",
+      whiteSpace: "nowrap",
+      marginTop: 2,
+      fontSize: 9,
+      lineHeight: "11px",
+      fontWeight: 700,
+      letterSpacing: "0.06em",
+      textTransform: "uppercase",
+      color: "var(--ink-muted)",
+      fontFamily: '"Raleway", sans-serif',
+      cursor: "help",
+    }}
+  >
+    {origin === "default" ? "default" : "auto"}
+  </span>
+);
+/** Tooltip of the "auto" tag under an automatic sample verdict. */
+const AUTO_VERDICT_MARK_TITLE =
+  "Automatic verdict: derived from the events that target this sample. Click a verdict to set it yourself; Pending removes a verdict you set, handing the sample back to this rule.";
+/** Tooltip of the "default" tag under the verdict of a sample no event
+    targets. */
+const DEFAULT_VERDICT_MARK_TITLE =
+  "Default verdict: no event targets this sample, so it is Not contaminated by default — not a decision. Click a verdict to set it yourself; Pending removes a verdict you set, giving the default back.";
+
+/** Why an automatic sample verdict is what it is: the rule of
+    src/curation.js, in the words of the chips' tooltips. */
+function autoVerdictReason(verdict, neverTargeted) {
+  if (neverTargeted) return "no event targets it";
+  if (verdict === "contaminated") return "an event that targets it is TP";
+  if (verdict === "uncertain")
+    return "an event that targets it is Uncertain, none is TP";
+  return "an event that targets it is FP, none is TP or Uncertain";
+}
+
+/** The verdict chips of a sample (Pending / Contaminated / Not
+    contaminated / Uncertain), as the Samples tab, the Events table, the
+    gallery cards and Guided validation show them: which one is active,
+    whether that verdict is automatic (drawn lighter, dashed, tagged
+    auto) and, where a click would not do what the chip's name says, a
+    title that tells what it does (verdictChipState in src/curation.js):
+    an automatic verdict has no Pending to go back to — the events still
+    call for it — while Pending on the curator's own verdict hands the
+    sample back to the rule. `title` is null where the view's own
+    "set … to …" wording is right. */
+function sampleVerdictChip(sampleId, entry, chip, { neverTargeted = false } = {}) {
+  const state = verdictChipState(entry, chip);
+  const label = SAMPLE_VERDICT_TONE[chip]?.label || chip;
+  let title = null;
+  if (chip === "pending") {
+    if (state.changes)
+      title = neverTargeted
+        ? `Remove your verdict on ${sampleId}: no event targets it, so it goes back to the default Not contaminated`
+        : `Remove your verdict on ${sampleId}: its verdict then follows the events that target it (automatic)`;
+    else if (!state.active)
+      // A sample no event targets has no events to evaluate: its verdict
+      // is the default, and only a verdict of the curator's replaces it.
+      title = `Pending changes nothing here: ${sampleId}'s verdict is ${neverTargeted ? "the default" : "automatic"} (${SAMPLE_VERDICT_TONE[entry.verdict]?.label || entry.verdict}: ${autoVerdictReason(entry.verdict, neverTargeted)}). ${
+        neverTargeted
+          ? "Pick a verdict to set your own"
+          : "Evaluate its events to change it, or pick a verdict to set your own"
+      }`;
+    else
+      title = `No verdict on ${sampleId}: none of the events that target it is evaluated yet`;
+  } else if (state.auto) {
+    title = `${label}, ${neverTargeted ? "by default" : "automatic"}: ${autoVerdictReason(chip, neverTargeted)}. Click to make it your own decision`;
+  }
+  return { ...state, title };
+}
+
 const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSampleVerdict }) {
+  const entry = { verdict: row.verdict, verdictAuto: row.verdictAuto };
+  // "default" for the Not contaminated of a sample no event targets.
+  const origin = curationOrigin(entry, "verdict", !row.neverTargeted);
   return (
-  <div className="flex gap-1">
-    {[
-      { id: "pending", k: SAMPLE_VERDICT_TONE.pending },
-      { id: "contaminated", k: SAMPLE_VERDICT_TONE.contaminated },
-      { id: "correct", k: SAMPLE_VERDICT_TONE.correct },
-      { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
-    ].map((opt) => {
-      const active = row.verdict === opt.id;
-      const Icon = SAMPLE_VERDICT_ICON[opt.id];
-      return (
-        <button
-          key={opt.id}
-          type="button"
-          onClick={() => setSampleVerdict(row.id, opt.id)}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 24,
-            height: 24,
-            padding: 0,
-            borderRadius: 12,
-            background: active ? opt.k.bg : "var(--bg-card)",
-            color: active ? "#fff" : opt.k.bg,
-            border: `1px solid ${active ? opt.k.bg : "var(--border)"}`,
-            cursor: "pointer",
-          }}
-          title={`Verdict: ${opt.k.label}`}
-          aria-label={`Set verdict to ${opt.k.label}`}
-        >
-          <Icon className="w-3.5 h-3.5" />
-        </button>
-      );
-    })}
+  <div>
+    <div className="flex gap-1">
+      {[
+        { id: "pending", k: SAMPLE_VERDICT_TONE.pending },
+        { id: "contaminated", k: SAMPLE_VERDICT_TONE.contaminated },
+        { id: "correct", k: SAMPLE_VERDICT_TONE.correct },
+        { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
+      ].map((opt) => {
+        const chip = sampleVerdictChip(row.id, entry, opt.id, {
+          neverTargeted: row.neverTargeted,
+        });
+        const Icon = SAMPLE_VERDICT_ICON[opt.id];
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => setSampleVerdict(row.id, opt.id)}
+            data-verdict-chip={opt.id}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 24,
+              height: 24,
+              padding: 0,
+              borderRadius: 12,
+              ...sampleChipColors(opt.k.bg, chip.active, chip.auto),
+              cursor: "pointer",
+            }}
+            title={chip.title || `Verdict: ${opt.k.label}`}
+            aria-label={`Set verdict to ${opt.k.label}`}
+          >
+            <Icon className="w-3.5 h-3.5" />
+          </button>
+        );
+      })}
+    </div>
+    {row.verdictAuto && (
+      <SampleAutoMark
+        origin={origin}
+        title={origin === "default" ? DEFAULT_VERDICT_MARK_TITLE : AUTO_VERDICT_MARK_TITLE}
+      />
+    )}
   </div>
   );
 });
 
-/** Action picker — keep / suppress icon-only chips. Only shown when
-    the sample's verdict is "contaminated"; otherwise we render a faint
-    dash so the column keeps its width without offering a decision the
-    curator hasn't motivated yet. Memoised. */
+/** The Keep / Suppress chips of a sample, as the Samples tab, the Events
+    table and the gallery cards all show them: which one is drawn active,
+    whether that value is automatic, the action a click writes
+    (actionChipState in src/curation.js) and how the chip says so. A
+    click on the curator's own action removes it, and the label tells
+    what the rule leaves instead: on a Contaminated sample, Suppress —
+    Keep is how not to suppress it; on a Not contaminated sample no
+    event targets (`opts.neverTargeted`), the default Keep. */
+function sampleActionChip(sampleId, entry, chip, opts) {
+  const label = chip === "keep" ? "Keep" : "Suppress";
+  const state = actionChipState(entry, chip, opts);
+  if (!state.active)
+    return {
+      ...state,
+      ariaLabel: `${label} ${sampleId}`,
+      title: `Mark ${sampleId} as ${label.toLowerCase()} (your own decision)`,
+    };
+  if (state.auto)
+    return {
+      ...state,
+      ariaLabel: `${label} ${sampleId}`,
+      title:
+        chip === "suppress"
+          ? `Suppress (automatic, paired with Contaminated) — click to make it your own decision; pick Keep to keep ${sampleId} in the curated table`
+          : `Keep (the default of a sample no event targets, not a decision) — click to make it your own decision`,
+    };
+  const ariaLabel = `Clear ${label.toLowerCase()} on ${sampleId}`;
+  if (state.returnsTo === "suppress")
+    return {
+      ...state,
+      ariaLabel,
+      title:
+        chip === "suppress"
+          ? `Make ${sampleId}'s Suppress automatic again: it stays suppressed while ${sampleId} is Contaminated (pick Keep to keep it in the curated table)`
+          : `Clear keep on ${sampleId}: ${sampleId} is Contaminated, so it goes back to the automatic Suppress`,
+    };
+  if (state.returnsTo === "keep")
+    return {
+      ...state,
+      ariaLabel,
+      title:
+        chip === "keep"
+          ? `Make ${sampleId}'s Keep the default again: no event targets ${sampleId}, so it stays kept by default (not counted as a Keep decision)`
+          : `Clear suppress on ${sampleId}: no event targets ${sampleId}, so it goes back to the default Keep`,
+    };
+  return { ...state, ariaLabel, title: ariaLabel };
+}
+
+/** The warning next to a Suppress on a sample that is not Contaminated:
+    unusual, and the sample is still dropped from the curated table. */
+const SuppressedNotContaminatedFlag = () => (
+  <span
+    role="img"
+    aria-label="Suppressed but not marked Contaminated"
+    title="Suppressed although not marked Contaminated: this sample is still dropped from the curated abundance table. Clear the action, or change the verdict, if that is not what you meant."
+    style={{ display: "inline-flex", alignSelf: "center", color: "#d97a3c" }}
+  >
+    <AlertCircle className="w-4 h-4" />
+  </span>
+);
+
+/** Action picker — keep / suppress icon-only chips. Offered once the
+    sample is Contaminated, and shown whenever an action is set, whatever
+    the verdict: a Suppress drops the sample from the curated abundance
+    table even when it is not marked Contaminated, so it must stay in
+    sight — flagged as unusual — and clearable. Otherwise a faint dash
+    keeps the column's width without offering a decision the curator
+    hasn't motivated yet. What a click does is the same in every view
+    (sampleActionChip): an automatic action becomes the curator's own,
+    the curator's own one goes back to the rule. Memoised. */
 const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAction }) {
-  if (row.verdict !== "contaminated") {
+  if (row.verdict !== "contaminated" && !row.action) {
     return (
       <span
         style={{
@@ -10894,49 +10666,63 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
       </span>
     );
   }
+  const entry = {
+    verdict: row.verdict,
+    action: row.action,
+    actionAuto: row.actionAuto,
+  };
+  // "default" for the Keep of a sample no event targets; the Suppress
+  // that goes with a Contaminated verdict is the rule's ("auto"), on such
+  // a sample too.
+  const origin = curationOrigin(entry, "action", !row.neverTargeted);
   return (
-  <div className="flex gap-1">
-    {[
-      { id: "keep", color: "#e0b13a", Icon: Save, label: "Keep" },
-      { id: "suppress", color: "#ed6e6c", Icon: Trash2, label: "Suppress" },
-    ].map((opt) => {
-      const active = row.action === opt.id;
-      const Icon = opt.Icon;
-      return (
-        <button
-          key={opt.id}
-          type="button"
-          onClick={() =>
-            setSampleAction(row.id, active ? null : opt.id)
-          }
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 24,
-            height: 24,
-            padding: 0,
-            borderRadius: 12,
-            background: active ? opt.color : "var(--bg-card)",
-            color: active ? "#fff" : opt.color,
-            border: `1px solid ${active ? opt.color : "var(--border)"}`,
-            cursor: "pointer",
-          }}
-          title={
-            active
-              ? `Clear ${opt.label.toLowerCase()} on ${row.id}`
-              : `${opt.label} ${row.id}`
-          }
-          aria-label={
-            active
-              ? `Clear ${opt.label.toLowerCase()} on ${row.id}`
-              : `${opt.label} ${row.id}`
-          }
-        >
-          <Icon className="w-3.5 h-3.5" />
-        </button>
-      );
-    })}
+  <div>
+    <div className="flex gap-1">
+      {[
+        { id: "keep", color: "#e0b13a", Icon: Save },
+        { id: "suppress", color: "#ed6e6c", Icon: Trash2 },
+      ].map((opt) => {
+        const chip = sampleActionChip(row.id, entry, opt.id, {
+          neverTargeted: row.neverTargeted,
+        });
+        const Icon = opt.Icon;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => setSampleAction(row.id, chip.next)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 24,
+              height: 24,
+              padding: 0,
+              borderRadius: 12,
+              ...sampleChipColors(opt.color, chip.active, chip.auto),
+              cursor: "pointer",
+            }}
+            title={chip.title}
+            aria-label={chip.ariaLabel}
+          >
+            <Icon className="w-3.5 h-3.5" />
+          </button>
+        );
+      })}
+      {row.action === "suppress" && row.verdict !== "contaminated" && (
+        <SuppressedNotContaminatedFlag />
+      )}
+    </div>
+    {row.actionAuto && (
+      <SampleAutoMark
+        origin={origin}
+        title={
+          origin === "default"
+            ? "Default action: Keep, as for every sample no event targets — not counted as a Keep decision. Click it to make it your own; pick Suppress to drop the sample from the curated table."
+            : "Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick Keep to keep the sample in the curated table."
+        }
+      />
+    )}
   </div>
   );
 });
@@ -11492,6 +11278,8 @@ const SamplesTab = ({
   ab,
   hasAb,
   sampleCuration,
+  neverTargeted,
+  tableSample,
   setSampleVerdict,
   setSampleAction,
   setSampleNote,
@@ -11633,41 +11421,10 @@ const SamplesTab = ({
     });
   };
 
-  // Samples that are never the target of any event (across the
-  // FULL events list — not the filtered view, otherwise a transient
-  // filter could spuriously auto-curate them). These are auto-tagged
-  // as `correct` + `keep` below, since by definition there is no
-  // contamination call against them.
-  const neverTargetSamples = useMemo(() => {
-    const targeted = new Set();
-    const universe = new Set();
-    for (const e of events) {
-      if (e.source) universe.add(e.source);
-      if (e.target) {
-        universe.add(e.target);
-        targeted.add(e.target);
-      }
-    }
-    if (ab?.samples) for (const s of ab.samples) universe.add(s);
-    const out = [];
-    for (const id of universe) if (!targeted.has(id)) out.push(id);
-    return out;
-  }, [events, ab]);
-
-  // Auto-curate the never-targeted samples. We only stamp a verdict
-  // / action when the sample carries none yet — explicit curator
-  // decisions are never overwritten. Re-runs whenever the
-  // never-target set or the action-feature flag changes; we
-  // intentionally exclude sampleCuration from the deps so the effect
-  // doesn't loop on the writes it just made.
-  useEffect(() => {
-    for (const id of neverTargetSamples) {
-      const cur = sampleCuration?.[id] || {};
-      if (!cur.verdict) setSampleVerdict(id, "correct");
-      if (!cur.action) setSampleAction(id, "keep");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [neverTargetSamples]);
+  // Samples that no event targets need no writing here: AppMain hands
+  // this tab the effective curation, where they are Not contaminated +
+  // Keep by default (automatic, derived from the FULL events list — a
+  // transient filter cannot change it — and never stored).
 
   // Build the universe of samples — only those touched by an event
   // currently passing the shared filter bar (rate / probability /
@@ -11677,12 +11434,24 @@ const SamplesTab = ({
   // are computed from the filtered set so they match what the user
   // sees in the other tabs.
   const eventsForSamples = filteredEvents || events;
+  // One row per sample, as in the samples TSV and report: a name the
+  // abundance table holds under another spelling (case, spaces:
+  // resolveSample, the matching the curated export makes) is that table
+  // sample's row, under the table's spelling, with the events and the
+  // curation of all its names (samplesReportIndex, src/exports.js). The
+  // events file's "s2" and the table's "S2" were two rows: "s2" with its
+  // event and its automatic Suppress, "S2" with no event, no verdict and
+  // no action, while the curated table dropped S2. The names come from
+  // the full events list: a filter must not split a sample in two.
+  const sampleIndex = useMemo(() => samplesReportIndex(events, ab), [events, ab]);
   // Species richness per sample: number of species observed (relative
   // abundance > 0) in the abundance table. null when no abundance is
   // loaded; samples absent from the table get null too (handled below).
   const richnessBySample = useMemo(() => {
     if (!ab?.matrix || !ab?.samples) return null;
-    const out = {};
+    // No prototype: richnessBySample["__proto__"] was Object.prototype,
+    // which React refused to render, and the whole tab failed.
+    const out = Object.create(null);
     for (const s of ab.samples) out[s] = 0;
     for (const sp of Object.keys(ab.matrix)) {
       const row = ab.matrix[sp];
@@ -11696,18 +11465,20 @@ const SamplesTab = ({
   // full O(events × samples) rebuild — the cheap row merge below picks
   // up the new verdict / action / notes in O(samples) instead.
   const sampleAggregates = useMemo(() => {
+    const { rowOf } = sampleIndex;
     const ids = new Set();
     for (const e of eventsForSamples) {
-      if (e.source) ids.add(e.source);
-      if (e.target) ids.add(e.target);
+      if (e.source) ids.add(rowOf(e.source));
+      if (e.target) ids.add(rowOf(e.target));
     }
     if (ab?.samples) for (const s of ab.samples) ids.add(s);
     const eventsBySample = new Map();
     for (const id of ids) eventsBySample.set(id, []);
     for (const e of eventsForSamples) {
-      if (e.source) eventsBySample.get(e.source)?.push(e);
-      if (e.target && e.target !== e.source)
-        eventsBySample.get(e.target)?.push(e);
+      const source = e.source ? rowOf(e.source) : null;
+      const target = e.target ? rowOf(e.target) : null;
+      if (source) eventsBySample.get(source)?.push(e);
+      if (target && target !== source) eventsBySample.get(target)?.push(e);
     }
     return Array.from(ids).map((id) => {
       const touching = eventsBySample.get(id) || [];
@@ -11727,11 +11498,11 @@ const SamplesTab = ({
         else bucket.pending++;
       };
       for (const e of touching) {
-        if (e.source === id) {
+        if (e.source && rowOf(e.source) === id) {
           asSource++;
           bumpEval(evalCountsAsSource, e);
         }
-        if (e.target === id) {
+        if (e.target && rowOf(e.target) === id) {
           asTarget++;
           bumpEval(evalCountsAsTarget, e);
           if (typeof e.rate === "number") {
@@ -11760,9 +11531,13 @@ const SamplesTab = ({
         }
         bumpEval(evalCounts, e);
       }
-      const suggested = suggestSampleVerdict(id, eventsForSamples);
+      // The verdict the events call for, by the same rule that fills
+      // in the automatic sample verdicts (src/curation.js).
+      const suggested = autoVerdictFromCounts(evalCountsAsTarget);
       const flags = flagSample(id, metadata);
-      const placement = plateMap?.bySample?.[id] || null;
+      // Looked up as the metadata is (lookupBySample): a row is the
+      // table's spelling, and a plate map may write it as the events do.
+      const placement = plateMap ? lookupBySample(plateMap.bySample, id) || null : null;
       return {
         id,
         name: sampleName(metadata, id) || "",
@@ -11782,22 +11557,56 @@ const SamplesTab = ({
         richness: richnessBySample?.[id] ?? null,
       };
     });
-  }, [eventsForSamples, ab, metadata, plateMap, richnessBySample]);
+  }, [eventsForSamples, sampleIndex, ab, metadata, plateMap, richnessBySample]);
   // Cheap row-by-row merge of the curation layer onto the precomputed
   // aggregates. Re-runs on every sampleCuration write but is O(samples)
   // not O(events × samples).
   const sampleRows = useMemo(
     () =>
       sampleAggregates.map((agg) => {
-        const cur = sampleCuration?.[agg.id] || {};
+        // The curation of all the sample's names (samplesReportCuration:
+        // a Suppress wins, then a verdict, the curator's first).
+        const names = sampleIndex.names(agg.id);
+        const cur = samplesReportCuration(sampleCuration, names);
         return {
           ...agg,
+          names,
           verdict: cur.verdict || "pending",
           action: cur.action || null,
+          // Set by the event-driven rule rather than by the curator.
+          verdictAuto: !!(cur.verdict && cur.verdictAuto),
+          actionAuto: !!(cur.action && cur.actionAuto),
+          // No event of the full list targets it: its defaults are
+          // Not contaminated + Keep, which a cleared value returns to.
+          neverTargeted: !!neverTargeted?.has(agg.id),
           notes: cur.notes || "",
         };
       }),
-    [sampleAggregates, sampleCuration],
+    [sampleAggregates, sampleIndex, sampleCuration, neverTargeted],
+  );
+  // A decision on a row is written to the names where the sample's
+  // curation lives (sampleCurationKeys, src/curation.js): the event's
+  // "s2" — where the rule wrote its Suppress — for the table's "S2".
+  const setRowVerdict = React.useCallback(
+    (id, verdict) => {
+      for (const key of sampleCurationKeys(sampleIndex.names(id), sampleCuration, events))
+        setSampleVerdict(key, verdict);
+    },
+    [sampleIndex, sampleCuration, events, setSampleVerdict],
+  );
+  const setRowAction = React.useCallback(
+    (id, action) => {
+      for (const key of sampleCurationKeys(sampleIndex.names(id), sampleCuration, events))
+        setSampleAction(key, action);
+    },
+    [sampleIndex, sampleCuration, events, setSampleAction],
+  );
+  const setRowNote = React.useCallback(
+    (id, notes) => {
+      for (const key of sampleCurationKeys(sampleIndex.names(id), sampleCuration, events))
+        setSampleNote(key, notes);
+    },
+    [sampleIndex, sampleCuration, events, setSampleNote],
   );
 
   const subjectFiltered = useMemo(() => {
@@ -11948,16 +11757,18 @@ const SamplesTab = ({
       correct: 0,
       uncertain: 0,
       pending: 0,
-      keep: 0,
-      suppress: 0,
+      // Keep / suppress counted like everywhere else (sampleActionCounts,
+      // matched to the abundance table as the curated export is): the
+      // default Keep of a never-targeted sample is not a decision.
+      ...sampleActionCounts(
+        sampleCuration,
+        sampleRows.flatMap((r) => r.names),
+        tableSample,
+      ),
     };
-    for (const r of sampleRows) {
-      t[r.verdict]++;
-      if (r.action === "keep") t.keep++;
-      else if (r.action === "suppress") t.suppress++;
-    }
+    for (const r of sampleRows) t[r.verdict]++;
     return t;
-  }, [sampleRows]);
+  }, [sampleRows, sampleCuration, tableSample]);
 
   // Visible columns derived from what's loaded. The Context column
   // hosts every metadata field as compact pills (cf. SampleContextCell);
@@ -12116,6 +11927,14 @@ const SamplesTab = ({
     (safePage - 1) * PAGE_SIZE,
     safePage * PAGE_SIZE,
   );
+  // The Sample column as wide as its longest id or name on this page while
+  // the table has room (idColumnWidth); measured again once the web fonts
+  // have loaded.
+  useFontEpoch();
+  const sampleColumnWidth = idColumnWidth(
+    visible.map((r) => [r.id, r.name]),
+    SAMPLES_ID_FONT,
+  );
 
   // Keyboard navigation — same UX as Validate. Arrow up / down step
   // through the sorted list one row at a time; left / right jump to
@@ -12201,7 +12020,9 @@ const SamplesTab = ({
     }
     if (appliedHighlightRef.current === highlightSampleId) return;
     appliedHighlightRef.current = highlightSampleId;
-    const i = displaySorted.findIndex((r) => r.id === highlightSampleId);
+    // A drill-in from another tab may name the sample as the events do.
+    const rowId = sampleIndex.rowOf(highlightSampleId);
+    const i = displaySorted.findIndex((r) => r.id === rowId);
     if (i >= 0) focusByIndex(i);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightSampleId, displaySorted]);
@@ -12232,13 +12053,13 @@ const SamplesTab = ({
           break;
         case "k":
           if (focusedId) {
-            setSampleAction(focusedId, "keep");
+            setRowAction(focusedId, "keep");
             e.preventDefault();
           }
           break;
         case "s":
           if (focusedId) {
-            setSampleAction(focusedId, "suppress");
+            setRowAction(focusedId, "suppress");
             e.preventDefault();
           }
           break;
@@ -12290,11 +12111,13 @@ const SamplesTab = ({
               label="To keep"
               value={totals.keep}
               tone={totals.keep > 0 ? "keep" : "neutral"}
+              hint={`${SAMPLES_TO_KEEP_HINT} ${SAMPLES_TAB_COUNT_SCOPE}`}
             />
             <Stat
               label="To suppress"
               value={totals.suppress}
               tone={totals.suppress > 0 ? "suppress" : "neutral"}
+              hint={`${SAMPLES_TO_SUPPRESS_HINT} ${SAMPLES_TAB_COUNT_SCOPE}`}
             />
           </>
         )}
@@ -12413,6 +12236,7 @@ const SamplesTab = ({
                       zIndex: 10,
                       background: "var(--bg-soft)",
                       minWidth: col.minWidth || undefined,
+                      width: col.id === "sample" ? sampleColumnWidth : undefined,
                       borderLeft: col.divider
                         ? "1px solid var(--border)"
                         : undefined,
@@ -12616,13 +12440,13 @@ const SamplesTab = ({
                         {col.id === "verdict" && (
                           <SampleVerdictCell
                             row={r}
-                            setSampleVerdict={setSampleVerdict}
+                            setSampleVerdict={setRowVerdict}
                           />
                         )}
                         {col.id === "action" && (
                           <SampleActionCell
                             row={r}
-                            setSampleAction={setSampleAction}
+                            setSampleAction={setRowAction}
                           />
                         )}
                       </td>
@@ -12640,7 +12464,7 @@ const SamplesTab = ({
                       >
                         <textarea
                           value={r.notes}
-                          onChange={(e) => setSampleNote(r.id, e.target.value)}
+                          onChange={(e) => setRowNote(r.id, e.target.value)}
                           placeholder={`Notes for ${r.id} (control? low biomass? plate context?)`}
                           rows={2}
                           className="w-full px-2 py-1 text-[12px] rounded-sm outline-none"
@@ -12690,8 +12514,8 @@ const SamplesTab = ({
           onClose={() => setBulkOpen(false)}
           onApply={(ids, verdict, action) => {
             for (const id of ids) {
-              if (verdict) setSampleVerdict(id, verdict);
-              if (action !== undefined) setSampleAction(id, action);
+              if (verdict) setRowVerdict(id, verdict);
+              if (action !== undefined) setRowAction(id, action);
             }
           }}
         />
@@ -13081,7 +12905,10 @@ const BulkSampleApplyDialog = ({
   const [action, setAction] = useState(""); // "" | "keep" | "suppress" | "clear"
   // Two independent safety toggles, both default ON to protect prior
   // curation work. They layer on top of the pre-condition multi-
-  // selects below; AND-ed together when both are checked.
+  // selects below; AND-ed together when both are checked. Only values
+  // the curator set by hand count as prior work: automatic ones (from
+  // the events, or the default of a never-targeted sample) are the
+  // rule's, and are overwritten like an empty slot.
   const [skipExistingVerdict, setSkipExistingVerdict] = useState(true);
   const [skipExistingAction, setSkipExistingAction] = useState(true);
   // Pre-condition multi-selects: only modify samples whose CURRENT
@@ -13152,8 +12979,15 @@ const BulkSampleApplyDialog = ({
       const ca = s.action || "unset";
       if (!matchVerdicts.includes(cv)) return false;
       if (actionEnabled && !matchActions.includes(ca)) return false;
-      if (skipExistingVerdict && cv !== "pending") return false;
-      if (skipExistingAction && actionEnabled && ca !== "unset") return false;
+      if (skipExistingVerdict && cv !== "pending" && !s.verdictAuto)
+        return false;
+      if (
+        skipExistingAction &&
+        actionEnabled &&
+        ca !== "unset" &&
+        !s.actionAuto
+      )
+        return false;
       const f = s.flags || {};
       if (ctxSubject && f.subject !== ctxSubject) return false;
       if (ctxTimepoint && f.timepoint !== ctxTimepoint) return false;
@@ -13556,6 +13390,11 @@ const BulkSampleApplyDialog = ({
                   fontFamily: '"Raleway", sans-serif',
                   cursor: "pointer",
                 }}
+                title={
+                  opt.id === "pending"
+                    ? "Remove the verdict you set by hand: each sample then follows its events automatically"
+                    : undefined
+                }
               >
                 {opt.label}
               </button>
@@ -13565,6 +13404,7 @@ const BulkSampleApplyDialog = ({
         <label
           className="flex items-center gap-2 mb-3 text-[11px] cursor-pointer"
           style={{ color: "var(--ink)", userSelect: "none" }}
+          title="Automatic verdicts (derived from the events) do not count as already set: they are replaced."
         >
           <input
             type="checkbox"
@@ -13572,7 +13412,7 @@ const BulkSampleApplyDialog = ({
             onChange={(e) => setSkipExistingVerdict(e.target.checked)}
             style={{ accentColor: "#00a3a6" }}
           />
-          Don't overwrite samples that already have a verdict.
+          Don't overwrite samples that already have a verdict set by hand.
         </label>
 
         {/* Action to set */}
@@ -13612,6 +13452,11 @@ const BulkSampleApplyDialog = ({
                       fontFamily: '"Raleway", sans-serif',
                       cursor: "pointer",
                     }}
+                    title={
+                      opt.id === "clear"
+                        ? "Remove the action you set by hand: a Contaminated sample gets its automatic Suppress back"
+                        : undefined
+                    }
                   >
                     {opt.label}
                   </button>
@@ -13621,6 +13466,7 @@ const BulkSampleApplyDialog = ({
             <label
               className="flex items-center gap-2 mb-3 text-[11px] cursor-pointer"
               style={{ color: "var(--ink)", userSelect: "none" }}
+              title="Automatic actions (Suppress paired with Contaminated) do not count as already set: they are replaced."
             >
               <input
                 type="checkbox"
@@ -13628,7 +13474,8 @@ const BulkSampleApplyDialog = ({
                 onChange={(e) => setSkipExistingAction(e.target.checked)}
                 style={{ accentColor: "#00a3a6" }}
               />
-              Don't overwrite samples that already have an action.
+              Don't overwrite samples that already have an action set by
+              hand.
             </label>
           </>
         )}
@@ -13756,7 +13603,8 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
       }
     });
     newMap[sid] = { plate: plateId, row: r, col: c };
-    setPlateMap({ bySample: newMap, format });
+    // Spread: the plate card keeps the upload's column mapping and warnings.
+    setPlateMap({ ...plateMap, bySample: newMap, format });
     setSelectedSample(null);
     // auto-advance the focus to the next empty well
     advanceFocusToNextEmpty({ bySample: newMap }, r, c);
@@ -13775,7 +13623,7 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
     if (!posA || !posB) return;
     newMap[sidA] = posB;
     newMap[sidB] = posA;
-    setPlateMap({ bySample: newMap, format });
+    setPlateMap({ ...plateMap, bySample: newMap, format });
     setSelectedSample(null);
   };
 
@@ -13783,7 +13631,7 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
     const newMap = { ...(plateMap?.bySample || {}) };
     delete newMap[sid];
     setPlateMap(
-      Object.keys(newMap).length ? { bySample: newMap, format } : null,
+      Object.keys(newMap).length ? { ...plateMap, bySample: newMap, format } : null,
     );
   };
 
@@ -14183,26 +14031,30 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
               >
                 <button
                   onClick={() => setSelectedSample(isSelected ? null : s)}
-                  className="flex-1 text-left"
+                  className="flex-1 min-w-0 truncate text-left"
                   style={{ fontWeight: 600 }}
+                  title={s}
                 >
                   {s}
                 </button>
                 {pos ? (
                   <>
-                    <Pill tone={isSelected ? "ink" : "primary"}>
+                    <Pill tone={isSelected ? "ink" : "primary"} className="shrink-0">
                       {pos.plate} · {wellLabel(pos.row, pos.col)}
                     </Pill>
                     <button
                       onClick={() => clearWell(s)}
                       title="remove"
+                      className="shrink-0"
                       style={{ color: isSelected ? "#fff" : "#797870" }}
                     >
                       <X className="w-3 h-3" />
                     </button>
                   </>
                 ) : (
-                  <Pill tone={isSelected ? "ink" : "neutral"}>to place</Pill>
+                  <Pill tone={isSelected ? "ink" : "neutral"} className="shrink-0">
+                    to place
+                  </Pill>
                 )}
               </div>
             );
@@ -14346,7 +14198,7 @@ const PlateThumbnail = ({
       {plate.nAdjacent > 0 && (
         <div
           className="mt-1 text-[10px]"
-          style={{ color: "#8a2422", fontWeight: 600 }}
+          style={{ color: "var(--ink-alert)", fontWeight: 600 }}
         >
           {plate.nAdjacent} adjacent-well
         </div>
@@ -15105,13 +14957,16 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
                       )}
                     </div>
                     <div
-                      className="text-[11px] mt-0.5"
+                      className="text-[11px] mt-0.5 flex items-baseline gap-1"
                       style={{ color: "var(--ink-muted)" }}
                     >
-                      {e.source} → {e.target} · probability {e.score.toFixed(2)}
-                      {e.introducedPct != null && (
-                        <> · introduced {formatIntroducedPct(e.introducedPct)}</>
-                      )}
+                      <SamplePair source={e.source} target={e.target} className="min-w-0" />
+                      <span className="shrink-0">
+                        · probability {e.score.toFixed(2)}
+                        {e.introducedPct != null && (
+                          <> · introduced {formatIntroducedPct(e.introducedPct)}</>
+                        )}
+                      </span>
                     </div>
                   </button>
                 );
@@ -15170,10 +15025,11 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
 /* ---------- BULK APPLY BY CRITERIA DIALOG ----------
    Modal that lets the user bulk-apply a verdict (TP / FP / Uncertain /
    Reset) to every event matching a rate range, a probability range and
-   a per-criterion pass/fail filter. The 6 criteria mirror the
-   data-driven checks displayed inline in the Guided validation panel —
-   they're computed here on demand for every event using the abundance
-   table.
+   a per-criterion pass/fail filter. The 6 criteria ARE the data-driven
+   checks displayed inline in the Guided validation panel: computed on
+   demand for every event using the abundance table, and read off the
+   same automaticScore evaluation (eventBulkCriteria), so a "pass" here
+   is a ✓ there.
 
    Comment behaviour: if the textarea is empty, existing notes on each
    matched event are preserved untouched. If non-empty, the comment is
@@ -15185,7 +15041,9 @@ const BULK_CRIT = [
   { id: "decade", label: "Decade range — line spans ≥ 1.5 decades" },
   { id: "missing", label: "Missing source species — observed misses within Poisson sampling noise (p ≥ 0.05)" },
   { id: "above", label: "Above-line points — none, or all within 0.5 decade" },
-  { id: "spearman", label: "Profile dissimilarity — Spearman ρ < 0.7" },
+  // id kept from when this was a Spearman-only check; it now carries the
+  // joint ρ × relatedness criterion 06 of the Validate panel.
+  { id: "spearman", label: "Biological similarity — ρ < 0.7, or ρ ≥ 0.7 between unrelated samples (different subjects, no shared group; needs metadata)" },
 ];
 
 /** Two-thumb (low / high) slider built on react-range. The track lights
@@ -15603,20 +15461,16 @@ const BulkPreviewOverlay = ({
                     }}
                   >
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div
+                      <SamplePair
+                        source={e.source}
+                        target={e.target}
                         style={{
                           fontSize: 12,
                           color: "var(--ink)",
                           fontWeight: 700,
                           fontFamily: '"Raleway", sans-serif',
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
                         }}
-                        title={`${e.source} → ${e.target}`}
-                      >
-                        {e.source} → {e.target}
-                      </div>
+                      />
                       <div style={{ marginTop: 2 }}>
                         <RowMeta e={e} />
                       </div>
@@ -15837,11 +15691,11 @@ const BulkApplyByCriteriaDialog = ({
   // dialog stamps a sample-level verdict / action. Empty = keep
   // existing sample notes untouched.
   const [sampleComment, setSampleComment] = useState("");
-  // Optional sample-level side-effects: also set a verdict and / or
-  // an action on the TARGET sample of each matched event. Empty
-  // strings = leave the target's existing curation untouched. The
-  // skip-existing checkboxes layer on top so the curator can
-  // safeguard already-decided targets without changing the picker.
+  // Sample-level side-effects on the TARGET sample of each matched
+  // event. Empty strings = automatic: the targets follow the same rule
+  // as a click on each event. Any other value is written as the
+  // curator's own decision; the skip-existing checkboxes layer on top
+  // so targets the curator already decided by hand stay as they are.
   const [targetVerdict, setTargetVerdict] = useState("");
   const [targetAction, setTargetAction] = useState(""); // "" | "keep" | "suppress" | "clear"
   const [skipTargetVerdict, setSkipTargetVerdict] = useState(true);
@@ -15863,39 +15717,25 @@ const BulkApplyByCriteriaDialog = ({
   // Compute the 6-criteria pass/fail status for every event. Each entry is
   // { shape, nOnLine, decade, missing, above, spearman } where each value
   // is true (pass), false (fail), or null (not evaluable).
+  //
+  // The values are read off automaticScore (eventBulkCriteria, in
+  // src/diagnostics.js, where the unit tests call it), the evaluation the
+  // Validate panel draws its ✓ / ✗ from — never re-derived here. Two
+  // re-derivations had already drifted: "missing" once tested
+  // `count <= 2`, and "spearman" tested ρ < 0.7 alone, failing the high-ρ
+  // pairs from different subjects that the panel (and the Help) pass as
+  // strong contamination — so "✓ pass" here skipped events the panel
+  // ticked. Keep this a plain map of eventBulkCriteria.
   const eventCriteria = useMemo(() => {
     if (!ab || !critActive) return null;
     return events.map((e) => {
       try {
-        const sc = buildScatter(ab, e);
-        if (!sc || sc.error) return null;
-        const di = lineDiagnostics(sc);
-        const ab2 = pointsAboveLine(sc);
-        const mi = missingAbundantFromSource(ab, e.source, e.target, e.rate);
-        return {
-          shape: di?.r2 != null ? di.r2 > 0.8 : null,
-          nOnLine: di?.n != null ? di.n > 10 : null,
-          decade: di?.decadeRange != null ? di.decadeRange >= 1.5 : null,
-          // Same rule as automaticScore's "missing" criterion and as this
-          // checkbox's own label ("within Poisson sampling noise, p ≥
-          // 0.05"). It used to test `count <= 2`, a third, unrelated rule:
-          // the dialog then selected a completely different set of events
-          // from the one the Validate panel showed a green tick for.
-          missing:
-            mi == null
-              ? null
-              : mi.evaluated === 0
-                ? null
-                : mi.count === 0 || mi.pValue >= 0.05,
-          above:
-            ab2 != null ? ab2.count === 0 || ab2.maxDist < 0.5 : null,
-          spearman: di?.spearman != null ? di.spearman < 0.7 : null,
-        };
+        return eventBulkCriteria(ab, e, areRelated(metadata, e.source, e.target));
       } catch {
         return null;
       }
     });
-  }, [events, ab, critActive]);
+  }, [events, ab, metadata, critActive]);
 
   const introducedFilterActive = minIntroduced > 0 || maxIntroduced < 100;
 
@@ -15912,15 +15752,7 @@ const BulkApplyByCriteriaDialog = ({
         if (e.introducedPct < minIntroduced || e.introducedPct > maxIntroduced)
           return false;
       }
-      const c = eventCriteria?.[i];
-      for (const k of Object.keys(crit)) {
-        const want = crit[k];
-        if (want === "any") continue;
-        if (!c) return false; // criteria not computable but a filter is set
-        if (want === "pass" && c[k] !== true) return false;
-        if (want === "fail" && c[k] !== false) return false;
-      }
-      return true;
+      return matchesBulkCriteria(eventCriteria?.[i], crit);
     });
   }, [
     events,
@@ -16096,7 +15928,7 @@ const BulkApplyByCriteriaDialog = ({
                     e.currentTarget.style.borderColor = "var(--border-strong)";
                     e.currentTarget.style.color = "#275662";
                   }}
-                  title="Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note. Target sample verdicts are left untouched — many subjects share some species naturally, so a target may still be genuinely contaminated by something else."
+                  title="Bulk-classify same-subject (longitudinal) events as false positives, with an explanatory note. Each target sample then follows the automatic rule, as if you had clicked each event: it stays Contaminated while another event targeting it is TP, becomes Uncertain if one is uncertain, and Not contaminated otherwise. A verdict or an action you set by hand is left unchanged."
                 >
                   <XCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>
@@ -16127,7 +15959,7 @@ const BulkApplyByCriteriaDialog = ({
                     e.currentTarget.style.borderColor = "var(--border-strong)";
                     e.currentTarget.style.color = "#275662";
                   }}
-                  title="Bulk-classify events flowing into a negative control as true positives. Their target negative-control samples are also flagged as Contaminated (skipping any target that already carries a sample-level verdict)."
+                  title="Bulk-classify events flowing into a negative control as true positives. Their target negative-control samples then follow the automatic rule, as if you had clicked each event: Contaminated, paired with Suppress, both automatic (rejecting those events later takes them back). Only a verdict or an action you set by hand is left unchanged."
                 >
                   <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                   <span>
@@ -16624,10 +16456,11 @@ const BulkApplyByCriteriaDialog = ({
           })}
         </div>
 
-        {/* Sample-level side-effects — also set a verdict and / or an
-            action on the TARGET sample of every matched event.
-            Both default to "(no change)" so the dialog stays a pure
-            event-evaluation tool unless the curator opts in. */}
+        {/* Sample-level side-effects on the TARGET sample of every
+            matched event. Both default to "Automatic": the targets
+            follow the rule of src/curation.js, exactly as when clicking
+            each event. An explicit value is written as the curator's
+            own decision. */}
         <div
           style={{
             fontSize: 11,
@@ -16639,11 +16472,11 @@ const BulkApplyByCriteriaDialog = ({
             textTransform: "uppercase",
           }}
         >
-          Verdict on samples targeted by the matched events (optional)
+          Verdict on samples targeted by the matched events
         </div>
         <div className="flex flex-wrap gap-1 mb-1">
           {[
-            { id: "", label: "(no change)" },
+            { id: "", label: "Automatic" },
             { id: "pending", label: "Pending" },
             { id: "contaminated", label: "Contaminated" },
             { id: "correct", label: "Not contaminated" },
@@ -16668,9 +16501,11 @@ const BulkApplyByCriteriaDialog = ({
                   cursor: "pointer",
                 }}
                 title={
-                  opt.id
-                    ? `Set the target sample's verdict to "${opt.label}" for every matched event`
-                    : "Don't touch the target sample's verdict"
+                  opt.id === "pending"
+                    ? "Remove the verdict you set by hand on each target sample: it then follows its events automatically"
+                    : opt.id
+                      ? `Set each target sample's verdict to "${opt.label}" as your own decision`
+                      : "Same as clicking each event: each target sample's verdict is recomputed from every event that targets it. A verdict you set by hand is kept."
                 }
               >
                 {opt.label}
@@ -16678,9 +16513,22 @@ const BulkApplyByCriteriaDialog = ({
             );
           })}
         </div>
+        <div
+          className="text-[11px] mb-2"
+          style={{ color: "var(--ink-muted)", lineHeight: 1.5 }}
+        >
+          <strong>Automatic</strong> is the same as clicking each event:
+          a target's verdict is recomputed from every event that targets
+          it (any TP → Contaminated, else any Uncertain → Uncertain, else
+          any FP → Not contaminated) and Contaminated comes with
+          Suppress. Verdicts and actions you set by hand are never
+          changed. Pick a value to write it on every target as your own
+          decision instead.
+        </div>
         <label
           className="flex items-center gap-2 mb-3 text-[11px] cursor-pointer"
           style={{ color: "var(--ink)", userSelect: "none" }}
+          title="Automatic verdicts (derived from the events) do not count as already set: they are replaced."
         >
           <input
             type="checkbox"
@@ -16688,7 +16536,8 @@ const BulkApplyByCriteriaDialog = ({
             onChange={(e) => setSkipTargetVerdict(e.target.checked)}
             style={{ accentColor: "#00a3a6" }}
           />
-          Don't overwrite target samples that already have a verdict.
+          Don't overwrite target samples that already have a verdict set
+          by hand.
         </label>
 
         {actionEnabled && (
@@ -16704,11 +16553,11 @@ const BulkApplyByCriteriaDialog = ({
                 textTransform: "uppercase",
               }}
             >
-              Action on samples targeted by the matched events (optional)
+              Action on samples targeted by the matched events
             </div>
             <div className="flex flex-wrap gap-1 mb-1">
               {[
-                { id: "", label: "(no change)" },
+                { id: "", label: "Automatic" },
                 { id: "clear", label: "(clear)" },
                 { id: "keep", label: "Keep" },
                 { id: "suppress", label: "Suppress" },
@@ -16736,10 +16585,10 @@ const BulkApplyByCriteriaDialog = ({
                     }}
                     title={
                       opt.id === ""
-                        ? "Don't touch the target sample's action"
+                        ? "Same as clicking each event: Suppress while the target is Contaminated, nothing otherwise. An action you set by hand is kept."
                         : opt.id === "clear"
-                          ? "Clear any action on the target sample"
-                          : `Set the target sample's action to ${opt.label}`
+                          ? "Remove the action you set by hand on the target sample: it then follows its verdict automatically"
+                          : `Set each target sample's action to ${opt.label} as your own decision`
                     }
                   >
                     {opt.label}
@@ -16750,6 +16599,7 @@ const BulkApplyByCriteriaDialog = ({
             <label
               className="flex items-center gap-2 mb-4 text-[11px] cursor-pointer"
               style={{ color: "var(--ink)", userSelect: "none" }}
+              title="Automatic actions (Suppress paired with Contaminated) do not count as already set: they are replaced."
             >
               <input
                 type="checkbox"
@@ -16757,7 +16607,8 @@ const BulkApplyByCriteriaDialog = ({
                 onChange={(e) => setSkipTargetAction(e.target.checked)}
                 style={{ accentColor: "#00a3a6" }}
               />
-              Don't overwrite target samples that already have an action.
+              Don't overwrite target samples that already have an action
+              set by hand.
             </label>
           </>
         )}
@@ -17149,6 +17000,27 @@ const ValidateTab = ({
   // their dataset.
   const [showSampleInfo, setShowSampleInfo] = useState(false);
   const [showDiagBlurb, setShowDiagBlurb] = useState(false);
+  // Whether the diagnostics below run on the low-abundance-filtered table
+  // (AppMain's diagAb): the run declares a factor and it is not off. The
+  // grade says which, on or off.
+  const lowAbFactor = lowAbundanceFilterFactor(runMetadata);
+  const lowAbOn = lowAbFactor != null && filter?.lowAbFilter !== false;
+  // The filter can be switched from the grade's note too, where its state
+  // is shown, not only from Overview › Run parameters, which a curator
+  // may have collapsed (one state: filter.lowAbFilter). Switching
+  // recomputes every diagnostic in one synchronous render (a second or
+  // two on the largest runs), so the note says so first, as the Overview
+  // box does, and the change is applied once that has been painted.
+  const [lowAbPending, setLowAbPending] = useState(null);
+  const switchLowAb = (on) => {
+    setLowAbPending(on);
+    requestAnimationFrame(() =>
+      setTimeout(() => {
+        setFilter((f) => ({ ...f, lowAbFilter: on }));
+        setLowAbPending(null);
+      }, 0),
+    );
+  };
   useEffect(() => {
     const handler = (e) => {
       // Don't compete with the bulk-apply dialog's own input handling.
@@ -17239,7 +17111,11 @@ const ValidateTab = ({
           </div>
         </EventFilterBar>
       )}
-      <div className="grid lg:grid-cols-[260px_1fr] gap-8">
+      {/* minmax(0, 1fr), not 1fr: a 1fr column is at least as wide as its
+          content's longest unbreakable line, and the cascade banner's
+          150-character upstream id pushed the panel out of the page's
+          column. */}
+      <div className="grid lg:grid-cols-[260px_minmax(0,1fr)] gap-8">
       <aside>
         <div
           className="text-[10px] tracking-[0.15em] uppercase mb-3 flex items-center justify-between"
@@ -17498,27 +17374,35 @@ const ValidateTab = ({
         <SectionTitle
           eyebrow={`Event ${idx + 1} of ${events.length}`}
           title={
-            <>
-              {sel.source}
-              {sampleName(metadata, sel.source) && (
-                <span
-                  className="text-[18px] ml-2"
-                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                >
-                  ({sampleName(metadata, sel.source)})
+            // The pair is this page's subject. When it does not fit on
+            // one line the target goes to the next, as the heading's text
+            // always wrapped there, and an id is cut only when it alone is
+            // wider than the line — the first version kept the pair on one
+            // line and cut the benchmark datasets' ids that used to wrap
+            // whole. Each id keeps its width before its name (SampleIdName),
+            // has its whole self in its tooltip, and stays whole in the
+            // page: a double-click selects all of it, a copy copies it.
+            <span className="flex flex-wrap items-baseline" style={{ columnGap: "0.3em" }}>
+              {[sel.source, sel.target].map((id, i) => (
+                <span key={i} className="flex items-baseline min-w-0 max-w-full">
+                  <SampleIdName
+                    id={id}
+                    name={sampleName(metadata, id)}
+                    className="min-w-0"
+                    idProps={{ "data-sample-id": id }}
+                    nameClassName="text-[18px]"
+                    nameStyle={{ color: "var(--ink-muted)", fontWeight: 500 }}
+                  />
+                  {i === 0 && (
+                    // The spaces do not show (they start and end their
+                    // box) but keep the heading's text "source → target".
+                    <span className="shrink-0" style={{ marginLeft: "0.3em" }}>
+                      {" → "}
+                    </span>
+                  )}
                 </span>
-              )}
-              {" → "}
-              {sel.target}
-              {sampleName(metadata, sel.target) && (
-                <span
-                  className="text-[18px] ml-2"
-                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                >
-                  ({sampleName(metadata, sel.target)})
-                </span>
-              )}
-            </>
+              ))}
+            </span>
           }
         />
 
@@ -17543,7 +17427,7 @@ const ValidateTab = ({
             ) : (
               <div
                 className="p-4 text-[13px] rounded-sm"
-                style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "#8a2422" }}
+                style={{ background: "var(--bg-alert)", border: "1px solid #ed6e6c", color: "var(--ink-alert)" }}
               >
                 Open <code>species_abundance.tsv</code> to see the plot and
                 enable diagnostic checks.
@@ -17672,12 +17556,15 @@ const ValidateTab = ({
                     style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
                   >
                     {sel.introduced.slice(0, 80).map((s, i) => {
-                      const active = pickedSpecies.includes(s);
+                      // Pin the table's name: the plotted point is "001" when
+                      // CroCoDeEL wrote "1" (see matchSpeciesName).
+                      const sp = matchSpeciesName(ab, s) ?? s;
+                      const active = pickedSpecies.includes(sp);
                       return (
                         <button
                           key={i}
                           type="button"
-                          onClick={() => togglePickedSpecies(s)}
+                          onClick={() => togglePickedSpecies(sp)}
                           title={
                             active
                               ? "Click to unpin this species in the plot"
@@ -17765,14 +17652,17 @@ const ValidateTab = ({
                       <HelpCircle className="w-3 h-3" />
                     </button>
                   </div>
-                  {autoScore.total > 0 && (
+                  {/* The grade comes from automaticScore — never re-derived
+                      here — so "not evaluable" (a sample missing from the
+                      abundance table) cannot fall through to a fail. */}
+                  {autoScore.grade !== "not_evaluable" && (
                     <div
                       className="text-[11px] mt-0.5"
                       style={{
                         color:
-                          autoScore.good === autoScore.total
+                          autoScore.grade === "contaminated"
                             ? EVAL_TP_COLOR
-                            : autoScore.good >= Math.ceil(autoScore.total * 0.6)
+                            : autoScore.grade === "possibly_not"
                               ? "#d97a3c"
                               : EVAL_FP_COLOR,
                         fontWeight: 700,
@@ -17780,23 +17670,73 @@ const ValidateTab = ({
                         letterSpacing: "0.02em",
                       }}
                     >
-                      {autoScore.good === autoScore.total
+                      {autoScore.grade === "contaminated"
                         ? "CONTAMINATED — CroCoDeEL is probably right"
-                        : autoScore.good >= Math.ceil(autoScore.total * 0.6)
+                        : autoScore.grade === "possibly_not"
                           ? "POSSIBLY NOT CONTAMINATED — use CroCoDeEL's call with prudence"
                           : "PROBABLY NOT CONTAMINATED — review carefully before validating"}
                     </div>
                   )}
+                  {autoScore.grade === "not_evaluable" && scatter?.error && (
+                    <div
+                      className="text-[11px] mt-0.5"
+                      style={{
+                        color: "var(--ink-muted)",
+                        fontWeight: 700,
+                        fontFamily: '"Raleway", sans-serif',
+                        letterSpacing: "0.02em",
+                      }}
+                    >
+                      NOT EVALUABLE — sample missing from the abundance table
+                    </div>
+                  )}
+                  {/* Which table the grade comes from, whenever the run
+                      filtered: switched off (saved with the session),
+                      the grades are no longer those of the run's table. */}
+                  {lowAbFactor != null && autoScore.grade !== "not_evaluable" && (
+                    <div
+                      className="text-[10px] mt-0.5"
+                      style={{ color: "var(--ink-muted)" }}
+                      title="Also switched in Overview › Run parameters."
+                    >
+                      {lowAbPending != null
+                        ? "Recomputing the diagnostics…"
+                        : lowAbOn
+                          ? `After CroCoDeEL's low-abundance filter (${lowAbFactor}×), as in the run`
+                          : `Low-abundance filter (${lowAbFactor}×) switched off — diagnostics on the table as loaded, unlike the run`}{" "}
+                      <button
+                        type="button"
+                        data-low-ab-switch=""
+                        onClick={() => switchLowAb(!lowAbOn)}
+                        disabled={lowAbPending != null}
+                        className="underline"
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          color: "inherit",
+                          font: "inherit",
+                          cursor: lowAbPending != null ? "default" : "pointer",
+                        }}
+                        title={
+                          lowAbOn
+                            ? "Compute the diagnostics on the abundance table as loaded, unlike the CroCoDeEL run"
+                            : `Apply CroCoDeEL's low-abundance filter (${lowAbFactor}×) to the diagnostics, as in the run`
+                        }
+                      >
+                        {lowAbOn ? "switch off" : "switch on"}
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {autoScore.total > 0 && (
+                {autoScore.grade !== "not_evaluable" && (
                   <div
                     className="tabular shrink-0"
                     style={{
                       color:
-                        autoScore.good === autoScore.total
+                        autoScore.grade === "contaminated"
                           ? EVAL_TP_COLOR
-                          : autoScore.good >=
-                              Math.ceil(autoScore.total * 0.6)
+                          : autoScore.grade === "possibly_not"
                             ? "#d97a3c"
                             : EVAL_FP_COLOR,
                       fontFamily: '"Raleway", sans-serif',
@@ -17828,8 +17768,13 @@ const ValidateTab = ({
                 </div>
               )}
               {autoScore.reasons.length === 0 && (
-                <div className="text-[12px]" style={{ color: "var(--ink-muted)" }}>
-                  Open the abundance table to compute.
+                <div
+                  className="text-[12px]"
+                  style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+                >
+                  {scatter?.error
+                    ? `${scatter.error}, so none of the checks below can be computed for this pair — it is neither a pass nor a fail. Expected after a CroCoDeEL -s2 run when only one of its two abundance tables is loaded.`
+                    : "Open the abundance table to compute."}
                 </div>
               )}
               {(() => {
@@ -17895,6 +17840,23 @@ const ValidateTab = ({
                 // `null` (not evaluated, or evaluated-inconclusive) renders
                 // the neutral grey state Criterion already handles.
                 const passFor = (key) => reasonFor(key)?.ok ?? null;
+                // A pair whose source or target is missing from the loaded
+                // table is "not evaluable" — the table is there, the
+                // sample is not.
+                const naValue = scatter?.error
+                  ? "not evaluable — sample missing from the abundance table"
+                  : "abundance table required";
+                // With the table loaded and both samples in it, a value can
+                // still be missing: R² and the spread need two species on
+                // the line, ρ three species in the pair, the points above
+                // the line a line to measure from (a rate above 0). These
+                // cards read "abundance table required", as if the table
+                // were not loaded; they now say what is missing.
+                const pairOk = !!scatter && !scatter.error;
+                const lineNaValue =
+                  pairOk && diag && diag.n < 2
+                    ? `${diag.n === 1 ? "Only 1 species" : "No species"} on the line — at least 2 needed`
+                    : naValue;
                 return (
               <div className="mt-4">
                 <Criterion
@@ -17905,7 +17867,7 @@ const ValidateTab = ({
                   value={
                     diag?.r2 != null
                       ? `R² = ${diag.r2.toFixed(3)}`
-                      : "abundance table required"
+                      : lineNaValue
                   }
                   summary={summaryFor("r2")}
                 />
@@ -17915,7 +17877,7 @@ const ValidateTab = ({
                   wiki="More than 10 species expected. Below this threshold the alignment may be statistical noise."
                   pass={passFor("n")}
                   value={
-                    diag?.n != null ? `${diag.n} species` : "abundance table required"
+                    diag?.n != null ? `${diag.n} species` : naValue
                   }
                   summary={summaryFor("n")}
                 />
@@ -17927,7 +17889,7 @@ const ValidateTab = ({
                   value={
                     diag?.decadeRange != null
                       ? `${diag.decadeRange.toFixed(1)} decades`
-                      : "abundance table required"
+                      : lineNaValue
                   }
                   summary={summaryFor("decade")}
                 />
@@ -18005,7 +17967,7 @@ const ValidateTab = ({
                                 : missing.pValue.toExponential(1)
                             }, expected ≈ ${missing.expectedMissing.toFixed(1)})`
                           : `${missing.count} / ${missing.evaluated} missing`
-                      : "abundance table required"
+                      : naValue
                   }
                   summary={summaryFor("missing")}
                 />
@@ -18023,17 +17985,31 @@ const ValidateTab = ({
                           : sel?.cascade
                             ? `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)} — cascade explains)`
                             : `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)})`
-                      : "abundance table required"
+                      : pairOk && scatter.logC == null
+                        ? // parseEvents keeps a rate out of (0, 1] as read,
+                          // with a warning: a negative one is not "0".
+                          sel.rate < 0
+                          ? `No contamination line — the event's rate (${(sel.rate * 100).toFixed(1)}%) is below 0`
+                          : "No contamination line — the event's rate is 0"
+                        : naValue
                   }
                   summary={summaryFor("above")}
                 />
                 <Criterion
                   n="06"
                   title="Biological similarity (ρ × relatedness)"
-                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
+                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ is CroCoDeEL's own: over every species of the table, those absent from both samples included, as printed above each plot of its PDF report. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects that share no group passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
                   pass={passFor("biosim")}
                   value={(() => {
-                    if (diag?.spearman == null) return "abundance table required";
+                    if (diag?.spearman == null) {
+                      // ρ ranks every species of the table, but means
+                      // nothing with fewer than 3 present in either sample
+                      // (the points of the scatter).
+                      const n = scatter?.points?.length ?? 0;
+                      return pairOk
+                        ? `${n === 1 ? "Only 1 species" : n === 0 ? "No species" : `Only ${n} species`} in source and target — ρ needs at least 3`
+                        : naValue;
+                    }
                     const rhoText = `ρ = ${diag.spearman.toFixed(2)}`;
                     const high = diag.spearman >= 0.7;
                     const isRelated =
@@ -18193,66 +18169,60 @@ const ValidateTab = ({
                           <div>
                             <div className="flex items-center gap-2 mb-1">
                               <span
-                                className="w-2 h-2 rounded-full"
+                                className="w-2 h-2 rounded-full shrink-0"
                                 style={{ background: "#00a3a6" }}
                               />
-                              <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>
+                              <span
+                                className="shrink-0"
+                                style={{ color: "var(--ink-muted)", fontSize: 11 }}
+                              >
                                 source
                               </span>
-                              <span
-                                style={{
+                              <SampleIdName
+                                id={sel.source}
+                                name={sampleName(metadata, sel.source)}
+                                className="min-w-0"
+                                idStyle={{
                                   color: "var(--ink)",
                                   fontWeight: 600,
                                   fontFamily: '"Raleway", sans-serif',
                                 }}
-                              >
-                                {sel.source}
-                              </span>
-                              {sampleName(metadata, sel.source) && (
-                                <span
-                                  style={{
-                                    color: "var(--ink-muted)",
-                                    fontSize: 11,
-                                    fontFamily: '"Raleway", sans-serif',
-                                  }}
-                                  title={sampleName(metadata, sel.source)}
-                                >
-                                  ({sampleName(metadata, sel.source)})
-                                </span>
-                              )}
+                                nameStyle={{
+                                  color: "var(--ink-muted)",
+                                  fontSize: 11,
+                                  fontFamily: '"Raleway", sans-serif',
+                                }}
+                              />
                             </div>
                             <SampleFlags flags={flagSample(sel.source, metadata)} />
                           </div>
                           <div>
                             <div className="flex items-center gap-2 mb-1">
                               <span
-                                className="w-2 h-2 rounded-full"
+                                className="w-2 h-2 rounded-full shrink-0"
                                 style={{ background: "#ed6e6c" }}
                               />
-                              <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>
+                              <span
+                                className="shrink-0"
+                                style={{ color: "var(--ink-muted)", fontSize: 11 }}
+                              >
                                 target
                               </span>
-                              <span
-                                style={{
+                              <SampleIdName
+                                id={sel.target}
+                                name={sampleName(metadata, sel.target)}
+                                className="min-w-0"
+                                idStyle={{
                                   color: "var(--ink)",
                                   fontWeight: 600,
                                   fontFamily: '"Raleway", sans-serif',
                                 }}
-                              >
-                                {sel.target}
-                              </span>
-                              {sampleName(metadata, sel.target) && (
-                                <span
-                                  style={{
-                                    color: "var(--ink-muted)",
-                                    fontSize: 11,
-                                    fontFamily: '"Raleway", sans-serif',
-                                  }}
-                                  title={sampleName(metadata, sel.target)}
-                                >
-                                  ({sampleName(metadata, sel.target)})
-                                </span>
-                              )}
+                                nameStyle={{
+                                  color: "var(--ink-muted)",
+                                  fontSize: 11,
+                                  fontFamily: '"Raleway", sans-serif',
+                                }}
+                              />
                             </div>
                             <SampleFlags flags={flagSample(sel.target, metadata)} />
                           </div>
@@ -18298,12 +18268,15 @@ const ValidateTab = ({
                   style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
                 >
                   {sel.introduced.slice(0, 80).map((s, i) => {
-                    const active = pickedSpecies.includes(s);
+                    // Pin the table's name: the plotted point is "001" when
+                    // CroCoDeEL wrote "1" (see matchSpeciesName).
+                    const sp = matchSpeciesName(ab, s) ?? s;
+                    const active = pickedSpecies.includes(sp);
                     return (
                       <button
                         key={i}
                         type="button"
-                        onClick={() => togglePickedSpecies(s)}
+                        onClick={() => togglePickedSpecies(sp)}
                         title={
                           active
                             ? "Click to unpin this species in the plot"
@@ -18424,9 +18397,14 @@ const ValidateTab = ({
                     {SAMPLE_VERDICT_OPTIONS.map((v) => {
                       const tone = SAMPLE_VERDICT_TONE[v.id] || {};
                       const accent = tone.bg || "var(--border-strong)";
-                      const active =
-                        (sampleCuration?.[sel.target]?.verdict || "pending") ===
-                        v.id;
+                      // Same chips as in the other views: an automatic
+                      // verdict is lighter, dashed and tagged auto.
+                      const chip = sampleVerdictChip(
+                        sel.target,
+                        sampleCuration?.[sel.target],
+                        v.id,
+                      );
+                      const active = chip.active;
                       return (
                         <button
                           key={v.id}
@@ -18435,13 +18413,23 @@ const ValidateTab = ({
                             setSampleVerdict &&
                             setSampleVerdict(sel.target, v.id)
                           }
-                          title={`Tag the target sample (${sel.target}) as ${tone.label}`}
+                          data-verdict-chip={v.id}
+                          title={
+                            chip.title ||
+                            `Tag the target sample (${sel.target}) as ${tone.label}`
+                          }
                           className="px-3 py-1 text-[11px] rounded-sm flex items-center gap-1.5"
                           style={{
-                            background: active ? accent : "var(--bg-card)",
+                            background: active
+                              ? chip.auto
+                                ? `${accent}b3`
+                                : accent
+                              : "var(--bg-card)",
                             color: active ? "#fff" : "var(--ink)",
                             border: active
-                              ? "1px solid transparent"
+                              ? chip.auto
+                                ? `1px dashed ${accent}`
+                                : "1px solid transparent"
                               : "1px solid var(--border-strong)",
                             fontWeight: 700,
                             fontFamily: '"Raleway", sans-serif',
@@ -18450,12 +18438,19 @@ const ValidateTab = ({
                           }}
                         >
                           {tone.label || v.label}
+                          {chip.auto ? " · auto" : ""}
                         </button>
                       );
                     })}
                   </div>
                 </div>
-                {sampleCuration?.[sel.target]?.verdict === "contaminated" && (
+                {/* Offered once the target is Contaminated, and shown
+                    whenever an action is set: a Suppress on a target
+                    that is not Contaminated still drops it from the
+                    curated table (flagged). Same chips as elsewhere
+                    (sampleActionChip). */}
+                {(sampleCuration?.[sel.target]?.verdict === "contaminated" ||
+                  sampleCuration?.[sel.target]?.action) && (
                   <div>
                     <div
                       className="text-[10px] tracking-[0.15em] uppercase mb-2"
@@ -18480,23 +18475,32 @@ const ValidateTab = ({
                           hint: "Drop this contaminated sample from downstream analyses. Keyboard shortcut: S.",
                         },
                       ].map((opt) => {
-                        const active =
-                          sampleCuration?.[sel.target]?.action === opt.id;
+                        const chip = sampleActionChip(
+                          sel.target,
+                          sampleCuration[sel.target],
+                          opt.id,
+                        );
+                        const active = chip.active;
                         const Icon = opt.Icon;
                         return (
                           <button
                             key={opt.id}
                             type="button"
-                            onClick={() => setAction(sel.id, opt.id)}
-                            title={opt.hint}
+                            onClick={() => setAction(sel.id, chip.next)}
+                            title={active ? chip.title : opt.hint}
+                            aria-label={chip.ariaLabel}
                             className="px-3 py-1 text-[11px] rounded-sm flex items-center gap-1.5"
                             style={{
                               background: active
-                                ? opt.color
+                                ? chip.auto
+                                  ? `${opt.color}b3`
+                                  : opt.color
                                 : "var(--bg-card)",
                               color: active ? "#fff" : "var(--ink)",
                               border: active
-                                ? "1px solid transparent"
+                                ? chip.auto
+                                  ? `1px dashed ${opt.color}`
+                                  : "1px solid transparent"
                                 : "1px solid var(--border-strong)",
                               fontWeight: 700,
                               fontFamily: '"Raleway", sans-serif',
@@ -18505,9 +18509,14 @@ const ValidateTab = ({
                           >
                             <Icon className="w-3.5 h-3.5" />
                             {opt.label}
+                            {chip.auto ? " · auto" : ""}
                           </button>
                         );
                       })}
+                      {sampleCuration[sel.target].action === "suppress" &&
+                        sampleCuration[sel.target].verdict !== "contaminated" && (
+                          <SuppressedNotContaminatedFlag />
+                        )}
                     </div>
                   </div>
                 )}
@@ -18666,7 +18675,7 @@ const HelpCol = ({ name, required, recognized, type, desc, aliases, example }) =
             className="text-[10px] px-1.5 rounded-sm"
             style={{
               background: "rgba(237,110,108,0.2)",
-              color: "#8a2422",
+              color: "var(--ink-alert)",
               fontWeight: 700,
             }}
           >
@@ -20665,9 +20674,107 @@ const HelpTab = ({ onStartTour }) => {
             }}
           >
             <p className="mb-2" style={{ color: "var(--ink)", fontWeight: 600 }}>
-              All files are TSV (tab-separated). Column names are matched
-              case-insensitively and many aliases are accepted — see each
-              file's section below for details.
+              All files are TSV (tab-separated); a comma- or
+              semicolon-separated file is refused, saying so. Column names
+              are matched case-insensitively and many aliases are accepted
+              — see each file's section below for details. In the metadata
+              and the plate map a header must match a name exactly,
+              ignoring case, spaces, underscores, hyphens and dots.
+            </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              Numbers use a dot as decimal separator (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>0.87</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>1.2e-05</code>
+              ), and the whole cell must be a number: a spreadsheet saved
+              with a decimal comma (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>0,87</code>
+              ) is refused or reported instead of being silently misread.
+              An empty cell, or NA / N/A / NaN / null / None / -, means "no
+              value".
+            </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              Lines starting with{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              are comments, as in CroCoDeEL: above the header, and below it
+              too (a row commented out). The header line itself must not
+              start with one. When the line read as the header is not one —
+              a row of numbers in the abundance table, no sample id column in
+              the metadata or the plate map — and a{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line above it is, as in a table written by{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>biom convert</code>{" "}
+              (<code style={{ fontFamily: "ui-monospace, monospace" }}>#OTU ID</code>),
+              mOTUs (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#consensus_taxonomy</code>
+              ) or a QIIME mapping file (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#SampleID</code>
+              ), the file is refused, naming the line to fix. CroCoDeEL skips
+              that line too and takes the first data row for the header, so
+              remove the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              before running CroCoDeEL on the table and loading it here.
+              An abundance header whose sample ids are numbers reads as a
+              row of numbers too: when its first cell names the species
+              column (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>species</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>OTU_ID</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>clade_name</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>id_mgs</code>
+              …, or the first cell of the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line), the table is read as CroCoDeEL reads it and the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line is named in a warning; otherwise the message also says
+              to delete the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              line if the line under it is the header.
+              An empty header cell is named{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>Unnamed: N</code>{" "}
+              (N its column, counted from 0), as CroCoDeEL names it; one at
+              the end of the header line with no value under it is ignored.
+              In the abundance table a{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              inside a line starts a comment too (outside a quoted cell), as
+              CroCoDeEL reads that table (pandas,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>comment="#"</code>
+              ), and a warning names the first line cut. Every file the
+              interpreter writes quotes a cell that holds a{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              (as R's write.table quotes its ids), so an id such as{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>Plate#1_A01</code>{" "}
+              loads back whole, here and in CroCoDeEL.
+            </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              A sample or species id that names a property every JavaScript
+              object has (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>__proto__</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>constructor</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>toString</code>,{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>valueOf</code>
+              …) cannot be kept in the tables of this interface: a file or a
+              session holding one is refused, naming it. Rename it in every
+              file.
+            </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              Sample ids are shown as your files write them. An id too
+              long for its place — a 150-character LIMS id, say — is cut
+              with an ellipsis: hover it to read it whole. The Samples tab
+              and the Events table give their id columns the width of
+              their longest id or name before widening any other column,
+              as long as the table fits the page's content column. Past
+              that an id wraps
+              onto more lines, at its separators (<code>_</code>,{" "}
+              <code>-</code>, <code>/</code>, <code>:</code>, before an
+              extension such as <code>.metaphlan4</code>), never narrower
+              than 12 characters; an id of up to 64 characters is never
+              cut there, so two ids never read the same, and a longer one
+              is cut after four lines. A sample's name stays on one line
+              under its id, cut first. On a{" "}
+              <em>source → target</em> line, the source keeps its width as
+              long as the target keeps a few characters; a sample's name is
+              cut before its id. The Guided validation header puts the
+              target on a second line rather than cut it, and selecting an
+              id there copies all of it.
             </p>
             <p style={{ color: "var(--ink-muted)" }}>
               Files are parsed entirely in your browser. Nothing is sent
@@ -20691,6 +20798,13 @@ const HelpTab = ({ onStartTour }) => {
               key: value | …
             </code>{" "}
             format — these are parsed and shown in the Overview tab.
+            Blank lines (even of spaces or tabs) are ignored, and a row
+            without a source or a target is skipped. What the reader
+            reports about the file — rows skipped, rates or probabilities
+            out of range, verdicts or actions it does not recognise — is
+            listed in the <em>Check the input files</em> banner under the
+            file cards, with the metadata and plate-map warnings, and kept
+            with the session until the file is replaced or cleared.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -20734,14 +20848,14 @@ const HelpTab = ({ onStartTour }) => {
                 name="rate"
                 required
                 type="float [0..1]"
-                desc="Estimated proportion of the contaminated sample that originates from the source."
+                desc="Estimated proportion of the contaminated sample that originates from the source. A value that is not a number (e.g. 0,41 written with a decimal comma) refuses the whole file, naming the row; an empty or NA cell reads as 0. A value outside (0, 1] is kept as read: check that the rates are fractions, not percentages."
                 aliases={["contamination_rate"]}
               />
               <HelpCol
                 name="probability"
                 required
                 type="float [0..1]"
-                desc="CroCoDeEL Random-Forest probability that the event is real. Older CroCoDeEL outputs may write this value into a column named `score` instead — both are accepted; the first non-empty value is used."
+                desc="CroCoDeEL Random-Forest probability that the event is real. Older CroCoDeEL outputs may write this value into a column named `score` instead — both are accepted; the first value that is neither empty nor NA is used. Read as strictly as the rate; a value outside [0, 1] is kept as read."
                 aliases={["score", "rf_score", "proba"]}
               />
               <HelpCol
@@ -20751,8 +20865,102 @@ const HelpTab = ({ onStartTour }) => {
                 desc="Species detected in the contaminated sample that are most likely introduced from the source. Listed in the events table."
                 aliases={["introduced_species", "species_specifically_introduced", "species"]}
               />
+              <HelpCol
+                name="verdict"
+                recognized
+                type="TP / FP / U / pending"
+                desc="Not in CroCoDeEL's output: written by the curated events TSV of the Export tab, so that reloading that file restores the event evaluations instead of resetting them to pending. Accepts true_positive, false_positive, uncertain, pending, TP, FP, U and 'true positive' / 'false positive', in any case; anything else reads as pending."
+                aliases={["evaluation"]}
+              />
+              <HelpCol
+                name="notes"
+                recognized
+                type="string"
+                desc="Curator notes, restored with the verdicts when the curated events TSV is reloaded — on one line: the TSV holds no line breaks or tabs (the session JSON keeps them)."
+                aliases={["note", "comment", "comments"]}
+              />
+              <HelpCol
+                name="sample_verdict"
+                recognized
+                type="contaminated / correct / uncertain"
+                desc="The target sample's verdict in the curated events TSV (correct is Not contaminated; empty: none). Restored on the target when all its rows give the same one: as your own value where it differs from the automatic one — a Not contaminated or Uncertain you set although a true positive targets the sample, which then stays in the curated table."
+              />
+              <HelpCol
+                name="action"
+                recognized
+                type="keep / suppress"
+                desc="The target sample's action in the curated events TSV. Restored on the target when all its rows give the same keep / suppress: as your own value where it differs from the automatic one (a Keep on a contaminated sample, a Suppress on one that is not)."
+              />
+              <HelpCol
+                name="origin"
+                recognized
+                type="manual / empty"
+                desc="manual for an event you added by hand (Explore new pairs) in the curated events TSV: reloaded, it is yours again, so a later CroCoDeEL file without its pair keeps it."
+              />
             </tbody>
           </table>
+          <p>
+            These columns are matched exactly (ignoring case,
+            spaces, underscores, hyphens and dots), never as part of a
+            longer header: an{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>extraction_batch</code>{" "}
+            column is not an action. Reloading the curated events TSV
+            restores the event evaluations, their notes, the events added
+            by hand and the targets' verdicts and keep / suppress actions,
+            so an export reloaded into an empty session gives back the same
+            counts and the same curated abundance table, unless a sample no
+            event targets has a verdict or an action of its own. A curated file of
+            an earlier version holds no target verdicts: a target with a
+            true-positive event and no action in it comes back suppressed,
+            and the banner names those targets. What the file does not
+            hold — the notes of the samples, the verdict and the action of
+            a sample no event targets — only the session JSON (Download
+            session) keeps. Its{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}># study: …</code>{" "}
+            line names the study when the session has none yet; it is not a
+            run parameter. An events file without CroCoDeEL's run header,
+            carried over into a session, leaves the session's run
+            parameters in place, and so the same diagnostics, cutoffs and
+            low-abundance setting.
+          </p>
+          <p>
+            <strong style={{ color: "var(--ink)" }}>Replacing the events
+            file.</strong>{" "}
+            Loading another events file — with the card's Replace button, by
+            dropping it on the card, or from the in-browser CroCoDeEL run —
+            into a session that holds curation asks first.{" "}
+            <em>Carry over</em> (the default) keeps the evaluation and notes
+            of every event whose source and target are in the new file
+            (repeated pairs are matched in file order), the events you
+            added by hand (Explore new pairs: no CroCoDeEL file holds them)
+            — still yours when the new file has their pair, so that a later
+            file without it keeps them too — and the sample
+            verdicts, actions and notes you set for the samples still
+            present (in the new events or the abundance table); the
+            automatic sample values are then recomputed from the new events.
+            Your other events that the new file does not have are dropped:
+            the question says beforehand how many, and how many of them are
+            evaluated or annotated.{" "}
+            <em>Start fresh</em> drops all of it; <em>Cancel</em> keeps the
+            session as it is. When the new file has its own evaluations,
+            notes or actions (a curated events TSV), they win over yours; an
+            empty cell never erases one. A banner then says what was kept,
+            restored, added and dropped. Clearing the events file asks too,
+            and says the curation goes with it.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            The curated events TSV starts with CroCoDeEL's five columns,
+            under the names above and with CroCoDeEL's own number
+            formatting, so CroCoDeEL reads it back too (to plot the curated
+            events with <code style={{ fontFamily: "ui-monospace, monospace" }}>plot_conta</code>,
+            say); introduced_pct, verdict, action, notes, sample_verdict
+            and origin follow. A
+            curated file exported by an earlier version, whose columns were
+            named{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>contamination_rate</code> and{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>introduced_species</code>,
+            still loads here.
+          </p>
         </HelpSection>
 
         {/* ---------- species_abundance.tsv ---------- */}
@@ -20778,8 +20986,48 @@ const HelpTab = ({ onStartTour }) => {
           </p>
           <p>
             Format: first column lists species names, every other column is a
-            sample. The parser normalizes each sample column to relative
-            abundances summing to 1.
+            sample. A header with one cell fewer than the rows — R's{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>write.table</code>{" "}
+            writes no cell above the row names — names samples only: the
+            first cell of each row is then its species, as CroCoDeEL
+            (pandas) reads it, the card says so and the downloads keep that
+            layout. Rows that end with one tab more than the header line (an
+            empty cell under no header) are read as the header says, with a
+            warning: CroCoDeEL reads such a table as one without a species
+            cell and names every sample one column off, so run it again on
+            the table without those tabs. A tab at the end of every line,
+            the header's included, under a header that starts with a sample
+            (R's layout saved from a spreadsheet with an empty last column)
+            shifts nothing: CroCoDeEL reads it right, and so does the
+            interpreter. A table CroCoDeEL cannot read at all (pandas stops
+            on a first row two cells or more longer than the header, or on
+            a later row longer than every line above it) still loads, with
+            a warning naming that line, and cells past the header are left
+            out; R's layout whose rows end with tabs its header line lacks
+            is read without a cell above the species. The parser normalizes each sample
+            column to relative abundances summing to 1 for the plots and the
+            checks, and keeps each column's total: the card's Download and the curated
+            abundance export write the file's own values back (counts stay
+            counts). Each sample column and each species row
+            must appear once: a table repeating one is refused, with the
+            repeated names. A table with a header but no species rows is
+            refused too.
+          </p>
+          <p>
+            Empty and NA cells read as 0. A cell that is not a number (for
+            instance <code style={{ fontFamily: "ui-monospace, monospace" }}>0,87</code>{" "}
+            from a spreadsheet using a decimal comma) or that is negative also
+            reads as 0, and the number of such cells is reported in the{" "}
+            <em>Check the input files</em> banner, with the first one as an
+            example.
+          </p>
+          <p>
+            The events file must name species exactly as this table does,
+            with one exception CroCoDeEL itself causes: when every species
+            name is an integer (say <code>001</code>), it reads them as
+            numbers and writes <code>1</code> in its events. Such a name is
+            matched to the table's <code>001</code> when no other species
+            of the table is the same integer.
           </p>
         </HelpSection>
 
@@ -20797,6 +21045,37 @@ const HelpTab = ({ onStartTour }) => {
             . Five columns are <em>recognized</em> and trigger dedicated
             features (pills, criteria). Any other column is shown as a generic
             "key: value" pill in the Sample context panel.
+          </p>
+          <p>
+            A header is recognized when it matches a column name or one of
+            its aliases exactly, ignoring case, spaces, underscores, hyphens
+            and dots:{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>Subject ID</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>subject-id</code>{" "}
+            and{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>SubjectID</code>{" "}
+            all read as subject_id. A header that merely contains a name is
+            not:{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>age_group</code>{" "}
+            or{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>host_age</code>{" "}
+            stay context columns, so they cannot make two different
+            subjects look related. A file without a recognized sample_id
+            column is refused, with the accepted names and the file's own
+            headers. One without a recognized subject_id column loads
+            with a warning that lists them too: its biome, control and
+            low-biomass flags are read, but no two samples count as the
+            same subject. Once loaded, the metadata card lists the
+            header read for each field. A sample_id found on more than one
+            row keeps its first row; the card names the repeated ids. Its
+            Download button writes the table back under the canonical names
+            (a <code style={{ fontFamily: "ui-monospace, monospace" }}>patient</code>{" "}
+            column becomes subject_id), other columns unchanged, so the file
+            reloads with the same subjects, groups and flags. Metadata kept
+            by a session saved with an earlier version, which matched
+            headers more loosely, is read again with these rules when the
+            session is reopened or imported; the card then says which field
+            changed column.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -20827,7 +21106,7 @@ const HelpTab = ({ onStartTour }) => {
                 required
                 type="string"
                 desc="Unique sample identifier — must match samples used in events and abundance files."
-                aliases={["sample", "sampleid", "id"]}
+                aliases={["sample", "id"]}
                 example={`sample_id\n40D89\n58M\n58D7\nNC3\n83D239`}
               />
               <HelpCol
@@ -20835,15 +21114,25 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Optional human-readable label for the sample. When present, surfaces alongside the canonical sample_id wherever a sample is named (events table, scatter cards, Guided validation header, sample-context panel). Purely cosmetic — the sample_id remains the join key."
-                aliases={["name", "display_name", "displayname", "label", "alias"]}
+                aliases={["name", "display_name", "label", "alias"]}
                 example={`sample_id   sample_name\n40D89       Patient40_D89\n58M         Mother_58\n58D7        Infant_58_D7\nNC3         Negative_ctrl_3\n83D239      Patient83_D239`}
               />
               <HelpCol
                 name="subject_id"
                 recognized
                 type="string"
-                desc="Person / individual the sample belongs to. Two samples sharing a subject_id trigger the 'same subject' criterion (longitudinal pair, often a false-positive risk)."
-                aliases={["subject", "subjectid", "patient_id", "patient", "host", "individual"]}
+                desc="Person / individual the sample belongs to. Two samples sharing a subject_id trigger the 'same subject' criterion (longitudinal pair, often a false-positive risk). A column named host is not read as the subject: in MIxS / NCBI BioSample metadata it holds the host organism (e.g. Homo sapiens); the subject there is host_subject_id. Without a subject column the file still loads, with a warning, and no two samples count as the same subject."
+                aliases={[
+                  "subject",
+                  "host_subject_id",
+                  "patient_id",
+                  "patient",
+                  "individual_id",
+                  "individual",
+                  "participant_id",
+                  "participant",
+                  "host_id",
+                ]}
                 example={`sample_id  subject_id\n58D7       58\n58D28      58\n60D38      60\nNC3        NC3\n58M        M58`}
               />
               <HelpCol
@@ -20851,7 +21140,7 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Time-of-collection label (e.g. 'D0', 'week2'). Shown as a calendar pill."
-                aliases={["time_point", "time", "day", "week", "visit"]}
+                aliases={["time", "day", "week", "visit"]}
                 example={`sample_id  timepoint\n58D0       D0\n58D7       D7\n58D28      D28\n58D43      D43\n58D382     D382`}
               />
               <HelpCol
@@ -20859,7 +21148,7 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="string"
                 desc="Biological compartment (e.g. 'infant gut', 'maternal gut', 'skin', 'control'). Shown as a beaker pill. Values containing 'control', 'blank' or 'negative' (case-insensitive) automatically tag the sample as a negative control (red shield pill)."
-                aliases={["body_site", "bodysite", "tissue", "sample_site"]}
+                aliases={["body_site", "tissue", "sample_site"]}
                 example={`sample_id  biome\n58D7       infant gut\n58M        maternal gut\nNC3        control\n83D239     infant gut\n40M        maternal gut`}
               />
               <HelpCol
@@ -20867,7 +21156,7 @@ const HelpTab = ({ onStartTour }) => {
                 recognized
                 type="bool"
                 desc="True/false flag for low-biomass samples (more vulnerable to contamination, per Lou et al. 2023). Shown as a droplet pill. Accepted values: true/1/yes or false/0/no."
-                aliases={["is_low_biomass", "lowbiomass"]}
+                aliases={["is_low_biomass"]}
                 example={`sample_id  low_biomass\n69D4       true\n72D6       true\nNC3        true\n58D43      false\n58M        false`}
               />
               <HelpCol
@@ -20877,7 +21166,6 @@ const HelpTab = ({ onStartTour }) => {
                 desc="True/false flag for samples with low sequencing depth (sparser abundance profiles, weaker contamination signal). Shown as an activity pill. Accepted values: true/1/yes or false/0/no."
                 aliases={[
                   "is_low_sequencing_depth",
-                  "lowsequencingdepth",
                   "low_seq_depth",
                   "low_depth",
                 ]}
@@ -20887,9 +21175,8 @@ const HelpTab = ({ onStartTour }) => {
                 name="group_id"
                 recognized
                 type="string"
-                desc="Generic group identifier — could be a family, cage, household, etc. Two samples sharing a group_id trigger the 'same group' criterion in Guided validation."
+                desc="Generic group identifier — could be a family, cage, household, etc. Two samples sharing a group_id trigger the 'same group' criterion in Guided validation. A column named just group is not read as group_id: in study metadata it is usually the experimental arm (case / control), whose samples are not related."
                 aliases={[
-                  "group",
                   "related_group_id",
                   "related_group",
                   "family_id",
@@ -20959,7 +21246,22 @@ const HelpTab = ({ onStartTour }) => {
           eyebrow="Optional input"
           title="plate_map.tsv"
         >
-          <p>Three columns: sample id, plate name, well coordinate.</p>
+          <p>
+            Two columns are mandatory: sample id and well coordinate — or,
+            instead of the well, its row and column in two columns. A plate
+            name column is optional: without it every sample is placed on
+            one plate, P1. Headers
+            are matched like the metadata's: exactly, ignoring case, spaces,
+            underscores, hyphens and dots. A sample placed on more than one
+            row keeps its first well; the plate map card names the repeated
+            ids. It also says when two samples share a well. A file without
+            a plate column is read as a single plate, P1 (the card's column
+            line then lists no plate): that is the usual one-plate study, so
+            the card warns about it only when the file suggests several
+            plates — a header containing "plate" that is not one of the
+            names below, or two samples in one well — since samples of
+            different plates would then look adjacent.
+          </p>
           <table className="w-full text-left mt-3">
             <thead>
               <tr style={{ borderBottom: "2px solid #275662" }}>
@@ -20979,17 +21281,32 @@ const HelpTab = ({ onStartTour }) => {
               />
               <HelpCol
                 name="plate"
-                required
+                recognized
                 type="string"
-                desc="Plate name or identifier."
-                aliases={["plate_id", "plateid"]}
+                desc="Plate name or identifier. Without it every sample is placed on one plate, P1."
+                aliases={["plate_id", "plate_name", "plate_number", "plate_no", "plate_barcode"]}
               />
               <HelpCol
                 name="well"
                 required
                 type="A01..H12 or A01..P24"
-                desc="Well coordinate. Both 96-well and 384-well plates are supported. Letter-then-number, e.g. 'A01', 'B7', 'P24'."
-                aliases={["position", "well_id", "pos"]}
+                desc="Well coordinate. Both 96-well and 384-well plates are supported. Letter-then-number, e.g. 'A01', 'B7', 'P24'. A file can give row and column instead, in place of the well column or for the rows whose well cell is empty. Rows whose well cannot be read are skipped, and counted on the plate map card; a file that places no sample at all is refused."
+                aliases={["well_position", "position", "well_id", "pos"]}
+              />
+              <HelpCol
+                name="row"
+                recognized
+                type="A..P or 1..16"
+                desc="Instead of well: the well's row, as a letter or its 1-based number. Read together with column, for a file without a well column or a row whose well cell is empty; a filled well cell wins."
+                aliases={["well_row"]}
+                example={`sample_id  plate  row  column\n40D89      P3     A    1\n58M        P3     C    3\nNC3        P3     H    6`}
+              />
+              <HelpCol
+                name="column"
+                recognized
+                type="1..24"
+                desc="Instead of well: the well's 1-based column, together with row. The plate map is downloaded back in the well format."
+                aliases={["col", "well_column", "well_col"]}
               />
             </tbody>
           </table>
@@ -21053,9 +21370,10 @@ const HelpTab = ({ onStartTour }) => {
                 gradient). Every column is click-sortable except Context
                 — including <strong>Evaluation</strong>,{" "}
                 <strong>Target verdict</strong> (sample-level verdict
-                of the event's target — read-only badge sourced from
-                the Samples tab) and <strong>Target action</strong>{" "}
-                (Keep / Suppress badge, also read-only). Species count
+                of the event's target, editable inline: its chips set
+                the target's verdict, as the Samples tab does) and{" "}
+                <strong>Target action</strong> (its Keep / Suppress
+                chips, editable the same way). Species count
                 is sortable too. Default sort:{" "}
                 <strong>rate (descending)</strong>. Pagination size is
                 configurable (default 100) under the gear icon → Items
@@ -21099,8 +21417,10 @@ const HelpTab = ({ onStartTour }) => {
                 to inspect pairs that CroCoDeEL did not flag — the
                 form mirrors the same three layers (event evaluation +
                 Verdict on target sample + Action on target sample,
-                auto-synced from the event verdict) and stamps both
-                the event and the target sample on save.
+                both on <em>Automatic</em> by default: the target then
+                follows its events, as after a click) and adds the
+                event on save, with any target value you picked as your
+                own.
               </p>
             </div>
             <div>
@@ -21150,9 +21470,13 @@ const HelpTab = ({ onStartTour }) => {
                 sample (i.e. the contaminations flowing into it). It
                 exposes: an event Evaluation picker, a Verdict on
                 target sample picker, an Action on target sample
-                picker, and three
+                picker (both <em>Automatic</em> by default, as when
+                clicking each event), and three
                 drill-ins → Scatter / → Events / → Samples that scope
-                to that sample and switch tabs.
+                to that sample and switch tabs. A sample no event targets
+                (a source only) has nothing to apply: its verdict is the
+                default Not contaminated unless you set one in the
+                Samples tab.
               </p>
             </div>
             <div>
@@ -21211,8 +21535,12 @@ const HelpTab = ({ onStartTour }) => {
                 layer that cohabits with the event evaluation; defaults
                 follow the event verdict but the curator can override),
                 and <strong>Action on target sample</strong>{" "}
-                (Keep / Suppress). Each picker writes directly to its
-                target.
+                (Keep / Suppress — offered once the target is
+                Contaminated, and shown whenever an action is set: a
+                Suppress on a target that is not Contaminated carries a
+                warning sign). Each picker writes directly to its
+                target; automatic values are tagged <em>auto</em>, as
+                on the Samples tab.
               </p>
               <p style={{ marginTop: 6 }}>
                 The event queue in the sidebar is sortable by{" "}
@@ -21237,7 +21565,14 @@ const HelpTab = ({ onStartTour }) => {
               <p>
                 Per-sample cockpit. The table lists every sample
                 (touched by an event or present in the abundance
-                table) with: sample id (+ optional sample_name), a
+                table), once: a sample the events file writes in
+                another case or with other spaces than the abundance
+                table is the table's sample, with the events and the
+                curation of both names, as in the curated table and
+                the samples TSV (its row says how the events file
+                writes it, and a decision made on it shows on those
+                events too). Each row has: sample id (+ optional
+                sample_name), a
                 Context cell with all metadata pills (subj / tp / grp
                 / biome / control / low biomass / low seq depth /
                 plate position; pills are clickable — subj / tp / grp
@@ -21259,9 +21594,17 @@ const HelpTab = ({ onStartTour }) => {
                 this sample is the source, and likewise for the target
                 column. A Verdict picker (Pending / Contaminated /
                 Not contaminated / Uncertain) is always visible; the
-                keep / suppress <em>Action</em> chips only appear once
-                the sample is marked <em>Contaminated</em> (Keep /
-                Suppress is meaningless before that call).
+                keep / suppress <em>Action</em> chips appear once the
+                sample is marked <em>Contaminated</em>, and whenever an
+                action is set: a Suppress on a sample that is not
+                Contaminated still drops it from the curated abundance
+                table, so it stays in sight with a warning sign, ready
+                to be cleared. Automatic values are drawn lighter with a
+                dashed rim and tagged under their chips:{" "}
+                <em>auto</em> for a value the rule set,{" "}
+                <em>default</em> for the Not contaminated + Keep of a
+                sample no event targets — the words of the samples TSV
+                and the samples HTML report.
               </p>
               <p style={{ marginTop: 6 }}>
                 <strong>Collapsible cells.</strong> The Context cell
@@ -21274,14 +21617,18 @@ const HelpTab = ({ onStartTour }) => {
                 state persists across tab round-trips.
               </p>
               <p style={{ marginTop: 6 }}>
-                <strong>Auto-curation of never-targeted samples.</strong>{" "}
+                <strong>Never-targeted samples.</strong>{" "}
                 Samples that are never the target of any event in the
-                full events list are automatically tagged{" "}
-                <em>Not contaminated</em> + <em>Keep</em> — by
-                definition there is no contamination call against
-                them. Existing curator decisions are never
-                overwritten; the rule only
-                stamps slots that are still empty.
+                full events list are <em>Not contaminated</em> +{" "}
+                <em>Keep</em> by default — by definition there is no
+                contamination call against them. Both are default
+                values, tagged <em>default</em> here as in the samples
+                TSV and the samples HTML report: they are not counted as
+                Keep decisions and do not block yours — mark such a sample
+                Contaminated and it is paired with Suppress like any
+                other. Clearing a Keep or a Suppress you set on a Not
+                contaminated one brings back the default Keep (its chip
+                says so).
               </p>
               <p style={{ marginTop: 6 }}>
                 The bar above the table is split in two: the shared
@@ -21358,18 +21705,44 @@ const HelpTab = ({ onStartTour }) => {
             <div>
               <h4 style={{ color: "var(--ink)", fontWeight: 700 }}>Export</h4>
               <p>
-                Four downloads. The two event-level exports respect
-                the Events filter bar at the top of the tab; the two
-                sample-level exports always cover the full sample
-                table (every sample that appears in the events list or
-                the abundance matrix):
+                Six downloads. The event-level ones (events TSV, events
+                HTML report, contamination graph) follow the Events
+                filter bar at the top of the tab; the sample-level ones
+                (samples TSV, samples HTML report, curated abundance
+                table) always cover every sample — every sample that
+                appears in the events list or the abundance matrix:
               </p>
               <ul className="list-disc pl-5 mt-2 space-y-1">
                 <li>
-                  <strong>Events TSV</strong> — every matched event
-                  with its evaluation, action and notes. Filter
-                  downstream using the evaluation / action columns if
-                  you only want TPs or want to drop FPs.
+                  <strong>Events TSV</strong> — every matched event,
+                  in CroCoDeEL's own layout followed by the curation:{" "}
+                  <code>source</code>, <code>target</code>,{" "}
+                  <code>rate</code>, <code>probability</code> and{" "}
+                  <code>contamination_specific_species</code> written as
+                  CroCoDeEL writes them, so CroCoDeEL reads the file
+                  back, then <code>introduced_pct</code>,{" "}
+                  <code>verdict</code> (true_positive / false_positive /
+                  uncertain / pending), <code>action</code> (the target
+                  sample's keep / suppress) and <code>notes</code>. The
+                  run's <code>#</code> parameter line and a{" "}
+                  <code># study:</code> line come first (a <code>|</code>{" "}
+                  in the title is written <code>/</code>: the reader
+                  splits <code>#</code> lines on it). To read the file in
+                  pandas or R, skip those leading <code>#</code> lines —{" "}
+                  <code>pd.read_csv(path, sep="\t", skiprows=n)</code>,{" "}
+                  <code>read.delim(path, skip = n)</code>, with{" "}
+                  <code>n</code> the number of lines that start with{" "}
+                  <code>#</code> at the top (none to two) — rather than
+                  pass <code>comment="#"</code>, which cuts a note at a
+                  bare <code>#</code> in a file an earlier version
+                  exported; a cell holding a <code>"</code> or a{" "}
+                  <code>#</code> is quoted the CSV way, as both read it. Filter
+                  downstream on the verdict / action columns if you only
+                  want TPs or want to drop FPs, or load the file again
+                  on the events card to restore the evaluations and
+                  notes; a file exported by an earlier version (with{" "}
+                  <code>contamination_rate</code> and{" "}
+                  <code>introduced_species</code>) still loads.
                 </li>
                 <li>
                   <strong>Samples TSV — full table</strong> — one row
@@ -21379,8 +21752,22 @@ const HelpTab = ({ onStartTour }) => {
                   plate position, per-side event counts, per-side TP /
                   FP / Uncertain / Pending breakdown, max
                   contamination rate, max introduced %, plus the
-                  sample-level verdict, action and notes. Same data
-                  the Samples-tab toolbar export produces.
+                  sample-level verdict and action as every view shows
+                  them — automatic values and the Not contaminated +
+                  Keep default of a sample no event targets included —
+                  each followed by its origin (<code>verdict_origin</code>,{" "}
+                  <code>action_origin</code>: <em>manual</em> when you
+                  set it; <em>automatic</em> when the rule sets it — the
+                  verdict the events that target the sample call for, the
+                  Suppress that goes with a Contaminated verdict, yours
+                  included; <em>default</em> for the Not contaminated +
+                  Keep of a sample no event targets; empty without a
+                  value), the notes, and the study (the session's title,
+                  on every row). The header is the first line, with no{" "}
+                  <code>#</code> line above it, so pandas and R read the
+                  file with their default options. The samples HTML
+                  report and the Samples tab tag the same values{" "}
+                  <em>auto</em> and <em>default</em>.
                 </li>
                 <li>
                   <strong>Events HTML report</strong> — self-contained
@@ -21397,7 +21784,74 @@ const HelpTab = ({ onStartTour }) => {
                   metadata flags, event-aggregate columns). Use the
                   browser's print dialog to save as PDF.
                 </li>
+                <li>
+                  <strong>Curated abundance table</strong> — the
+                  abundance table without the samples whose action is
+                  Suppress (and, unless you untick the box, without the
+                  species observed only in those samples; a species at
+                  zero in every sample of the input stays). Each
+                  remaining column holds the input file's own values —
+                  counts stay integers, percentages stay percentages,
+                  nothing is renormalised — under the input's first
+                  header and in its species order. The file holds the
+                  data only, so CroCoDeEL, pandas{" "}
+                  (<code>read_csv(path, sep="\t", index_col=0)</code>)
+                  and R (<code>read.delim</code>) read it with their
+                  default options. The same click writes its provenance
+                  next to it, <code>species_abundance_curated.provenance.txt</code>{" "}
+                  — suppressed samples, species dropped with them, date,
+                  study — built from that very table (the browser may ask
+                  before this second download). A cell read as 0
+                  (empty, NA, not a number, negative) is written as 0. A
+                  value written with up to 15 significant digits comes
+                  back exactly. One written with 16 or 17, more digits
+                  than a number holds, comes back as the same number,
+                  sometimes in fewer digits, or — when the number next to
+                  it makes the same relative abundance — as that one: a
+                  relative difference of about 2e-16, which can change its
+                  last one or two digits. The abundance card's Download
+                  writes the whole table the same way. A session saved by
+                  an earlier version lacks the input's column totals: both
+                  files are then written as relative abundances under a{" "}
+                  <code>species</code> header, and both cards say so —
+                  load the abundance table again to export its own
+                  values.
+                </li>
+                <li>
+                  <strong>Contamination graph</strong> — the directed
+                  source → target graph as GraphML (Gephi and Cytoscape
+                  open it natively) or as a node + edge CSV pair, every
+                  annotation a typed attribute: per sample its verdict and
+                  action, each with its origin as in the samples TSV
+                  (manual, automatic, or default for the Not contaminated +
+                  Keep of a sample no event targets), notes, metadata, plate
+                  position, event counts and species richness; per event its
+                  rate (also as{" "}
+                  <code>weight</code>), probability, introduced share,
+                  evaluation, notes, cascade flag, relatedness and plate
+                  distance. A missing number is −1, never 0, which would
+                  read as a measurement: a sample no event targets has a{" "}
+                  <code>max_incoming_rate</code> and a{" "}
+                  <code>max_introduced_pct</code> of −1, a sample outside
+                  the abundance table a <code>species_richness</code> of
+                  −1.
+                </li>
               </ul>
+              <p style={{ marginTop: 6 }}>
+                <strong>Units.</strong> Rates are fractions (0.704) in
+                the TSV and graph files, as in CroCoDeEL's files, and
+                percentages with a % sign (70.40%) in the HTML reports,
+                as on screen. The introduced share is a percentage of
+                the target's species (61.54 for 8 of 13), the same in
+                every export:{" "}
+                <code>introduced_pct</code> in the events TSV and the
+                graph files, <code>max_target_introduced_pct</code> in
+                the samples TSV, <code>max_introduced_pct</code> on the
+                graph's nodes, "introduced %" in the HTML reports. When
+                it is unknown — the target is not in the abundance
+                table, or no event targets the sample — the TSVs leave
+                it empty and the graph files write −1.
+              </p>
               <p style={{ marginTop: 6 }}>
                 For a full reproducibility-grade backup of the entire
                 session (events + every loaded file + UI state), use{" "}
@@ -21471,8 +21925,8 @@ const HelpTab = ({ onStartTour }) => {
             or <strong>pending</strong>. Answers <em>"is this sample
             as a whole compromised?"</em> Edited from the Samples tab,
             from the Scatterplot card popover (<em>Verdict on
-            target</em>), the Events-table target-verdict column or
-            from the Network node popover.
+            target</em>), the Events-table target-verdict column, Guided
+            validation or the Network node popover.
           </p>
           <h4
             className="mt-3 text-[14px]"
@@ -21485,45 +21939,81 @@ const HelpTab = ({ onStartTour }) => {
             Auto-sync: how the sample verdict tracks event verdicts
           </h4>
           <p>
-            When the curator changes an event's evaluation, the
-            target sample's verdict updates automatically — but only
-            when the sample verdict is unset or was itself auto-derived.
-            Any manual sample-level decision becomes sticky and is
-            never overwritten by the auto-sync. Rules, in order of
-            precedence:
+            Whenever an event's evaluation changes — a click, a keyboard
+            shortcut, a gallery card, the two presets, the
+            Bulk-apply dialog, the Network node popover or a pair added
+            from <em>Explore new pairs</em> (the last three with the
+            target verdict and action on <em>Automatic</em>, their
+            default) — the target sample's <em>automatic</em> verdict is
+            recomputed from <strong>every</strong> event that targets it,
+            so the result never depends on the order of the clicks. A
+            verdict you set by hand is never changed; a value picked
+            explicitly in those three forms is written as yours. Rules,
+            in order of precedence:
           </p>
           <ul className="list-disc pl-5 space-y-1.5 mt-2">
             <li>
-              <strong>Any event targeting the sample is TP</strong> →
-              sample auto-stamped <em>Contaminated</em>. Positive
-              evidence always wins, even if other events targeting the
-              same sample are FP / Uncertain.
+              <strong>Any event targeting the sample is TP</strong> →{" "}
+              <em>Contaminated</em>. Positive evidence always wins, even
+              if other events targeting the same sample are FP /
+              Uncertain.
             </li>
             <li>
-              <strong>Every event targeting the sample has a verdict
-              (none pending) and none are TP</strong> → sample auto-
-              stamped <em>Not contaminated</em>. By elimination,
-              nothing reaching the sample is real contamination.
+              <strong>Otherwise, any of them is Uncertain</strong> →{" "}
+              <em>Uncertain</em> — even when the others are FP: one open
+              question is enough to keep the sample undecided.
             </li>
             <li>
-              <strong>Mixed state — some still pending, no TP yet</strong>{" "}
-              → the sample reflects the curator's most recent call on
-              this event: FP → <em>Not contaminated</em>, Uncertain →
-              <em> Uncertain</em>. Resetting an event to Pending leaves
-              the sample alone.
+              <strong>Otherwise, any of them is FP</strong> →{" "}
+              <em>Not contaminated</em>.
             </li>
             <li>
-              <strong>Unwind</strong> — if the curator flips the last
-              remaining TP backing an auto-Contaminated sample, the
-              sample reverts to <em>Pending</em> (provided the rules
-              above don't already pick another verdict for it).
+              <strong>All of them still pending</strong> → no automatic
+              verdict (Pending). An automatic verdict set earlier goes
+              away — e.g. after marking an event FP and then back to
+              Pending, or rejecting the last TP.
             </li>
           </ul>
           <p style={{ marginTop: 6 }}>
-            All four rules ignore the sample if its verdict was set
-            by hand — once the curator clicks a sample-level chip
-            directly, the auto-derivation flag is cleared and future
-            event flips don't second-guess the call.
+            <strong>Action pairing.</strong> A Contaminated sample with no
+            action gets <em>Suppress</em> automatically; once its verdict
+            is no longer Contaminated, that automatic Suppress goes away.
+            An action you set by hand stays whatever the verdict (a
+            Suppress on a sample that is not Contaminated is shown and
+            flagged wherever the action is: the sample is still dropped
+            from the curated abundance table).
+          </p>
+          <p style={{ marginTop: 6 }}>
+            Automatic values are drawn lighter, with a dashed rim, and
+            tagged <em>auto</em> (Samples tab, Events table, scatter card
+            popover, Guided validation). Clicking a sample-level verdict
+            or action makes it yours; choosing <em>Pending</em> on a
+            verdict you set, or clearing your action, hands the sample
+            back to the automatic rule. On a Contaminated sample that
+            means Suppress again: to keep it in the curated table, pick{" "}
+            <em>Keep</em>. <em>Pending</em> changes nothing on an
+            automatic verdict, since the events still call for it (its
+            tooltip says why): evaluate the events instead, or pick a
+            verdict of your own. On a sample no event targets, the
+            default Not contaminated has no events behind it: only a
+            verdict of your own replaces it.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            <strong>Sessions saved by an earlier version</strong> are
+            brought up to date when they are reopened or imported: their
+            automatic values are recomputed with these rules and the
+            values you set by hand are kept as they are. A Contaminated
+            sample whose Suppress you had removed is marked{" "}
+            <em>Keep</em>, so the curated abundance table still keeps
+            it; the Not contaminated + Keep that the Samples tab used to
+            write on every sample no event targets is dropped (that
+            default is derived now), also when you had changed the
+            sample since: its notes and any other verdict are kept, and
+            so is a Keep on a sample you made Contaminated (that version
+            showed the action chips on Contaminated samples only). A
+            message lists the samples whose suppression changed. A
+            session saved by this version comes back exactly as it was
+            saved.
           </p>
           <h4
             className="mt-3 text-[14px]"
@@ -21541,18 +22031,37 @@ const HelpTab = ({ onStartTour }) => {
             preserve the sample) or <strong>suppress</strong> (drop the
             sample from analyses). Lives on the sample, not on the
             event — so in case of multiple events targeting the same
-            sample, the action is set once. Surfaces as a read-only
-            badge in the Events table's <em>Target action</em> column,
-            as a halo on TP scatter cards and as the node border in
-            the Network's curation scheme.
+            sample, the action is set once. Set from the Samples tab,
+            the Events table's <em>Target action</em> column or the
+            scatter card popover; shown as a halo on TP scatter cards
+            and as the node border in the Network's curation scheme.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            The <em>to suppress</em> / <em>to keep</em> counters
+            (Overview, Samples, Export, HTML reports) all count samples
+            the same way, whatever the events filter: to suppress is
+            every sample whose action is Suppress, automatic or not —
+            exactly the samples the curated abundance table drops; to
+            keep counts Keep decisions, so the default Keep of a sample
+            no event targets is not included. Once an abundance table is
+            loaded, only its samples count (a sample it lacks cannot be
+            dropped from it). The Samples tab counts its own samples,
+            before its context filters. The samples HTML report prints
+            these definitions and, as the Samples tab does, tags{" "}
+            <em>auto</em> each value the rule set — a verdict derived
+            from the event evaluations, or the Suppress that goes with a
+            Contaminated verdict, one you set by hand included — and{" "}
+            <em>default</em> the Not contaminated + Keep of a sample no
+            event targets.
           </p>
           <p style={{ marginTop: 6 }}>
             The Bulk-apply by criteria dialog (Validate sidebar) lets
             you stamp evaluation, target verdict and target action in a
-            single sweep — each layer with its own "don't overwrite
-            previous" safety toggle. The Samples-tab Bulk-apply dialog
-            does the same per-sample, with its own pre-condition
-            multi-selects.
+            single sweep — each layer with its own "don't overwrite"
+            safety toggle. The Samples-tab Bulk-apply dialog does the
+            same per-sample, with its own pre-condition multi-selects.
+            Those toggles protect what you set by hand: an automatic
+            value is the rule's, not a decision, and is overwritten.
           </p>
         </HelpSection>
 
@@ -21573,6 +22082,41 @@ const HelpTab = ({ onStartTour }) => {
             (cyan), fails (salmon) or is inconclusive (neutral). The
             Guided validation panel summarises the score and lists
             the individual reasons.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            An event whose source or target is not in the loaded
+            abundance table — the normal situation after a CroCoDeEL{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>-s2</code>{" "}
+            run when only one of its two tables is loaded — cannot be
+            scored at all. It is shown as <em>not evaluable</em>, in the
+            panel as in the HTML report: neither a pass nor a fail, and
+            the bulk dialog's pass / fail filters match it with neither.
+            A pair that is in the table can still leave a criterion
+            uncomputed: the line's shape (01) and spread (03) need at
+            least two species on the line, ρ (06) three species in
+            source and target, the points above the line (05) a rate
+            above 0. Its card then says which is missing, and it counts
+            neither way.
+          </p>
+          <p style={{ marginTop: 6 }}>
+            <strong>Low-abundance filter.</strong> A CroCoDeEL run made
+            with{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>--filter-low-ab F</code>{" "}
+            (the run parameters on the Overview show F) set to 0, in each
+            sample, every abundance up to F times the sample's smallest
+            one, and rescaled the rest, before fitting anything. Every
+            criterion, scatterplot and report plot here uses that same
+            filtered table by default; untick{" "}
+            <em>Low-abundance filter F×</em> in the run parameters, or
+            click <em>switch off</em> in the note under the grade in
+            Guided validation, to compute them on the table as loaded (the
+            choice is saved with the session). Exports, sample richness and the introduced %
+            always use the table as loaded. One rare case differs: a value
+            exactly F times its sample's smallest one is zeroed here, as
+            CroCoDeEL zeroes it in a count table, but in a table of
+            decimals CroCoDeEL's floating-point rounding keeps about one
+            such tie in eight (20 × 0.00007 falls just under 0.0014) —
+            the relative abundances loaded here no longer tell which.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -21627,10 +22171,13 @@ const HelpTab = ({ onStartTour }) => {
                   <code style={{ fontFamily: "ui-monospace, monospace" }}>λ = N × rate × source_abundance</code>{" "}
                   and is missed by Poisson chance alone with probability{" "}
                   <code style={{ fontFamily: "ui-monospace, monospace" }}>e^(−λ)</code>.
-                  Across the full source profile, the observed miss
-                  count is compared to its expectation under{" "}
-                  <em>H<sub>real</sub></em> (genuine contamination) via
-                  a Poisson-binomial sum (one-sided normal approximation).
+                  Across the full source profile, the number of misses
+                  under <em>H<sub>real</sub></em> (genuine contamination)
+                  follows a Poisson-binomial distribution, and the
+                  observed miss count is compared with it exactly: the
+                  p-value is its one-sided upper tail,{" "}
+                  <code style={{ fontFamily: "ui-monospace, monospace" }}>P(X ≥ observed misses)</code>,
+                  summed term by term rather than approximated.
                   No abundance pre-filter is needed: rare species
                   contribute almost nothing to the test variance and
                   cancel out in expectation, so the test self-regulates.
@@ -21676,8 +22223,13 @@ const HelpTab = ({ onStartTour }) => {
                 <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Biological similarity (ρ × relatedness)</td>
                 <td className="py-2.5 align-top text-[13px]">
                   Spearman rank correlation ρ between source and target
-                  profiles, read jointly with the metadata-driven
-                  relatedness signal — because ρ alone is ambiguous:
+                  profiles — CroCoDeEL's own, the rho printed above each
+                  plot of its PDF report: over every species of the table,
+                  those absent from both samples tied below the others, on
+                  the table the diagnostics use (its low-abundance filter
+                  applied when the run declares one) — read jointly with
+                  the metadata-driven relatedness signal, because ρ alone
+                  is ambiguous:
                   high ρ can mean either same-subject biological
                   persistence (FP) <em>or</em> very strong contamination
                   (TP). Cross-referencing with{" "}
@@ -21689,7 +22241,8 @@ const HelpTab = ({ onStartTour }) => {
                       <strong>ρ &lt; 0.7</strong> → passes (profiles distinct).
                     </li>
                     <li>
-                      <strong>ρ ≥ 0.7 and samples from different subjects</strong>{" "}
+                      <strong>ρ ≥ 0.7 and samples from different subjects
+                      that share no group</strong>{" "}
                       → passes too (consistent with strong contamination — a
                       TP-supportive reading).
                     </li>
@@ -22008,11 +22561,12 @@ const HelpTab = ({ onStartTour }) => {
               </code>
               , every PENDING event whose source and target share
               that id (longitudinal pair) is flipped to false positive
-              with an explanatory auto-note. Target sample verdicts
-              are left untouched on purpose — a sample may still be
-              genuinely contaminated by another event, so its sample-
-              level verdict stays under your control (or the auto-sync
-              rules described in <em>Event vs sample curation</em>).
+              with an explanatory auto-note. Each target sample then
+              follows the automatic rule described in{" "}
+              <em>Event vs sample curation</em>, as if you had clicked
+              the events one by one: it stays Contaminated while another
+              event targeting it is TP. Verdicts and actions you set by
+              hand are not touched.
             </li>
             <li>
               <strong>
@@ -22021,8 +22575,11 @@ const HelpTab = ({ onStartTour }) => {
               </strong>{" "}
               — every PENDING event flowing into a sample tagged as a
               negative control (biome contains "control" / "blank" /
-              "negative") is flipped to true positive and the NC
-              sample is flagged as <em>Contaminated</em>.
+              "negative") is flipped to true positive, which makes the
+              NC sample <em>Contaminated</em> + <em>Suppress</em> through
+              the automatic rule. Both values stay automatic: rejecting
+              those events later takes them back, and a verdict or an
+              action you set on the NC by hand is never changed.
             </li>
             <li>
               <strong>Reset all evaluations</strong> — wipes every
@@ -22037,8 +22594,9 @@ const HelpTab = ({ onStartTour }) => {
               range in %, probability range, introduced % range, and
               pass / fail / any per criterion: shape, n on line,
               decade range, missing source species, above-line points,
-              Spearman profile dissimilarity), then apply, in one
-              sweep:
+              biological similarity — the very ✓ / ✗ Guided validation
+              shows, ρ read together with the metadata), then apply, in
+              one sweep:
               <ul className="list-disc pl-5 mt-2 space-y-1">
                 <li>
                   An <em>event evaluation</em> (TP / FP / Uncertain /
@@ -22046,14 +22604,19 @@ const HelpTab = ({ onStartTour }) => {
                   matched event's notes.
                 </li>
                 <li>
-                  An optional <em>Verdict on samples targeted by the
-                  matched events</em> with its own "don't overwrite
-                  previous verdict" safety toggle (default ON).
+                  A <em>Verdict on samples targeted by the matched
+                  events</em>. The default, <em>Automatic</em>, is the
+                  same as clicking each event: each target follows the
+                  rule above. Any other choice is written on every target
+                  as your own decision, with a "don't overwrite" safety
+                  toggle (default ON) that protects verdicts you set by
+                  hand — automatic ones are always updated.
                 </li>
                 <li>
-                  An optional <em>Action on samples targeted by the
-                  matched events</em> with its own "don't overwrite
-                  previous action" safety toggle (default ON).
+                  An <em>Action on samples targeted by the matched
+                  events</em>, likewise <em>Automatic</em> by default
+                  (Suppress while Contaminated), with its own "don't
+                  overwrite" toggle for actions you set by hand.
                 </li>
                 <li>
                   An optional <em>Comment on target sample</em>{" "}
@@ -22185,14 +22748,20 @@ const HelpTab = ({ onStartTour }) => {
             Local persistence (browser storage)
           </h4>
           <p>
-            To survive accidental refreshes, the app auto-saves your full
+            To survive accidental refreshes, the app auto-saves your
             session to your browser's <code style={{ fontFamily: "ui-monospace, monospace" }}>IndexedDB</code>{" "}
-            after every change (debounced 1 s). A discrete{" "}
-            <em>Saved</em> pill appears in the bottom-right corner each time
-            the save succeeds. What is persisted:
+            a moment after every change (0.3 s), and at once when the page
+            is hidden, closed or reloaded. Only what changed is written: an
+            evaluation rewrites a small curation record, a tab switch a
+            small UI-state record, and the files are written when they are
+            loaded or edited — so saving stays instant on the largest
+            datasets. A discrete <em>Saved</em> pill appears in the
+            bottom-right corner each time the save succeeds. What is
+            persisted:
           </p>
           <ul className="list-disc pl-5 text-[13px]" style={{ color: "var(--ink-soft)", lineHeight: 1.7 }}>
-            <li>Loaded events (with evaluations and notes)</li>
+            <li>Loaded events, with what the parser reported about the file</li>
+            <li>Your evaluations and notes, sample verdicts, actions and notes, and the study title</li>
             <li>CroCoDeEL run parameters from the file header</li>
             <li>Sample metadata, plate map, and species abundance table</li>
             <li>UI state: active tab, selected event, filters, sort order</li>
@@ -22202,13 +22771,45 @@ const HelpTab = ({ onStartTour }) => {
             <code style={{ fontFamily: "ui-monospace, monospace" }}>
               crocodeel-interpreter
             </code>{" "}
-            (object store <code style={{ fontFamily: "ui-monospace, monospace" }}>kv</code>),
+            (object store <code style={{ fontFamily: "ui-monospace, monospace" }}>kv</code>,
+            one record per part: <code style={{ fontFamily: "ui-monospace, monospace" }}>events</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>ab</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>metadata</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>plate</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>curation</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>ui</code>),
             scoped to the application's origin (GitHub Pages domain). It is
             never transmitted anywhere — not even to our own infrastructure.
             Only the browser session running on this device, in this browser
             profile, can read it. Closing the tab keeps the data; clearing
-            your browser's site data removes it. Sessions stored under the
-            old localStorage keys are migrated transparently on first load.
+            your browser's site data removes it. Sessions stored by earlier
+            versions (a single record, or the old localStorage keys) are
+            migrated transparently on first load; if that migration cannot
+            be written (storage full), the session is read as it was stored
+            and written in the current form by the first save.
+          </p>
+          <p>
+            <strong style={{ color: "var(--ink)" }}>Not saved.</strong>{" "}
+            When a save fails — the browser's storage for this site is full,
+            or unavailable — a red <em>Not saved</em> pill and a banner stay
+            up until a later save succeeds (it is tried again on your next
+            change). Your latest changes are then only in this tab:{" "}
+            <strong>Download session</strong> keeps them.
+          </p>
+          <p>
+            <strong style={{ color: "var(--ink)" }}>Several tabs.</strong>{" "}
+            Each save checks that no other tab has changed the session since
+            this one read it. When another tab has, this tab stops saving —
+            it cannot overwrite the other tab's work — and says{" "}
+            <em>"This session was changed in another tab — reload to see
+            the latest version"</em>. What you change in it from then on
+            stays in that tab: download its session first if you need it.
+            A tab still showing an earlier version of the interface (open
+            since before an update) takes no part in this check: what it
+            saves after the update becomes the session (the next reload of
+            any tab brings it in, and says so), and a tab of this version
+            that saves after it stops saving, as above. Close or reload such
+            tabs.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Storage limits.</strong>{" "}
@@ -22220,17 +22821,29 @@ const HelpTab = ({ onStartTour }) => {
           <p>
             <strong style={{ color: "var(--ink)" }}>Clearing storage.</strong>{" "}
             Use the <em>Clear session</em> button in the files bar to wipe
-            everything immediately. The Discard button on the welcome
-            popup does the same when offered. You can also remove just one
-            file via the trash icon on its file card.
+            everything immediately. You can also remove just one file with
+            the <em>Clear</em> button on its file card: the other files stay
+            loaded, and saved. Removing the events file also removes the
+            curation done on them — the card asks first, and says so.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Private / incognito
-            windows.</strong>{" "}
-            Browsers may restrict or fully disable IndexedDB in private mode.
-            The app refuses to boot when IndexedDB is unavailable and shows a
-            "browser not supported" screen — open the page in a normal window
-            (or another browser) and your session will load.
+            windows, blocked site data.</strong>{" "}
+            Browsers may restrict or fully disable IndexedDB in private mode,
+            and a browser set to block site data refuses both IndexedDB and
+            localStorage. Without IndexedDB — or when the database cannot be
+            opened — the app runs in memory: everything works, but nothing
+            survives closing or reloading the tab (display preferences such
+            as the theme and page sizes are not kept either without
+            localStorage), and a <em>Not saved</em> banner says so.
+            Download the session to keep your work, and import it later (or
+            open the page in a normal window).
+          </p>
+          <p>
+            <strong style={{ color: "var(--ink)" }}>When a tab fails.</strong>{" "}
+            A tab that hits an error shows it in its place; the other tabs,
+            the files bar and <em>Download session</em> keep working, so
+            your curation can always be saved.
           </p>
           <p>
             The tutorial-seen flag (
@@ -22257,10 +22870,11 @@ const HelpTab = ({ onStartTour }) => {
                 real?"</em>. Verdict lives on the sample
                 (Contaminated / Not contaminated / Uncertain / Pending) and
                 answers <em>"is this sample as a whole compromised?"</em>.
-                A sample can be marked Contaminated even when its
-                events are still pending, and a TP event doesn't
-                automatically mark its target as Contaminated — see
-                the "Event vs sample curation" section above.
+                A TP event makes its target Contaminated
+                automatically, but that is only the default: you can
+                mark a sample yourself (even while its events are still
+                pending), and your call is never overridden — see the
+                "Event vs sample curation" section above.
               </p>
             </div>
             <div>
@@ -22269,16 +22883,16 @@ const HelpTab = ({ onStartTour }) => {
                 Keep without me having clicked anything?
               </p>
               <p>
-                The Samples tab auto-applies{" "}
-                <em>Not contaminated</em> + <em>Keep</em> to any
-                sample that is never the target
-                of an event in the full events list — by definition
-                there is no contamination call against them. The
-                rule respects existing curator decisions: it only
-                stamps slots that are still empty. The "never
-                targeted" set is computed from the unfiltered events,
-                so a transient filter cannot trigger spurious
-                curation.
+                A sample that is never the target of an event in the
+                full events list is <em>Not contaminated</em> +{" "}
+                <em>Keep</em> by default — by definition there is no
+                contamination call against it. That default is
+                automatic: it is derived, never stored, counts as no
+                decision ("Samples to keep" stays at 0 until you keep a
+                sample yourself), and any verdict or action you set
+                replaces it. The "never targeted" set is computed from
+                the unfiltered events, so a transient filter cannot
+                change it.
               </p>
             </div>
             <div>
@@ -22339,9 +22953,11 @@ const HelpTab = ({ onStartTour }) => {
               <p>
                 No — the app auto-saves your full session (events,
                 evaluations, actions, notes, all loaded files, plus your
-                active tab and filters) to your browser's IndexedDB
-                every time something changes. After a refresh you land
-                exactly where you left off. See the Privacy & how it
+                active tab and filters) to your browser's IndexedDB a
+                moment after every change, and at once when the page is
+                closed or reloaded. After a refresh you land exactly where
+                you left off. If the browser cannot store it, a{" "}
+                <em>Not saved</em> banner says so. See the Privacy & how it
                 works section for details, including the IndexedDB
                 quotas and how to clear it. For belt-and-braces backups
                 before a long break or to move sessions between
@@ -22509,7 +23125,7 @@ const DatasetsTab = ({ onLoadDataset, hasCurrentData, pageSize }) => {
           style={{
             background: "var(--bg-alert)",
             border: "1px solid #ed6e6c",
-            color: "#8a2422",
+            color: "var(--ink-alert)",
           }}
         >
           <strong>Could not load datasets manifest.</strong> {error}
@@ -22937,7 +23553,7 @@ const ExportTab = ({
   runMetadata,
   hasAb,
   actionEnabled,
-  sampleCuration,
+  actionTotals,
   onBulkApply,
   onExportTSV,
   onExportHTML,
@@ -22951,10 +23567,11 @@ const ExportTab = ({
   // Species rows left at zero once the suppressed samples are gone can be
   // dropped or kept; both are defensible, so the curator decides.
   const [dropEmptySpecies, setDropEmptySpecies] = useState(true);
-  // Compute counts from the filtered subset so the stat row reflects what
-  // will actually go into the export. Action lives on samples now —
-  // tally distinct target-sample actions across the events that pass
-  // the filter so the cards match the actual downstream effect.
+  // Compute the evaluation counts from the filtered subset so the stat
+  // row reflects what will actually go into the events export. The
+  // keep / suppress counts are per sample, over ALL samples, like the
+  // Overview and the curated abundance card below: "to suppress" is
+  // exactly the set of columns that export drops (sampleActionCounts).
   const counts = useMemo(() => {
     const c = {
       total: filteredEvents.length,
@@ -22962,24 +23579,16 @@ const ExportTab = ({
       fp: 0,
       uncertain: 0,
       pending: 0,
-      suppress: 0,
-      keep: 0,
+      ...actionTotals,
     };
-    const seen = new Set();
     filteredEvents.forEach((e) => {
       if (e.verdict === "true_positive") c.tp++;
       else if (e.verdict === "false_positive") c.fp++;
       else if (e.verdict === "uncertain") c.uncertain++;
       else c.pending++;
-      if (e.target && !seen.has(e.target)) {
-        seen.add(e.target);
-        const a = sampleCuration?.[e.target]?.action;
-        if (a === "suppress") c.suppress++;
-        else if (a === "keep") c.keep++;
-      }
     });
     return c;
-  }, [filteredEvents, sampleCuration]);
+  }, [filteredEvents, actionTotals]);
 
   const totalLoaded = events.length;
   const isFiltered = filteredEvents.length !== totalLoaded;
@@ -22987,7 +23596,7 @@ const ExportTab = ({
   return (
     <div>
       <SectionTitle eyebrow="Export" title="Save your curated report">
-        Download a TSV with every event (evaluation, action, notes) or a printable
+        Download a TSV with every event (its verdict, action and notes) or a printable
         HTML report. The filter bar below scopes the export — to back up the
         full session including loaded files and UI state, use{" "}
         <strong style={{ color: "var(--ink)" }}>Download session</strong> on the
@@ -23035,6 +23644,7 @@ const ExportTab = ({
             label="To suppress"
             value={counts.suppress}
             tone={counts.suppress > 0 ? "suppress" : "neutral"}
+            hint={SAMPLES_TO_SUPPRESS_HINT}
           />
         )}
         {actionEnabled && (
@@ -23042,6 +23652,7 @@ const ExportTab = ({
             label="To keep"
             value={counts.keep}
             tone={counts.keep > 0 ? "keep" : "neutral"}
+            hint={SAMPLES_TO_KEEP_HINT}
           />
         )}
       </div>
@@ -23073,8 +23684,8 @@ const ExportTab = ({
           title={`Events TSV — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
           desc={
             isFiltered
-              ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). Verdict, action and notes columns are included.`
-              : "Every event with its evaluation, action and notes. Filter downstream using the evaluation / action columns if you want to drop FPs or keep TPs only."
+              ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). CroCoDeEL's own columns come first, so CroCoDeEL reads the file too; the introduced_pct, verdict, action and notes columns follow.`
+              : "Every event after CroCoDeEL's own columns, with its introduced_pct, verdict (the evaluation), action and notes: CroCoDeEL reads the file too, and so does this interface (reload it to restore the evaluations). Filter downstream on the verdict / action columns if you want to drop FPs or keep TPs only."
           }
           action="Download events TSV"
           onClick={() => onExportTSV(filteredEvents)}
@@ -23089,7 +23700,11 @@ const ExportTab = ({
               "plate position, per-side event counts, per-side TP / " +
               "FP / Uncertain / Pending breakdown, max contamination " +
               "rate and max introduced %, plus the sample-level " +
-              "verdict, action and notes."
+              "verdict and action, each with its origin (manual; " +
+              "automatic, set by the rule from the events or paired " +
+              "with Contaminated; or the default Not contaminated + " +
+              "Keep of a sample no event targets), the notes and the " +
+              "study. No # line: pandas and R read it as it is."
             }
             action="Download samples TSV"
             onClick={onExportSamplesTSV}
@@ -23117,33 +23732,59 @@ const ExportTab = ({
             desc={
               !hasAb ? (
                 "Load species_abundance.tsv to enable this export."
-              ) : curatedAbundanceStats?.suppressedSamples === 0 ? (
-                <>
-                  The abundance table with every sample set to{" "}
-                  <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
-                  removed. Nothing is set to suppress yet, so this would
-                  export the table unchanged — mark a sample{" "}
-                  <em>Contaminated</em> from the Samples, Validate or Network
-                  tab (which defaults its action to Suppress), or set the
-                  action by hand.
-                </>
               ) : (
                 <>
-                  The abundance table with the{" "}
-                  <strong style={{ color: "var(--ink)" }}>
-                    {curatedAbundanceStats.suppressedSamples} sample
-                    {curatedAbundanceStats.suppressedSamples === 1 ? "" : "s"}
-                  </strong>{" "}
-                  set to <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
-                  removed — which includes every sample you marked{" "}
-                  <em>Contaminated</em> without then choosing <em>Keep</em>
-                  {curatedAbundanceStats.droppedSpecies > 0 && dropEmptySpecies
-                    ? `, and ${curatedAbundanceStats.droppedSpecies} species that are left at zero everywhere`
-                    : ""}
-                  . Remaining columns are untouched — dropping a sample does
-                  not change any other sample's relative abundances, so no
-                  renormalisation is applied. The suppressed ids are recorded
-                  in the file header.
+                  {curatedAbundanceStats?.suppressedSamples === 0 ? (
+                    <>
+                      The abundance table with every sample set to{" "}
+                      <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
+                      removed. Nothing is set to suppress yet, so this would
+                      export every sample — mark a sample{" "}
+                      <em>Contaminated</em> from the Samples, Validate or
+                      Network tab (which defaults its action to Suppress), or
+                      set the action by hand.
+                    </>
+                  ) : (
+                    <>
+                      The abundance table with the{" "}
+                      <strong style={{ color: "var(--ink)" }}>
+                        {curatedAbundanceStats.suppressedSamples} sample
+                        {curatedAbundanceStats.suppressedSamples === 1 ? "" : "s"}
+                      </strong>{" "}
+                      set to <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
+                      removed — which includes every sample you marked{" "}
+                      <em>Contaminated</em> without then choosing <em>Keep</em>
+                      {curatedAbundanceStats.droppedSpecies > 0 && dropEmptySpecies
+                        ? `, and the ${curatedAbundanceStats.droppedSpecies} species observed only in those samples`
+                        : ""}
+                      .
+                    </>
+                  )}{" "}
+                  {curatedAbundanceStats?.inputValues ? (
+                    <>
+                      Every remaining column holds the input file's own
+                      values — counts stay counts, nothing is renormalised —
+                      under its first header and in its species order, so the
+                      table loads in CroCoDeEL, pandas and R just as the input
+                      did.
+                    </>
+                  ) : (
+                    <>
+                      <strong style={{ color: "var(--ink)" }}>
+                        Written as relative abundances:
+                      </strong>{" "}
+                      this session was saved before the interface kept the
+                      input's column totals, so each value is the sample's
+                      fraction of its total, under a <code>species</code>{" "}
+                      header. Load species_abundance.tsv again to export the
+                      input's own values.
+                    </>
+                  )}{" "}
+                  Its provenance comes with it, in a second file (
+                  <code>species_abundance_curated.provenance.txt</code>):
+                  the suppressed samples, the species dropped with them,
+                  the date and the study of that very table. Your browser
+                  may ask before the second download.
                 </>
               )
             }
@@ -23252,297 +23893,14 @@ const ExportTab = ({
    8. MAIN APP
    ============================================================================ */
 
-/* Persistence: we keep the entire session alive across page refreshes
-   by stashing it in IndexedDB. We save:
-   - events (with verdicts and notes) — the curation work
-   - runMetadata (CroCoDeEL run params)
-   - metadata (sample annotations)
-   - plateMap (sample-to-well placement)
-   - ab (species abundance table)
-   IndexedDB gives us hundreds of MB to GBs (vs localStorage's ~5–10 MB),
-   structured-cloned writes that don't block the main thread, and no
-   need for JSON.stringify / LZ compression. The legacy localStorage
-   payload is migrated transparently on first boot. */
-const DB_NAME = "crocodeel-interpreter";
-const DB_VERSION = 1;
-const STORE = "kv";
-// Two records per session: the main payload (events / metadata / UI
-// state, small, rewritten on every change) and the abundance matrix
-// (large, rewritten only when its reference changes — file load,
-// dataset switch, decontamination). Splitting them keeps verdict /
-// filter clicks cheap on big datasets.
-const KEY_MAIN = "main";
-const KEY_AB = "ab";
-// Legacy localStorage keys — read once during the IndexedDB migration
-// and removed afterwards. The COMPRESSED_PREFIX flagged LZ-compressed
-// payloads under those keys; we still need to recognise it to migrate.
-const LEGACY_KEY = "crocodeel-interpreter-v1";
-const LEGACY_KEY_AB = "crocodeel-interpreter-v1-ab";
-const LEGACY_COMPRESSED_PREFIX = "lz:";
-
-/** True when the current browser exposes IndexedDB. The app refuses
-    to boot without it (no fallback) and shows an unsupported-browser
-    message instead. */
-function indexedDBSupported() {
-  return typeof window !== "undefined" && !!window.indexedDB;
-}
-
-/** Open (or create) the session database. The schema is one
-    keyed-object store; we don't bother with auto-incrementing keys.
-    The handle is cached at module scope so subsequent reads / writes
-    skip the open round-trip — important on the 1 s auto-save cadence
-    where the DB would otherwise be re-opened several times per
-    second. The cache is cleared on the connection's `close` /
-    `versionchange` events so we recover gracefully if another tab
-    upgrades the schema. */
-let dbHandlePromise = null;
-function openDB() {
-  if (dbHandlePromise) return dbHandlePromise;
-  dbHandlePromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE);
-      }
-    };
-    req.onsuccess = () => {
-      const db = req.result;
-      // If another tab opens the DB with a higher version, our handle
-      // is invalidated — drop it and let the next call re-open.
-      db.onversionchange = () => {
-        try {
-          db.close();
-        } catch {
-          // ignore
-        }
-        if (dbHandlePromise === thisPromise) dbHandlePromise = null;
-      };
-      db.onclose = () => {
-        if (dbHandlePromise === thisPromise) dbHandlePromise = null;
-      };
-      resolve(db);
-    };
-    req.onerror = () => {
-      dbHandlePromise = null;
-      reject(req.error);
-    };
-    req.onblocked = () => {
-      dbHandlePromise = null;
-      reject(new Error("IndexedDB open blocked — close other tabs running this app"));
-    };
-  });
-  // Local copy so the .onversionchange / .onclose closure can compare
-  // against *this* handle — a stale guard might otherwise null out a
-  // newer one.
-  // eslint-disable-next-line no-var
-  var thisPromise = dbHandlePromise;
-  return dbHandlePromise;
-}
-
-function idbGet(key) {
-  return openDB().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readonly");
-        const req = tx.objectStore(STORE).get(key);
-        req.onsuccess = () => resolve(req.result ?? null);
-        req.onerror = () => reject(req.error);
-      }),
-  );
-}
-
-function idbSet(key, value) {
-  return openDB().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).put(value, key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      }),
-  );
-}
-
-function idbDel(key) {
-  return openDB().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).delete(key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      }),
-  );
-}
-
-/** Drop zero / falsy entries from the abundance matrix before saving.
-    Most metagenomic profiles are very sparse (a typical sample has a
-    few hundred non-zero species out of thousands), so omitting the
-    zeros usually shrinks the structured-clone payload 5–10×. The
-    dense form is never needed downstream: every consumer reads
-    `matrix[sp]?.[s] || 0` so a missing key is treated as zero exactly
-    like an explicit zero. */
-function sparsifyAbundance(ab) {
-  if (!ab || !ab.matrix) return ab;
-  const sparse = {};
-  for (const sp of Object.keys(ab.matrix)) {
-    const row = ab.matrix[sp];
-    const sparseRow = {};
-    for (const s of Object.keys(row)) {
-      const v = row[s];
-      if (v) sparseRow[s] = v;
-    }
-    sparse[sp] = sparseRow;
-  }
-  return { ...ab, matrix: sparse };
-}
-
-/** Read a single legacy localStorage key, transparently decompressing
-    the LZ-UTF16 payload if the COMPRESSED_PREFIX is present. Returns
-    null if the key is missing or the parse / decompress fails. Used
-    only by the one-shot migration below. */
-function readLegacyKey(key) {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return null;
-    if (raw.startsWith(LEGACY_COMPRESSED_PREFIX)) {
-      const decompressed = LZString.decompressFromUTF16(
-        raw.slice(LEGACY_COMPRESSED_PREFIX.length),
-      );
-      if (!decompressed) return null;
-      return JSON.parse(decompressed);
-    }
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-/** Migrate sessions stored under the old localStorage keys into
-    IndexedDB. Runs once: if IDB already has a payload we skip; if
-    localStorage has one we move it across and remove the legacy
-    entries so we don't drift between two sources of truth. */
-async function migrateLocalStorageToIDB() {
-  if (typeof window === "undefined") return;
-  let migrated = false;
-  try {
-    const main = readLegacyKey(LEGACY_KEY);
-    if (main) {
-      await idbSet(KEY_MAIN, main);
-      migrated = true;
-    }
-    const ab = readLegacyKey(LEGACY_KEY_AB);
-    if (ab) {
-      await idbSet(KEY_AB, ab);
-      migrated = true;
-    }
-  } catch (e) {
-    console.warn("[crocodeel] localStorage → IndexedDB migration failed:", e?.message);
-    return;
-  }
-  // Only remove the legacy entries once they're safely in IDB.
-  if (migrated) {
-    try {
-      window.localStorage.removeItem(LEGACY_KEY);
-      window.localStorage.removeItem(LEGACY_KEY_AB);
-    } catch {
-      // ignore
-    }
-  }
-}
-
-/** Read the main payload + the abundance side payload from IndexedDB,
-    splice them together and return a session object — or null if
-    nothing is stored. Triggers the legacy migration on first run. */
-async function loadFromStorage() {
-  const main = await idbGet(KEY_MAIN);
-  if (!main) {
-    // Nothing in IDB — try to import a legacy localStorage session.
-    await migrateLocalStorageToIDB();
-    const migrated = await idbGet(KEY_MAIN);
-    if (!migrated) return null;
-    if (!Array.isArray(migrated.rawEvents) || migrated.rawEvents.length === 0) {
-      return null;
-    }
-    if (!migrated.ab) {
-      const ab = await idbGet(KEY_AB);
-      if (ab) migrated.ab = ab;
-    }
-    return migrated;
-  }
-  if (!Array.isArray(main.rawEvents) || main.rawEvents.length === 0) {
-    return null;
-  }
-  if (!main.ab) {
-    const ab = await idbGet(KEY_AB);
-    if (ab) main.ab = ab;
-  }
-  return main;
-}
-
-/** Persist the session to IndexedDB. The main payload is rewritten on
-    every call; the abundance matrix is rewritten only when
-    options.saveAb is true (i.e. when its reference actually changed).
-    All writes are async — this returns a promise resolving to
-    `{ main, ab }`, each a boolean. Errors are caught and logged but do
-    not propagate so the caller's render loop is unaffected.
-
-    The two outcomes MUST be reported separately. This used to return a
-    bare `true` even when the abundance write had thrown, so the caller
-    latched `lastSavedAbRef` on a matrix that was never written: from
-    then on `abChanged` stayed false, the pill kept saying "Saved just
-    now", and the next reload restored every verdict with `ab === null`
-    — no scatter, no diagnostic, no cascade, no explanation. */
-async function saveToStorage(payload, options) {
-  const { saveAb } = options || {};
-  const { ab, ...rest } = payload;
-  // `ab: !saveAb` — when there was nothing to write, there is nothing to
-  // report as failed.
-  const result = { main: false, ab: !saveAb };
-  try {
-    await idbSet(KEY_MAIN, rest);
-    result.main = true;
-  } catch (e) {
-    console.warn("[crocodeel] IndexedDB save (main) failed:", e?.message);
-    return result;
-  }
-  if (saveAb) {
-    if (ab) {
-      try {
-        await idbSet(KEY_AB, sparsifyAbundance(ab));
-        result.ab = true;
-      } catch (e) {
-        console.warn("[crocodeel] IndexedDB save (ab) failed:", e?.message);
-        // Drop the stale ab if any; otherwise the loader would splice
-        // an out-of-date matrix into the next session.
-        try {
-          await idbDel(KEY_AB);
-        } catch {
-          // ignore
-        }
-        result.ab = false;
-      }
-    } else {
-      try {
-        await idbDel(KEY_AB);
-      } catch {
-        // ignore
-      }
-      result.ab = true;
-    }
-  }
-  return result;
-}
-
-async function clearStorage() {
-  try {
-    await idbDel(KEY_MAIN);
-    await idbDel(KEY_AB);
-  } catch {
-    // ignore
-  }
-}
+/* Persistence: the session survives page refreshes in the browser's
+   IndexedDB, as separate records — the inputs (events without their
+   curation, abundance table, metadata, plate map, run header), the
+   curation, the UI state — so that a change rewrites only what it
+   touches. The records, the earlier layouts they are migrated from and
+   the session JSON live in src/persistence.js; the IndexedDB access in
+   src/storage.js; when and what to write, and the revision check that
+   keeps a second tab from overwriting the first, in src/autosave.js. */
 
 /* ----------------------------------------------------------------------------
    FILE READING WITH PROGRESS
@@ -23799,8 +24157,11 @@ const AnalysisTitleField = ({ value, onChange }) => {
 
 /** Floating "Saved" pill that appears briefly each time the curation
     work is auto-saved. The parent passes a timestamp; whenever it
-    changes, we show the pill for 1.4s then fade. */
-const SavedPill = ({ timestamp, abFailed }) => {
+    changes, we show the pill for 1.4s then fade. `notSaved`: the
+    session is not being saved (storage full, unavailable, or the
+    session changed in another tab) — a persistent "Not saved" instead,
+    next to the banner that says why. */
+const SavedPill = ({ timestamp, abFailed, notSaved }) => {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (!timestamp) {
@@ -23811,6 +24172,37 @@ const SavedPill = ({ timestamp, abFailed }) => {
     const t = setTimeout(() => setVisible(false), 1400);
     return () => clearTimeout(t);
   }, [timestamp]);
+
+  if (notSaved) {
+    return (
+      <div
+        role="status"
+        aria-live="assertive"
+        data-save-state="not-saved"
+        title="Your recent changes are not stored in this browser: see the banner at the top of the page."
+        style={{
+          position: "fixed",
+          bottom: 16,
+          right: 16,
+          zIndex: 900,
+          padding: "5px 10px",
+          background: "#8a2422",
+          color: "#fff",
+          fontSize: 11,
+          fontWeight: 700,
+          fontFamily: '"Raleway", sans-serif',
+          borderRadius: 3,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        <AlertCircle className="w-3 h-3" />
+        <span>Not saved</span>
+      </div>
+    );
+  }
 
   // A failed abundance write is not transient: verdicts are safe but the
   // matrix will be missing on reload, so the warning stays up until the
@@ -23845,7 +24237,7 @@ const SavedPill = ({ timestamp, abFailed }) => {
           Verdicts saved, but the abundance table could not be stored
           (browser storage is full or blocked). Reload this session and you
           will need to drop <code>species_abundance.tsv</code> again — or
-          export the session now from the Export tab.
+          download the session now (Download session, on the files bar).
         </span>
       </div>
     );
@@ -23881,6 +24273,221 @@ const SavedPill = ({ timestamp, abFailed }) => {
     </div>
   );
 };
+
+/** Persistent banner over the tabs when the session is not being saved
+    (src/autosave.js status): the browser has no usable storage, a write
+    failed (a full quota arrives as an aborted transaction), or another
+    tab changed the session — this tab then stops saving rather than
+    overwrite the newer version. Each case says what is at risk and offers
+    the session JSON, which keeps everything. */
+const StorageBanner = ({ status, onDownload }) => {
+  const state = status?.state;
+  if (state !== "unavailable" && state !== "failed" && state !== "conflict") return null;
+  const conflict = state === "conflict";
+  const title = conflict
+    ? "This session was changed in another tab — reload to see the latest version."
+    : state === "unavailable"
+      ? "Not saved — this browser's storage is unavailable."
+      : "Not saved — browser storage is full or unavailable.";
+  const body = conflict
+    ? "This tab no longer saves, so that it cannot overwrite the other tab's work. Anything you change here from now on stays in this tab only: download this tab's session first if you need it."
+    : state === "unavailable"
+      ? "IndexedDB is missing or could not be opened (private browsing, blocked site data, a damaged browser profile), so this session lives only in this tab and is lost when you close or reload it. Download the session JSON to keep your work; Import session brings it back."
+      : `Your latest changes could not be stored: ${status.error || "the write failed"}. They are lost if this tab closes or reloads. Download the session JSON to keep your work; saving is tried again on your next change.`;
+  const button = (label, onClick, primary) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className="px-3 py-1 text-[11px] rounded-sm"
+      style={{
+        background: primary ? "#8a2422" : "var(--bg-card)",
+        color: primary ? "#fff" : "var(--ink-alert)",
+        border: `1px solid ${primary ? "#8a2422" : "var(--ink-alert)"}`,
+        fontWeight: 700,
+        fontFamily: '"Raleway", sans-serif',
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="max-w-7xl mx-auto px-6 pb-4">
+      <div
+        role="alert"
+        data-save-banner={state}
+        className="flex items-start gap-2 text-[13px] px-3 py-2 rounded-sm"
+        style={{
+          background: "var(--bg-alert)",
+          border: "1px solid #ed6e6c",
+          color: "var(--ink-alert)",
+        }}
+      >
+        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0" style={{ overflowWrap: "anywhere" }}>
+          <strong>{title}</strong>
+          <div style={{ marginTop: 2 }}>{body}</div>
+          <div className="flex gap-2 flex-wrap" style={{ marginTop: 6 }}>
+            {conflict && button("Reload", () => window.location.reload(), true)}
+            {button(
+              conflict ? "Download this tab's session" : "Download session",
+              onDownload,
+              !conflict,
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/** Dismissable banner telling what a load did to the session: what
+    loading another events file did to the curation (src/carryOver.js,
+    replaceReportLines), or that a restored session came back without its
+    abundance table. */
+const NoticeBanner = ({ title, lines, onDismiss }) => (
+  <div className="max-w-7xl mx-auto px-6 pb-4">
+    <div
+      role="status"
+      data-notice
+      className="flex items-start gap-2 text-[13px] px-3 py-2 rounded-sm"
+      style={{
+        background: "var(--bg-info)",
+        border: "1px solid #00a3a6",
+        color: "var(--ink)",
+      }}
+    >
+      <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" style={{ color: "#00a3a6" }} />
+      <div className="flex-1 min-w-0" style={{ overflowWrap: "anywhere" }}>
+        <strong>{title}</strong>
+        <ul className="list-disc" style={{ paddingLeft: 18, marginTop: 3 }}>
+          {lines.map((line, i) => (
+            <li key={i}>{line}</li>
+          ))}
+        </ul>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        title="Dismiss"
+        style={{
+          background: "transparent",
+          border: "none",
+          color: "var(--ink-muted)",
+          cursor: "pointer",
+          padding: 2,
+        }}
+      >
+        <X className="w-4 h-4" />
+      </button>
+    </div>
+  </div>
+);
+
+/** The tabs' names, as their buttons show them. */
+const TAB_NAMES = {
+  overview: "Overview",
+  samples: "Samples",
+  table: "Events",
+  scatter: "Scatter",
+  validate: "Validate",
+  network: "Network",
+  plate: "Plate",
+  export: "Export",
+  datasets: "Datasets",
+  learn: "Learn",
+  help: "Help",
+};
+
+/** Error boundary around one tab's body, keyed by the tab: a tab that
+    throws while rendering shows the error in its place, and the
+    navigation, the files bar and every other tab keep working — Export
+    and Download session included, so the curation can always be saved.
+    A single boundary around the whole app (src/main.jsx) used to replace
+    everything with its error screen. */
+class TabErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error(`[crocodeel] the ${this.props.label} tab failed:`, error, info?.componentStack);
+  }
+
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    const { label, onExport, onDownloadSession } = this.props;
+    const button = (text, onClick, primary) => (
+      <button
+        type="button"
+        onClick={onClick}
+        className="px-3 py-1.5 text-[12px] rounded-sm"
+        style={{
+          background: primary ? "#275662" : "var(--bg-card)",
+          // var(--ink): the deep teal in the light theme, a light ink in
+          // the dark one, where #275662 on the card read 2:1 and the two
+          // ways to save the curation looked disabled.
+          color: primary ? "#fff" : "var(--ink)",
+          border: `1px solid ${primary ? "#275662" : "var(--ink)"}`,
+          fontWeight: 700,
+          fontFamily: '"Raleway", sans-serif',
+          cursor: "pointer",
+        }}
+      >
+        {text}
+      </button>
+    );
+    return (
+      <div
+        role="alert"
+        data-tab-error={label}
+        className="p-5 rounded-sm"
+        style={{
+          background: "var(--bg-alert)",
+          border: "1px solid #ed6e6c",
+          borderLeft: "4px solid #ed6e6c",
+          color: "var(--ink)",
+        }}
+      >
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+          The {label} tab could not be shown.
+        </div>
+        <p className="text-[13px]" style={{ lineHeight: 1.6, marginBottom: 8 }}>
+          Your curation is not affected: the other tabs work as usual, and
+          Export or Download session (files bar) saves your work. The error
+          below is what failed; reloading the page may help.
+        </p>
+        <pre
+          className="text-[12px]"
+          style={{
+            fontFamily: "ui-monospace, monospace",
+            background: "var(--bg-card)",
+            border: "1px solid var(--border)",
+            borderRadius: 3,
+            padding: 10,
+            whiteSpace: "pre-wrap",
+            overflowWrap: "anywhere",
+            marginBottom: 12,
+          }}
+        >
+          {String(error?.message || error)}
+        </pre>
+        <div className="flex gap-2 flex-wrap">
+          {button("Try again", () => this.setState({ error: null }), true)}
+          {onExport && button("Go to Export", onExport)}
+          {onDownloadSession && button("Download session", onDownloadSession)}
+        </div>
+      </div>
+    );
+  }
+}
 
 /* ---------- TUTORIAL PANEL ----------
    Side panel that walks the user through the demo dataset. Each step
@@ -24369,12 +24976,36 @@ const TutorialWelcome = ({ onStart, onSkip }) => (
   </div>
 );
 
-function AppMain({ initial }) {
+/** The display preferences kept in localStorage (theme, dark window,
+    page sizes, cards per row): read and written through these, which
+    never throw. When the browser blocks site data, every localStorage
+    access throws a SecurityError — IndexedDB fails too, so the app runs
+    in memory (StorageBanner) — and an unguarded read in a state
+    initialiser stopped the whole app on every load instead. The defaults
+    are used, and nothing is kept. */
+function readPref(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function writePref(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // not kept: the next visit uses the defaults
+  }
+}
+
+function AppMain({ initial, storage }) {
   // The session is loaded asynchronously by the outer App wrapper
   // before this component mounts, so `initial` is already populated
   // (or null when no prior session exists). All persisted UI state
   // (filters, sort, active tab, selected event) is restored from it
-  // so the user lands exactly where they left off.
+  // so the user lands exactly where they left off. `storage` says where
+  // it is saved: { available, rev, abToken } (src/storage.js); without
+  // storage the session lives in memory and the page says so.
   // Sample-level curation lives in its own map keyed by sample id. Each
   // entry holds an optional verdict ("contaminated" / "correct" /
   // "uncertain") and an optional downstream action ("keep" / "suppress")
@@ -24384,24 +25015,58 @@ function AppMain({ initial }) {
   // Migration: pre-refactor sessions stored the action on the event
   // (`e.action`). We migrate those into sampleCuration[e.target] on the
   // first load that detects them, then strip the field from the events.
-  const migrateLegacyAction = (rawEv, existingSC) => {
-    const sc = { ...(existingSC || {}) };
-    let touched = false;
-    for (const e of rawEv || []) {
-      if (e.action && e.target) {
-        const cur = sc[e.target] || {};
-        if (cur.action == null) {
-          sc[e.target] = { ...cur, action: e.action };
-          touched = true;
-        }
-      }
-    }
-    return { sampleCuration: sc, touched };
-  };
-  const initialMigration = migrateLegacyAction(
-    initial?.rawEvents,
-    initial?.sampleCuration,
+  // When a target's events disagree, the most severe action wins, as in
+  // the legacy app (see migrateSampleCuration in src/curation.js).
+  // `version` is the SAMPLE_CURATION_VERSION the session was saved with:
+  // the clean-up of an earlier model (stamped defaults, cleared actions)
+  // only applies to a session saved before it, never to one curated with
+  // this version. (An imported session JSON is migrated the same way, by
+  // sessionFromPayload in src/persistence.js; a stored session of an
+  // earlier layout already was, before its records were written —
+  // upgradedSession — so this only acts when that write failed.)
+  // Once, on the session this component was mounted with (it only
+  // seeds the useState initialisers below).
+  const initialMigration = useMemo(
+    () =>
+      migrateSampleCuration(
+        initial?.rawEvents,
+        initial?.sampleCuration,
+        initial?.sampleCurationVersion,
+      ),
+    [initial],
   );
+  // What reopening a session saved by an earlier version changed in the
+  // curated output, told once in the info dialog (null: nothing to say).
+  const sessionMigrationNotice = (changes) => {
+    if (!changes) return null;
+    const list = (ids) =>
+      ids.length > 12
+        ? `${ids.slice(0, 12).join(", ")} … (+${ids.length - 12})`
+        : ids.join(", ");
+    const parts = [
+      "This session was saved by an earlier version of the interface. Its automatic sample verdicts and actions have been recomputed with the current rules (Help → Auto-sync); the values you set by hand are unchanged.",
+    ];
+    if (changes.nowSuppressed.length)
+      parts.push(
+        `Now to suppress (${changes.nowSuppressed.length}): ${list(changes.nowSuppressed)} — a true-positive event targets them and nothing you set by hand says otherwise.`,
+      );
+    if (changes.noLongerSuppressed.length)
+      parts.push(
+        `No longer suppressed (${changes.noLongerSuppressed.length}): ${list(changes.noLongerSuppressed)} — their automatic Suppress no longer matched their events.`,
+      );
+    if (changes.keptAsKeep.length)
+      parts.push(
+        `Still kept in the curated table, now marked Keep (${changes.keptAsKeep.length}): ${list(changes.keptAsKeep)} — you had removed their Suppress; this version records that as Keep.`,
+      );
+    parts.push(
+      "The Samples tab shows each of them; the curated abundance export follows.",
+    );
+    return {
+      kind: "info",
+      title: "Session brought up to date",
+      body: parts.join("\n\n"),
+    };
+  };
   const [rawEvents, setRawEvents] = useState(() => {
     const ev = initial?.rawEvents || [];
     if (!initialMigration.touched) return ev;
@@ -24421,10 +25086,76 @@ function AppMain({ initial }) {
   React.useLayoutEffect(() => {
     rawEventsRef.current = rawEvents;
   }, [rawEvents]);
+  // Same for the sample curation, read when another events file replaces
+  // the current one (the confirmation runs after the render that opened
+  // it).
+  const sampleCurationRef = useRef(sampleCuration);
+  React.useLayoutEffect(() => {
+    sampleCurationRef.current = sampleCuration;
+  }, [sampleCuration]);
   const [runMetadata, setRunMetadata] = useState(initial?.runMetadata || null);
+  // What the events parser reported about the loaded file (rates or
+  // probabilities out of range, rows skipped, unrecognised verdicts or
+  // actions): kept with the file — replaced or cleared with it — saved
+  // with the session, and shown with the other data warnings.
+  const [eventsWarnings, setEventsWarnings] = useState(
+    Array.isArray(initial?.eventsWarnings) ? initial.eventsWarnings : [],
+  );
   const [ab, setAb] = useState(initial?.ab || null);
   const [metadata, setMetadata] = useState(initial?.metadata || null);
   const [plateMap, setPlateMap] = useState(initial?.plateMap || null);
+  // What every reader shows for the samples — tables and their filters,
+  // counts, Network colours, reports, exports: the stored curation plus
+  // the default of a sample no event targets, Not contaminated + Keep,
+  // marked automatic and never stored (src/curation.js). The setters
+  // keep writing `sampleCuration`. The never-targeted set travels as one
+  // string so a verdict click (new events, same targets) does not hand
+  // every reader a new map.
+  const neverTargetedKey = useMemo(
+    () =>
+      neverTargetedSamples(
+        rawEvents,
+        ab?.samples,
+        // A table sample that an event targets under another spelling is
+        // targeted.
+        ab ? (id) => resolveSample(ab, id) : null,
+      ).join("\n"),
+    [rawEvents, ab],
+  );
+  const neverTargeted = useMemo(
+    () => new Set(neverTargetedKey ? neverTargetedKey.split("\n") : []),
+    [neverTargetedKey],
+  );
+  const effectiveSampleCuration = useMemo(
+    () => buildEffectiveSampleCuration(sampleCuration, neverTargeted),
+    [sampleCuration, neverTargeted],
+  );
+  // Samples to keep / to suppress, the same numbers in the Overview, the
+  // Export tab and the HTML reports: matched to the abundance table's
+  // columns the way the curated abundance export matches them, so "to
+  // suppress" is exactly what that export drops.
+  const tableSample = useMemo(
+    () => (ab ? (id) => resolveSample(ab, id) : null),
+    [ab],
+  );
+  const sampleActionTotals = useMemo(
+    () => sampleActionCounts(effectiveSampleCuration, undefined, tableSample),
+    [effectiveSampleCuration, tableSample],
+  );
+  // What the curator has done that is not in any input file — evaluated
+  // or annotated events, sample decisions set by hand — for the
+  // confirmations that would lose it (src/carryOver.js).
+  const curationTotals = useMemo(
+    () => curationSummary(rawEvents, sampleCuration),
+    [rawEvents, sampleCuration],
+  );
+  // The other files, which clearing the events file leaves loaded — for
+  // its question, which named all three whether loaded or not.
+  const otherFiles = [ab && "abundance table", metadata && "metadata", plateMap && "plate map"].filter(Boolean);
+  const stayLoadedPhrase =
+    otherFiles.length === 0
+      ? ""
+      : `The ${otherFiles.length > 1 ? `${otherFiles.slice(0, -1).join(", ")} and ${otherFiles[otherFiles.length - 1]}` : otherFiles[0]} ${otherFiles.length > 1 ? "stay" : "stays"} loaded. `;
   // Tab can be deep-linked via the URL fragment: `#learn`, `#help`,
   // `#scatter`, etc. all land the curator on the matching tab. Lets
   // README sections cite the in-app interpretation guide directly,
@@ -24518,77 +25249,12 @@ function AppMain({ initial }) {
     window.addEventListener("popstate", handler);
     return () => window.removeEventListener("popstate", handler);
   }, [tab]);
-  // Save the page scroll position when leaving the Samples tab and
-  // restore it when coming back, so the curator lands back on the
-  // sample row they were studying after a Scatter / Events drill-in.
-  // Also clear any sample-list scope on entering the Samples tab —
-  // the scope was almost certainly set by a drill-in from Samples
-  // itself and shouldn't persist when we come back. Same effect
-  // records the previous tab into `lastTab` so the back chip knows
-  // where to send the curator.
   // Ref on the tab nav row so a tab switch can scroll it to the top
   // of the viewport — otherwise the curator clicks a tab and the new
   // content stays below the fold (the files bar + the tab row eat
   // ~half the screen on first load).
   const tabsNavRef = useRef(null);
   const prevTabRef = useRef(tab);
-  useEffect(() => {
-    const prev = prevTabRef.current;
-    if (prev !== tab) {
-      setLastTab(prev);
-      // On every tab change, bring the tab nav to the top of the
-      // viewport so the new content has the full real estate below.
-      // Samples-specific scroll restoration (below) can still override
-      // when there's a saved Y to come back to.
-      tabsNavRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-    }
-    if (prev === "samples" && tab !== "samples") {
-      samplesUIRef.current.scrollY = window.scrollY;
-    } else if (prev !== "samples" && tab === "samples") {
-      // If we arrive on Samples with a single-sample scope (almost
-      // certainly a drill-in from Network or elsewhere), promote
-      // that id to lastSamplesDrill so the row is highlighted on
-      // arrival, then clear the scope so the table shows everything.
-      let drillTargetId = null;
-      setFilter((f) => {
-        if (Array.isArray(f.scopeSamples) && f.scopeSamples.length === 1) {
-          drillTargetId = f.scopeSamples[0];
-          setLastSamplesDrill(drillTargetId);
-        }
-        return Array.isArray(f.scopeSamples) && f.scopeSamples.length > 0
-          ? { ...f, scopeSamples: null, scopeSide: "either" }
-          : f;
-      });
-      // When returning from a drill (lastSamplesDrill is set), let
-      // the SamplesTab's focus-on-arrival logic scroll to the
-      // matching row — it uses scrollIntoView({ block: "center" }),
-      // which is more useful than restoring the previous Y. Without
-      // this guard, our setTimeout(scrollTo(savedY)) below races
-      // with the SamplesTab scroll and lands the curator back at the
-      // top of the page when savedY was 0 (typical when the drill
-      // started from a row that was already in view).
-      const isDrillReturn = !!lastSamplesDrill || !!drillTargetId;
-      if (!isDrillReturn) {
-        const y = samplesUIRef.current.scrollY || 0;
-        // Only force a scroll when there's a real position to restore.
-        // y === 0 means we've never left Samples yet (or left from the
-        // very top) — in that case let the tab-switch scroll-to-tabs
-        // above do its job rather than fighting it with scrollTo(0).
-        if (y > 0) {
-          const handle = window.setTimeout(() => {
-            window.scrollTo({ top: y, behavior: "auto" });
-          }, 0);
-          prevTabRef.current = tab;
-          return () => window.clearTimeout(handle);
-        }
-      }
-      prevTabRef.current = tab;
-      return undefined;
-    }
-    prevTabRef.current = tab;
-    return undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
   // Analysis title — surfaces in the sidebar between "Interpretation
   // interface" and the version chip so the curator (and anyone looking
   // over their shoulder) sees which study they're working on. Auto-set
@@ -24607,8 +25273,9 @@ function AppMain({ initial }) {
     rateLog: -2,
     probability: 0.9,
     verdict: "true_positive",
-    targetVerdict: "contaminated",
-    action: "suppress",
+    // Automatic: the target follows the new event like any other.
+    targetVerdict: null,
+    action: null,
     notes: "Manually added by user",
   };
   const [explorePairsForm, setExplorePairsForm] = useState(
@@ -24703,23 +25370,23 @@ function AppMain({ initial }) {
   // 07:00).
   const [theme, setTheme] = useState(() => {
     if (typeof window === "undefined") return "light";
-    const v = window.localStorage.getItem("crocodeel-theme") || "light";
+    const v = readPref("crocodeel-theme") || "light";
     // Backwards compat: the old "auto" key meant time-based.
     if (v === "auto") return "auto-time";
     return v;
   });
   const [darkStart, setDarkStart] = useState(() => {
     if (typeof window === "undefined") return "19:00";
-    return window.localStorage.getItem("crocodeel-theme-dark-start") || "19:00";
+    return readPref("crocodeel-theme-dark-start") || "19:00";
   });
   const [darkEnd, setDarkEnd] = useState(() => {
     if (typeof window === "undefined") return "07:00";
-    return window.localStorage.getItem("crocodeel-theme-dark-end") || "07:00";
+    return readPref("crocodeel-theme-dark-end") || "07:00";
   });
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem("crocodeel-theme-dark-start", darkStart);
-    window.localStorage.setItem("crocodeel-theme-dark-end", darkEnd);
+    writePref("crocodeel-theme-dark-start", darkStart);
+    writePref("crocodeel-theme-dark-end", darkEnd);
   }, [darkStart, darkEnd]);
   // Suppress / keep action — always available. Every TP-targeted
   // sample defaults to `action: "suppress"` and the curator can flip
@@ -24731,7 +25398,7 @@ function AppMain({ initial }) {
   const readPageSize = (key, fallback) => {
     if (typeof window === "undefined") return fallback;
     const v = parseInt(
-      window.localStorage.getItem(`crocodeel-page-size-${key}`) || "",
+      readPref(`crocodeel-page-size-${key}`) || "",
       10,
     );
     return Number.isFinite(v) && v > 0 ? v : fallback;
@@ -24754,7 +25421,7 @@ function AppMain({ initial }) {
   const [galleryCardsPerRow, setGalleryCardsPerRow] = useState(() => {
     if (typeof window === "undefined") return 5;
     const v = parseInt(
-      window.localStorage.getItem("crocodeel-cards-per-row-gallery") || "",
+      readPref("crocodeel-cards-per-row-gallery") || "",
       10,
     );
     if (!Number.isFinite(v)) return 5;
@@ -24762,14 +25429,11 @@ function AppMain({ initial }) {
   });
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem("crocodeel-page-size-events", String(eventsPageSize));
-    window.localStorage.setItem("crocodeel-page-size-gallery", String(galleryPageSize));
-    window.localStorage.setItem("crocodeel-page-size-datasets", String(datasetsPageSize));
-    window.localStorage.setItem("crocodeel-page-size-samples", String(samplesPageSize));
-    window.localStorage.setItem(
-      "crocodeel-cards-per-row-gallery",
-      String(galleryCardsPerRow),
-    );
+    writePref("crocodeel-page-size-events", String(eventsPageSize));
+    writePref("crocodeel-page-size-gallery", String(galleryPageSize));
+    writePref("crocodeel-page-size-datasets", String(datasetsPageSize));
+    writePref("crocodeel-page-size-samples", String(samplesPageSize));
+    writePref("crocodeel-cards-per-row-gallery", String(galleryCardsPerRow));
   }, [
     eventsPageSize,
     galleryPageSize,
@@ -24779,7 +25443,7 @@ function AppMain({ initial }) {
   ]);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem("crocodeel-theme", theme);
+    writePref("crocodeel-theme", theme);
     const mql = window.matchMedia("(prefers-color-scheme: dark)");
     // Time `HH:MM` -> minutes since midnight. Used to test whether the
     // current local time falls inside the user-defined dark window.
@@ -24863,51 +25527,23 @@ const defaultFilter = () => ({
     adjacent: "any",
     scopeSamples: null,
     scopeSide: "either",
+    // Apply the run's --filter-low-ab to the diagnostics, as CroCoDeEL
+    // did (only meaningful when the run header declares a factor; see
+    // diagAb). On by default, switchable in Overview › Run parameters.
+    lowAbFilter: true,
   });
-  const [filter, setFilter] = useState(() => {
-    // Migrate legacy boolean fields (hideRelated / adjacentOnly) to the
-    // tri-state strings while preserving the user's last selection.
-    // Verdict went from a single string ("all" | "pending" | ...) to a
-    // multi-select array; promote the old shape if found.
-    const f = initial?.filter || {};
-    let verdicts;
-    if (Array.isArray(f.verdicts)) verdicts = f.verdicts;
-    else if (f.verdict && f.verdict !== "all") verdicts = [f.verdict];
-    else verdicts = [...VERDICT_IDS];
-    const sampleVerdicts = Array.isArray(f.sampleVerdicts)
-      ? f.sampleVerdicts
-      : [...SAMPLE_VERDICT_IDS];
-    const sampleVerdictsSide =
-      f.sampleVerdictsSide === "source" ||
-      f.sampleVerdictsSide === "target"
-        ? f.sampleVerdictsSide
-        : "either";
-    return {
-      q: f.q ?? "",
-      minScore: f.minScore ?? 0,
-      minRate: f.minRate ?? 0,
-      minIntroduced: f.minIntroduced ?? 0,
-      verdicts,
-      sampleVerdicts,
-      sampleVerdictsSide,
-      subject: f.subject ?? (f.hideRelated ? "different" : "any"),
-      group: f.group ?? "any",
-      adjacent: f.adjacent ?? (f.adjacentOnly ? "adjacent" : "any"),
-      // Optional sample-list scope. When set, only events whose source
-      // or target is in this array pass the filter — used by the
-      // Network tab to drill into one component's events from Scatter
-      // or the Events table. `scopeSide` narrows the match to one side
-      // ("source" or "target"); default "either" matches both.
-      scopeSamples: Array.isArray(f.scopeSamples) ? f.scopeSamples : null,
-      scopeSide:
-        f.scopeSide === "source" || f.scopeSide === "target"
-          ? f.scopeSide
-          : "either",
-    };
-  });
-  const [sort, setSort] = useState(
-    initial?.sort || { by: "score", dir: "desc" },
+  // The stored filter merged over the defaults (restoreFilter,
+  // src/persistence.js): a field it lacks gets its default — lowAbFilter
+  // on for a session saved before the toggle existed — and the earlier
+  // shapes are promoted (a single `verdict` string to the `verdicts`
+  // list, the hideRelated / adjacentOnly booleans to the tri-state
+  // strings). The optional sample-list scope (`scopeSamples`, narrowed to
+  // one side by `scopeSide`) is how the Network tab drills into one
+  // component's events from Scatter or the Events table.
+  const [filter, setFilter] = useState(() =>
+    restoreFilter(initial?.filter, defaultFilter()),
   );
+  const [sort, setSort] = useState(() => restoreSort(initial?.sort));
   const [err, setErr] = useState(null);
   // Long-running file load / parse indicator. `null` when idle; an
   // object `{ label, sub?, progress }` while a load is in flight.
@@ -24918,13 +25554,38 @@ const defaultFilter = () => ({
   const abFileRef = useRef(null);
   const sessionFileRef = useRef(null);
 
-  /* Save indicator: shows a discrete "Saved" pill briefly after each
-     auto-save. Set to a timestamp on save; the indicator fades out via
-     a separate timeout. */
-  const [savedAt, setSavedAt] = useState(null);
-  // True when the last save wrote the verdicts but failed to write the
-  // abundance matrix — surfaced persistently, see SavedPill.
-  const [abSaveFailed, setAbSaveFailed] = useState(false);
+  /* Save indicator (src/autosave.js): `savedAt` flashes the "Saved"
+     pill after each auto-save; `abFailed` says the verdicts were saved
+     but not the abundance matrix (persistent, see SavedPill); the state
+     "failed", "unavailable" (no storage: the session lives in memory) or
+     "conflict" (another tab changed the session) keeps "Not saved" up
+     with a banner that says why. */
+  const [saveStatus, setSaveStatus] = useState(() => ({
+    state: storage?.available === false ? "unavailable" : "idle",
+    savedAt: null,
+    abFailed: false,
+    error: null,
+  }));
+  // Dismissable notice over the tabs (NoticeBanner): what loading another
+  // events file did to the curation, or a session restored without its
+  // abundance table (the table's last save had failed).
+  // What reopening the stored session found: its table lost, parts the
+  // readers of src/persistence.js repaired (checkStoredSession), the
+  // save of a tab of the earlier version brought in (readStoredSession).
+  const [notice, setNotice] = useState(() => {
+    const lost =
+      initial?.abLost && !initial?.ab
+        ? "Its last save to this browser's storage failed, so the session came back without it: load species_abundance.tsv again for the scatterplots and the diagnostics."
+        : null;
+    const repaired = Array.isArray(initial?.storageNotes) ? initial.storageNotes : [];
+    if (repaired.length > 0) {
+      return {
+        title: "The session saved in this browser was updated when it was opened.",
+        lines: lost ? [...repaired, `The abundance table was not restored. ${lost}`] : repaired,
+      };
+    }
+    return lost ? { title: "The abundance table was not restored.", lines: [lost] } : null;
+  });
 
   /* Tutorial state — two pieces:
      - welcomeOpen: the first-visit popup that asks "Take the tour or
@@ -24969,7 +25630,7 @@ const defaultFilter = () => ({
       {
         title: "Samples — the per-sample cockpit",
         body:
-          "Each event has an evaluation; each sample has its own verdict (Contaminated / Not contaminated / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are auto-tagged Not contaminated + Keep.\n\n" +
+          "Each event has an evaluation; each sample has its own verdict (Contaminated / Not contaminated / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are Not contaminated + Keep by default (tagged default, not counted as decisions).\n\n" +
           "The table splits events into two side-aware columns — Events as source / Events as target — each with its own count, TP/FP/Uncertain/Pending breakdown and → Scatter / → Events / → Network drill-ins that scope the destination tab to that side. A floating \"Back to Samples\" chip on the destination tab brings you back to the same row.\n\n" +
           "Filter by metadata (autocomplete on subject / timepoint / group / biome / control / quality flags) or by \"count event source\" / \"count event target\" counters. The Bulk-apply dialog combines all those filters with per-side event-count chips and pre-conditions on the samples' current verdict / action so you can stamp a verdict / action on a precise subset.",
         action: "tabSamples",
@@ -25040,7 +25701,7 @@ const defaultFilter = () => ({
       {
         title: "Export your curated report",
         body:
-          "When done, the Export tab produces four downloads: a curated events TSV (evaluation, action, notes), a full samples TSV (one row per sample with metadata facets, plate position, per-side event counts and breakdown, max rate / introduced %, plus verdict / action / notes), a printable events HTML report and a printable samples HTML report. Filter downstream using the evaluation / action columns if needed.",
+          "When done, the Export tab produces six downloads: a curated events TSV (CroCoDeEL's own columns, which CroCoDeEL reads back, then introduced_pct, verdict, action, notes), a full samples TSV (one row per sample with metadata facets, plate position, per-side event counts and breakdown, max rate / introduced %, plus verdict / action / notes), a printable events HTML report, a printable samples HTML report, the curated abundance table (the input's own values, without the samples set to Suppress) and the contamination graph for Gephi or Cytoscape. Filter downstream on the verdict / action columns if needed.",
         action: "tabExport",
         highlight: '[data-tutorial="tab-export"]',
       },
@@ -25145,77 +25806,115 @@ const defaultFilter = () => ({
     }
   };
 
-  /* Auto-save the full session to localStorage whenever any persisted
-     state changes. Debounced to 1 s so we don't hammer the disk when
-     the user blasts through events with keyboard shortcuts.
-     The abundance matrix is written to its own localStorage key, only
-     when the `ab` reference itself changes — this keeps verdict / action
-     clicks fast on large datasets (1000+ samples) where re-serializing
-     the matrix on every tick was the dominant cost. */
-  const lastSavedAbRef = useRef(null);
+  /* Auto-save (src/autosave.js). A short while after each change, only
+     the records that changed are written to IndexedDB: an evaluation
+     rewrites the small curation record, a tab switch the small UI
+     record; the events, the abundance matrix, the metadata and the plate
+     map are written only when they change. The whole session used to be
+     cloned again after every change — tab, selection, filter and sort
+     included. Measured per change (IndexedDB put() plus the save timer's
+     callback), on the bundled dataset whose events carry the longest
+     species lists (Sylph, 15.4k events): 134 ms of main-thread freeze,
+     0.6 s on a 4x slower CPU — 0.2 ms for a tab switch and 0.8 ms for
+     an evaluation now (0.7 / 2.3 ms on the slower CPU). The events
+     record alone costs 0.18 s, once, when the file is loaded. (On
+     Meteor, 16.6k events with shorter lists: 31 ms before, 0.3 / 0.9 ms
+     now.)
+
+     A page being hidden or closed is saved at once (a T pressed half a
+     second before a reload used to be lost with the 1 s debounce). A
+     write that fails, a browser without storage, or a session another
+     tab has changed since this one read it keep "Not saved" up, with a
+     banner that says why (StorageBanner); in the last case this tab
+     stops saving rather than overwrite the newer session.
+
+     The saver starts from what storage holds (storage.stored), so the
+     changes this component makes on mount — the curation brought up to
+     date with the current model, metadata read again with the current
+     header rules — are written once. */
+  const autosaveRef = useRef(null);
   useEffect(() => {
-    if (rawEvents.length === 0) {
-      // No data to save — actively clear storage so a previous session
-      // doesn't linger after the user clears everything.
-      clearStorage();
-      lastSavedAbRef.current = null;
-      setSavedAt(null);
-      return undefined;
-    }
-    const abChanged = lastSavedAbRef.current !== ab;
-    const handle = setTimeout(() => {
-      // saveToStorage is async (IndexedDB) — fire-and-forget; the save
-      // indicator updates from inside the promise. Errors are already
-      // caught + logged inside saveToStorage, which reports the main and
-      // abundance writes separately.
-      saveToStorage(
-        {
-          version: 1,
-          savedAt: new Date().toISOString(),
-          rawEvents,
-          sampleCuration,
-          runMetadata,
-          metadata,
-          plateMap,
-          ab,
-          analysisTitle,
-          // UI state — keeps the user exactly where they left off
-          tab,
-          selId,
-          filter,
-          sort,
-        },
-        { saveAb: abChanged },
-      ).then((res) => {
-        if (!res.main) return;
-        // Only latch the reference when the matrix actually made it to
-        // disk — otherwise the next tick sees abChanged === false and
-        // never retries, silently dropping the abundance table from the
-        // restored session.
-        if (abChanged && res.ab) lastSavedAbRef.current = ab;
-        setAbSaveFailed(abChanged && !res.ab);
-        setSavedAt(Date.now());
-      });
-    }, 1000);
-    return () => clearTimeout(handle);
-  }, [rawEvents, sampleCuration, runMetadata, metadata, plateMap, ab, analysisTitle, tab, selId, filter, sort]);
+    const saver = createAutosave({
+      backend: idbBackend,
+      initialState: storage?.stored || null,
+      rev: storage?.rev ?? 0,
+      abToken: storage?.abToken ?? null,
+      // The time the stored curation record holds (that of the boot's
+      // read when none is stored), which a save of a tab of the earlier
+      // version is compared with (src/autosave.js).
+      checkedAt: storage?.savedAt ?? null,
+      available: storage?.available !== false,
+      onStatus: setSaveStatus,
+    });
+    autosaveRef.current = saver;
+    const onPageHide = () => saver.flushOnPageHide();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") saver.flushNow();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+      saver.dispose();
+      if (autosaveRef.current === saver) autosaveRef.current = null;
+    };
+  }, [storage]);
+  useEffect(() => {
+    autosaveRef.current?.update({
+      rawEvents,
+      runMetadata,
+      eventsWarnings,
+      ab,
+      metadata,
+      plateMap,
+      sampleCuration,
+      // The model the curation follows (src/curation.js): a session
+      // without it is migrated as one saved by an earlier version.
+      sampleCurationVersion: SAMPLE_CURATION_VERSION,
+      analysisTitle,
+      // UI state — keeps the user exactly where they left off
+      tab,
+      selId,
+      filter,
+      sort,
+    });
+  }, [rawEvents, runMetadata, eventsWarnings, ab, metadata, plateMap, sampleCuration, analysisTitle, tab, selId, filter, sort]);
 
 
   /* ---- derived state ---- */
   /** Count of species with non-zero abundance per sample. Used to compute
-      introducedPct (= introduced species / target's total species). */
-  const targetSpeciesCounts = useMemo(() => {
-    if (!ab) return null;
-    const counts = {};
-    for (const sample of ab.samples) {
-      let n = 0;
-      for (const sp of ab.species) {
-        if ((ab.matrix[sp]?.[sample] || 0) > 0) n++;
-      }
-      counts[sample] = n;
-    }
-    return counts;
-  }, [ab]);
+      introducedPct (= introduced species / target's total species), on
+      the table as loaded: a sample's richness is a plain statistic, not a
+      diagnostic. */
+  const targetSpeciesCounts = useMemo(
+    () => (ab ? speciesCountsBySample(ab) : null),
+    [ab],
+  );
+
+  /* The table the DIAGNOSTICS run on. A CroCoDeEL run with
+     --filter-low-ab F zeroed, in each sample, every abundance ≤ F × the
+     sample's smallest one and rescaled the rest before fitting anything;
+     its header records F (filtering_ab_thr_factor). The scatter points and
+     line, R², points above the line, the missing-species test, cascades,
+     the automatic grade, the bulk criteria and the gallery / report plots
+     must see that same table — applyLowAbundanceFilter rebuilds it once
+     per (table, factor, toggle).
+
+     Data and plain statistics — exports and downloads, session storage,
+     sample lists, richness, introduced % — keep `ab`, the table as loaded.
+     `ab` itself is never replaced: a consumer that still reads it falls
+     back to the unfiltered diagnostics, never to saving a filtered table.
+     When the run declares no factor (or "None"), diagAb IS ab. */
+  const lowAbFactor = useMemo(
+    () => lowAbundanceFilterFactor(runMetadata),
+    [runMetadata],
+  );
+  const lowAbApplied = lowAbFactor != null && filter.lowAbFilter !== false;
+  const diagAb = useMemo(
+    () => (ab && lowAbApplied ? applyLowAbundanceFilter(ab, lowAbFactor) : ab),
+    [ab, lowAbApplied, lowAbFactor],
+  );
 
   // `detectCascades` is O(events × species) and was the dominant cost
   // on verdict clicks for large datasets — it ran on every rawEvents
@@ -25249,27 +25948,28 @@ const defaultFilter = () => ({
     const sig = sigParts.join("\n");
     let cascadeMap;
     if (
-      cascadeCacheRef.current.ab === ab &&
+      cascadeCacheRef.current.ab === diagAb &&
       cascadeCacheRef.current.metadata === metadata &&
       cascadeCacheRef.current.sig === sig
     ) {
       cascadeMap = cascadeCacheRef.current.byId;
     } else {
-      const cascaded = detectCascades(rawEvents, ab, metadata);
+      const cascaded = detectCascades(
+        rawEvents,
+        diagAb,
+        metadata ? (source, target) => areRelated(metadata, source, target) : null,
+      );
       cascadeMap = new Map(cascaded.map((e) => [e.id, e.cascade || null]));
-      cascadeCacheRef.current = { ab, metadata, sig, byId: cascadeMap };
+      cascadeCacheRef.current = { ab: diagAb, metadata, sig, byId: cascadeMap };
     }
     const prev = eventsAugmentedCacheRef.current;
     const next = new Map();
     const out = rawEvents.map((e) => {
       const cascade = cascadeMap.get(e.id) || null;
-      let pct = null;
-      if (targetSpeciesCounts) {
-        const total = targetSpeciesCounts[e.target];
-        if (total > 0 && Array.isArray(e.introduced)) {
-          pct = (e.introduced.length / total) * 100;
-        }
-      }
+      // The target is resolved like the scatter resolves it: a raw-name
+      // lookup left "s2 " without a count — a blank introduced_pct in the
+      // export, and an event the introduced-% filter always hid.
+      const pct = introducedPercent(ab, targetSpeciesCounts, e);
       const cached = prev.get(e.id);
       // Reuse the cached augmented object if the underlying raw event
       // and the two derived fields are all unchanged. This preserves
@@ -25290,7 +25990,7 @@ const defaultFilter = () => ({
     });
     eventsAugmentedCacheRef.current = next;
     return out;
-  }, [rawEvents, ab, metadata, targetSpeciesCounts]);
+  }, [rawEvents, ab, diagAb, metadata, targetSpeciesCounts]);
 
   const allSamples = useMemo(() => {
     if (ab) return ab.samples;
@@ -25338,9 +26038,29 @@ const defaultFilter = () => ({
      zero resolvable species simply has zero on-line points and gets graded
      "PROBABLY NOT CONTAMINATED" with the contamination line still drawn.
      The split is fixed, but the class of failure (any name mismatch between
-     the two files) deserves a permanent detector rather than a one-off fix. */
+     the two files) deserves a permanent detector rather than a one-off fix.
+
+     The parsers' own warnings come first, each prefixed with the file it
+     is about (parserWarnings): the events file's — rates or
+     probabilities out of range, rows skipped, verdicts or actions not
+     recognised — used to be dropped by every loader; the metadata and
+     plate-map ones were only on their cards. */
+  const parserWarnings = useMemo(() => {
+    // A hand-edited session may hold a single string, or anything.
+    const lines = (v) =>
+      Array.isArray(v)
+        ? v.filter((w) => typeof w === "string" && w)
+        : typeof v === "string" && v
+          ? [v]
+          : [];
+    return [
+      ...lines(eventsWarnings).map((w) => `Events file: ${w}`),
+      ...lines(metadata?.warnings).map((w) => `Metadata: ${w}`),
+      ...lines(plateMap?.warnings).map((w) => `Plate map: ${w}`),
+    ];
+  }, [eventsWarnings, metadata, plateMap]);
   const dataWarnings = useMemo(() => {
-    const out = [];
+    const out = [...parserWarnings];
     if (ab?.warnings?.length) out.push(...ab.warnings);
     if (rawEvents.length > 0 && rawEvents.every((e) => !(e.rate > 0))) {
       out.push(
@@ -25349,13 +26069,14 @@ const defaultFilter = () => ({
       );
     }
     if (ab && rawEvents.length > 0) {
-      const known = new Set(ab.species);
       let withSpecies = 0;
       let unresolved = 0;
       for (const e of rawEvents) {
         if (!e.introduced?.length) continue;
         withSpecies++;
-        if (!e.introduced.some((sp) => known.has(sp))) unresolved++;
+        // Same matcher as the scatter: integer ids CroCoDeEL rewrote
+        // ("1" for "001") resolve, so they no longer trip this warning.
+        if (!e.introduced.some((sp) => matchSpeciesName(ab, sp) != null)) unresolved++;
       }
       if (withSpecies > 0 && unresolved / withSpecies > 0.5) {
         const sample = rawEvents.find((e) => e.introduced?.length)?.introduced[0];
@@ -25369,7 +26090,7 @@ const defaultFilter = () => ({
       }
     }
     return out;
-  }, [ab, rawEvents]);
+  }, [ab, rawEvents, parserWarnings]);
 
   const filtered = useMemo(() => {
     const q = filter.q.trim().toLowerCase();
@@ -25378,19 +26099,23 @@ const defaultFilter = () => ({
     // would silently hide everything.
     const minIntro = ab ? filter.minIntroduced || 0 : 0;
     // Sample-list scope (set by Network drill-in actions). Build a Set
-    // upfront for O(1) per-event lookup.
+    // upfront for O(1) per-event lookup. A sample of the scope is matched
+    // under any spelling the abundance table resolves to it (tableSample:
+    // case, spaces), as the Samples tab shows it: its row for the table's
+    // "S2" drills into the events that name it "s2".
+    const scopeKey = (id) => (tableSample && tableSample(id)) || id;
     const scopeSet =
       Array.isArray(filter.scopeSamples) && filter.scopeSamples.length > 0
-        ? new Set(filter.scopeSamples)
+        ? new Set(filter.scopeSamples.map(scopeKey))
         : null;
     const scopeSide = filter.scopeSide || "either";
     let res = events.filter((e) => {
       if (scopeSet) {
         if (scopeSide === "source") {
-          if (!scopeSet.has(e.source)) return false;
+          if (!scopeSet.has(scopeKey(e.source))) return false;
         } else if (scopeSide === "target") {
-          if (!scopeSet.has(e.target)) return false;
-        } else if (!scopeSet.has(e.source) && !scopeSet.has(e.target)) {
+          if (!scopeSet.has(scopeKey(e.target))) return false;
+        } else if (!scopeSet.has(scopeKey(e.source)) && !scopeSet.has(scopeKey(e.target))) {
           return false;
         }
       }
@@ -25414,8 +26139,8 @@ const defaultFilter = () => ({
         // curator can quickly handle candidates whose target is
         // already explained by another contamination story.
         const side = filter.sampleVerdictsSide || "either";
-        const sv = sampleCuration?.[e.source]?.verdict || "pending";
-        const tv = sampleCuration?.[e.target]?.verdict || "pending";
+        const sv = effectiveSampleCuration?.[e.source]?.verdict || "pending";
+        const tv = effectiveSampleCuration?.[e.target]?.verdict || "pending";
         const sourceMatches = filter.sampleVerdicts.includes(sv);
         const targetMatches = filter.sampleVerdicts.includes(tv);
         const sideMatch =
@@ -25429,7 +26154,7 @@ const defaultFilter = () => ({
       if (filter.action) {
         // Action lives on the target sample — match events whose
         // target's recorded action equals the requested filter.
-        const effective = sampleCuration[e.target]?.action || null;
+        const effective = effectiveSampleCuration[e.target]?.action || null;
         if (effective !== filter.action) return false;
       }
       // Subject filter — events are "same subject" only when both samples
@@ -25480,9 +26205,9 @@ const defaultFilter = () => ({
           case "verdict":
             return e.verdict || "pending";
           case "action":
-            return sampleCuration[e.target]?.action || "";
+            return effectiveSampleCuration[e.target]?.action || "";
           case "targetVerdict":
-            return sampleCuration[e.target]?.verdict || "pending";
+            return effectiveSampleCuration[e.target]?.verdict || "pending";
           default:
             return e[sort.by];
         }
@@ -25497,7 +26222,7 @@ const defaultFilter = () => ({
       return sort.dir === "asc" ? av - bv : bv - av;
     });
     return res;
-  }, [events, filter, sort, metadata, plateMap, ab, sampleCuration]);
+  }, [events, filter, sort, metadata, plateMap, ab, tableSample, effectiveSampleCuration]);
 
   const counts = useMemo(() => {
     const c = {
@@ -25531,6 +26256,22 @@ const defaultFilter = () => ({
 
   const selected =
     events.find((e) => e.id === selId) || events[0] || null;
+  // Event evaluations and the automatic sample values derived from them
+  // (src/curation.js) change together: every path that changes an
+  // evaluation goes through here. `update` maps the event list to its
+  // next state; `syncSamples(sampleCuration, nextEvents)` returns the
+  // matching sample curation. The post-update events are computed HERE,
+  // from the last committed list, never collected inside the
+  // setRawEvents updater: React may run that updater only at the next
+  // render, and the sample side would then see the old evaluations.
+  const commitEvents = React.useCallback((update, syncSamples) => {
+    const nextEvents = update(rawEventsRef.current);
+    // Two writes from one handler must build on each other before React
+    // commits; the layout effect above re-syncs the ref afterwards.
+    rawEventsRef.current = nextEvents;
+    setRawEvents(update);
+    setSampleCuration((prev) => syncSamples(prev, nextEvents));
+  }, []);
   // Stable refs across renders so memoised consumers (GalleryCard,
   // table rows) don't see a fresh function on every parent render.
   // Without useCallback the wrapper would prevent React.memo from
@@ -25538,115 +26279,18 @@ const defaultFilter = () => ({
   // large datasets.
   const setVerdict = React.useCallback(
     (id, verdict) => {
-      // Read the event from the last committed state, not from inside
-      // the setRawEvents updater: React may defer that updater to the
-      // next render, and the sample sync below would then see no target
-      // and silently skip.
-      const prevEvents = rawEventsRef.current;
-      const ev = prevEvents.find((e) => e.id === id);
-      setRawEvents((prev) =>
-        prev.map((e) => (e.id === id ? { ...e, verdict } : e)),
+      // The target sample's automatic verdict / action are recomputed
+      // from ALL the events that target it (syncSampleCuration), so the
+      // result never depends on the order of the clicks; a verdict or an
+      // action the curator set by hand is never changed.
+      const target = rawEventsRef.current.find((e) => e.id === id)?.target;
+      commitEvents(
+        (list) => list.map((e) => (e.id === id ? { ...e, verdict } : e)),
+        (sc, nextEvents) =>
+          target ? syncSampleCuration(sc, nextEvents, [target]) : sc,
       );
-      const target = ev?.target;
-      if (!target) return;
-      const oldVerdict = ev.verdict;
-      const sampleEvents = prevEvents
-        .filter((e) => e.target === target)
-        .map((e) => (e.id === id ? { ...e, verdict } : e));
-      const stillHasTPOnTarget = sampleEvents.some(
-        (e) => e.id !== id && e.verdict === "true_positive",
-      );
-      const allTargetEventsResolved =
-        sampleEvents.length > 0 &&
-        sampleEvents.every((e) => e.verdict && e.verdict !== "pending");
-      // Auto-sync the target sample's verdict from the new event
-      // verdict — but only when the sample's current verdict was
-      // either unset or previously auto-derived by this same path.
-      // Manual sample-level decisions are never overwritten.
-      //
-      // Rules (in order):
-      //   1. ANY event targeting S is TP → S = contaminated. Positive
-      //      evidence wins, regardless of what we just changed.
-      //   2. Every event targeting S has a verdict (none pending) AND
-      //      none are TP → S = correct. Definitive: nothing reaching
-      //      this sample is a real contamination.
-      //   3. Mixed state (some still pending, no TP) → reflect the
-      //      curator's most recent call on this event: FP → correct,
-      //      Uncertain → uncertain. Pending → no change.
-      const hasTP = verdict === "true_positive" || stillHasTPOnTarget;
-      let sampleVerdict = null;
-      if (hasTP) sampleVerdict = "contaminated";
-      else if (allTargetEventsResolved) sampleVerdict = "correct";
-      else if (verdict === "false_positive") sampleVerdict = "correct";
-      else if (verdict === "uncertain") sampleVerdict = "uncertain";
-      if (sampleVerdict) {
-        setSampleCuration((prev) => {
-          const cur = prev[target] || {};
-          if (cur.verdict && !cur.verdictAuto) return prev;
-          const nextEntry = {
-            ...cur,
-            verdict: sampleVerdict,
-            verdictAuto: true,
-          };
-          // Auto-pair Contaminated → Suppress when no explicit action
-          // exists. Mirror the manual setSampleVerdict path so the
-          // pairing fires whether the curator marks the sample by
-          // hand or arrives at it via an event TP. Conversely, when
-          // the auto-sync moves the sample away from contaminated,
-          // drop the auto-suppress so a stale action doesn't linger.
-          if (sampleVerdict === "contaminated" && nextEntry.action == null) {
-            nextEntry.action = "suppress";
-            nextEntry.actionAuto = true;
-          } else if (
-            sampleVerdict !== "contaminated" &&
-            nextEntry.actionAuto
-          ) {
-            delete nextEntry.action;
-            delete nextEntry.actionAuto;
-          }
-          return { ...prev, [target]: nextEntry };
-        });
-      }
-      // Symmetric unwind: if the event was TP and just stopped being
-      // TP, and the target sample's "contaminated" tag was auto-set
-      // by an earlier TP click, and no other event targeting this
-      // sample is still TP, drop the auto verdict back to pending.
-      // Without this, clicking FP on the last remaining TP would
-      // leave the sample stuck on "contaminated" with nothing
-      // backing it.
-      if (
-        oldVerdict === "true_positive" &&
-        verdict !== "true_positive" &&
-        !stillHasTPOnTarget
-      ) {
-        setSampleCuration((prev) => {
-          const cur = prev[target];
-          if (!cur || cur.verdict !== "contaminated" || !cur.verdictAuto)
-            return prev;
-          const nextEntry = { ...cur };
-          delete nextEntry.verdict;
-          delete nextEntry.verdictAuto;
-          // Drop the auto-suppress that the contaminated tag pulled in
-          // — leaving the explicit action alone if the user picked it
-          // themselves.
-          if (nextEntry.actionAuto) {
-            delete nextEntry.action;
-            delete nextEntry.actionAuto;
-          }
-          const next = { ...prev };
-          if (
-            nextEntry.action == null &&
-            !nextEntry.notes
-          ) {
-            delete next[target];
-          } else {
-            next[target] = nextEntry;
-          }
-          return next;
-        });
-      }
     },
-    [],
+    [commitEvents],
   );
   const setNote = React.useCallback(
     (id, notes) =>
@@ -25658,65 +26302,23 @@ const defaultFilter = () => ({
   // Sample-level setters. The action / verdict / notes for a sample
   // live in `sampleCuration[sampleId]`. Toggling to null / empty value
   // drops the corresponding key so an unset sample serializes empty.
+  // A verdict or an action set here is the curator's own (no *Auto
+  // flag) and the event-driven rule never changes it; clearing it
+  // ("pending" / null) hands the sample back to that rule, which reads
+  // the current events — taken from the ref here, outside the updater.
   const setSampleVerdict = React.useCallback((sampleId, verdict) => {
     if (!sampleId) return;
-    setSampleCuration((prev) => {
-      const cur = prev[sampleId] || {};
-      const nextEntry = { ...cur };
-      if (verdict == null || verdict === "pending") {
-        delete nextEntry.verdict;
-      } else {
-        nextEntry.verdict = verdict;
-      }
-      // Any explicit user action clears the auto-derived flag. Future
-      // event-verdict flips will no longer try to unwind this sample's
-      // verdict — it was set by hand.
-      delete nextEntry.verdictAuto;
-      // Auto-pair Contaminated → Suppress when the user hasn't picked
-      // an action yet. Tag with actionAuto so we can roll it back if
-      // the verdict later moves away from contaminated. Mirrors the
-      // verdictAuto convention used elsewhere.
-      if (verdict === "contaminated" && nextEntry.action == null) {
-        nextEntry.action = "suppress";
-        nextEntry.actionAuto = true;
-      } else if (verdict !== "contaminated" && nextEntry.actionAuto) {
-        delete nextEntry.action;
-        delete nextEntry.actionAuto;
-      }
-      const next = { ...prev };
-      if (
-        nextEntry.verdict == null &&
-        nextEntry.action == null &&
-        !nextEntry.notes
-      ) {
-        delete next[sampleId];
-      } else {
-        next[sampleId] = nextEntry;
-      }
-      return next;
-    });
+    const events = rawEventsRef.current;
+    setSampleCuration((prev) =>
+      withManualVerdict(prev, sampleId, verdict, events),
+    );
   }, []);
   const setSampleAction = React.useCallback((sampleId, action) => {
     if (!sampleId) return;
-    setSampleCuration((prev) => {
-      const cur = prev[sampleId] || {};
-      const nextEntry = { ...cur };
-      if (action == null) delete nextEntry.action;
-      else nextEntry.action = action;
-      // Explicit user action — never auto-unwind it later.
-      delete nextEntry.actionAuto;
-      const next = { ...prev };
-      if (
-        nextEntry.verdict == null &&
-        nextEntry.action == null &&
-        !nextEntry.notes
-      ) {
-        delete next[sampleId];
-      } else {
-        next[sampleId] = nextEntry;
-      }
-      return next;
-    });
+    const events = rawEventsRef.current;
+    setSampleCuration((prev) =>
+      withManualAction(prev, sampleId, action, events),
+    );
   }, []);
   const setSampleNote = React.useCallback((sampleId, notes) => {
     if (!sampleId) return;
@@ -25792,6 +26394,84 @@ const defaultFilter = () => ({
     [scopeToSamples],
   );
 
+  // Save the page scroll position when leaving the Samples tab and
+  // restore it when coming back, so the curator lands back on the
+  // sample row they were studying after a Scatter / Events drill-in.
+  // Also clear any sample-list scope on entering the Samples tab —
+  // the scope was almost certainly set by a drill-in from Samples
+  // itself and shouldn't persist when we come back. Same effect
+  // records the previous tab into `lastTab` so the back chip knows
+  // where to send the curator.
+  // (Declared here, below `filter` and `lastSamplesDrill`, which it
+  // reads: the tab nav ref and prevTabRef it uses are declared with the
+  // tab state above.)
+  useEffect(() => {
+    const prev = prevTabRef.current;
+    if (prev !== tab) {
+      setLastTab(prev);
+      // On every tab change, bring the tab nav to the top of the
+      // viewport so the new content has the full real estate below.
+      // Samples-specific scroll restoration (below) can still override
+      // when there's a saved Y to come back to.
+      tabsNavRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+    if (prev === "samples" && tab !== "samples") {
+      samplesUIRef.current.scrollY = window.scrollY;
+    } else if (prev !== "samples" && tab === "samples") {
+      // If we arrive on Samples with a single-sample scope (almost
+      // certainly a drill-in from Network or elsewhere), promote
+      // that id to lastSamplesDrill so the row is highlighted on
+      // arrival, then clear the scope so the table shows everything.
+      // Read the scope from the committed filter — this effect runs
+      // after the render that switched the tab, so `filter` is current —
+      // and call the setters out here. Collecting drillTargetId inside a
+      // setFilter updater left it null whenever React deferred that
+      // updater to the next render (always, here: setLastTab above has
+      // already queued an update), so a drill-in was taken for a plain
+      // tab switch and the saved scroll position was restored over it.
+      const scope = Array.isArray(filter.scopeSamples)
+        ? filter.scopeSamples
+        : null;
+      const drillTargetId = scope && scope.length === 1 ? scope[0] : null;
+      if (drillTargetId) setLastSamplesDrill(drillTargetId);
+      if (scope && scope.length > 0) {
+        setFilter((f) =>
+          Array.isArray(f.scopeSamples) && f.scopeSamples.length > 0
+            ? { ...f, scopeSamples: null, scopeSide: "either" }
+            : f,
+        );
+      }
+      // When returning from a drill (lastSamplesDrill is set), let
+      // the SamplesTab's focus-on-arrival logic scroll to the
+      // matching row — it uses scrollIntoView({ block: "center" }),
+      // which is more useful than restoring the previous Y. Without
+      // this guard, our setTimeout(scrollTo(savedY)) below races
+      // with the SamplesTab scroll and lands the curator back at the
+      // top of the page when savedY was 0 (typical when the drill
+      // started from a row that was already in view).
+      const isDrillReturn = !!lastSamplesDrill || !!drillTargetId;
+      if (!isDrillReturn) {
+        const y = samplesUIRef.current.scrollY || 0;
+        // Only force a scroll when there's a real position to restore.
+        // y === 0 means we've never left Samples yet (or left from the
+        // very top) — in that case let the tab-switch scroll-to-tabs
+        // above do its job rather than fighting it with scrollTo(0).
+        if (y > 0) {
+          const handle = window.setTimeout(() => {
+            window.scrollTo({ top: y, behavior: "auto" });
+          }, 0);
+          prevTabRef.current = tab;
+          return () => window.clearTimeout(handle);
+        }
+      }
+      prevTabRef.current = tab;
+      return undefined;
+    }
+    prevTabRef.current = tab;
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
   /** Add a user-curated event to the events list. Used by the
       "Explore new pairs" feature in the Scatterplots tab when the user
       identifies a missed contamination (false negative) and wants to
@@ -25800,50 +26480,53 @@ const defaultFilter = () => ({
       auto-loaded events. The caller chooses the verdict (TP / FP /
       Uncertain) and the note text. */
   const addManualEvent = (data) => {
-    setRawEvents((prev) => {
-      const nextManualNum = prev.filter((e) =>
-        typeof e.id === "string" && e.id.startsWith("manual-"),
-      ).length + 1;
-      const newEvent = {
-        id: `manual-${nextManualNum}`,
-        source: data.source,
-        target: data.target,
-        rate: data.rate,
-        score: data.score,
-        introduced: data.introduced || [],
-        verdict: data.verdict || "true_positive",
-        notes: data.notes || "Manually added by user",
-      };
-      return [...prev, newEvent];
-    });
-    // Action lives on the target sample now — apply it after the event
-    // is staged so the next render reflects both pieces consistently.
-    if (
-      actionEnabled &&
-      data.target &&
-      (data.action === "keep" || data.action === "suppress")
-    ) {
-      setSampleAction(data.target, data.action);
-    }
-    // Target-sample verdict (contaminated / correct / uncertain) — also
-    // applied so a manual TP immediately tags the target as contaminated
-    // in the Samples cockpit, matching what the inline event-table
-    // pickers do for auto-flagged events.
-    if (
-      data.target &&
-      data.targetVerdict &&
-      data.targetVerdict !== "pending" &&
-      SAMPLE_VERDICT_IDS.includes(data.targetVerdict)
-    ) {
-      setSampleVerdict(data.target, data.targetVerdict);
-    }
+    // The new event is one more piece of evidence on its target: the
+    // target's automatic verdict / action follow it, like after a click.
+    // A verdict / action picked in the form (null: Automatic) is the
+    // curator's own, written by the same update.
+    const targetVerdict = SAMPLE_VERDICT_IDS.includes(data.targetVerdict)
+      ? data.targetVerdict
+      : null;
+    const targetAction =
+      actionEnabled && (data.action === "keep" || data.action === "suppress")
+        ? data.action
+        : undefined;
+    commitEvents(
+      (list) => {
+        const nextManualNum = list.filter(isManualEvent).length + 1;
+        const newEvent = {
+          id: `manual-${nextManualNum}`,
+          source: data.source,
+          target: data.target,
+          rate: data.rate,
+          score: data.score,
+          introduced: data.introduced || [],
+          verdict: data.verdict || "true_positive",
+          notes: data.notes || "Manually added by user",
+        };
+        return [...list, newEvent];
+      },
+      (sc, nextEvents) =>
+        data.target
+          ? applyTargetSideEffects(sc, nextEvents, [data.target], {
+              targetVerdict,
+              targetAction,
+            })
+          : sc,
+    );
   };
 
   /** Bulk-classify all same-subject events as false positives, with an
       auto-generated note explaining the rationale. Events that already
       have a manual verdict are skipped (to avoid overwriting user
       decisions). User notes are preserved by prepending the auto-note. */
-  const [bulkConfirm, setBulkConfirm] = useState(null); // null | { kind, count, onConfirm }
+  // null | { kind, count, onConfirm }. Opens on what reopening a session
+  // saved by an earlier version changed, if anything.
+  const [bulkConfirm, setBulkConfirm] = useState(() =>
+    sessionMigrationNotice(
+      initialMigration.changes || initial?.migrationChanges || null,
+    ),
+  );
   // Global Escape handler — closes the topmost dialog (config /
   // bulk-confirm) so keyboard users aren't trapped behind a backdrop
   // click target. Bulk-apply, popovers and tour-style overlays own
@@ -25885,19 +26568,22 @@ const defaultFilter = () => ({
       title: `Mark ${matches.length} same-subject event${matches.length > 1 ? "s" : ""} as false positive?`,
       body:
         "These are longitudinal pairs (source and target share a subject_id) — biologically expected to share microbes, so CroCoDeEL flags are typically false positives.\n\n" +
-        "Each event is marked FP. Target sample verdicts are left untouched — a sample may still be genuinely contaminated by something else, so its sample-level verdict stays under your control.",
+        "Each event is marked FP and its target sample follows the automatic rule, as if you had clicked each event: it stays Contaminated while another event targeting it is TP, becomes Uncertain if one is uncertain, and Not contaminated otherwise. A verdict or an action you set on a sample yourself is never changed.",
       confirmLabel: `Mark ${matches.length} as FP`,
       onConfirm: () => {
         const matchIds = new Set(matches.map((e) => e.id));
-        setRawEvents((prev) =>
-          prev.map((e) => {
-            if (!matchIds.has(e.id)) return e;
-            const r = areRelated(metadata, e.source, e.target);
-            const subj = r?.value || "?";
-            const autoNote = `Auto-classified as FP: longitudinal pair (same subject_id=${subj}).`;
-            const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
-            return { ...e, verdict: "false_positive", notes: newNote };
-          }),
+        const targets = matches.map((e) => e.target).filter(Boolean);
+        commitEvents(
+          (list) =>
+            list.map((e) => {
+              if (!matchIds.has(e.id)) return e;
+              const r = areRelated(metadata, e.source, e.target);
+              const subj = r?.value || "?";
+              const autoNote = `Auto-classified as FP: longitudinal pair (same subject_id=${subj}).`;
+              const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
+              return { ...e, verdict: "false_positive", notes: newNote };
+            }),
+          (sc, nextEvents) => syncSampleCuration(sc, nextEvents, targets),
         );
       },
     });
@@ -25933,29 +26619,23 @@ const defaultFilter = () => ({
       title: `Mark ${matches.length} event${matches.length > 1 ? "s" : ""} toward NC as true positive?`,
       body:
         "These events flow into a sample tagged as a negative control. A clean NC should not carry biological signal, so any contamination reaching it is almost certainly real (well-to-well leakage, carry-over, or reagent contamination).\n\n" +
-        "Each event is marked TP and its TARGET sample (the negative control) is flagged as Contaminated (skipping any target sample that already carries a verdict). Already-validated events are not affected.",
+        "Each event is marked TP. Its TARGET sample (the negative control) then follows the automatic rule, as if you had clicked each event: a TP event makes it Contaminated, paired with Suppress. Both stay automatic — rejecting those events later takes them back — and a verdict or an action you set on the sample yourself is never changed. Already-validated events are not affected.",
       confirmLabel: `Mark ${matches.length} as TP`,
       onConfirm: () => {
         const matchIds = new Set(matches.map((e) => e.id));
         // Taken from `matches`, not collected inside the updater below,
         // which React may run only at the next render.
         const matchedTargets = matches.map((e) => e.target).filter(Boolean);
-        setRawEvents((prev) =>
-          prev.map((e) => {
-            if (!matchIds.has(e.id)) return e;
-            const autoNote = `Auto-classified as TP: contamination flowing into negative control "${e.target}".`;
-            const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
-            return { ...e, verdict: "true_positive", notes: newNote };
-          }),
+        commitEvents(
+          (list) =>
+            list.map((e) => {
+              if (!matchIds.has(e.id)) return e;
+              const autoNote = `Auto-classified as TP: contamination flowing into negative control "${e.target}".`;
+              const newNote = e.notes ? `${autoNote}\n\n${e.notes}` : autoNote;
+              return { ...e, verdict: "true_positive", notes: newNote };
+            }),
+          (sc, nextEvents) => syncSampleCuration(sc, nextEvents, matchedTargets),
         );
-        // Side-effect: stamp the target NC samples as Contaminated,
-        // but never overwrite an existing sample-level verdict.
-        const uniqueTargets = Array.from(new Set(matchedTargets));
-        for (const t of uniqueTargets) {
-          const cur = sampleCuration[t] || {};
-          if (cur.verdict && cur.verdict !== "pending") continue;
-          setSampleVerdict(t, "contaminated");
-        }
       },
     });
   };
@@ -25969,13 +26649,19 @@ const defaultFilter = () => ({
       preserved untouched; otherwise the comment is prepended to each
       event's notes so prior context is never destroyed.
 
-      The optional `sampleSideEffects` argument lets the dialog ALSO
-      stamp a verdict and / or an action on the TARGET sample of each
-      matched event — handy for sweeping rules like "every event with
+      Each matched event's TARGET sample follows: by default its
+      automatic verdict / action are recomputed from every event that
+      targets it, exactly as when clicking each event (src/curation.js).
+      The optional `sampleSideEffects` lets the dialog ALSO write a
+      verdict and / or an action on those targets as the curator's own
+      decision — handy for sweeping rules like "every event with
       probability ≥ 0.95 → mark TP and mark its target as contaminated
-      + suppress". `targetVerdict` is null → leave alone, otherwise
-      one of pending/contaminated/correct/uncertain. `targetAction` is
-      undefined → leave alone, null → clear, else "keep"/"suppress". */
+      + keep". `targetVerdict` null → automatic, otherwise one of
+      pending (= remove the curator's verdict) / contaminated / correct
+      / uncertain. `targetAction` undefined → automatic, null → remove
+      the curator's action, else "keep" / "suppress". The skip toggles
+      protect the values the curator set by hand; automatic values do
+      not count as already set. */
   const bulkApplyToEvents = (ids, verdict, comment, sampleSideEffects) => {
     if (!ids || ids.length === 0) return;
     const idSet = new Set(ids);
@@ -25987,77 +26673,80 @@ const defaultFilter = () => ({
     const skipExistingTV = !!sse.skipExistingTargetVerdict;
     const skipExistingTA = !!sse.skipExistingTargetAction;
     const sampleComment = (sse.sampleComment || "").trim();
-    const sideEffectBits = [];
-    if (tv)
-      sideEffectBits.push(
-        `target verdict → ${tv}${skipExistingTV ? " (skip already-set)" : ""}`,
-      );
-    if (taProvided)
-      sideEffectBits.push(
-        `target action → ${ta == null ? "(clear)" : ta}${skipExistingTA ? " (skip already-set)" : ""}`,
-      );
-    if (sampleComment) sideEffectBits.push("note prepended to target sample");
+    const yoursKept = " (except on samples where you set one yourself)";
+    const sideEffectBits = [
+      tv === "pending"
+        ? skipExistingTV
+          ? 'verdict → unchanged (Pending removes verdicts set by hand, which "don\'t overwrite" protects)'
+          : "verdict → remove the one you set by hand, so it follows its events"
+        : tv
+          ? `verdict → ${tv} as your own decision${skipExistingTV ? yoursKept : ""}`
+          : "verdict → automatic, recomputed from every event targeting it (as when clicking each event)",
+      !taProvided
+        ? "action → automatic (Suppress while Contaminated, unless you chose an action)"
+        : ta != null
+          ? `action → ${ta} as your own decision${skipExistingTA ? yoursKept : ""}`
+          : skipExistingTA
+            ? 'action → unchanged ((clear) removes actions set by hand, which "don\'t overwrite" protects)'
+            : "action → remove the one you set by hand, so it follows the verdict",
+    ];
+    if (sampleComment) sideEffectBits.push("note prepended to the target sample");
     setBulkConfirm({
       kind: "confirm",
       title: `Apply "${verdict.replace("_", " ")}" to ${ids.length} event${ids.length > 1 ? "s" : ""}?`,
       body:
         `Existing evaluations on the matched events will be overwritten.` +
-        (sideEffectBits.length
-          ? `\n\nSample-level side-effects on each event's TARGET sample: ${sideEffectBits.join(", ")}.`
-          : "") +
+        `\n\nEach event's TARGET sample: ${sideEffectBits.join("; ")}.` +
+        (tv && taProvided
+          ? ""
+          : " The automatic rule never changes a verdict or an action you set by hand.") +
         (comment
           ? `\n\nThe comment will be prepended to each event's notes (existing notes are preserved).`
           : `\n\nNo comment provided — existing notes are kept untouched.`),
       confirmLabel: `Apply to ${ids.length}`,
       onConfirm: () => {
-        // Collected here, not inside the setRawEvents updater: React may
-        // defer that updater to the next render, which would leave this
-        // list empty when the sample side-effects below read it.
-        const matchedTargets = rawEvents
+        // Collected here, from the current events, not inside the
+        // setRawEvents updater: React may defer that updater to the next
+        // render, which would leave this list empty.
+        const matchedTargets = rawEventsRef.current
           .filter((e) => idSet.has(e.id) && e.target)
           .map((e) => e.target);
-        setRawEvents((prev) =>
-          prev.map((e) => {
-            if (!idSet.has(e.id)) return e;
-            const next = { ...e, verdict };
-            if (comment) {
-              const tag = `[bulk ${stamp}] ${comment}`;
-              next.notes = e.notes ? `${tag}\n\n${e.notes}` : tag;
-            }
-            return next;
-          }),
+        const note = sampleComment ? `[bulk ${stamp}] ${sampleComment}` : "";
+        commitEvents(
+          (list) =>
+            list.map((e) => {
+              if (!idSet.has(e.id)) return e;
+              const next = { ...e, verdict };
+              if (comment) {
+                const tag = `[bulk ${stamp}] ${comment}`;
+                next.notes = e.notes ? `${tag}\n\n${e.notes}` : tag;
+              }
+              return next;
+            }),
+          // Explicit choices first (as the curator's own values, honouring
+          // the skip toggles), then the automatic rule on every target.
+          (sc, nextEvents) =>
+            applyTargetSideEffects(sc, nextEvents, matchedTargets, {
+              targetVerdict: tv,
+              targetAction: ta,
+              skipExistingTargetVerdict: skipExistingTV,
+              skipExistingTargetAction: skipExistingTA,
+              note,
+            }),
         );
-        if (tv || taProvided || sampleComment) {
-          // Dedupe target ids before pushing to setSampleVerdict /
-          // setSampleAction so a sample touched by multiple matched
-          // events isn't written N times in a row. Skip-existing
-          // toggles are honoured field by field — checked against the
-          // sampleCuration snapshot at confirm time.
-          const uniqueTargets = Array.from(new Set(matchedTargets));
-          for (const t of uniqueTargets) {
-            const cur = sampleCuration[t] || {};
-            const hasVerdict = cur.verdict && cur.verdict !== "pending";
-            const hasAction = !!cur.action;
-            if (tv && !(skipExistingTV && hasVerdict))
-              setSampleVerdict(t, tv);
-            if (taProvided && !(skipExistingTA && hasAction))
-              setSampleAction(t, ta);
-            if (sampleComment) {
-              const tag = `[bulk ${stamp}] ${sampleComment}`;
-              const newNote = cur.notes ? `${tag}\n\n${cur.notes}` : tag;
-              setSampleNote(t, newNote);
-            }
-          }
-        }
       },
     });
   };
 
+  // Counted as the other questions that would lose the curation count it
+  // (curationTotals, src/carryOver.js): evaluations, notes and what was
+  // set by hand on a sample. An automatic sample value is not a decision
+  // — it goes with the evaluations it was derived from — and counting
+  // every sample entry made one TP read "1 event evaluation and 0 notes,
+  // plus 1 sample-level verdict / action" here and "1 evaluation" in the
+  // replace / import / dataset / tour questions.
   const bulkResetAllVerdicts = () => {
-    const decided = events.filter((e) => e.verdict !== "pending").length;
-    const noted = events.filter((e) => e.notes && e.notes.length > 0).length;
-    const sampleDecisions = Object.keys(sampleCuration).length;
-    if (decided === 0 && noted === 0 && sampleDecisions === 0) {
+    if (!curationTotals.any) {
       setBulkConfirm({
         kind: "info",
         title: "Nothing to reset",
@@ -26065,33 +26754,177 @@ const defaultFilter = () => ({
       });
       return;
     }
-    const sampleParts = [];
-    if (sampleDecisions > 0) {
-      sampleParts.push(
-        `${sampleDecisions} sample-level verdict${sampleDecisions !== 1 ? "s" : ""} / action${sampleDecisions !== 1 ? "s" : ""}`,
-      );
-    }
     setBulkConfirm({
       kind: "confirm",
       title: "Reset all curation work?",
       body:
-        `This will clear ${decided} event evaluation${decided !== 1 ? "s" : ""} and ` +
-        `${noted} note${noted !== 1 ? "s" : ""}` +
-        (sampleParts.length ? `, plus ${sampleParts.join(" / ")}` : "") +
-        `, returning every event to the "pending" state.\n\n` +
+        `Your session holds ${curationPhrase(curationTotals)}. Resetting clears it all and ` +
+        `returns every event to the "pending" state, so the sample verdicts and actions ` +
+        `derived from the evaluations go too.\n\n` +
         "The files you opened (events, abundance, metadata, plate map) are NOT affected.",
       confirmLabel: "Reset everything",
       destructive: true,
       onConfirm: () => {
-        setRawEvents((prev) =>
-          prev.map((e) => ({ ...e, verdict: "pending", notes: "" })),
+        // Every event back to pending: the rule leaves no automatic
+        // value anywhere, and the reset wipes the manual ones too.
+        commitEvents(
+          (list) => list.map((e) => ({ ...e, verdict: "pending", notes: "" })),
+          () => ({}),
         );
-        setSampleCuration({});
       },
     });
   };
 
   /* ---- file loaders ---- */
+
+  /** What the session's curation amounts to, for the confirmations that
+      would lose it: "5 evaluations, 2 notes and 3 sample decisions". */
+  const curationPhrase = (summary) => {
+    const parts = [];
+    const n = (count, one) => `${count} ${one}${count === 1 ? "" : "s"}`;
+    if (summary.evaluations) parts.push(n(summary.evaluations, "evaluation"));
+    if (summary.notes) parts.push(n(summary.notes, "note"));
+    if (summary.sampleEntries) parts.push(n(summary.sampleEntries, "sample decision"));
+    return parts.length > 1
+      ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`
+      : parts[0] || "";
+  };
+
+  /* Another events file replacing the current one — the card's Replace
+     (or a file dropped on it), the run page's "Use these events +
+     abundance in this session". This used to wipe every evaluation, note
+     and sample decision without a word, and the autosave then stored the
+     loss. Now, when the session holds curation, the curator chooses:
+     carry it over to the new file (the default), start fresh, or cancel;
+     replaceEvents (src/carryOver.js) builds the new session — the file's
+     own curation columns included — and a banner says what happened. */
+  const applyNewEvents = (parsed, { carryOver, title, onApplied }) => {
+    const hadEvents = rawEventsRef.current.length > 0;
+    const next = replaceEvents({
+      oldEvents: rawEventsRef.current,
+      oldSampleCuration: sampleCurationRef.current,
+      newEvents: parsed.events,
+      sampleIds: ab?.samples,
+      carryOver,
+      fileHasCuration: !!parsed.curation,
+      fileColumns: parsed.curationColumns,
+    });
+    // Seen by any handler that runs before the next commit (commitEvents
+    // does the same).
+    rawEventsRef.current = next.events;
+    setRawEvents(next.events);
+    setSampleCuration(next.sampleCuration);
+    setEventsWarnings(Array.isArray(parsed.warnings) ? parsed.warnings : []);
+    // A curated export has no run header: carried over, the session
+    // keeps its own, and the diagnostics with it (replacedRunMetadata).
+    const run = replacedRunMetadata(parsed.runMetadata, runMetadata, carryOver);
+    // Reset the filter so any scope / sliders / sample-verdict
+    // selection from a previous study don't silently hide every
+    // event in the new file. Carried over, the study is the same: the
+    // curator's low-abundance toggle stays, and so do their cutoffs when
+    // the run header is the session's.
+    const base = withRunCutoffs(defaultFilter(), run.runMetadata);
+    setFilter(
+      carryOver
+        ? {
+            ...base,
+            lowAbFilter: filter.lowAbFilter !== false,
+            ...(run.kept ? { minScore: filter.minScore, minRate: filter.minRate } : {}),
+          }
+        : base,
+    );
+    setRunMetadata(run.runMetadata);
+    // The ids are the new file's: the old selection would point at
+    // another event.
+    setSelId(null);
+    // Default the study label (the file's "# study:" title, else the
+    // events filename without extension) so the curator gets some
+    // context immediately. They can rename it inline from the upload bar.
+    const fileTitle = run.study || title;
+    if (!analysisTitle && fileTitle) setAnalysisTitle(fileTitle);
+    const lines = replaceReportLines(next.report);
+    if (run.kept) {
+      lines.push(
+        "The new file has no CroCoDeEL run header: your session's run parameters are kept (Overview › Run parameters), and the diagnostics with them.",
+      );
+    }
+    setNotice(
+      lines.length > 0
+        ? { title: hadEvents ? "Events file replaced." : "Events file loaded.", lines }
+        : null,
+    );
+    setErr(null);
+    setTab("overview");
+    onApplied?.();
+  };
+  const requestNewEvents = (parsed, { title, onApplied, aboveOverlays } = {}) => {
+    const summary = curationSummary(rawEventsRef.current, sampleCurationRef.current);
+    if (!summary.any) {
+      applyNewEvents(parsed, { carryOver: false, title, onApplied });
+      return;
+    }
+    const fileHasCuration = !!parsed.curation;
+    // What carrying over would drop, counted before the choice — whatever
+    // the file holds (a filtered curated export is a subset).
+    const preview = replaceEvents({
+      oldEvents: rawEventsRef.current,
+      oldSampleCuration: sampleCurationRef.current,
+      newEvents: parsed.events,
+      sampleIds: ab?.samples,
+      carryOver: true,
+      fileHasCuration,
+      fileColumns: parsed.curationColumns,
+    }).report;
+    const { dropped, droppedCurated, keptManual, manual } = preview;
+    const carried = [];
+    if (fileHasCuration) {
+      carried.push("The new file has its own evaluations: where it gives one, the file's value is used.");
+    }
+    if (dropped > 0) {
+      carried.push(
+        `${dropped} event${dropped === 1 ? " of yours is" : "s of yours are"} not in the new file and will be dropped` +
+          (droppedCurated > 0
+            ? `, with the evaluations and notes of ${droppedCurated} of them.`
+            : ` (none of ${dropped === 1 ? "it" : "them"} evaluated or annotated).`),
+      );
+    }
+    if (keptManual > 0) {
+      carried.push(
+        keptManual === 1
+          ? "The event you added by hand (Explore new pairs), which no CroCoDeEL file holds, is kept with its evaluation and notes."
+          : `The ${keptManual} events you added by hand (Explore new pairs), which no CroCoDeEL file holds, are kept with their evaluations and notes.`,
+      );
+    }
+    if (dropped === 0) {
+      carried.push(`Every ${keptManual > 0 ? "other " : ""}event of yours is in the new file.`);
+    }
+    setBulkConfirm({
+      kind: "confirm",
+      title: "Replace the events file?",
+      body:
+        `Your session holds ${curationPhrase(summary)} on the current events.\n\n` +
+        "Carry over (recommended): each event of the new file with the same source and target as one of yours keeps its evaluation and notes, and the sample verdicts, actions and notes you set stay for the samples still present. " +
+        carried.join(" ") +
+        "\n\nStart fresh: all of it is dropped" +
+        (manual === 1
+          ? ", the event you added by hand included,"
+          : manual > 1
+            ? `, the ${manual} events you added by hand included,`
+            : "") +
+        (fileHasCuration
+          ? " and only the file's own evaluations, notes and actions are used."
+          : " and every event starts pending.") +
+        "\n\nCancel keeps your session as it is.",
+      confirmLabel: "Carry over",
+      onConfirm: () => applyNewEvents(parsed, { carryOver: true, title, onApplied }),
+      altLabel: "Start fresh",
+      altDestructive: true,
+      onAlt: () => applyNewEvents(parsed, { carryOver: false, title, onApplied }),
+      // The run page covers the app: the question must sit above it.
+      zIndex: aboveOverlays ? 8500 : undefined,
+    });
+  };
+
   const loadEvents = async (file) => {
     const sizeStr = formatBytes(file?.size || 0);
     try {
@@ -26110,22 +26943,8 @@ const defaultFilter = () => ({
       setLoading({ label: `Parsing ${file.name}…`, sub: sizeStr, progress: null });
       await yieldToBrowser();
       const parsed = parseEvents(text);
-      setRawEvents(parsed.events);
-      setSampleCuration({});
-      // Reset the filter so any scope / sliders / sample-verdict
-      // selection from a previous study don't silently hide every
-      // event in the new file.
-      setFilter(withRunCutoffs(defaultFilter(), parsed.runMetadata));
-      setRunMetadata(parsed.runMetadata);
-      // Default the study label to the events filename (without
-      // extension) so the curator gets some context immediately.
-      // They can rename it inline from the upload bar.
-      if (!analysisTitle) {
-        const base = (file?.name || "").replace(/\.tsv$|\.txt$|\.csv$/i, "");
-        setAnalysisTitle(base || "Untitled study");
-      }
-      setErr(null);
-      setTab("overview");
+      const base = (file?.name || "").replace(/\.tsv$|\.txt$|\.csv$/i, "");
+      requestNewEvents(parsed, { title: base || "Untitled study" });
     } catch (e) {
       setErr(`Events file: ${e.message}`);
     } finally {
@@ -26198,8 +27017,13 @@ const defaultFilter = () => ({
       const parsedAb = parseAbundance(abText);
       if (!parsedAb) throw new Error("Could not parse demo abundance table");
       const parsedEvents = parseEvents(evText);
-      setRawEvents(parsedEvents.events);
-      setSampleCuration({});
+      // Another study: nothing of the current session is carried over
+      // (src/carryOver.js reads the file's own curation columns, if any).
+      const fresh = replaceEvents({ newEvents: parsedEvents.events, carryOver: false });
+      setRawEvents(fresh.events);
+      setSampleCuration(fresh.sampleCuration);
+      setEventsWarnings(parsedEvents.warnings || []);
+      setNotice(null);
       // Reset the filter so any scope / sliders / sample-verdict
       // selection from a previous study don't silently hide every
       // event of the demo, seeded with the run header's own cutoffs.
@@ -26282,9 +27106,14 @@ const defaultFilter = () => ({
         if (!parsedAb) throw new Error("Could not parse abundance table");
         const parsedEvents = parseEvents(evText);
 
-        // Reset session state to avoid mixing files from different datasets
-        setRawEvents(parsedEvents.events);
-        setSampleCuration({});
+        // Reset session state to avoid mixing files from different
+        // datasets: nothing of the current session is carried over
+        // (src/carryOver.js reads the file's own curation columns, if any).
+        const fresh = replaceEvents({ newEvents: parsedEvents.events, carryOver: false });
+        setRawEvents(fresh.events);
+        setSampleCuration(fresh.sampleCuration);
+        setEventsWarnings(parsedEvents.warnings || []);
+        setNotice(null);
         // Reset the filter so any scope / sliders / sample-verdict
         // selection from the previous study don't silently hide every
         // event of the new one (a stale scopeSamples list is the most
@@ -26339,11 +27168,16 @@ const defaultFilter = () => ({
       await performLoad();
       return;
     }
+    // Say plainly what would be lost: the curation is not in any file.
+    const summary = curationTotals;
     setBulkConfirm({
       kind: "confirm",
       title: `Replace your session with "${dataset.short_title || dataset.title}"?`,
       body:
-        "Loading this dataset will replace your currently-loaded events, abundance, metadata, plate map and evaluations.\n\n" +
+        "Loading this dataset will replace your currently-loaded events, abundance, metadata and plate map" +
+        (summary.any
+          ? `, and your curation will be lost: ${curationPhrase(summary)}. Download the session first (Download session, on the files bar) to keep it.\n\n`
+          : ".\n\n") +
         "The original files on disk are not affected — you can re-open them after exploring this dataset.",
       confirmLabel: "Replace and load",
       destructive: true,
@@ -26364,11 +27198,16 @@ const defaultFilter = () => ({
       setTutorialOpen(true);
       return;
     }
+    // Say plainly what would be lost, as loadDataset does.
+    const summary = curationTotals;
     setBulkConfirm({
       kind: "confirm",
       title: "Replace your session with the demo dataset?",
       body:
-        "The guided tour walks through the bundled Lou et al. 2023 P3 demo dataset. To run it, your currently-loaded events, abundance, metadata, plate map and evaluations will be replaced.\n\n" +
+        "The guided tour walks through the bundled Lou et al. 2023 P3 demo dataset. To run it, your currently-loaded events, abundance table, metadata and plate map will be replaced" +
+        (summary.any
+          ? `, and your curation will be lost: ${curationPhrase(summary)}. Download the session first (Download session, on the files bar) to keep it.\n\n`
+          : ".\n\n") +
         "The original files on disk are not affected — you can re-open them after the tour.",
       confirmLabel: "Replace and start tour",
       destructive: true,
@@ -26376,6 +27215,8 @@ const defaultFilter = () => ({
         // Clear current session so the welcome step can load demo cleanly
         setRawEvents([]);
         setSampleCuration({});
+        setEventsWarnings([]);
+        setNotice(null);
         setRunMetadata(null);
         setAb(null);
         setMetadata(null);
@@ -26404,64 +27245,28 @@ const defaultFilter = () => ({
     // filter bar). When omitted we dump every loaded event so downstream
     // tools can do their own filtering on the verdict/action columns.
     const list = Array.isArray(eventsList) ? eventsList : events;
-    const header = [
-      "source",
-      "target",
-      "contamination_rate",
-      "probability",
-      "introduced_pct",
-      "introduced_species",
-      "verdict",
-      "action",
-      "notes",
-    ];
-    const lines = [];
-    // CroCoDeEL-style header comments — the study name lets downstream
-    // tools or readers identify which dataset this curation belongs to.
-    if (analysisTitle) {
-      lines.push(`# study: ${tsvCell(analysisTitle)}`);
-    }
-    lines.push(header.join("\t"));
-    list.forEach((e) => {
-      lines.push(
-        [
-          e.source,
-          e.target,
-          e.rate,
-          e.score,
-          e.introducedPct == null ? "" : (e.introducedPct / 100).toFixed(4),
-          e.introduced.join(","),
-          e.verdict,
-          // Action lives on the target sample; surface it on the event
-          // row so downstream tools that consume this TSV see the same
-          // shape they did before the sample-level refactor.
-          sampleCuration?.[e.target]?.action || "",
-          e.notes,
-        ]
-          .map(tsvCell)
-          .join("\t"),
-      );
-    });
+    // CroCoDeEL's own columns first, so CroCoDeEL reads the file back,
+    // then introduced_pct, verdict, action and notes; the run's "#" line
+    // and the study name on top (curatedEventsToTSV, src/exports.js).
     downloadFile(
-      lines.join("\n"),
+      curatedEventsToTSV(list, {
+        runMetadata,
+        study: analysisTitle,
+        sampleCuration: effectiveSampleCuration,
+      }),
       `contamination_events_curated.tsv`,
       "text/tab-separated-values",
     );
   };
 
-  /** Sample-level curation export. One row per sample in the union of
-      events (source or target) and the abundance table, with every
-      column the Samples tab surfaces: metadata facets, plate position,
-      per-side event counts and evaluation breakdown, max rate, max
-      introduced %, plus the curation triplet (verdict, action, notes).
-      Empty / missing values become empty cells; the rows aren't
-      filtered so downstream tooling can pivot on whatever it needs. */
-  /** Preview counts for the Export tab card. Cheap: one pass over the
-      matrix, and only when an abundance table is loaded. */
+  /** Preview counts for the Export tab card, recomputed on every curation
+      change: no table is built (`matrix: false`), only the samples and
+      species it would drop are counted. */
   const curatedAbundanceStats = useMemo(() => {
     if (!ab) return null;
-    const cur = buildCuratedAbundance(ab, sampleCuration, {
+    const cur = buildCuratedAbundance(ab, effectiveSampleCuration, {
       dropEmptySpecies: true,
+      matrix: false,
     });
     return {
       totalSamples: ab.samples.length,
@@ -26469,39 +27274,44 @@ const defaultFilter = () => ({
       suppressedSamples: cur.droppedSamples.length,
       totalSpecies: ab.species.length,
       droppedSpecies: cur.droppedSpecies.length,
+      // False for a session saved before the parser kept the column sums:
+      // the table is then written as fractions, and the card says so.
+      inputValues: hasInputValues(ab),
     };
-  }, [ab, sampleCuration]);
+  }, [ab, effectiveSampleCuration]);
 
+  /** The curated abundance table and the text file that records how it
+      was made — the suppressed samples, the species that went with them,
+      the date, the study — both written from the same
+      buildCuratedAbundance result, on the same click. The provenance used
+      to be "#" lines at the top of the table, which pandas' and R's
+      default readers take for data: the table now holds the data only
+      (abundanceToTSV), with the input's own values. It then came from a
+      link of its own, which a curator could skip, and which described the
+      curation of the moment it was clicked, not the table downloaded
+      before. */
   const exportCuratedAbundance = (opts = {}) => {
     if (!ab) return;
-    const cur = buildCuratedAbundance(ab, sampleCuration, opts);
-    const head = [
-      `# curated abundance table — ${cur.samples.length} of ${ab.samples.length} samples kept`,
-    ];
-    if (analysisTitle) head.push(`# study: ${tsvCell(analysisTitle)}`);
-    head.push(`# curated: ${new Date().toISOString()}`);
-    // Provenance: which samples were dropped and why the species list may
-    // be shorter. A reader must be able to reconstruct the input.
-    if (cur.droppedSamples.length > 0) {
-      head.push(
-        `# suppressed samples (${cur.droppedSamples.length}): ${cur.droppedSamples
-          .map(tsvCell)
-          .join(", ")}`,
-      );
-    } else {
-      head.push("# suppressed samples (0): none — table is unchanged");
-    }
-    if (cur.droppedSpecies.length > 0) {
-      head.push(
-        `# species dropped as all-zero after suppression (${cur.droppedSpecies.length})`,
-      );
-    }
-    head.push(
-      "# relative abundances are unchanged: removing a sample column does not affect the others",
-    );
-    downloadText(
-      head.join("\n") + "\n" + abundanceToTSV(cur),
-      "species_abundance_curated.tsv",
+    // Written from the input's own rows (abundanceToTSV writes only the
+    // kept samples and species): no copy of the matrix is built.
+    const cur = buildCuratedAbundance(ab, effectiveSampleCuration, { ...opts, matrix: false });
+    const table = abundanceToTSV({ ...cur, matrix: ab.matrix });
+    const provenance = curatedAbundanceProvenance(ab, cur, {
+      study: analysisTitle,
+      curated: new Date().toISOString(),
+      build: `${__APP_VERSION__.hash} (${__APP_VERSION__.date})`,
+    });
+    downloadText(table, "species_abundance_curated.tsv");
+    // Two files, like the graph's CSV pair; the browser may ask before the
+    // second one.
+    setTimeout(
+      () =>
+        downloadFile(
+          provenance,
+          "species_abundance_curated.provenance.txt",
+          "text/plain",
+        ),
+      350,
     );
   };
 
@@ -26510,7 +27320,8 @@ const defaultFilter = () => ({
       other exports on this tab. */
   const exportGraph = (format) => {
     const graph = buildContaminationGraph(filtered, {
-      sampleCuration,
+      sampleCuration: effectiveSampleCuration,
+      neverTargeted,
       metadata,
       plateMap,
       ab,
@@ -26546,13 +27357,25 @@ const defaultFilter = () => ({
     return { nodes: ids.size, edges: filtered.length };
   }, [filtered]);
 
+  /** Sample-level curation export. One row per sample in the union of
+      events (source or target) and the abundance table, with every
+      column the Samples tab surfaces: metadata facets, plate position,
+      per-side event counts and evaluation breakdown, max rate, max
+      introduced %, plus the curation: verdict and action as every view
+      shows them (the effective curation: automatic values and the
+      default of a never-targeted sample included), each followed by its
+      origin — manual, automatic or default (curationOrigin) — the notes
+      and the study. Empty / missing values become empty cells; the rows
+      aren't filtered so downstream tooling can pivot on whatever it
+      needs. The header is the first line: the "# study:" line the file
+      used to start with is a data row to pandas' and R's default readers
+      (pandas silently took the 23 first columns for an index, R refused
+      the file), so the study is a column of its own. */
   const exportSamplesReport = () => {
-    const sampleIds = new Set();
-    (events || []).forEach((e) => {
-      if (e.source) sampleIds.add(e.source);
-      if (e.target) sampleIds.add(e.target);
-    });
-    if (ab?.samples) for (const s of ab.samples) sampleIds.add(s);
+    // One row per sample: a name the abundance table holds under another
+    // spelling is that table sample (samplesReportIndex, src/exports.js).
+    const index = samplesReportIndex(events, ab);
+    const sampleIds = new Set(index.ids);
 
     // Pre-compute per-sample aggregates in a single pass over events.
     const agg = new Map();
@@ -26570,11 +27393,11 @@ const defaultFilter = () => ({
     }
     (events || []).forEach((e) => {
       if (e.source) {
-        const a = agg.get(e.source);
+        const a = agg.get(index.rowOf(e.source));
         if (a) a.asSource++;
       }
       if (e.target) {
-        const a = agg.get(e.target);
+        const a = agg.get(index.rowOf(e.target));
         if (a) {
           a.asTarget++;
           if (e.verdict === "true_positive") a.tpAsTarget++;
@@ -26617,14 +27440,13 @@ const defaultFilter = () => ({
       "max_target_rate",
       "max_target_introduced_pct",
       "verdict",
+      "verdict_origin",
       "action",
+      "action_origin",
       "notes",
+      "study",
     ];
-    const lines = [];
-    if (analysisTitle) {
-      lines.push(`# study: ${tsvCell(analysisTitle)}`);
-    }
-    lines.push(header.join("\t"));
+    const lines = [header.join("\t")];
 
     // Letter columns are 1-based when re-emitted to plate map style,
     // matching plateMapToTSV (e.g. row 0 col 0 → "A01").
@@ -26633,7 +27455,6 @@ const defaultFilter = () => ({
       const rowChar = String.fromCharCode(65 + placement.row);
       return `${rowChar}${String(placement.col + 1).padStart(2, "0")}`;
     };
-    const boolCell = (v) => (v == null ? "" : v ? "true" : "false");
     const num = (v, digits) =>
       v == null || !Number.isFinite(v) ? "" : v.toFixed(digits);
 
@@ -26643,7 +27464,7 @@ const defaultFilter = () => ({
         const flags = flagSample(id, metadata);
         const placement = plateMap?.bySample?.[id] || null;
         const a = agg.get(id) || {};
-        const c = sampleCuration?.[id] || {};
+        const c = samplesReportCuration(effectiveSampleCuration, index.names(id));
         lines.push(
           [
             id,
@@ -26652,9 +27473,8 @@ const defaultFilter = () => ({
             flags.timepoint || "",
             flags.groupId || "",
             flags.biome || "",
-            boolCell(flags.isControl),
-            boolCell(flags.isLowBiomass),
-            boolCell(flags.isLowSequencingDepth),
+            // Empty when the metadata does not say (sampleFlagCells).
+            ...sampleFlagCells(lookupBySample(metadata?.bySample, id), metadata),
             placement?.plate || "",
             well(placement),
             a.asSource || 0,
@@ -26663,11 +27483,14 @@ const defaultFilter = () => ({
             a.fpAsTarget || 0,
             a.uncAsTarget || 0,
             a.pendingAsTarget || 0,
-            num(a.maxTargetRate, 6),
+            rateCell(a.maxTargetRate),
             num(a.maxTargetIntroducedPct, 2),
             c.verdict || "",
+            curationOrigin(c, "verdict", a.asTarget > 0),
             c.action || "",
+            curationOrigin(c, "action", a.asTarget > 0),
             c.notes,
+            analysisTitle || "",
           ]
             .map(tsvCell)
             .join("\t"),
@@ -26686,12 +27509,9 @@ const defaultFilter = () => ({
       conventions of the events HTML report (palette, page header,
       "save as PDF" footer). */
   const exportSamplesHTMLReport = () => {
-    const sampleIds = new Set();
-    (events || []).forEach((e) => {
-      if (e.source) sampleIds.add(e.source);
-      if (e.target) sampleIds.add(e.target);
-    });
-    if (ab?.samples) for (const s of ab.samples) sampleIds.add(s);
+    // One row per sample, as in the samples TSV.
+    const index = samplesReportIndex(events, ab);
+    const sampleIds = new Set(index.ids);
 
     const agg = new Map();
     for (const id of sampleIds) {
@@ -26708,11 +27528,11 @@ const defaultFilter = () => ({
     }
     (events || []).forEach((e) => {
       if (e.source) {
-        const a = agg.get(e.source);
+        const a = agg.get(index.rowOf(e.source));
         if (a) a.asSource++;
       }
       if (e.target) {
-        const a = agg.get(e.target);
+        const a = agg.get(index.rowOf(e.target));
         if (a) {
           a.asTarget++;
           if (e.verdict === "true_positive") a.tpAsTarget++;
@@ -26736,18 +27556,19 @@ const defaultFilter = () => ({
 
     const rows = Array.from(sampleIds).sort((a, b) => a.localeCompare(b));
 
-    // Summary counts — verdict distribution + action distribution.
+    // Summary counts — verdict distribution + action distribution. Keep
+    // / suppress are counted like everywhere else (sampleActionCounts,
+    // matched to the abundance table as the curated export is): the
+    // default Keep of a never-targeted sample is not a decision.
     const summary = rows.reduce(
       (acc, id) => {
         acc.total++;
-        const c = sampleCuration?.[id] || {};
+        const c = samplesReportCuration(effectiveSampleCuration, index.names(id));
         const v = c.verdict || "pending";
         if (v === "contaminated") acc.contaminated++;
         else if (v === "correct") acc.correct++;
         else if (v === "uncertain") acc.uncertain++;
         else acc.pending++;
-        if (c.action === "keep") acc.keep++;
-        else if (c.action === "suppress") acc.suppress++;
         return acc;
       },
       {
@@ -26756,17 +27577,13 @@ const defaultFilter = () => ({
         correct: 0,
         uncertain: 0,
         pending: 0,
-        keep: 0,
-        suppress: 0,
+        ...sampleActionCounts(
+          effectiveSampleCuration,
+          rows.flatMap((id) => index.names(id)),
+          tableSample,
+        ),
       },
     );
-
-    const escapeHTML = (s) =>
-      String(s == null ? "" : s)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
 
     const verdictPill = (v) => {
       const norm = String(v || "pending");
@@ -26788,6 +27605,17 @@ const defaultFilter = () => ({
           : { bg: "#e0b13a", label: "Keep" };
       return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
+    // Values the curator did not set, as the samples TSV's origin columns
+    // name them (curationOrigin): "auto" for the rule's — from the events
+    // that target the sample, or the Suppress paired with Contaminated —
+    // and "default" for the Not contaminated + Keep of a sample no event
+    // targets. Printed, so a saved PDF keeps it.
+    const originTag = (c, field, targeted) => {
+      const origin = curationOrigin(c, field, targeted);
+      return origin === "automatic" || origin === "default"
+        ? `<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#797870;">${origin === "automatic" ? "auto" : "default"}</span>`
+        : "";
+    };
     const flagChip = (label, on, color) => {
       if (!on) return "";
       return `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:2px;font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;margin-right:2px;">${label}</span>`;
@@ -26806,7 +27634,7 @@ const defaultFilter = () => ({
         const flags = flagSample(id, metadata);
         const placement = plateMap?.bySample?.[id] || null;
         const a = agg.get(id) || {};
-        const c = sampleCuration?.[id] || {};
+        const c = samplesReportCuration(effectiveSampleCuration, index.names(id));
         const name = sampleName(metadata, id) || "";
         const facets = [
           flags.subject ? `subj: ${escapeHTML(flags.subject)}` : null,
@@ -26846,8 +27674,8 @@ const defaultFilter = () => ({
             </td>
             <td style="text-align:right;font-family:ui-monospace,monospace;">${ratePct(a.maxTargetRate)}</td>
             <td style="text-align:right;font-family:ui-monospace,monospace;">${introPct(a.maxTargetIntroducedPct)}</td>
-            <td>${verdictPill(c.verdict)}</td>
-            <td>${actionPill(c.action)}</td>
+            <td>${verdictPill(c.verdict)}${originTag(c, "verdict", a.asTarget > 0)}</td>
+            <td>${actionPill(c.action)}${originTag(c, "action", a.asTarget > 0)}</td>
             <td style="font-size:10px;color:#5a5550;white-space:pre-wrap;">${escapeHTML(c.notes || "")}</td>
           </tr>
         `;
@@ -26897,9 +27725,10 @@ const defaultFilter = () => ({
     <div class="stat correct"><div class="label">Not contaminated</div><div class="value">${summary.correct}</div></div>
     <div class="stat unc"><div class="label">Uncertain</div><div class="value">${summary.uncertain}</div></div>
     <div class="stat"><div class="label">Pending</div><div class="value">${summary.pending}</div></div>
-    <div class="stat keep"><div class="label">Keep</div><div class="value">${summary.keep}</div></div>
-    <div class="stat suppress"><div class="label">Suppress</div><div class="value">${summary.suppress}</div></div>
+    <div class="stat keep" title="${escapeHTML(SAMPLES_TO_KEEP_HINT)}"><div class="label">Keep</div><div class="value">${summary.keep}</div></div>
+    <div class="stat suppress" title="${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)}"><div class="label">Suppress</div><div class="value">${summary.suppress}</div></div>
   </div>
+  <div class="meta">Keep: ${escapeHTML(SAMPLES_TO_KEEP_HINT)} Suppress: ${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)} In the table, <em>auto</em> marks a verdict or an action set by the rule — a verdict derived from the event evaluations, or the Suppress that goes with a Contaminated verdict — and <em>default</em> the Not contaminated + Keep of a sample no event targets; the others were set by hand.</div>
 
   <h2>Samples</h2>
   <table>
@@ -26933,69 +27762,68 @@ const defaultFilter = () => ({
     downloadFile(html, "crocodeel_samples_report.html", "text/html");
   };
 
-  /** Restore the entire session from a JSON file produced by exportJSON.
-      Reverses the field-name changes done at export time, then writes
-      directly to the App-level setters. Best-effort: missing fields
-      are left as-is, malformed JSON throws which the caller surfaces. */
+  /** Restore the entire session from a JSON file produced by exportJSON
+      (any version). The WHOLE file is checked first (sessionFromPayload,
+      src/persistence.js): events, sample curation, abundance table —
+      firstHeader / colSums / integerCols / species order included —
+      metadata, plate map and UI state, the filter merged over the
+      defaults. A file that fails throws, which the caller reports, and
+      the current session stays as it is: the import used to clear the
+      browser's storage first, and a file whose filter had no `q` then
+      crashed the render — the previous session was gone either way.
+      When the current session holds curation, the curator is asked
+      first. Storage is never cleared: the autosave writes the imported
+      session over the stored one. */
   const importSessionFromJSON = (json) => {
-    if (!json || typeof json !== "object") {
-      throw new Error("Not a valid session JSON.");
-    }
-    if (!Array.isArray(json.events)) {
-      throw new Error('Missing "events" array in the session JSON.');
-    }
-    const restoredEventsWithLegacyAction = json.events.map((e, i) => ({
-      id: e.id != null ? e.id : i,
-      source: e.source,
-      target: e.target,
-      rate: e.contamination_rate,
-      score: e.probability,
-      introduced: e.introduced_species || [],
-      verdict: e.verdict || "pending",
-      action: e.action || undefined,
-      notes: e.notes || "",
-      cascade: e.cascade || undefined,
-    }));
-    // Preferred: a top-level sample_curation map. Fall back to migrating
-    // any legacy per-event `action` fields when the JSON predates the
-    // sample-level model.
-    const restoredSampleCuration =
-      json.sample_curation && typeof json.sample_curation === "object"
-        ? { ...json.sample_curation }
-        : {};
-    const migratedFromEvents = migrateLegacyAction(
-      restoredEventsWithLegacyAction,
-      restoredSampleCuration,
-    );
-    const restoredEvents = restoredEventsWithLegacyAction.map((e) => {
-      if (!e.action) return e;
-      const { action: _drop, ...rest } = e;
-      return rest;
+    const read = sessionFromPayload(json, {
+      defaults: defaultFilter(),
+      tabs: [...new Set(Object.values(TAB_HASH_ALIASES))],
     });
-    // Wipe IndexedDB synchronously (fire-and-forget) so a fast F5
-    // before the 1 s auto-save debounce fires can't restore the
-    // *previous* session. The next auto-save will write the imported
-    // data fresh; force the abundance side payload to be rewritten by
-    // resetting lastSavedAbRef so the loader can't splice in the old
-    // matrix.
-    clearStorage();
-    lastSavedAbRef.current = null;
-    setRawEvents(restoredEvents);
-    setSampleCuration(migratedFromEvents.sampleCuration);
-    setRunMetadata(json.run_metadata || null);
-    setMetadata(json.metadata || null);
-    setPlateMap(json.plate_map || null);
-    setAb(json.abundance || null);
-    setAnalysisTitle(json.analysis_title || "");
-    if (json.ui_state) {
-      if (typeof json.ui_state.tab === "string") setTab(json.ui_state.tab);
-      if (json.ui_state.sel_id !== undefined) setSelId(json.ui_state.sel_id);
-      if (json.ui_state.filter && typeof json.ui_state.filter === "object")
-        setFilter(json.ui_state.filter);
-      if (json.ui_state.sort && typeof json.ui_state.sort === "object")
-        setSort(json.ui_state.sort);
+    if (!read.ok) throw new Error(read.errors.join(" "));
+    const s = read.session;
+    const apply = () => {
+      rawEventsRef.current = s.rawEvents;
+      setRawEvents(s.rawEvents);
+      setSampleCuration(s.sampleCuration);
+      setEventsWarnings(s.eventsWarnings);
+      setRunMetadata(s.runMetadata);
+      setMetadata(remapMetadata(s.metadata) || null);
+      setPlateMap(s.plateMap);
+      setAb(s.ab);
+      setAnalysisTitle(s.analysisTitle);
+      if (s.tab) setTab(s.tab);
+      setSelId(s.selId);
+      setFilter(s.filter);
+      setSort(s.sort);
+      setErr(null);
+      // What the readers repaired in the file — what an earlier version's
+      // parser left in it — is said, not refused.
+      setNotice(
+        read.repairs.length > 0
+          ? { title: "Session imported. The file was repaired while it was read:", lines: read.repairs }
+          : null,
+      );
+      // A session saved by an earlier version: say what its migration
+      // changed in the curated output.
+      const migration = sessionMigrationNotice(read.changes);
+      if (migration) setBulkConfirm(migration);
+    };
+    const summary = curationSummary(rawEventsRef.current, sampleCurationRef.current);
+    if (!summary.any) {
+      apply();
+      return;
     }
-    setErr(null);
+    const evaluated = s.rawEvents.filter((e) => e.verdict && e.verdict !== "pending").length;
+    setBulkConfirm({
+      kind: "confirm",
+      title: "Replace your session with the imported one?",
+      body:
+        `Your current session holds ${curationPhrase(summary)}: importing replaces it, and that curation is lost unless you download the session first (Download session, on the files bar).\n\n` +
+        `The imported session has ${s.rawEvents.length} event${s.rawEvents.length === 1 ? "" : "s"}, ${evaluated} evaluated.`,
+      confirmLabel: "Replace session",
+      destructive: true,
+      onConfirm: apply,
+    });
   };
 
   const exportJSON = () => {
@@ -27003,53 +27831,41 @@ const defaultFilter = () => ({
     // file (run metadata, sample metadata, plate map, abundance table).
     // Aim is "everything you need to reproduce or re-import this
     // session". Abundance can be large; we serialize the parsed
-    // structure as-is rather than the raw text.
-    const payload = {
-      generated: new Date().toISOString(),
-      schema_version: 2,
-      counts: {
-        total: counts.total,
-        true_positive: counts.tp,
-        false_positive: counts.fp,
-        uncertain: counts.uncertain,
-        pending: counts.pending,
-      },
-      analysis_title: analysisTitle || null,
-      has_metadata: !!metadata,
-      has_plate_map: !!plateMap,
-      has_abundance: !!ab,
-      run_metadata: runMetadata || null,
-      metadata: metadata || null,
-      plate_map: plateMap || null,
-      abundance: ab || null,
-      // UI state — let the importer drop the user back exactly where
-      // they were (active tab, selected event, filters, sort).
-      ui_state: {
+    // structure as-is rather than the raw text. The format is
+    // sessionToJSON's (src/persistence.js), which the error screen also
+    // uses for what the browser stored.
+    const payload = sessionToJSON(
+      {
+        rawEvents,
+        sampleCuration,
+        sampleCurationVersion: SAMPLE_CURATION_VERSION,
+        runMetadata,
+        eventsWarnings,
+        metadata,
+        plateMap,
+        ab,
+        analysisTitle,
         tab,
-        sel_id: selId,
+        selId,
         filter,
         sort,
       },
-      // Sample-level curation: verdict / action / notes per sample.
-      // Action lives here (not on the event) since the curator's
-      // downstream decision is bound to the sample, not to a single
-      // flagged event touching it.
-      sample_curation: sampleCuration,
-      events: events.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        contamination_rate: e.rate,
-        probability: e.score,
-        introduced_species: e.introduced,
-        verdict: e.verdict,
-        action: sampleCuration[e.target]?.action || null,
-        notes: e.notes,
-        relatedness: areRelated(metadata, e.source, e.target),
-        plate_distance: plateDistance(plateMap, e.source, e.target),
-        cascade: e.cascade,
-      })),
-    };
+      {
+        events,
+        counts: {
+          total: counts.total,
+          true_positive: counts.tp,
+          false_positive: counts.fp,
+          uncertain: counts.uncertain,
+          pending: counts.pending,
+        },
+        eventFields: (e) => ({
+          relatedness: areRelated(metadata, e.source, e.target),
+          plate_distance: plateDistance(plateMap, e.source, e.target),
+          cascade: e.cascade,
+        }),
+      },
+    );
     downloadFile(
       JSON.stringify(payload, null, 2),
       "crocodeel_curation_session.json",
@@ -27069,9 +27885,10 @@ const defaultFilter = () => ({
     const reportFilter = opts && opts.filter ? opts.filter : null;
     // Recompute the verdict tally over the filtered subset so the
     // header in the report matches what's actually rendered below.
-    // The suppress / keep counts are tallied across distinct target
-    // samples (action lives on the sample, not the event).
-    const seenTargets = new Set();
+    // The suppress / keep counts are per sample, over ALL samples, the
+    // same numbers as in the Overview and Export tabs
+    // (sampleActionTotals): "to suppress" is what the curated abundance
+    // export drops.
     const counts = list.reduce(
       (acc, e) => {
         acc.total++;
@@ -27079,26 +27896,17 @@ const defaultFilter = () => ({
         else if (e.verdict === "false_positive") acc.fp++;
         else if (e.verdict === "uncertain") acc.uncertain++;
         else acc.pending++;
-        // Action lives on samples — count distinct target-sample
-        // actions across the events in this report so the suppress /
-        // keep cards reflect the actual downstream effect.
-        if (e.target && !seenTargets.has(e.target)) {
-          seenTargets.add(e.target);
-          const a = sampleCuration?.[e.target]?.action;
-          if (a === "suppress") acc.suppress++;
-          else if (a === "keep") acc.keep++;
-        }
         return acc;
       },
-      { total: 0, tp: 0, fp: 0, uncertain: 0, pending: 0, suppress: 0, keep: 0 },
+      {
+        total: 0,
+        tp: 0,
+        fp: 0,
+        uncertain: 0,
+        pending: 0,
+        ...sampleActionTotals,
+      },
     );
-    const escapeHTML = (s) =>
-      String(s == null ? "" : s)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-
     // Verdicts arrive as snake_case ("true_positive"); accept both the
     // canonical form and a couple of upper-case shorthands so the pill
     // never silently falls back to "Pending".
@@ -27115,28 +27923,38 @@ const defaultFilter = () => ({
       return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
 
+    // The target sample's curation as every view shows it (an event's
+    // target always has one), and an "auto" tag after a value the rule
+    // set rather than the curator — from the events that target the
+    // sample, or the Suppress paired with Contaminated — as the Events
+    // table, the Samples tab and the samples HTML report mark it
+    // (curationOrigin). Printed, so a saved PDF keeps it.
+    const targetCuration = (e) => effectiveSampleCuration?.[e.target] || {};
+    const autoTag = (e, field) =>
+      curationOrigin(targetCuration(e), field, true) === "automatic"
+        ? `<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#797870;">auto</span>`
+        : "";
+
     // Action chip — the curator's "what to do with the contaminated
     // sample" choice. Action lives on the target sample; render the
     // chip whenever an action is recorded for the event's target,
     // regardless of the event's own evaluation.
     const actionPill = (e) => {
-      const eff = sampleCuration?.[e.target]?.action;
+      const eff = targetCuration(e).action;
       if (!eff) return "";
       const tone =
         eff === "suppress"
           ? { bg: "#ed6e6c", label: "Suppress" }
           : { bg: "#00a3a6", label: "Keep" };
-      return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
+      return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>${autoTag(e, "action")}`;
     };
 
-    // Sample-level verdict chip — the curator's call on the target
-    // sample as a whole (contaminated / correct / uncertain /
-    // pending). Cohabits with the event evaluation; we render
-    // whatever lives in sampleCuration for the target, defaulting to
-    // "Pending" with a muted chip when the sample hasn't been
-    // curated yet.
+    // Sample-level verdict chip — the call on the target sample as a
+    // whole (contaminated / correct / uncertain / pending). Cohabits with
+    // the event evaluation; "Pending" with a muted chip when the sample
+    // has no verdict yet.
     const sampleVerdictPill = (e) => {
-      const v = sampleCuration?.[e.target]?.verdict || "pending";
+      const v = targetCuration(e).verdict || "pending";
       const tone =
         v === "contaminated"
           ? { bg: "#ed6e6c", label: "Contaminated" }
@@ -27145,55 +27963,13 @@ const defaultFilter = () => ({
             : v === "uncertain"
               ? { bg: "#d97a3c", label: "Uncertain" }
               : { bg: "#e6e8e8", label: "Pending", textColor: "#5a5550" };
-      return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
+      return `<span style="background:${tone.bg};color:${tone.textColor || "#fff"};padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>${autoTag(e, "verdict")}`;
     };
 
-    // Build a one-paragraph summary of the active filter so the reader
-    // knows what subset they're looking at. Only mentions fields that
-    // diverge from the defaults; returns null when nothing is active.
-    const filterSummary = (() => {
-      if (!reportFilter) return null;
-      const parts = [];
-      if (reportFilter.q && reportFilter.q.trim()) {
-        parts.push(`search: "${escapeHTML(reportFilter.q.trim())}"`);
-      }
-      if (reportFilter.minScore && reportFilter.minScore > 0) {
-        parts.push(`probability ≥ ${reportFilter.minScore.toFixed(2)}`);
-      }
-      if (reportFilter.minRate && reportFilter.minRate > 0) {
-        parts.push(
-          `rate ≥ ${(reportFilter.minRate * 100).toFixed(2)}%`,
-        );
-      }
-      if (reportFilter.minIntroduced && reportFilter.minIntroduced > 0) {
-        parts.push(`introduced ≥ ${reportFilter.minIntroduced.toFixed(0)}%`);
-      }
-      if (
-        Array.isArray(reportFilter.verdicts) &&
-        reportFilter.verdicts.length > 0 &&
-        reportFilter.verdicts.length < 4
-      ) {
-        const labels = {
-          true_positive: "true positive",
-          false_positive: "false positive",
-          uncertain: "uncertain",
-          pending: "pending",
-        };
-        parts.push(
-          `verdict: ${reportFilter.verdicts.map((v) => labels[v] || v).join(", ")}`,
-        );
-      }
-      if (reportFilter.subject && reportFilter.subject !== "any") {
-        parts.push(`subject: ${reportFilter.subject}`);
-      }
-      if (reportFilter.group && reportFilter.group !== "any") {
-        parts.push(`group: ${reportFilter.group}`);
-      }
-      if (reportFilter.adjacent && reportFilter.adjacent !== "any") {
-        parts.push(`plate: ${reportFilter.adjacent}`);
-      }
-      return parts.length ? parts.join(" · ") : null;
-    })();
+    // A one-paragraph summary of the active filter so the reader knows
+    // what subset they're looking at (reportFilterSummary): only the
+    // fields that differ from the defaults, escaped; null when none does.
+    const filterSummary = reportFilterSummary(reportFilter);
 
     /** Build a small SVG scatterplot for an event. Mirrors the visual
         language of the main Scatterplot component (deep teal points
@@ -27290,12 +28066,15 @@ const defaultFilter = () => ({
     /** Render the diagnostic checks for an event as a small list, plus
         a side table with the underlying numerical values. */
     const renderDiagChecks = (event, sc) => {
-      if (!sc || sc.error) return "<em style='color:#797870'>abundance table required</em>";
-      const di = lineDiagnostics(sc);
-      const ab2 = pointsAboveLine(sc);
-      const mi = missingAbundantFromSource(ab, event.source, event.target, event.rate);
+      if (!sc) return "<em style='color:#797870'>abundance table required</em>";
+      // The table is loaded but this pair is not in it: not evaluable,
+      // which is neither a pass nor a fail.
+      if (sc.error)
+        return `<div class="aggregate skip">Not evaluable — ${escapeHTML(sc.error)}. No criterion can be computed for this pair.</div>`;
       const rel = areRelated(metadata, event.source, event.target);
-      const score = automaticScore(di, ab2, mi, event.cascade, rel);
+      // Guided validation's evaluation (eventScore), on the scatter
+      // already built for this page.
+      const { diag: di, above: ab2, missing: mi, score } = eventScore(diagAb, event, rel, sc);
       const valueRows = [];
       if (di?.r2 != null) valueRows.push(["R² of line fit", di.r2.toFixed(3)]);
       if (di?.n != null) valueRows.push(["Species on line", di.n]);
@@ -27348,13 +28127,13 @@ const defaultFilter = () => ({
                 .join("")}
             </ul>
             ${
-              score.total > 0
-                ? `<div class="aggregate ${score.good === score.total ? "all-pass" : score.good >= Math.ceil(score.total * 0.6) ? "warn" : "fail"}">
+              score.grade !== "not_evaluable"
+                ? `<div class="aggregate ${score.grade === "contaminated" ? "all-pass" : score.grade === "possibly_not" ? "warn" : "fail"}">
               ${score.good} / ${score.total} —
               ${
-                score.good === score.total
+                score.grade === "contaminated"
                   ? "CONTAMINATED — CroCoDeEL is probably right"
-                  : score.good >= Math.ceil(score.total * 0.6)
+                  : score.grade === "possibly_not"
                     ? "POSSIBLY NOT CONTAMINATED — use CroCoDeEL's call with prudence"
                     : "PROBABLY NOT CONTAMINATED — review carefully"
               }
@@ -27448,7 +28227,7 @@ const defaultFilter = () => ({
         // through both renderers — buildScatter is O(species) and
         // running it twice per event is the dominant export cost on
         // big reports.
-        const sc = ab ? buildScatter(ab, e) : null;
+        const sc = diagAb ? buildScatter(diagAb, e) : null;
         const rel = areRelated(metadata, e.source, e.target);
         const pd = plateDistance(plateMap, e.source, e.target);
         // Print up to 80 introduced species in the per-event detail —
@@ -27471,7 +28250,7 @@ const defaultFilter = () => ({
             ${e.cascade.explained
               .map(
                 (c) =>
-                  `<li><strong>${escapeHTML(c.upstream_source)} → ${escapeHTML(e.source)}</strong> (${(c.rate * 100).toFixed(2)}%) explains ${c.species_explained} species</li>`,
+                  `<li><strong>${escapeHTML(c.upstream_source)} → ${escapeHTML(e.source)}</strong>${Number.isFinite(c.upstream_rate) ? ` (${(c.upstream_rate * 100).toFixed(2)}%)` : ""} explains ${c.species_explained} species</li>`,
               )
               .join("")}
           </ul>`
@@ -27529,12 +28308,17 @@ const defaultFilter = () => ({
       })
       .join("");
 
-    const runMetaSection = runMetadata
+    // The study is the report's title, not a run parameter: a session
+    // saved by an earlier version may still keep the "# study:" line of a
+    // reloaded curated TSV among its run parameters (the events loader
+    // has kept it out of them since, src/carryOver.js).
+    const runMetaEntries = Object.entries(runMetadata || {}).filter(([k]) => k !== "study");
+    const runMetaSection = runMetaEntries.length > 0
       ? `
       <h2>CroCoDeEL run parameters</h2>
       <table class="kv">
         <tbody>
-          ${Object.entries(runMetadata)
+          ${runMetaEntries
             .map(
               ([k, v]) =>
                 `<tr><th>${escapeHTML(k)}</th><td>${escapeHTML(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`,
@@ -27798,12 +28582,13 @@ const defaultFilter = () => ({
     <div class="stat fp"><div class="label">False positive</div><div class="value">${counts.fp}</div></div>
     <div class="stat unc"><div class="label">Uncertain</div><div class="value">${counts.uncertain}</div></div>
     <div class="stat"><div class="label">Pending</div><div class="value">${counts.pending}</div></div>
-    <div class="stat suppress"><div class="label">To suppress</div><div class="value">${counts.suppress}</div></div>
-    <div class="stat keep"><div class="label">To keep</div><div class="value">${counts.keep}</div></div>
+    <div class="stat suppress" title="${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)}"><div class="label">To suppress</div><div class="value">${counts.suppress}</div></div>
+    <div class="stat keep" title="${escapeHTML(SAMPLES_TO_KEEP_HINT)}"><div class="label">To keep</div><div class="value">${counts.keep}</div></div>
   </div>
+  <div class="meta">Samples to suppress: ${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)} Samples to keep: ${escapeHTML(SAMPLES_TO_KEEP_HINT)}</div>
   ${
     filterSummary
-      ? `<div class="filter-banner"><strong>Filter applied:</strong> ${filterSummary}. Counts above and the per-event detail below cover only the matching subset.</div>`
+      ? `<div class="filter-banner"><strong>Filter applied:</strong> ${filterSummary}. The event counts above and the per-event detail below cover only the matching subset; the samples to suppress / keep are counted over every sample.</div>`
       : ""
   }
 
@@ -27811,7 +28596,12 @@ const defaultFilter = () => ({
   <div class="dataset-grid">
     <div class="item"><div class="k">Total events loaded</div><div class="v">${events.length}</div></div>
     <div class="item"><div class="k">Events in report</div><div class="v">${list.length}</div></div>
-    <div class="item"><div class="k">Abundance table</div><div class="v">${ab ? `${ab.species?.length || 0} species · ${ab.samples?.length || 0} samples` : "<em style='font-weight:400;color:#797870;'>not loaded</em>"}</div></div>
+    <div class="item"><div class="k">Abundance table</div><div class="v">${ab ? `${ab.species?.length || 0} species · ${ab.samples?.length || 0} samples` : "<em style='font-weight:400;color:#797870;'>not loaded</em>"}</div></div>${
+      ab && lowAbFactor != null
+        ? `
+    <div class="item"><div class="k">Low-abundance filter</div><div class="v">${lowAbFactor}× — ${lowAbApplied ? "applied to the diagnostics, as in the CroCoDeEL run" : "<em style='font-weight:400;'>not applied: diagnostics on the table as loaded</em>"}</div></div>`
+        : ""
+    }
     <div class="item"><div class="k">Sample metadata</div><div class="v">${
       metadata
         ? `${metadata.nSamples} samples${metadata.hasGroupIdCol ? " · group_id" : ""}${metadata.hasBiomeCol ? " · biome" : ""}${metadata.hasLowBiomassCol ? " · low_biomass" : ""}${metadata.hasLowSequencingDepthCol ? " · low_seq_depth" : ""}`
@@ -27892,40 +28682,27 @@ const defaultFilter = () => ({
   // so verdict / action / cascade flips on the selected event don't
   // re-run buildScatter (and the diag chain that depends on it).
   const scatter = useMemo(
-    () => (selected ? buildScatter(ab, selected) : null),
+    () => (selected ? buildScatter(diagAb, selected) : null),
     [
-      ab,
+      diagAb,
       selected?.source,
       selected?.target,
       selected?.rate,
       selected?.introduced,
     ],
   );
-  const diag = useMemo(() => lineDiagnostics(scatter), [scatter]);
-  const above = useMemo(() => pointsAboveLine(scatter), [scatter]);
-  const missing = useMemo(
-    () =>
-      selected && ab
-        ? missingAbundantFromSource(ab, selected.source, selected.target, selected.rate)
-        : null,
-    [ab, selected],
-  );
   const selectedRelatedness = useMemo(
     () =>
       selected ? areRelated(metadata, selected.source, selected.target) : null,
     [metadata, selected],
   );
-  const autoScore = useMemo(
-    () =>
-      automaticScore(
-        diag,
-        above,
-        missing,
-        selected?.cascade,
-        selectedRelatedness,
-      ),
-    [diag, above, missing, selected, selectedRelatedness],
+  // The rest of the evaluation through eventScore (src/diagnostics.js),
+  // the chain the bulk dialog and the HTML report run too.
+  const evaluation = useMemo(
+    () => eventScore(diagAb, selected, selectedRelatedness, scatter),
+    [diagAb, selected, selectedRelatedness, scatter],
   );
+  const { diag, above, missing, score: autoScore } = evaluation;
 
   /* ============================================================
      RENDER
@@ -27944,8 +28721,8 @@ const defaultFilter = () => ({
         transition: "padding-right 0.2s ease-out",
       }}
     >
+      {/* Raleway and Nunito Sans are served with the app (src/index.css). */}
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Raleway:wght@400;500;600;700;800&family=Nunito+Sans:opsz,wght@6..12,400;6..12,500;6..12,600;6..12,700&display=swap');
         .tabular { font-variant-numeric: tabular-nums; }
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-thumb { background: #c4c0b3; border-radius: 4px; }
@@ -28154,9 +28931,23 @@ const defaultFilter = () => ({
                   style={{ color: "var(--ink-soft)", lineHeight: 1.5 }}
                 >
                   All parsing, image generation, and computation happen entirely in
-                  your browser. No data is sent to any server.
-                  Your work is auto-saved locally so you can close the tab and come
-                  back anytime (unless your browser cache is cleared). Use{" "}
+                  your browser. No data is sent to any server.{" "}
+                  {/* What the auto-save does for this tab (saveStatus): the
+                      promise to come back to the work only holds while it
+                      is stored. Without storage, or once a write failed or
+                      another tab took the session over, the red banner
+                      under the files bar says why; this sentence no longer
+                      contradicts it. */}
+                  <span data-autosave-note={saveStatus.state}>
+                    {saveStatus.state === "unavailable"
+                      ? "This browser's storage is unavailable, so nothing is auto-saved: your work lives in this tab only and is lost when you close or reload it — Download session (files bar) keeps it."
+                      : saveStatus.state === "failed"
+                        ? "Auto-save failed (see the banner under the files bar): your latest changes are not stored — Download session (files bar) keeps them."
+                        : saveStatus.state === "conflict"
+                          ? "This tab no longer auto-saves: the session was changed in another tab (see the banner under the files bar)."
+                          : "Your work is auto-saved locally so you can close the tab and come back anytime (unless your browser cache is cleared)."}
+                  </span>{" "}
+                  Use{" "}
                   <strong style={{ color: "var(--ink)" }}>Clear session</strong>{" "}
                   on the files bar to wipe everything and start fresh.
                 </div>
@@ -28301,18 +29092,25 @@ const defaultFilter = () => ({
                         kind: "confirm",
                         title: "Clear the entire session?",
                         body:
-                          "This removes the loaded events, abundance, metadata and plate map, plus all your evaluations and notes.\n\n" +
+                          "This removes the loaded events, abundance, metadata and plate map, plus all your evaluations, notes and sample decisions.\n\n" +
                           "The original files on disk are not affected.",
                         confirmLabel: "Clear session",
                         destructive: true,
                         onConfirm: () => {
                           setRawEvents([]);
                           setSampleCuration({});
+                          setEventsWarnings([]);
+                          setNotice(null);
                           setRunMetadata(null);
                           setAb(null);
                           setMetadata(null);
                           setPlateMap(null);
                           setSelId(null);
+                          // The study goes with the rest: kept, it was
+                          // hidden with the emptied files bar, and the next
+                          // events file's "# study:" line was ignored for
+                          // it, its curation exported under the old title.
+                          setAnalysisTitle("");
                           setErr(null);
                           setTab("overview");
                         },
@@ -28417,8 +29215,25 @@ const defaultFilter = () => ({
                   ? () => {
                       setRawEvents([]);
                       setSampleCuration({});
+                      setEventsWarnings([]);
+                      setNotice(null);
                       setRunMetadata(null);
                       setSelId(null);
+                    }
+                  : undefined
+              }
+              // The curation lives on these events: say plainly that
+              // removing them loses it. The other files stay loaded — and
+              // saved.
+              clearConfirm={
+                curationTotals.any
+                  ? {
+                      title: "Remove the events file and your curation?",
+                      body:
+                        `Your curation of these events will be lost: ${curationPhrase(curationTotals)}. Download the session first (Download session, on the files bar) to keep it.\n\n` +
+                        stayLoadedPhrase +
+                        "Your original file on disk is untouched.",
+                      confirmLabel: "Remove and lose the curation",
                     }
                   : undefined
               }
@@ -28453,6 +29268,23 @@ const defaultFilter = () => ({
                       downloadText(abundanceToTSV(ab), "species_abundance.tsv")
                   : undefined
               }
+              // A session saved before the parser kept the column totals
+              // has only the fractions: the Download writes those, which
+              // the card must say, as the Export tab's card does. A header
+              // without a cell above the species (R's write.table) is
+              // named, since each of its cells is then read as a sample.
+              details={
+                ab
+                  ? uploadCardDetails(
+                      abundanceColumnsLine(ab),
+                      hasInputValues(ab)
+                        ? []
+                        : [
+                            'Its Download writes relative abundances under a "species" header: this session was saved before the interface kept the table\'s column totals. Load species_abundance.tsv again to download its own values.',
+                          ],
+                    )
+                  : null
+              }
               onClear={ab ? () => setAb(null) : undefined}
               confirmDialog={setBulkConfirm}
             />
@@ -28470,6 +29302,7 @@ const defaultFilter = () => ({
             />
           </div>
         </div>
+        <StorageBanner status={saveStatus} onDownload={exportJSON} />
         {err && (
           <div className="max-w-7xl mx-auto px-6 pb-4">
             <div
@@ -28479,7 +29312,7 @@ const defaultFilter = () => ({
               style={{
                 background: "var(--bg-alert)",
                 border: "1px solid #ed6e6c",
-                color: "#8a2422",
+                color: "var(--ink-alert)",
               }}
             >
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -28488,18 +29321,28 @@ const defaultFilter = () => ({
                   "Objects are not valid as a React child" and took the whole
                   app down — so a session file that failed to parse blanked
                   the page instead of reporting the parse failure. */}
+              {/* A message can quote an id or a header with nothing to
+                  break a line on: it wraps anywhere rather than run past
+                  the banner. */}
               {err && typeof err === "object" ? (
-                <div>
+                <div className="min-w-0" style={{ overflowWrap: "anywhere" }}>
                   <strong>{err.title}</strong>
                   {err.body ? (
                     <div style={{ marginTop: 2 }}>{err.body}</div>
                   ) : null}
                 </div>
               ) : (
-                <div>{err}</div>
+                <div className="min-w-0" style={{ overflowWrap: "anywhere" }}>{err}</div>
               )}
             </div>
           </div>
+        )}
+        {notice && (
+          <NoticeBanner
+            title={notice.title}
+            lines={notice.lines}
+            onDismiss={() => setNotice(null)}
+          />
         )}
         {sampleMismatches && (
           <div className="max-w-7xl mx-auto px-6 pb-4">
@@ -28520,7 +29363,7 @@ const defaultFilter = () => ({
                     {sampleMismatches.missingCount > 1 ? "s are" : " is"}{" "}
                     missing — scatterplots will show an error for those events.
                     First few:{" "}
-                    <code style={{ fontFamily: "system-ui, monospace" }}>
+                    <code style={{ fontFamily: "system-ui, monospace", overflowWrap: "anywhere" }}>
                       {sampleMismatches.missing.join(", ")}
                       {sampleMismatches.missingCount > 10 ? " …" : ""}
                     </code>
@@ -28549,7 +29392,10 @@ const defaultFilter = () => ({
               }}
             >
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div>
+              {/* A warning quotes what it found: a taxon name such as
+                  "d__Bacteria;p__Firmicutes_A;…" has nothing to break a
+                  line on, and ran past the banner. */}
+              <div className="min-w-0" style={{ overflowWrap: "anywhere" }}>
                 <strong>Check the input files.</strong>
                 <ul
                   className="list-disc"
@@ -28627,7 +29473,23 @@ const defaultFilter = () => ({
           </nav>
 
           {(events.length > 0 || tab === "help" || tab === "overview" || tab === "learn" || tab === "datasets") && (
-            <>
+            // One boundary per tab (keyed by it): a tab that throws shows
+            // its error here, and the navigation, the files bar and the
+            // other tabs — Export included — keep working.
+            <TabErrorBoundary
+              key={tab}
+              label={TAB_NAMES[tab] || tab}
+              onExport={
+                tab !== "export" && events.length > 0
+                  ? () => setTab("export")
+                  : undefined
+              }
+              onDownloadSession={
+                rawEvents.length > 0 || ab || metadata || plateMap
+                  ? exportJSON
+                  : undefined
+              }
+            >
           {tab === "overview" && (
             <Overview
               counts={counts}
@@ -28636,6 +29498,16 @@ const defaultFilter = () => ({
               metadata={metadata}
               plateMap={plateMap}
               runMetadata={runMetadata}
+              lowAbFilter={
+                lowAbFactor != null
+                  ? {
+                      factor: lowAbFactor,
+                      applied: lowAbApplied,
+                      setApplied: (on) =>
+                        setFilter((f) => ({ ...f, lowAbFilter: on })),
+                    }
+                  : null
+              }
               onOpen={(id) => {
                 setSelId(id);
                 setTab("validate");
@@ -28643,7 +29515,7 @@ const defaultFilter = () => ({
               onLoadDemo={loadDemo}
               demoLoading={demoLoading}
               actionEnabled={actionEnabled}
-              sampleCuration={sampleCuration}
+              actionTotals={sampleActionTotals}
             />
           )}
           {tab === "table" && (
@@ -28666,7 +29538,7 @@ const defaultFilter = () => ({
               actionEnabled={actionEnabled}
               setAction={setAction}
               setSampleVerdict={setSampleVerdict}
-              sampleCuration={sampleCuration}
+              sampleCuration={effectiveSampleCuration}
               pageSize={eventsPageSize}
               focusEventId={selId}
             />
@@ -28677,7 +29549,8 @@ const defaultFilter = () => ({
               filtered={filtered}
               filter={filter}
               setFilter={setFilter}
-              ab={ab}
+              // Gallery mini-plots and Explore pairs are diagnostics.
+              ab={diagAb}
               metadata={metadata}
               plateMap={plateMap}
               runMetadata={runMetadata}
@@ -28689,7 +29562,7 @@ const defaultFilter = () => ({
               }
               actionEnabled={actionEnabled}
               setAction={setAction}
-              sampleCuration={sampleCuration}
+              sampleCuration={effectiveSampleCuration}
               setSampleVerdict={setSampleVerdict}
               pageSize={galleryPageSize}
               cardsPerRow={galleryCardsPerRow}
@@ -28721,7 +29594,7 @@ const defaultFilter = () => ({
               colorScheme={networkColorScheme}
               setColorScheme={setNetworkColorScheme}
               onScopeToSamples={scopeToSamples}
-              sampleCuration={sampleCuration}
+              sampleCuration={effectiveSampleCuration}
               focusSampleId={
                 // Priority 1: a Samples drill-in always wins (the
                 // curator explicitly asked to look at THAT sample's
@@ -28771,7 +29644,7 @@ const defaultFilter = () => ({
               actionEnabled={actionEnabled}
               setAction={setAction}
               setSampleVerdict={setSampleVerdict}
-              sampleCuration={sampleCuration}
+              sampleCuration={effectiveSampleCuration}
               metadata={metadata}
               plateMap={plateMap}
               bulkResetAllVerdicts={bulkResetAllVerdicts}
@@ -28802,7 +29675,9 @@ const defaultFilter = () => ({
               plateMap={plateMap}
               ab={ab}
               hasAb={!!ab}
-              sampleCuration={sampleCuration}
+              sampleCuration={effectiveSampleCuration}
+              neverTargeted={neverTargeted}
+              tableSample={tableSample}
               setSampleVerdict={setSampleVerdict}
               setSampleAction={setSampleAction}
               setSampleNote={setSampleNote}
@@ -28830,7 +29705,7 @@ const defaultFilter = () => ({
               runMetadata={runMetadata}
               hasAb={!!ab}
               actionEnabled={actionEnabled}
-              sampleCuration={sampleCuration}
+              actionTotals={sampleActionTotals}
               onBulkApply={
                 bulkApplyToEvents ? () => setBulkApplyOpen(true) : undefined
               }
@@ -28857,7 +29732,7 @@ const defaultFilter = () => ({
           {tab === "help" && (
             <HelpTab onStartTour={startTutorial} />
           )}
-            </>
+            </TabErrorBoundary>
           )}
         </div>
 
@@ -28865,7 +29740,15 @@ const defaultFilter = () => ({
           successful auto-save and fades out after a couple of seconds.
           Lets the user know the work is being persisted without
           interrupting the flow. */}
-      <SavedPill timestamp={savedAt} abFailed={abSaveFailed} />
+      <SavedPill
+        timestamp={saveStatus.savedAt}
+        abFailed={saveStatus.abFailed}
+        notSaved={
+          saveStatus.state === "failed" ||
+          saveStatus.state === "unavailable" ||
+          saveStatus.state === "conflict"
+        }
+      />
 
       {/* First-visit welcome popup. Asks the user whether to take the
           guided tour or skip. Sets the tutorial-seen flag in either
@@ -28910,11 +29793,14 @@ const defaultFilter = () => ({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            zIndex: 1000,
+            // A question asked from the run page sits above it.
+            zIndex: bulkConfirm.zIndex || 1000,
             padding: 20,
           }}
         >
           <div
+            role="dialog"
+            aria-label={bulkConfirm.title}
             onClick={(e) => e.stopPropagation()}
             style={{
               background: "var(--bg-card)",
@@ -28943,6 +29829,8 @@ const defaultFilter = () => ({
                 color: "var(--ink-soft)",
                 lineHeight: 1.6,
                 whiteSpace: "pre-wrap",
+                // The body can list sample ids: a long one wraps.
+                overflowWrap: "anywhere",
                 marginBottom: 20,
               }}
             >
@@ -28971,11 +29859,39 @@ const defaultFilter = () => ({
               >
                 {bulkConfirm.kind === "confirm" ? "Cancel" : "Close"}
               </button>
+              {/* An optional second choice (altLabel / onAlt): replacing
+                  the events file offers "Start fresh" next to "Carry
+                  over". */}
+              {bulkConfirm.kind === "confirm" && bulkConfirm.altLabel && (
+                <button
+                  onClick={() => {
+                    const run = bulkConfirm.onAlt;
+                    setBulkConfirm(null);
+                    run?.();
+                  }}
+                  style={{
+                    padding: "8px 16px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    background: "var(--bg-card)",
+                    color: bulkConfirm.altDestructive ? "#c0392b" : "#275662",
+                    border: `1px solid ${bulkConfirm.altDestructive ? "#ed6e6c" : "#275662"}`,
+                    borderRadius: 3,
+                    cursor: "pointer",
+                    fontFamily: '"Raleway", sans-serif',
+                  }}
+                >
+                  {bulkConfirm.altLabel}
+                </button>
+              )}
               {bulkConfirm.kind === "confirm" && (
                 <button
                   onClick={() => {
-                    bulkConfirm.onConfirm?.();
+                    // Closed first: the action may open the next dialog
+                    // (an imported session's migration notice).
+                    const run = bulkConfirm.onConfirm;
                     setBulkConfirm(null);
+                    run?.();
                   }}
                   style={{
                     padding: "8px 16px",
@@ -29066,7 +29982,8 @@ const defaultFilter = () => ({
       {bulkApplyOpen && bulkApplyToEvents && (
         <BulkApplyByCriteriaDialog
           events={events}
-          ab={ab}
+          // Its criteria and preview plots are the Validate panel's.
+          ab={diagAb}
           metadata={metadata}
           filter={filter}
           onClose={() => setBulkApplyOpen(false)}
@@ -29449,17 +30366,16 @@ const defaultFilter = () => ({
           ab={ab}
           onClose={() => setRunCrocodeelOpen(false)}
           onLoadAbundance={loadAbundance}
-          onAdoptEvents={(parsed) => {
-            setRawEvents(parsed.events);
-            setSampleCuration({});
-            setFilter(withRunCutoffs(defaultFilter(), parsed.runMetadata));
-            setRunMetadata(parsed.runMetadata);
-            if (!analysisTitle) {
-              setAnalysisTitle("CroCoDeEL run (in-browser)");
-            }
-            setRunCrocodeelOpen(false);
-            setTab("overview");
-          }}
+          onAdoptEvents={(parsed) =>
+            // Like any other events file: asked first when the session
+            // holds curation (the question sits above this page, which
+            // stays open with its results if the curator cancels).
+            requestNewEvents(parsed, {
+              title: "CroCoDeEL run (in-browser)",
+              aboveOverlays: true,
+              onApplied: () => setRunCrocodeelOpen(false),
+            })
+          }
         />
       )}
       {/* Floating "Back to {previous tab}" chip — appears whenever the
@@ -29550,7 +30466,10 @@ const defaultFilter = () => ({
               />
               Back to {label}
               {sampleHint && (
+                // Cut, like every long sample id; the button's title
+                // has it whole.
                 <span
+                  className="truncate"
                   style={{
                     fontFamily: "ui-monospace, monospace",
                     fontWeight: 600,
@@ -29558,6 +30477,7 @@ const defaultFilter = () => ({
                     marginLeft: 2,
                     textTransform: "none",
                     letterSpacing: 0,
+                    maxWidth: 240,
                   }}
                 >
                   {sampleHint}
@@ -30947,7 +31867,7 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
             <div
               className="flex items-center gap-3 mb-2"
               style={{ opacity: running ? 0.5 : 1 }}
-              title="Equivalent to the --filter-low-ab CLI flag. Drops species with median abundance below the LOD multiplied by this factor. 0 disables the filter."
+              title="Equivalent to the --filter-low-ab CLI flag: in each sample, every abundance up to this factor times the sample's smallest one is set to 0 (and the rest rescaled) before the search. 0 disables the filter."
             >
               <span
                 className="text-[10px] uppercase tracking-[0.05em]"
@@ -30982,11 +31902,11 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
               >
                 {filterLowAb > 0 ? (
                   <>
-                    Drop species with median abundance below{" "}
+                    In each sample, set to 0 every abundance up to{" "}
                     <strong style={{ color: "var(--ink)" }}>
-                      {filterLowAb}× LOD
-                    </strong>
-                    .
+                      {filterLowAb}×
+                    </strong>{" "}
+                    the sample's smallest one.{" "}
                   </>
                 ) : (
                   <>0 = disabled. </>
@@ -31391,7 +32311,7 @@ function RunCrocodeelPage({ ab, onClose, onAdoptEvents, onLoadAbundance }) {
             style={{
               background: "var(--bg-alert)",
               border: "1px solid #ed6e6c",
-              color: "#8a2422",
+              color: "var(--ink-alert)",
               fontSize: 13,
               lineHeight: 1.55,
             }}
@@ -31490,88 +32410,88 @@ function BootSplash({ message }) {
   );
 }
 
-function UnsupportedBrowser({ reason }) {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "var(--bg, #faf7f0)",
-        color: "var(--ink, #1d3a44)",
-        fontFamily: '"Raleway", sans-serif',
-        padding: 24,
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 520,
-          padding: 24,
-          borderRadius: 6,
-          background: "var(--bg-card, #fff)",
-          border: "1px solid #ed6e6c",
-          boxShadow: "0 12px 32px rgba(39,86,98,0.12)",
-        }}
-      >
-        <div
-          style={{
-            color: "#ed6e6c",
-            fontWeight: 700,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            fontSize: 11,
-            marginBottom: 8,
-          }}
-        >
-          Browser not supported
-        </div>
-        <h1
-          style={{
-            fontSize: 22,
-            fontWeight: 700,
-            marginBottom: 12,
-            lineHeight: 1.25,
-          }}
-        >
-          IndexedDB is required
-        </h1>
-        <p style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 10 }}>
-          {reason ||
-            "This interface stores your curation session in IndexedDB so it survives refreshes and can hold large abundance tables. Your browser doesn't expose IndexedDB — usually because it's running in private / incognito mode with strict site-data restrictions, or because it's an older release."}
-        </p>
-        <p style={{ fontSize: 13, lineHeight: 1.6, color: "var(--ink-muted, #6b7a82)" }}>
-          Please open this page in a recent build of Firefox, Chrome, Edge,
-          Safari or any Chromium-based browser, outside private mode.
-        </p>
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   // Async boot: load the session from IndexedDB before mounting the
   // main app. Keeping AppMain sync (initial as a prop) avoids reshaping
-  // every state-from-props initializer.
+  // every state-from-props initializer. Without IndexedDB, or when it
+  // cannot be opened or read, the app runs in memory — it used to refuse
+  // to start — and says the session is not saved (StorageBanner); a
+  // session that could not be read stays stored, untouched.
   const [boot, setBoot] = useState({ status: "loading" });
   useEffect(() => {
     if (!indexedDBSupported()) {
-      setBoot({ status: "unsupported" });
+      setBoot({
+        status: "ready",
+        initial: null,
+        storage: { available: false },
+      });
       return;
     }
     let cancelled = false;
-    loadFromStorage()
-      .then((initial) => {
-        if (!cancelled) setBoot({ status: "ready", initial });
+    readStoredSession()
+      .then(({ session, rev, abToken, savedAt, inRecords, upgrade }) => {
+        // The stored session is read by the readers of the session
+        // import (checkStoredSession, src/persistence.js): what an
+        // earlier version or a damaged profile left in it is repaired,
+        // reset or left out, and said — it used to blank the whole app
+        // at every reload. Metadata saved by an earlier version is read
+        // again with the current header rules (remapMetadata,
+        // src/parsing.js). The stored copy stays as read (`stored`), so
+        // the autosave writes the new reading once. A session read from
+        // an earlier layout whose migration failed is not in the current
+        // records: nothing counts as stored, so the first save writes
+        // every record. A session of an earlier layout was brought up to
+        // date before it was written (`upgrade`, src/storage.js): this
+        // tab says what that changed.
+        let checked;
+        try {
+          checked = checkStoredSession(session);
+        } catch (e) {
+          // Should the readers fail, the session opens as it was read,
+          // as it did before them.
+          console.warn("[crocodeel] could not check the stored session:", e?.message);
+          checked = { session, notes: [] };
+        }
+        const read = checked.session;
+        let initial = read?.metadata
+          ? { ...read, metadata: remapMetadata(read.metadata) }
+          : read;
+        const notes = [...(upgrade?.notes || []), ...checked.notes];
+        if (upgrade?.olderTabSavedAt) {
+          const when = new Date(upgrade.olderTabSavedAt);
+          notes.unshift(
+            `A tab still running the earlier version of this interface saved the session after it was upgraded here${
+              Number.isNaN(when.getTime()) ? "" : ` (${when.toLocaleString()})`
+            }: that save is the session now. Close the tabs that still show the earlier version, or reload them: what they save is only brought in when another tab opens, and a tab of this version that saves after them stops saving.`,
+          );
+        }
+        if (initial && (notes.length > 0 || upgrade?.changes)) {
+          initial = {
+            ...initial,
+            storageNotes: notes,
+            migrationChanges: upgrade?.changes || null,
+          };
+        }
+        if (!cancelled)
+          setBoot({
+            status: "ready",
+            initial,
+            storage: {
+              available: true,
+              rev,
+              abToken,
+              savedAt,
+              stored: inRecords === false ? null : session,
+            },
+          });
       })
       .catch((err) => {
         console.error("[crocodeel] IndexedDB load failed:", err);
         if (!cancelled)
           setBoot({
-            status: "unsupported",
-            reason:
-              "Your browser exposes IndexedDB but the session database could not be opened (often because of strict private-browsing storage policies or a corrupted profile). Try a fresh window or another browser.",
+            status: "ready",
+            initial: null,
+            storage: { available: false },
           });
       });
     return () => {
@@ -31579,7 +32499,5 @@ export default function App() {
     };
   }, []);
   if (boot.status === "loading") return <BootSplash />;
-  if (boot.status === "unsupported")
-    return <UnsupportedBrowser reason={boot.reason} />;
-  return <AppMain initial={boot.initial} />;
+  return <AppMain initial={boot.initial} storage={boot.storage} />;
 }

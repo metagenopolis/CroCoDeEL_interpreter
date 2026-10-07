@@ -1,11 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  parseAbundance,
-  buildScatter,
-  lineDiagnostics,
-  pointsAboveLine,
-  missingAbundantFromSource,
-} from "../src/App.jsx";
+import { parseAbundance } from "../src/parsing.js";
+import { buildScatter, lineDiagnostics, pointsAboveLine, missingAbundantFromSource } from "../src/diagnostics.js";
 
 /* Build a synthetic source/target pair where the target holds `rate` ×
    source for a known set of species, so we can reason about the expected
