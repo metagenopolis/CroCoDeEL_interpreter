@@ -19,7 +19,7 @@ import {
   applyLowAbundanceFilter,
   automaticScore,
   buildScatter,
-  cascadeExplanations,
+  detectCascades,
   eventBulkCriteria,
   introducedPercent,
   lineDiagnostics,
@@ -672,41 +672,8 @@ function downloadText(content, filename) {
 // resolveSample, matchSpeciesName and automaticScore: pure functions that
 // the unit tests can call, together with whatever is built on them,
 // without this file exporting more (see the re-export at the top).
-
-/** A cascade is suspected when event A→B has many points above the line AND
-    A is itself flagged as contaminated (C→A).  The points above A→B's line
-    can then be explained as species introduced into B via A through C. */
-function detectCascades(events, abundance, metadata) {
-  const incoming = {};
-  events.forEach((e) => {
-    if (!incoming[e.target]) incoming[e.target] = [];
-    incoming[e.target].push(e);
-  });
-
-  return events.map((e) => {
-    if (!abundance) return { ...e, cascade: null };
-    // Skip pairs whose source and target are related (same subject or
-    // related group): an apparent multi-source signal there is more
-    // parsimoniously explained by biological similarity than by a
-    // cascade. Cascade detection is only meaningful between unrelated
-    // samples.
-    if (metadata) {
-      const r = areRelated(metadata, e.source, e.target);
-      if (r && r.related === true) return { ...e, cascade: null };
-    }
-    const scatter = buildScatter(abundance, e);
-    const aboveInfo = pointsAboveLine(scatter);
-    if (aboveInfo == null || aboveInfo.count <= 3) return { ...e, cascade: null };
-    const upstream = incoming[e.source] || [];
-    if (upstream.length === 0) return { ...e, cascade: null };
-    const explained = cascadeExplanations(scatter, upstream, abundance);
-    if (explained.length === 0) return { ...e, cascade: null };
-    return {
-      ...e,
-      cascade: { points_above: aboveInfo.count, explained },
-    };
-  });
-}
+// Cascade detection (detectCascades) lives there too; AppMain hands it
+// areRelated, below, bound to the metadata.
 
 /** Are source and target from the same subject? */
 /** Returns null if not enough metadata, otherwise an object describing
@@ -24879,7 +24846,11 @@ const defaultFilter = () => ({
     ) {
       cascadeMap = cascadeCacheRef.current.byId;
     } else {
-      const cascaded = detectCascades(rawEvents, diagAb, metadata);
+      const cascaded = detectCascades(
+        rawEvents,
+        diagAb,
+        metadata ? (source, target) => areRelated(metadata, source, target) : null,
+      );
       cascadeMap = new Map(cascaded.map((e) => [e.id, e.cascade || null]));
       cascadeCacheRef.current = { ab: diagAb, metadata, sig, byId: cascadeMap };
     }
