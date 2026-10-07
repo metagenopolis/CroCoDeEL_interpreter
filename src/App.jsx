@@ -20026,6 +20026,26 @@ const HelpTab = ({ onStartTour }) => {
               An empty cell, or NA / N/A / NaN / null / None / -, means "no
               value".
             </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              Lines starting with{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              before the header are comments, as in CroCoDeEL. The header
+              line itself must not start with one: a table written by{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>biom convert</code>{" "}
+              (<code style={{ fontFamily: "ui-monospace, monospace" }}>#OTU ID</code>),
+              mOTUs (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#consensus_taxonomy</code>
+              ) or a QIIME mapping file (
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#SampleID</code>
+              ) is refused, naming the line to fix. CroCoDeEL skips that line
+              too and takes the first data row for the header, so remove the{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              before running CroCoDeEL on the table and loading it here.
+              Empty cells at the end of the header line are ignored; an
+              empty header cell between two named ones is named{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>Unnamed: N</code>{" "}
+              (N its column, counted from 0), as CroCoDeEL names it.
+            </p>
             <p style={{ color: "var(--ink-muted)" }}>
               Files are parsed entirely in your browser. Nothing is sent
               to any server.
