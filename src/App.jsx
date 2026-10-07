@@ -13295,7 +13295,8 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
       }
     });
     newMap[sid] = { plate: plateId, row: r, col: c };
-    setPlateMap({ bySample: newMap, format });
+    // Spread: the plate card keeps the upload's column mapping and warnings.
+    setPlateMap({ ...plateMap, bySample: newMap, format });
     setSelectedSample(null);
     // auto-advance the focus to the next empty well
     advanceFocusToNextEmpty({ bySample: newMap }, r, c);
@@ -13314,7 +13315,7 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
     if (!posA || !posB) return;
     newMap[sidA] = posB;
     newMap[sidB] = posA;
-    setPlateMap({ bySample: newMap, format });
+    setPlateMap({ ...plateMap, bySample: newMap, format });
     setSelectedSample(null);
   };
 
@@ -13322,7 +13323,7 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
     const newMap = { ...(plateMap?.bySample || {}) };
     delete newMap[sid];
     setPlateMap(
-      Object.keys(newMap).length ? { bySample: newMap, format } : null,
+      Object.keys(newMap).length ? { ...plateMap, bySample: newMap, format } : null,
     );
   };
 

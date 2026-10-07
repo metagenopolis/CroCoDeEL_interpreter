@@ -138,8 +138,8 @@ describe("parsePlateMap — one sample per well, on its own plate", () => {
     );
     expect(pm.cols.plate).toBeNull();
     expect(pm.warnings).toEqual([
-      '1 well holds more than one sample (first: A01 on plate P1: "S1", "S3"). A well holds one ' +
-        "sample: check the well and plate columns.",
+      'The file places more than one sample in one well (A01 on plate P1: "S1", "S3"). A well ' +
+        "holds one sample: check the well and plate columns.",
       'No plate column was recognised, so every sample was put on one plate (P1): if ' +
         '"extraction_plate" names the plate, rename it plate and upload the file again.',
     ]);
@@ -169,8 +169,8 @@ describe("parsePlateMap — one sample per well, on its own plate", () => {
       ]),
     );
     expect(pm.warnings).toEqual([
-      '2 wells hold more than one sample (first: A01 on plate P1: "S1", "S2"). A well holds one ' +
-        "sample: check the well and plate columns.",
+      'The file places more than one sample in 2 wells (first: A01 on plate P1: "S1", "S2"). A ' +
+        "well holds one sample: check the well and plate columns.",
     ]);
   });
 

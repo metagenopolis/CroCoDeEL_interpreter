@@ -13,6 +13,8 @@
      - a plate map given as row + column loads (it used to be refused);
      - the curated events TSV of the Export tab reloads with its verdicts;
      - the metadata download reloads to the same relatedness;
+     - the plate card keeps its column mapping and warnings through a
+       Plate tab edit and a page reload;
      - a hand-edited session whose card warnings are not a list loads.
 
    Usage:  node e2e/a1-parsing.e2e.mjs          (starts a preview server)
@@ -301,7 +303,49 @@ try {
     await ctx.close();
   }
 
-  /* -- 7. a hand-edited session whose card warnings are not a list */
+  /* -- 7. the plate card through a Plate tab edit and a page reload */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    await loadDemo(page);
+    const plate = ["sample_id\tplate\twell", "40D89\tP3\tA01", "58M\tP3\tC03", "58M\tP3\tC04", "NC3\tP3\tH06"].join("\n");
+    await upload(page, 3, "plate_map.tsv", plate);
+    const repeated = 'sample id appears on more than one row ("58M")';
+    const before = await cardText(page, "plate_map.tsv");
+    check(
+      before.includes("Columns: sample_id · plate · well") && before.includes(repeated),
+      "the plate card shows the mapping and the repeated id",
+      before.replace(/\s+/g, " ").slice(0, 200),
+    );
+    await openTab(page, "Plate");
+    const removes = page.locator('button[title="remove"]');
+    if ((await removes.count()) === 0) {
+      await page.getByRole("button", { name: /edit/i }).first().click();
+      await page.waitForTimeout(800);
+    }
+    await removes.first().click();
+    await page.waitForTimeout(1000);
+    const after = await cardText(page, "plate_map.tsv");
+    check(
+      after.includes("2 wells (8×12)") &&
+        after.includes("Columns: sample_id · plate · well") &&
+        after.includes(repeated),
+      "after a Plate tab edit the card still shows the mapping and the warning",
+      after.replace(/\s+/g, " ").slice(0, 200),
+    );
+    await page.waitForTimeout(2500); // auto-save
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(3000);
+    const reloaded = await cardText(page, "plate_map.tsv");
+    check(
+      reloaded.includes("2 wells (8×12)") && reloaded.includes("Columns: sample_id · plate · well") && reloaded.includes(repeated),
+      "the plate card's mapping and warning survive a page reload",
+      reloaded.replace(/\s+/g, " ").slice(0, 200),
+    );
+    check(errors.length === 0, "no JS error across the plate edit", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* -- 8. a hand-edited session whose card warnings are not a list */
   {
     const { ctx, page, errors } = await newPage(browser);
     const metadata = { ...parseMetadata(demo("metadata.tsv")), warnings: "2 sample ids appear twice" };

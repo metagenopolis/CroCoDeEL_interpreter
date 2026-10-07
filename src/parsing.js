@@ -1186,8 +1186,9 @@ export function parsePlateMap(text) {
     const ids = shared[0];
     const p = bySample[ids[0]];
     const named = ids.slice(0, 3).map((id) => `"${id}"`).join(", ") + (ids.length > 3 ? ", …" : "");
+    // About the file, so it stays true once the Plate tab edits the map.
     warnings.push(
-      `${n} well${n > 1 ? "s hold" : " holds"} more than one sample (first: ` +
+      `The file places more than one sample in ${n > 1 ? `${n} wells (first: ` : "one well ("}` +
         `${wellLabel(p.row, p.col)} on plate ${p.plate}: ${named}). A well holds one sample: ` +
         "check the well and plate columns.",
     );
