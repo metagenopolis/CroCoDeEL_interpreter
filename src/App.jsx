@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as d3 from "d3";
 import { Range, getTrackBackground } from "react-range";
-import LZString from "lz-string";
 import {
   tsvCell,
   parseEvents,
@@ -55,6 +54,9 @@ import {
   buildEffectiveSampleCuration,
   sampleActionCounts,
 } from "./curation.js";
+import { restoreFilter, restoreSort } from "./persistence.js";
+import { idbBackend, indexedDBSupported, readStoredSession } from "./storage.js";
+import { createAutosave } from "./autosave.js";
 import {
   FolderOpen,
   AlertCircle,
@@ -21786,14 +21788,20 @@ const HelpTab = ({ onStartTour }) => {
             Local persistence (browser storage)
           </h4>
           <p>
-            To survive accidental refreshes, the app auto-saves your full
+            To survive accidental refreshes, the app auto-saves your
             session to your browser's <code style={{ fontFamily: "ui-monospace, monospace" }}>IndexedDB</code>{" "}
-            after every change (debounced 1 s). A discrete{" "}
-            <em>Saved</em> pill appears in the bottom-right corner each time
-            the save succeeds. What is persisted:
+            a moment after every change (0.3 s), and at once when the page
+            is hidden, closed or reloaded. Only what changed is written: an
+            evaluation rewrites a small curation record, a tab switch a
+            small UI-state record, and the files are written when they are
+            loaded or edited — so saving stays instant on the largest
+            datasets. A discrete <em>Saved</em> pill appears in the
+            bottom-right corner each time the save succeeds. What is
+            persisted:
           </p>
           <ul className="list-disc pl-5 text-[13px]" style={{ color: "var(--ink-soft)", lineHeight: 1.7 }}>
-            <li>Loaded events (with evaluations and notes)</li>
+            <li>Loaded events, with what the parser reported about the file</li>
+            <li>Your evaluations and notes, sample verdicts, actions and notes, and the study title</li>
             <li>CroCoDeEL run parameters from the file header</li>
             <li>Sample metadata, plate map, and species abundance table</li>
             <li>UI state: active tab, selected event, filters, sort order</li>
@@ -21803,13 +21811,37 @@ const HelpTab = ({ onStartTour }) => {
             <code style={{ fontFamily: "ui-monospace, monospace" }}>
               crocodeel-interpreter
             </code>{" "}
-            (object store <code style={{ fontFamily: "ui-monospace, monospace" }}>kv</code>),
+            (object store <code style={{ fontFamily: "ui-monospace, monospace" }}>kv</code>,
+            one record per part: <code style={{ fontFamily: "ui-monospace, monospace" }}>events</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>ab</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>metadata</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>plate</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>curation</code>,{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>ui</code>),
             scoped to the application's origin (GitHub Pages domain). It is
             never transmitted anywhere — not even to our own infrastructure.
             Only the browser session running on this device, in this browser
             profile, can read it. Closing the tab keeps the data; clearing
-            your browser's site data removes it. Sessions stored under the
-            old localStorage keys are migrated transparently on first load.
+            your browser's site data removes it. Sessions stored by earlier
+            versions (a single record, or the old localStorage keys) are
+            migrated transparently on first load.
+          </p>
+          <p>
+            <strong style={{ color: "var(--ink)" }}>Not saved.</strong>{" "}
+            When a save fails — the browser's storage for this site is full,
+            or unavailable — a red <em>Not saved</em> pill and a banner stay
+            up until a later save succeeds (it is tried again on your next
+            change). Your latest changes are then only in this tab:{" "}
+            <strong>Download session</strong> keeps them.
+          </p>
+          <p>
+            <strong style={{ color: "var(--ink)" }}>Several tabs.</strong>{" "}
+            Each save checks that no other tab has changed the session since
+            this one read it. When another tab has, this tab stops saving —
+            it cannot overwrite the other tab's work — and says{" "}
+            <em>"This session was changed in another tab — reload to see
+            the latest version"</em>. What you change in it from then on
+            stays in that tab: download its session first if you need it.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Storage limits.</strong>{" "}
@@ -21821,17 +21853,19 @@ const HelpTab = ({ onStartTour }) => {
           <p>
             <strong style={{ color: "var(--ink)" }}>Clearing storage.</strong>{" "}
             Use the <em>Clear session</em> button in the files bar to wipe
-            everything immediately. The Discard button on the welcome
-            popup does the same when offered. You can also remove just one
-            file via the trash icon on its file card.
+            everything immediately. You can also remove just one file with
+            the <em>Clear</em> button on its file card: the other files stay
+            loaded, and saved.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Private / incognito
             windows.</strong>{" "}
             Browsers may restrict or fully disable IndexedDB in private mode.
-            The app refuses to boot when IndexedDB is unavailable and shows a
-            "browser not supported" screen — open the page in a normal window
-            (or another browser) and your session will load.
+            Without it — or when the database cannot be opened — the app
+            runs in memory: everything works, but nothing survives closing
+            or reloading the tab, and a <em>Not saved</em> banner says so.
+            Download the session to keep your work, and import it later (or
+            open the page in a normal window).
           </p>
           <p>
             The tutorial-seen flag (
@@ -21941,9 +21975,11 @@ const HelpTab = ({ onStartTour }) => {
               <p>
                 No — the app auto-saves your full session (events,
                 evaluations, actions, notes, all loaded files, plus your
-                active tab and filters) to your browser's IndexedDB
-                every time something changes. After a refresh you land
-                exactly where you left off. See the Privacy & how it
+                active tab and filters) to your browser's IndexedDB a
+                moment after every change, and at once when the page is
+                closed or reloaded. After a refresh you land exactly where
+                you left off. If the browser cannot store it, a{" "}
+                <em>Not saved</em> banner says so. See the Privacy & how it
                 works section for details, including the IndexedDB
                 quotas and how to clear it. For belt-and-braces backups
                 before a long break or to move sessions between
@@ -22849,297 +22885,14 @@ const ExportTab = ({
    8. MAIN APP
    ============================================================================ */
 
-/* Persistence: we keep the entire session alive across page refreshes
-   by stashing it in IndexedDB. We save:
-   - events (with verdicts and notes) — the curation work
-   - runMetadata (CroCoDeEL run params)
-   - metadata (sample annotations)
-   - plateMap (sample-to-well placement)
-   - ab (species abundance table)
-   IndexedDB gives us hundreds of MB to GBs (vs localStorage's ~5–10 MB),
-   structured-cloned writes that don't block the main thread, and no
-   need for JSON.stringify / LZ compression. The legacy localStorage
-   payload is migrated transparently on first boot. */
-const DB_NAME = "crocodeel-interpreter";
-const DB_VERSION = 1;
-const STORE = "kv";
-// Two records per session: the main payload (events / metadata / UI
-// state, small, rewritten on every change) and the abundance matrix
-// (large, rewritten only when its reference changes — file load,
-// dataset switch, decontamination). Splitting them keeps verdict /
-// filter clicks cheap on big datasets.
-const KEY_MAIN = "main";
-const KEY_AB = "ab";
-// Legacy localStorage keys — read once during the IndexedDB migration
-// and removed afterwards. The COMPRESSED_PREFIX flagged LZ-compressed
-// payloads under those keys; we still need to recognise it to migrate.
-const LEGACY_KEY = "crocodeel-interpreter-v1";
-const LEGACY_KEY_AB = "crocodeel-interpreter-v1-ab";
-const LEGACY_COMPRESSED_PREFIX = "lz:";
-
-/** True when the current browser exposes IndexedDB. The app refuses
-    to boot without it (no fallback) and shows an unsupported-browser
-    message instead. */
-function indexedDBSupported() {
-  return typeof window !== "undefined" && !!window.indexedDB;
-}
-
-/** Open (or create) the session database. The schema is one
-    keyed-object store; we don't bother with auto-incrementing keys.
-    The handle is cached at module scope so subsequent reads / writes
-    skip the open round-trip — important on the 1 s auto-save cadence
-    where the DB would otherwise be re-opened several times per
-    second. The cache is cleared on the connection's `close` /
-    `versionchange` events so we recover gracefully if another tab
-    upgrades the schema. */
-let dbHandlePromise = null;
-function openDB() {
-  if (dbHandlePromise) return dbHandlePromise;
-  dbHandlePromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE);
-      }
-    };
-    req.onsuccess = () => {
-      const db = req.result;
-      // If another tab opens the DB with a higher version, our handle
-      // is invalidated — drop it and let the next call re-open.
-      db.onversionchange = () => {
-        try {
-          db.close();
-        } catch {
-          // ignore
-        }
-        if (dbHandlePromise === thisPromise) dbHandlePromise = null;
-      };
-      db.onclose = () => {
-        if (dbHandlePromise === thisPromise) dbHandlePromise = null;
-      };
-      resolve(db);
-    };
-    req.onerror = () => {
-      dbHandlePromise = null;
-      reject(req.error);
-    };
-    req.onblocked = () => {
-      dbHandlePromise = null;
-      reject(new Error("IndexedDB open blocked — close other tabs running this app"));
-    };
-  });
-  // Local copy so the .onversionchange / .onclose closure can compare
-  // against *this* handle — a stale guard might otherwise null out a
-  // newer one.
-  // eslint-disable-next-line no-var
-  var thisPromise = dbHandlePromise;
-  return dbHandlePromise;
-}
-
-function idbGet(key) {
-  return openDB().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readonly");
-        const req = tx.objectStore(STORE).get(key);
-        req.onsuccess = () => resolve(req.result ?? null);
-        req.onerror = () => reject(req.error);
-      }),
-  );
-}
-
-function idbSet(key, value) {
-  return openDB().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).put(value, key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      }),
-  );
-}
-
-function idbDel(key) {
-  return openDB().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).delete(key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      }),
-  );
-}
-
-/** Drop zero / falsy entries from the abundance matrix before saving.
-    Most metagenomic profiles are very sparse (a typical sample has a
-    few hundred non-zero species out of thousands), so omitting the
-    zeros usually shrinks the structured-clone payload 5–10×. The
-    dense form is never needed downstream: every consumer reads
-    `matrix[sp]?.[s] || 0` so a missing key is treated as zero exactly
-    like an explicit zero. */
-function sparsifyAbundance(ab) {
-  if (!ab || !ab.matrix) return ab;
-  const sparse = {};
-  for (const sp of Object.keys(ab.matrix)) {
-    const row = ab.matrix[sp];
-    const sparseRow = {};
-    for (const s of Object.keys(row)) {
-      const v = row[s];
-      if (v) sparseRow[s] = v;
-    }
-    sparse[sp] = sparseRow;
-  }
-  return { ...ab, matrix: sparse };
-}
-
-/** Read a single legacy localStorage key, transparently decompressing
-    the LZ-UTF16 payload if the COMPRESSED_PREFIX is present. Returns
-    null if the key is missing or the parse / decompress fails. Used
-    only by the one-shot migration below. */
-function readLegacyKey(key) {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return null;
-    if (raw.startsWith(LEGACY_COMPRESSED_PREFIX)) {
-      const decompressed = LZString.decompressFromUTF16(
-        raw.slice(LEGACY_COMPRESSED_PREFIX.length),
-      );
-      if (!decompressed) return null;
-      return JSON.parse(decompressed);
-    }
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-/** Migrate sessions stored under the old localStorage keys into
-    IndexedDB. Runs once: if IDB already has a payload we skip; if
-    localStorage has one we move it across and remove the legacy
-    entries so we don't drift between two sources of truth. */
-async function migrateLocalStorageToIDB() {
-  if (typeof window === "undefined") return;
-  let migrated = false;
-  try {
-    const main = readLegacyKey(LEGACY_KEY);
-    if (main) {
-      await idbSet(KEY_MAIN, main);
-      migrated = true;
-    }
-    const ab = readLegacyKey(LEGACY_KEY_AB);
-    if (ab) {
-      await idbSet(KEY_AB, ab);
-      migrated = true;
-    }
-  } catch (e) {
-    console.warn("[crocodeel] localStorage → IndexedDB migration failed:", e?.message);
-    return;
-  }
-  // Only remove the legacy entries once they're safely in IDB.
-  if (migrated) {
-    try {
-      window.localStorage.removeItem(LEGACY_KEY);
-      window.localStorage.removeItem(LEGACY_KEY_AB);
-    } catch {
-      // ignore
-    }
-  }
-}
-
-/** Read the main payload + the abundance side payload from IndexedDB,
-    splice them together and return a session object — or null if
-    nothing is stored. Triggers the legacy migration on first run. */
-async function loadFromStorage() {
-  const main = await idbGet(KEY_MAIN);
-  if (!main) {
-    // Nothing in IDB — try to import a legacy localStorage session.
-    await migrateLocalStorageToIDB();
-    const migrated = await idbGet(KEY_MAIN);
-    if (!migrated) return null;
-    if (!Array.isArray(migrated.rawEvents) || migrated.rawEvents.length === 0) {
-      return null;
-    }
-    if (!migrated.ab) {
-      const ab = await idbGet(KEY_AB);
-      if (ab) migrated.ab = ab;
-    }
-    return migrated;
-  }
-  if (!Array.isArray(main.rawEvents) || main.rawEvents.length === 0) {
-    return null;
-  }
-  if (!main.ab) {
-    const ab = await idbGet(KEY_AB);
-    if (ab) main.ab = ab;
-  }
-  return main;
-}
-
-/** Persist the session to IndexedDB. The main payload is rewritten on
-    every call; the abundance matrix is rewritten only when
-    options.saveAb is true (i.e. when its reference actually changed).
-    All writes are async — this returns a promise resolving to
-    `{ main, ab }`, each a boolean. Errors are caught and logged but do
-    not propagate so the caller's render loop is unaffected.
-
-    The two outcomes MUST be reported separately. This used to return a
-    bare `true` even when the abundance write had thrown, so the caller
-    latched `lastSavedAbRef` on a matrix that was never written: from
-    then on `abChanged` stayed false, the pill kept saying "Saved just
-    now", and the next reload restored every verdict with `ab === null`
-    — no scatter, no diagnostic, no cascade, no explanation. */
-async function saveToStorage(payload, options) {
-  const { saveAb } = options || {};
-  const { ab, ...rest } = payload;
-  // `ab: !saveAb` — when there was nothing to write, there is nothing to
-  // report as failed.
-  const result = { main: false, ab: !saveAb };
-  try {
-    await idbSet(KEY_MAIN, rest);
-    result.main = true;
-  } catch (e) {
-    console.warn("[crocodeel] IndexedDB save (main) failed:", e?.message);
-    return result;
-  }
-  if (saveAb) {
-    if (ab) {
-      try {
-        await idbSet(KEY_AB, sparsifyAbundance(ab));
-        result.ab = true;
-      } catch (e) {
-        console.warn("[crocodeel] IndexedDB save (ab) failed:", e?.message);
-        // Drop the stale ab if any; otherwise the loader would splice
-        // an out-of-date matrix into the next session.
-        try {
-          await idbDel(KEY_AB);
-        } catch {
-          // ignore
-        }
-        result.ab = false;
-      }
-    } else {
-      try {
-        await idbDel(KEY_AB);
-      } catch {
-        // ignore
-      }
-      result.ab = true;
-    }
-  }
-  return result;
-}
-
-async function clearStorage() {
-  try {
-    await idbDel(KEY_MAIN);
-    await idbDel(KEY_AB);
-  } catch {
-    // ignore
-  }
-}
+/* Persistence: the session survives page refreshes in the browser's
+   IndexedDB, as separate records — the inputs (events without their
+   curation, abundance table, metadata, plate map, run header), the
+   curation, the UI state — so that a change rewrites only what it
+   touches. The records, the earlier layouts they are migrated from and
+   the session JSON live in src/persistence.js; the IndexedDB access in
+   src/storage.js; when and what to write, and the revision check that
+   keeps a second tab from overwriting the first, in src/autosave.js. */
 
 /* ----------------------------------------------------------------------------
    FILE READING WITH PROGRESS
@@ -23396,8 +23149,11 @@ const AnalysisTitleField = ({ value, onChange }) => {
 
 /** Floating "Saved" pill that appears briefly each time the curation
     work is auto-saved. The parent passes a timestamp; whenever it
-    changes, we show the pill for 1.4s then fade. */
-const SavedPill = ({ timestamp, abFailed }) => {
+    changes, we show the pill for 1.4s then fade. `notSaved`: the
+    session is not being saved (storage full, unavailable, or the
+    session changed in another tab) — a persistent "Not saved" instead,
+    next to the banner that says why. */
+const SavedPill = ({ timestamp, abFailed, notSaved }) => {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (!timestamp) {
@@ -23408,6 +23164,37 @@ const SavedPill = ({ timestamp, abFailed }) => {
     const t = setTimeout(() => setVisible(false), 1400);
     return () => clearTimeout(t);
   }, [timestamp]);
+
+  if (notSaved) {
+    return (
+      <div
+        role="status"
+        aria-live="assertive"
+        data-save-state="not-saved"
+        title="Your recent changes are not stored in this browser: see the banner at the top of the page."
+        style={{
+          position: "fixed",
+          bottom: 16,
+          right: 16,
+          zIndex: 900,
+          padding: "5px 10px",
+          background: "#8a2422",
+          color: "#fff",
+          fontSize: 11,
+          fontWeight: 700,
+          fontFamily: '"Raleway", sans-serif',
+          borderRadius: 3,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        <AlertCircle className="w-3 h-3" />
+        <span>Not saved</span>
+      </div>
+    );
+  }
 
   // A failed abundance write is not transient: verdicts are safe but the
   // matrix will be missing on reload, so the warning stays up until the
@@ -23442,7 +23229,7 @@ const SavedPill = ({ timestamp, abFailed }) => {
           Verdicts saved, but the abundance table could not be stored
           (browser storage is full or blocked). Reload this session and you
           will need to drop <code>species_abundance.tsv</code> again — or
-          export the session now from the Export tab.
+          download the session now (Download session, on the files bar).
         </span>
       </div>
     );
@@ -23478,6 +23265,115 @@ const SavedPill = ({ timestamp, abFailed }) => {
     </div>
   );
 };
+
+/** Persistent banner over the tabs when the session is not being saved
+    (src/autosave.js status): the browser has no usable storage, a write
+    failed (a full quota arrives as an aborted transaction), or another
+    tab changed the session — this tab then stops saving rather than
+    overwrite the newer version. Each case says what is at risk and offers
+    the session JSON, which keeps everything. */
+const StorageBanner = ({ status, onDownload }) => {
+  const state = status?.state;
+  if (state !== "unavailable" && state !== "failed" && state !== "conflict") return null;
+  const conflict = state === "conflict";
+  const title = conflict
+    ? "This session was changed in another tab — reload to see the latest version."
+    : state === "unavailable"
+      ? "Not saved — this browser's storage is unavailable."
+      : "Not saved — browser storage is full or unavailable.";
+  const body = conflict
+    ? "This tab no longer saves, so that it cannot overwrite the other tab's work. Anything you change here from now on stays in this tab only: download this tab's session first if you need it."
+    : state === "unavailable"
+      ? "IndexedDB is missing or could not be opened (private browsing, blocked site data, a damaged browser profile), so this session lives only in this tab and is lost when you close or reload it. Download the session JSON to keep your work; Import session brings it back."
+      : `Your latest changes could not be stored: ${status.error || "the write failed"}. They are lost if this tab closes or reloads. Download the session JSON to keep your work; saving is tried again on your next change.`;
+  const button = (label, onClick, primary) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className="px-3 py-1 text-[11px] rounded-sm"
+      style={{
+        background: primary ? "#8a2422" : "var(--bg-card)",
+        color: primary ? "#fff" : "#8a2422",
+        border: "1px solid #8a2422",
+        fontWeight: 700,
+        fontFamily: '"Raleway", sans-serif',
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="max-w-7xl mx-auto px-6 pb-4">
+      <div
+        role="alert"
+        data-save-banner={state}
+        className="flex items-start gap-2 text-[13px] px-3 py-2 rounded-sm"
+        style={{
+          background: "var(--bg-alert)",
+          border: "1px solid #ed6e6c",
+          color: "#8a2422",
+        }}
+      >
+        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <strong>{title}</strong>
+          <div style={{ marginTop: 2 }}>{body}</div>
+          <div className="flex gap-2 flex-wrap" style={{ marginTop: 6 }}>
+            {conflict && button("Reload", () => window.location.reload(), true)}
+            {button(
+              conflict ? "Download this tab's session" : "Download session",
+              onDownload,
+              !conflict,
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/** Dismissable banner telling what a load did to the session: that a
+    restored session came back without its abundance table. */
+const NoticeBanner = ({ title, lines, onDismiss }) => (
+  <div className="max-w-7xl mx-auto px-6 pb-4">
+    <div
+      role="status"
+      data-notice
+      className="flex items-start gap-2 text-[13px] px-3 py-2 rounded-sm"
+      style={{
+        background: "var(--bg-info)",
+        border: "1px solid #00a3a6",
+        color: "var(--ink)",
+      }}
+    >
+      <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" style={{ color: "#00a3a6" }} />
+      <div className="flex-1 min-w-0">
+        <strong>{title}</strong>
+        <ul className="list-disc" style={{ paddingLeft: 18, marginTop: 3 }}>
+          {lines.map((line, i) => (
+            <li key={i}>{line}</li>
+          ))}
+        </ul>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        title="Dismiss"
+        style={{
+          background: "transparent",
+          border: "none",
+          color: "var(--ink-muted)",
+          cursor: "pointer",
+          padding: 2,
+        }}
+      >
+        <X className="w-4 h-4" />
+      </button>
+    </div>
+  </div>
+);
 
 /* ---------- TUTORIAL PANEL ----------
    Side panel that walks the user through the demo dataset. Each step
@@ -23966,12 +23862,14 @@ const TutorialWelcome = ({ onStart, onSkip }) => (
   </div>
 );
 
-function AppMain({ initial }) {
+function AppMain({ initial, storage }) {
   // The session is loaded asynchronously by the outer App wrapper
   // before this component mounts, so `initial` is already populated
   // (or null when no prior session exists). All persisted UI state
   // (filters, sort, active tab, selected event) is restored from it
-  // so the user lands exactly where they left off.
+  // so the user lands exactly where they left off. `storage` says where
+  // it is saved: { available, rev, abToken } (src/storage.js); without
+  // storage the session lives in memory and the page says so.
   // Sample-level curation lives in its own map keyed by sample id. Each
   // entry holds an optional verdict ("contaminated" / "correct" /
   // "uncertain") and an optional downstream action ("keep" / "suppress")
@@ -24052,6 +23950,11 @@ function AppMain({ initial }) {
     rawEventsRef.current = rawEvents;
   }, [rawEvents]);
   const [runMetadata, setRunMetadata] = useState(initial?.runMetadata || null);
+  // What the events parser reported about the loaded file, saved with it
+  // in the events record (src/persistence.js).
+  const [eventsWarnings] = useState(
+    Array.isArray(initial?.eventsWarnings) ? initial.eventsWarnings : [],
+  );
   const [ab, setAb] = useState(initial?.ab || null);
   const [metadata, setMetadata] = useState(initial?.metadata || null);
   const [plateMap, setPlateMap] = useState(initial?.plateMap || null);
@@ -24465,52 +24368,18 @@ const defaultFilter = () => ({
     // diagAb). On by default, switchable in Overview › Run parameters.
     lowAbFilter: true,
   });
-  const [filter, setFilter] = useState(() => {
-    // Migrate legacy boolean fields (hideRelated / adjacentOnly) to the
-    // tri-state strings while preserving the user's last selection.
-    // Verdict went from a single string ("all" | "pending" | ...) to a
-    // multi-select array; promote the old shape if found.
-    const f = initial?.filter || {};
-    let verdicts;
-    if (Array.isArray(f.verdicts)) verdicts = f.verdicts;
-    else if (f.verdict && f.verdict !== "all") verdicts = [f.verdict];
-    else verdicts = [...VERDICT_IDS];
-    const sampleVerdicts = Array.isArray(f.sampleVerdicts)
-      ? f.sampleVerdicts
-      : [...SAMPLE_VERDICT_IDS];
-    const sampleVerdictsSide =
-      f.sampleVerdictsSide === "source" ||
-      f.sampleVerdictsSide === "target"
-        ? f.sampleVerdictsSide
-        : "either";
-    return {
-      q: f.q ?? "",
-      minScore: f.minScore ?? 0,
-      minRate: f.minRate ?? 0,
-      minIntroduced: f.minIntroduced ?? 0,
-      verdicts,
-      sampleVerdicts,
-      sampleVerdictsSide,
-      subject: f.subject ?? (f.hideRelated ? "different" : "any"),
-      group: f.group ?? "any",
-      adjacent: f.adjacent ?? (f.adjacentOnly ? "adjacent" : "any"),
-      // Optional sample-list scope. When set, only events whose source
-      // or target is in this array pass the filter — used by the
-      // Network tab to drill into one component's events from Scatter
-      // or the Events table. `scopeSide` narrows the match to one side
-      // ("source" or "target"); default "either" matches both.
-      scopeSamples: Array.isArray(f.scopeSamples) ? f.scopeSamples : null,
-      scopeSide:
-        f.scopeSide === "source" || f.scopeSide === "target"
-          ? f.scopeSide
-          : "either",
-      // Sessions saved before the toggle existed get it on.
-      lowAbFilter: f.lowAbFilter !== false,
-    };
-  });
-  const [sort, setSort] = useState(
-    initial?.sort || { by: "score", dir: "desc" },
+  // The stored filter merged over the defaults (restoreFilter,
+  // src/persistence.js): a field it lacks gets its default — lowAbFilter
+  // on for a session saved before the toggle existed — and the earlier
+  // shapes are promoted (a single `verdict` string to the `verdicts`
+  // list, the hideRelated / adjacentOnly booleans to the tri-state
+  // strings). The optional sample-list scope (`scopeSamples`, narrowed to
+  // one side by `scopeSide`) is how the Network tab drills into one
+  // component's events from Scatter or the Events table.
+  const [filter, setFilter] = useState(() =>
+    restoreFilter(initial?.filter, defaultFilter()),
   );
+  const [sort, setSort] = useState(() => restoreSort(initial?.sort));
   const [err, setErr] = useState(null);
   // Long-running file load / parse indicator. `null` when idle; an
   // object `{ label, sub?, progress }` while a load is in flight.
@@ -24521,13 +24390,30 @@ const defaultFilter = () => ({
   const abFileRef = useRef(null);
   const sessionFileRef = useRef(null);
 
-  /* Save indicator: shows a discrete "Saved" pill briefly after each
-     auto-save. Set to a timestamp on save; the indicator fades out via
-     a separate timeout. */
-  const [savedAt, setSavedAt] = useState(null);
-  // True when the last save wrote the verdicts but failed to write the
-  // abundance matrix — surfaced persistently, see SavedPill.
-  const [abSaveFailed, setAbSaveFailed] = useState(false);
+  /* Save indicator (src/autosave.js): `savedAt` flashes the "Saved"
+     pill after each auto-save; `abFailed` says the verdicts were saved
+     but not the abundance matrix (persistent, see SavedPill); the state
+     "failed", "unavailable" (no storage: the session lives in memory) or
+     "conflict" (another tab changed the session) keeps "Not saved" up
+     with a banner that says why. */
+  const [saveStatus, setSaveStatus] = useState(() => ({
+    state: storage?.available === false ? "unavailable" : "idle",
+    savedAt: null,
+    abFailed: false,
+    error: null,
+  }));
+  // Dismissable notice over the tabs (NoticeBanner): a session restored
+  // without its abundance table (the table's last save had failed).
+  const [notice, setNotice] = useState(() =>
+    initial?.abLost && !initial?.ab
+      ? {
+          title: "The abundance table was not restored.",
+          lines: [
+            "Its last save to this browser's storage failed, so the session came back without it: load species_abundance.tsv again for the scatterplots and the diagnostics.",
+          ],
+        }
+      : null,
+  );
 
   /* Tutorial state — two pieces:
      - welcomeOpen: the first-visit popup that asks "Take the tour or
@@ -24748,63 +24634,70 @@ const defaultFilter = () => ({
     }
   };
 
-  /* Auto-save the full session to localStorage whenever any persisted
-     state changes. Debounced to 1 s so we don't hammer the disk when
-     the user blasts through events with keyboard shortcuts.
-     The abundance matrix is written to its own localStorage key, only
-     when the `ab` reference itself changes — this keeps verdict / action
-     clicks fast on large datasets (1000+ samples) where re-serializing
-     the matrix on every tick was the dominant cost. */
-  const lastSavedAbRef = useRef(null);
+  /* Auto-save (src/autosave.js). A short while after each change, only
+     the records that changed are written to IndexedDB: an evaluation
+     rewrites the small curation record, a tab switch the small UI
+     record; the events, the abundance matrix, the metadata and the plate
+     map are written only when they change. The whole session used to be
+     cloned again after every change — tab, selection, filter and sort
+     included: on the largest bundled dataset, 30 ms of main-thread
+     freeze per click, 150 ms on a 4x slower CPU.
+
+     A page being hidden or closed is saved at once (a T pressed half a
+     second before a reload used to be lost with the 1 s debounce). A
+     write that fails, a browser without storage, or a session another
+     tab has changed since this one read it keep "Not saved" up, with a
+     banner that says why (StorageBanner); in the last case this tab
+     stops saving rather than overwrite the newer session.
+
+     The saver starts from what storage holds (storage.stored), so the
+     changes this component makes on mount — the curation brought up to
+     date with the current model, metadata read again with the current
+     header rules — are written once. */
+  const autosaveRef = useRef(null);
   useEffect(() => {
-    if (rawEvents.length === 0) {
-      // No data to save — actively clear storage so a previous session
-      // doesn't linger after the user clears everything.
-      clearStorage();
-      lastSavedAbRef.current = null;
-      setSavedAt(null);
-      return undefined;
-    }
-    const abChanged = lastSavedAbRef.current !== ab;
-    const handle = setTimeout(() => {
-      // saveToStorage is async (IndexedDB) — fire-and-forget; the save
-      // indicator updates from inside the promise. Errors are already
-      // caught + logged inside saveToStorage, which reports the main and
-      // abundance writes separately.
-      saveToStorage(
-        {
-          version: 1,
-          savedAt: new Date().toISOString(),
-          rawEvents,
-          sampleCuration,
-          // The model the curation follows (src/curation.js): a session
-          // without it is migrated as one saved by an earlier version.
-          sampleCurationVersion: SAMPLE_CURATION_VERSION,
-          runMetadata,
-          metadata,
-          plateMap,
-          ab,
-          analysisTitle,
-          // UI state — keeps the user exactly where they left off
-          tab,
-          selId,
-          filter,
-          sort,
-        },
-        { saveAb: abChanged },
-      ).then((res) => {
-        if (!res.main) return;
-        // Only latch the reference when the matrix actually made it to
-        // disk — otherwise the next tick sees abChanged === false and
-        // never retries, silently dropping the abundance table from the
-        // restored session.
-        if (abChanged && res.ab) lastSavedAbRef.current = ab;
-        setAbSaveFailed(abChanged && !res.ab);
-        setSavedAt(Date.now());
-      });
-    }, 1000);
-    return () => clearTimeout(handle);
-  }, [rawEvents, sampleCuration, runMetadata, metadata, plateMap, ab, analysisTitle, tab, selId, filter, sort]);
+    const saver = createAutosave({
+      backend: idbBackend,
+      initialState: storage?.stored || null,
+      rev: storage?.rev ?? 0,
+      abToken: storage?.abToken ?? null,
+      available: storage?.available !== false,
+      onStatus: setSaveStatus,
+    });
+    autosaveRef.current = saver;
+    const onPageHide = () => saver.flushOnPageHide();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") saver.flushNow();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+      saver.dispose();
+      if (autosaveRef.current === saver) autosaveRef.current = null;
+    };
+  }, [storage]);
+  useEffect(() => {
+    autosaveRef.current?.update({
+      rawEvents,
+      runMetadata,
+      eventsWarnings,
+      ab,
+      metadata,
+      plateMap,
+      sampleCuration,
+      // The model the curation follows (src/curation.js): a session
+      // without it is migrated as one saved by an earlier version.
+      sampleCurationVersion: SAMPLE_CURATION_VERSION,
+      analysisTitle,
+      // UI state — keeps the user exactly where they left off
+      tab,
+      selId,
+      filter,
+      sort,
+    });
+  }, [rawEvents, runMetadata, eventsWarnings, ab, metadata, plateMap, sampleCuration, analysisTitle, tab, selId, filter, sort]);
 
 
   /* ---- derived state ---- */
@@ -26565,14 +26458,9 @@ const defaultFilter = () => ({
       const { action: _drop, ...rest } = e;
       return rest;
     });
-    // Wipe IndexedDB synchronously (fire-and-forget) so a fast F5
-    // before the 1 s auto-save debounce fires can't restore the
-    // *previous* session. The next auto-save will write the imported
-    // data fresh; force the abundance side payload to be rewritten by
-    // resetting lastSavedAbRef so the loader can't splice in the old
-    // matrix.
-    clearStorage();
-    lastSavedAbRef.current = null;
+    // Storage is not cleared first: the autosave writes the imported
+    // session over the stored one, and a page closed before that is
+    // saved when it goes (src/autosave.js).
     setRawEvents(restoredEvents);
     setSampleCuration(migratedFromEvents.sampleCuration);
     setRunMetadata(json.run_metadata || null);
@@ -28078,6 +27966,7 @@ const defaultFilter = () => ({
             />
           </div>
         </div>
+        <StorageBanner status={saveStatus} onDownload={exportJSON} />
         {err && (
           <div className="max-w-7xl mx-auto px-6 pb-4">
             <div
@@ -28108,6 +27997,13 @@ const defaultFilter = () => ({
               )}
             </div>
           </div>
+        )}
+        {notice && (
+          <NoticeBanner
+            title={notice.title}
+            lines={notice.lines}
+            onDismiss={() => setNotice(null)}
+          />
         )}
         {sampleMismatches && (
           <div className="max-w-7xl mx-auto px-6 pb-4">
@@ -28486,7 +28382,15 @@ const defaultFilter = () => ({
           successful auto-save and fades out after a couple of seconds.
           Lets the user know the work is being persisted without
           interrupting the flow. */}
-      <SavedPill timestamp={savedAt} abFailed={abSaveFailed} />
+      <SavedPill
+        timestamp={saveStatus.savedAt}
+        abFailed={saveStatus.abFailed}
+        notSaved={
+          saveStatus.state === "failed" ||
+          saveStatus.state === "unavailable" ||
+          saveStatus.state === "conflict"
+        }
+      />
 
       {/* First-visit welcome popup. Asks the user whether to take the
           guided tour or skip. Sets the tutorial-seen flag in either
@@ -31112,91 +31016,47 @@ function BootSplash({ message }) {
   );
 }
 
-function UnsupportedBrowser({ reason }) {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "var(--bg, #faf7f0)",
-        color: "var(--ink, #1d3a44)",
-        fontFamily: '"Raleway", sans-serif',
-        padding: 24,
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 520,
-          padding: 24,
-          borderRadius: 6,
-          background: "var(--bg-card, #fff)",
-          border: "1px solid #ed6e6c",
-          boxShadow: "0 12px 32px rgba(39,86,98,0.12)",
-        }}
-      >
-        <div
-          style={{
-            color: "#ed6e6c",
-            fontWeight: 700,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            fontSize: 11,
-            marginBottom: 8,
-          }}
-        >
-          Browser not supported
-        </div>
-        <h1
-          style={{
-            fontSize: 22,
-            fontWeight: 700,
-            marginBottom: 12,
-            lineHeight: 1.25,
-          }}
-        >
-          IndexedDB is required
-        </h1>
-        <p style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 10 }}>
-          {reason ||
-            "This interface stores your curation session in IndexedDB so it survives refreshes and can hold large abundance tables. Your browser doesn't expose IndexedDB — usually because it's running in private / incognito mode with strict site-data restrictions, or because it's an older release."}
-        </p>
-        <p style={{ fontSize: 13, lineHeight: 1.6, color: "var(--ink-muted, #6b7a82)" }}>
-          Please open this page in a recent build of Firefox, Chrome, Edge,
-          Safari or any Chromium-based browser, outside private mode.
-        </p>
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   // Async boot: load the session from IndexedDB before mounting the
   // main app. Keeping AppMain sync (initial as a prop) avoids reshaping
-  // every state-from-props initializer.
+  // every state-from-props initializer. Without IndexedDB, or when it
+  // cannot be opened or read, the app runs in memory — it used to refuse
+  // to start — and says the session is not saved (StorageBanner); a
+  // session that could not be read stays stored, untouched.
   const [boot, setBoot] = useState({ status: "loading" });
   useEffect(() => {
     if (!indexedDBSupported()) {
-      setBoot({ status: "unsupported" });
+      setBoot({
+        status: "ready",
+        initial: null,
+        storage: { available: false },
+      });
       return;
     }
     let cancelled = false;
-    loadFromStorage()
-      .then((initial) => {
+    readStoredSession()
+      .then(({ session, rev, abToken }) => {
         // Metadata saved by an earlier version is read again with the
-        // current header rules (remapMetadata, src/parsing.js).
-        if (initial?.metadata) initial.metadata = remapMetadata(initial.metadata);
-        if (!cancelled) setBoot({ status: "ready", initial });
+        // current header rules (remapMetadata, src/parsing.js). The
+        // stored copy stays as read (`stored`), so the autosave writes
+        // the new reading once.
+        const initial = session?.metadata
+          ? { ...session, metadata: remapMetadata(session.metadata) }
+          : session;
+        if (!cancelled)
+          setBoot({
+            status: "ready",
+            initial,
+            storage: { available: true, rev, abToken, stored: session },
+          });
       })
       .catch((err) => {
         console.error("[crocodeel] IndexedDB load failed:", err);
         if (!cancelled)
           setBoot({
-            status: "unsupported",
-            reason:
-              "Your browser exposes IndexedDB but the session database could not be opened (often because of strict private-browsing storage policies or a corrupted profile). Try a fresh window or another browser.",
+            status: "ready",
+            initial: null,
+            storage: { available: false },
           });
       });
     return () => {
@@ -31204,7 +31064,5 @@ export default function App() {
     };
   }, []);
   if (boot.status === "loading") return <BootSplash />;
-  if (boot.status === "unsupported")
-    return <UnsupportedBrowser reason={boot.reason} />;
-  return <AppMain initial={boot.initial} />;
+  return <AppMain initial={boot.initial} storage={boot.storage} />;
 }

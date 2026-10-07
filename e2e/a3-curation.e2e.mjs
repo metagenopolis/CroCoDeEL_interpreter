@@ -34,15 +34,17 @@ const targets = new Set(demoEvents.map((c) => c[1]));
 const NC3_SOURCES = demoEvents.filter((c) => c[1] === "NC3").map((c) => c[0]);
 
 /** The session stored by the app (IndexedDB), once the autosave has
-    caught up with everything done so far. Saves are debounced by one
-    second after the last change; when nothing changed, none comes and
-    the stored session is already current. */
+    caught up with everything done so far: the events record with the
+    verdicts and notes of the curation record put back (the records are
+    described in src/persistence.js). Saves come a moment after the last
+    change; when nothing changed, none comes and the stored session is
+    already current. */
 async function storedSession(page) {
   const since = await page.evaluate(() => Date.now());
   let latest = null;
   for (let i = 0; i < 40; i++) {
     await page.waitForTimeout(250);
-    const main = await page.evaluate(
+    const records = await page.evaluate(
       () =>
         new Promise((resolve) => {
           const req = indexedDB.open("crocodeel-interpreter");
@@ -50,12 +52,30 @@ async function storedSession(page) {
           req.onsuccess = () => {
             const db = req.result;
             if (!db.objectStoreNames.contains("kv")) return resolve(null);
-            const get = db.transaction("kv", "readonly").objectStore("kv").get("main");
-            get.onerror = () => resolve(null);
-            get.onsuccess = () => resolve(get.result || null);
+            const tx = db.transaction("kv", "readonly");
+            const out = {};
+            for (const k of ["events", "curation", "ui"]) {
+              const get = tx.objectStore("kv").get(k);
+              get.onsuccess = () => (out[k] = get.result || null);
+            }
+            tx.oncomplete = () => resolve(out);
+            tx.onerror = () => resolve(null);
           };
         }),
     );
+    const cur = records?.curation;
+    const main = cur
+      ? {
+          savedAt: [cur.savedAt, records.ui?.savedAt].filter(Boolean).sort().pop(),
+          rawEvents: (records.events?.events || []).map((e) => ({
+            ...e,
+            verdict: cur.verdicts?.[String(e.id)] || "pending",
+            notes: cur.notes?.[String(e.id)] || "",
+          })),
+          sampleCuration: cur.sampleCuration,
+          sampleCurationVersion: cur.sampleCurationVersion,
+        }
+      : null;
     if (main && Date.parse(main.savedAt) > since) return main;
     latest = main;
     if (i >= 12 && latest) return latest;
@@ -263,8 +283,8 @@ async function importSession(page, session) {
 }
 
 /** Reload the page (the session comes back from the browser's storage),
-    once the autosave — debounced by a second after the last change, a
-    tab switch included — has written everything. Returns the text of
+    once the autosave — a moment after the last change, a tab switch
+    included — has written everything. Returns the text of
     the notice it opened (closed here), or null. */
 async function reloadSession(page) {
   await page.waitForTimeout(1500);
@@ -282,9 +302,9 @@ async function download(page, name) {
   return readFileSync(await file.path(), "utf8");
 }
 
-/** Rewrite fields of the stored session (IndexedDB), as another version
-    of the app would have saved it: `set` replaces fields, `remove`
-    deletes them. */
+/** Rewrite fields of the stored curation record (IndexedDB) —
+    sampleCuration, sampleCurationVersion — as another version of the app
+    would have saved them: `set` replaces fields, `remove` deletes them. */
 async function editStoredSession(page, { set = {}, remove = [] }) {
   await page.evaluate(
     ([set, remove]) =>
@@ -293,11 +313,11 @@ async function editStoredSession(page, { set = {}, remove = [] }) {
         req.onerror = () => reject(req.error);
         req.onsuccess = () => {
           const store = req.result.transaction("kv", "readwrite").objectStore("kv");
-          const get = store.get("main");
+          const get = store.get("curation");
           get.onsuccess = () => {
-            const main = { ...get.result, ...set };
-            for (const k of remove) delete main[k];
-            const put = store.put(main, "main");
+            const curation = { ...get.result, ...set };
+            for (const k of remove) delete curation[k];
+            const put = store.put(curation, "curation");
             put.onsuccess = () => resolve();
             put.onerror = () => reject(put.error);
           };

@@ -1,0 +1,356 @@
+/* ---------- the browser's copy of the session (IndexedDB) ----------
+
+   One database, one key → value object store; the records and what they
+   hold are described in src/persistence.js. IndexedDB gives hundreds of
+   MB to GBs (vs localStorage's ~5–10 MB) and structured-cloned writes,
+   with no JSON.stringify / LZ compression. Sessions stored by the first
+   versions under localStorage keys, then under the single "main" record,
+   are migrated once, on boot.
+
+   Every write of the session records (writeSession) runs in ONE
+   readwrite transaction that first reads the stored revision: if it is
+   not the one this page last read or wrote, another tab has changed the
+   session since, and nothing is written — the caller stops saving and
+   says so. The abundance table is written afterwards, on its own (a full
+   quota on the largest record must not cost the curation), and the UI
+   state on its own too, unchecked.
+
+   A failed write rejects. A write the browser refuses at commit — a full
+   quota — aborts the transaction WITHOUT any error event: the previous
+   version listened to `error` only, so its save promise never settled,
+   the failure went unseen, and the work was gone after a reload. */
+
+import LZString from "lz-string";
+import {
+  ALL_DIRTY,
+  LEGACY_MAIN_KEY,
+  RECORD_KEYS,
+  abundanceRecord,
+  sessionFromLegacyMain,
+  sessionFromRecords,
+  sessionWrites,
+  uiRecord,
+} from "./persistence.js";
+
+export const DB_NAME = "crocodeel-interpreter";
+const DB_VERSION = 1;
+const STORE = "kv";
+// Legacy localStorage keys — read once during the migration and removed
+// afterwards. The prefix flagged LZ-compressed payloads.
+const LEGACY_KEY = "crocodeel-interpreter-v1";
+const LEGACY_KEY_AB = "crocodeel-interpreter-v1-ab";
+const LEGACY_COMPRESSED_PREFIX = "lz:";
+
+/** This page's name in the curation record and in the notices it sends
+    the other tabs. */
+export const WRITER_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/** True when the current browser exposes IndexedDB. Without it the app
+    runs in memory, and says the session is not saved. */
+export function indexedDBSupported() {
+  return typeof window !== "undefined" && !!window.indexedDB;
+}
+
+/** Open (or create) the session database. The handle is cached at module
+    scope so that reads and writes skip the open round-trip, and so that
+    a save started while the page is being hidden can open its
+    transaction synchronously (writeSessionNow). The cache is cleared on
+    the connection's `close` / `versionchange` events so we recover if
+    another tab upgrades the schema. */
+let dbHandlePromise = null;
+let dbHandle = null;
+export function openDB() {
+  if (dbHandlePromise) return dbHandlePromise;
+  const thisPromise = new Promise((resolve, reject) => {
+    let req;
+    try {
+      req = window.indexedDB.open(DB_NAME, DB_VERSION);
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      const forget = () => {
+        if (dbHandlePromise === thisPromise) {
+          dbHandlePromise = null;
+          dbHandle = null;
+        }
+      };
+      // If another tab opens the DB with a higher version, our handle is
+      // invalidated — drop it and let the next call re-open.
+      db.onversionchange = () => {
+        try {
+          db.close();
+        } catch {
+          // ignore
+        }
+        forget();
+      };
+      db.onclose = forget;
+      if (dbHandlePromise === thisPromise) dbHandle = db;
+      resolve(db);
+    };
+    req.onerror = () => {
+      if (dbHandlePromise === thisPromise) dbHandlePromise = null;
+      reject(req.error);
+    };
+    req.onblocked = () => {
+      if (dbHandlePromise === thisPromise) dbHandlePromise = null;
+      reject(new Error("IndexedDB open blocked — close other tabs running this app"));
+    };
+  });
+  dbHandlePromise = thisPromise;
+  return thisPromise;
+}
+
+/** Run `fn(db)`: at once when the database is open, after opening it
+    otherwise. A synchronous throw (a closed connection) rejects. */
+function withDB(fn) {
+  const run = (db) => {
+    try {
+      return Promise.resolve(fn(db));
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  };
+  return dbHandle ? run(dbHandle) : openDB().then(run);
+}
+
+/** Settles with the transaction: resolves on `complete`, rejects on
+    `abort` — which also follows a failed request — with the reason. */
+function settled(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onabort = () =>
+      reject(tx.error || new DOMException("The browser aborted the write.", "AbortError"));
+  });
+}
+
+export function idbGet(key) {
+  return withDB((db) => {
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).get(key);
+    return settled(tx).then(() => req.result ?? null);
+  });
+}
+
+export function idbSet(key, value) {
+  return withDB((db) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(value, key);
+    return settled(tx);
+  });
+}
+
+export function idbDel(key) {
+  return withDB((db) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(key);
+    return settled(tx);
+  });
+}
+
+/** Every record, in one read. */
+function readRecords(db) {
+  const tx = db.transaction(STORE, "readonly");
+  const store = tx.objectStore(STORE);
+  const out = {};
+  for (const key of [...Object.values(RECORD_KEYS), LEGACY_MAIN_KEY]) {
+    const req = store.get(key);
+    req.onsuccess = () => {
+      out[key] = req.result ?? null;
+    };
+  }
+  return settled(tx).then(() => out);
+}
+
+/** The curation record as written: with the revision, this page's id and
+    the time. */
+const stamped = (record, rev) => ({
+  ...record,
+  rev,
+  writer: WRITER_ID,
+  savedAt: new Date().toISOString(),
+});
+
+function putAll(store, { puts, dels }, rev) {
+  for (const [key, value] of puts) {
+    store.put(key === RECORD_KEYS.curation ? stamped(value, rev) : value, key);
+  }
+  for (const key of dels) store.delete(key);
+}
+
+/* ------------------------------------------------- legacy localStorage */
+
+/** Read a single legacy localStorage key, transparently decompressing
+    the LZ-UTF16 payload if the prefix is present. Null if the key is
+    missing or the parse / decompress fails. */
+function readLegacyKey(key) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    if (raw.startsWith(LEGACY_COMPRESSED_PREFIX)) {
+      const decompressed = LZString.decompressFromUTF16(
+        raw.slice(LEGACY_COMPRESSED_PREFIX.length),
+      );
+      if (!decompressed) return null;
+      return JSON.parse(decompressed);
+    }
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function removeLegacyKeys() {
+  try {
+    window.localStorage.removeItem(LEGACY_KEY);
+    window.localStorage.removeItem(LEGACY_KEY_AB);
+  } catch {
+    // ignore
+  }
+}
+
+/** Write a session of an earlier layout as the current records, in one
+    transaction, unless another tab has done it first (then nothing is
+    written and false comes back). The abundance record of the "main"
+    layout already has the current shape and stays; one read from
+    localStorage (`abFromLocal`) is written. */
+function migrateSession(db, session, abFromLocal) {
+  const tx = db.transaction(STORE, "readwrite");
+  const store = tx.objectStore(STORE);
+  let migrated = false;
+  const get = store.get(RECORD_KEYS.curation);
+  get.onsuccess = () => {
+    if (get.result) return;
+    migrated = true;
+    putAll(store, sessionWrites(session, { ...ALL_DIRTY, ab: false }, null), 1);
+    store.put({ ...uiRecord(session), savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
+    if (abFromLocal) store.put(abundanceRecord(abFromLocal, null), RECORD_KEYS.ab);
+    store.delete(LEGACY_MAIN_KEY);
+  };
+  return settled(tx).then(() => migrated);
+}
+
+/** The stored session, read on boot: { session, rev, abToken } —
+    `session` null when nothing is stored, `rev` the revision the next
+    write must find, `abToken` the token of the stored abundance table.
+    A session of an earlier layout is migrated first. Rejects when the
+    database cannot be opened or read (the app then runs in memory). */
+export async function readStoredSession() {
+  const db = await openDB();
+  let records = await readRecords(db);
+  if (!records.curation) {
+    let session = sessionFromLegacyMain(records[LEGACY_MAIN_KEY], records.ab);
+    let abFromLocal = null;
+    let fromLocal = false;
+    if (!session && !records[LEGACY_MAIN_KEY]) {
+      const main = readLegacyKey(LEGACY_KEY);
+      if (main) {
+        abFromLocal = readLegacyKey(LEGACY_KEY_AB) || main.ab || null;
+        session = sessionFromLegacyMain(main, abFromLocal);
+        fromLocal = !!session;
+      }
+    }
+    if (!session) return { session: null, rev: 0, abToken: null };
+    try {
+      await migrateSession(db, session, fromLocal ? abFromLocal : null);
+      if (fromLocal) removeLegacyKeys();
+    } catch (e) {
+      // Read it as it is; the first save writes the current records.
+      console.warn("[crocodeel] session migration failed:", e?.message);
+      return { session, rev: 0, abToken: null };
+    }
+    records = await readRecords(db);
+  }
+  return {
+    session: sessionFromRecords(records),
+    rev: records.curation?.rev ?? 0,
+    abToken: records.curation?.abToken ?? null,
+  };
+}
+
+/** Write the session records (persistence.js' sessionWrites) in one
+    transaction, if the stored revision is still `expectedRev`: resolves
+    { status: "ok", rev } with the new revision, or
+    { status: "conflict", rev } with the stored one — another tab wrote
+    since, and nothing was written. Rejects when the write fails. */
+export function writeSession(writes, expectedRev) {
+  return withDB((db) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    const rev = expectedRev + 1;
+    let conflict = null;
+    const get = store.get(RECORD_KEYS.curation);
+    get.onsuccess = () => {
+      const stored = get.result?.rev ?? 0;
+      if (stored !== expectedRev) {
+        conflict = stored;
+        return;
+      }
+      putAll(store, writes, rev);
+    };
+    return settled(tx).then(() =>
+      conflict === null ? { status: "ok", rev } : { status: "conflict", rev: conflict },
+    );
+  });
+}
+
+/** The same writes, plus the abundance table and the UI state, issued
+    synchronously and committed at once — for a page being hidden for
+    good (pagehide), whose callbacks may never run: a revision check
+    would need one. The revision is the next one; a write by another tab
+    in the last moments before this one would not be detected. Returns
+    false when the database is not open. */
+export function writeSessionNow({ writes, rev, ab, ui }) {
+  if (!dbHandle) return false;
+  try {
+    const tx = dbHandle.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    if (writes) putAll(store, writes, rev);
+    if (ab) store.put(ab, RECORD_KEYS.ab);
+    if (ui) store.put({ ...ui, savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
+    if (typeof tx.commit === "function") tx.commit();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Write the abundance record (persistence.js' abundanceRecord). */
+export function writeAb(record) {
+  return idbSet(RECORD_KEYS.ab, record);
+}
+
+/** Delete the abundance record: after a failed write, so that an older
+    table is never restored with the newer session. */
+export function deleteAb() {
+  return idbDel(RECORD_KEYS.ab);
+}
+
+/** Write the UI record. */
+export function writeUi(ui) {
+  return idbSet(RECORD_KEYS.ui, { ...ui, savedAt: new Date().toISOString() });
+}
+
+/** The channel on which tabs announce their saves (null without
+    BroadcastChannel). */
+export function openSessionChannel() {
+  return typeof BroadcastChannel === "function" ? new BroadcastChannel(DB_NAME) : null;
+}
+
+/** The backend of the autosave (src/autosave.js). */
+export const idbBackend = {
+  writer: WRITER_ID,
+  writeSession,
+  writeSessionNow,
+  writeAb,
+  deleteAb,
+  writeUi,
+  openChannel: openSessionChannel,
+};
