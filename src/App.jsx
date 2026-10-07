@@ -20679,7 +20679,12 @@ const HelpTab = ({ onStartTour }) => {
               inside a line starts a comment too (outside a quoted cell), as
               CroCoDeEL reads that table (pandas,{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>comment="#"</code>
-              ), and a warning names the first line cut.
+              ), and a warning names the first line cut. Every file the
+              interpreter writes quotes a cell that holds a{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              (as R's write.table quotes its ids), so an id such as{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>Plate#1_A01</code>{" "}
+              loads back whole, here and in CroCoDeEL.
             </p>
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
               A sample or species id that names a property every JavaScript
@@ -21658,9 +21663,10 @@ const HelpTab = ({ onStartTour }) => {
                   <code>read.delim(path, skip = n)</code>, with{" "}
                   <code>n</code> the number of lines that start with{" "}
                   <code>#</code> at the top (none to two) — rather than
-                  pass <code>comment="#"</code>, which cuts a note at its
-                  first <code>#</code>; a cell holding a <code>"</code> is
-                  quoted the CSV way, as both read it. Filter
+                  pass <code>comment="#"</code>, which cuts a note at a
+                  bare <code>#</code> in a file an earlier version
+                  exported; a cell holding a <code>"</code> or a{" "}
+                  <code>#</code> is quoted the CSV way, as both read it. Filter
                   downstream on the verdict / action columns if you only
                   want TPs or want to drop FPs, or load the file again
                   on the events card to restore the evaluations and

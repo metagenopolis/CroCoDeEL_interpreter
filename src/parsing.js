@@ -39,10 +39,22 @@ function unquoteCell(s) {
     `S"q"2` (read `Sq2`), and one lone quote (a note `tube labelled 2"
     short`) swallowed the rest of the file into that cell — 17 rows read
     of the samples TSV's 91. Quoted, unquoteCell, CroCoDeEL's csv reader,
-    pandas and R all give back the text as written. */
+    pandas and R all give back the text as written.
+
+    A cell that holds a "#" is quoted too. The abundance table is read
+    with comment="#" — by CroCoDeEL (pandas) and by parseAbundance — which
+    ends a line at a "#" outside a quoted cell, and every file this
+    interface reads takes a line that starts with "#" for a comment. R's
+    write.table quotes its ids, so a table with a sample "Plate#1_A01" or
+    a species "sp#1" loaded fine, but its downloads wrote them bare: read
+    back, the header ended at "Plate" (CroCoDeEL: "Expected 2 fields in
+    line 3, saw 4"), and a metadata, plate map or events row whose first
+    cell starts with "#" was skipped as a comment. Quoted, every one of
+    those readers, pandas' and R's own comment options included, reads
+    the "#" as text. */
 export function tsvCell(v) {
   const s = String(v ?? "").replace(/[\t\r\n]+/g, " ");
-  return s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+  return s.includes('"') || s.includes("#") ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /** Split a TSV text into its header cells, its rows (objects keyed by
