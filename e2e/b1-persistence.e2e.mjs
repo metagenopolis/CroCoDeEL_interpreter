@@ -1,13 +1,16 @@
 /* Browser checks for the session's persistence: what the browser keeps of
    the curation, and what replacing or importing files does to it.
 
-     - replacing the events file asks first when the session holds
-       curation: carry it over (matched by source and target), start
+     - replacing the events file — Replace, a file dropped on the card,
+       the run page's result — asks first when the session holds
+       curation, saying what carrying over drops: carry it over (matched
+       by source and target; the events added by hand kept), start
        fresh, or cancel — and a banner says what happened; clearing the
        events file asks too and says the curation goes with it;
      - the curated events TSV of the Export tab, reloaded into a fresh
        session, gives back the same evaluations, notes, sample actions,
-       Overview counts and curated-abundance card;
+       Overview counts and curated-abundance card; carried over into its
+       own session, it keeps the run header and the diagnostics;
      - the parsers' warnings (events, metadata, plate map) are in the
        data-warnings banner and survive a reload;
      - a tab switch writes the small UI record only, an evaluation the
@@ -16,13 +19,16 @@
        localStorage keys, plain or compressed) is migrated once, and kept
        whole when that migration fails;
      - two tabs of one browser: the second cannot overwrite the first's
-       decisions, and says so;
-     - a T pressed half a second before a reload — or right before it —
-       is kept;
-     - a failed write shows "Not saved"; without IndexedDB, or with site
-       data blocked, the app runs in memory and says so;
-     - a malformed session JSON is refused and the previous session stays,
-       across a reload; the error screen says what is really stored;
+       decisions, and says so — not even with the last save of a page
+       that goes away;
+     - a T pressed half a second before a reload — or right before it, or
+       right before the tab is closed or left — is kept;
+     - a failed write shows "Not saved"; a session restored without its
+       table says so once; without IndexedDB, or with site data blocked,
+       the app runs in memory and says so;
+     - a malformed session JSON — or one whose content would break a
+       tab — is refused and the previous session stays, across a reload;
+       the error screen says what is really stored;
      - clearing the events file keeps the abundance table and the metadata
        across a reload;
      - a tab that crashes keeps the navigation and Export usable;
@@ -680,6 +686,88 @@ try {
     );
   });
 
+  /* B1.1 A file dropped on the events card is asked about like a file
+     picked with Replace. */
+  await scenario("B1.1 drop on the events card", async (page) => {
+    await mark(page, "true positive", 0);
+    await saved(page);
+    const dt = await page.evaluateHandle((text) => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([text], "contamination_events.tsv", { type: "text/tab-separated-values" }));
+      return transfer;
+    }, demo("contamination_events.tsv"));
+    const target = card(page, "contamination_events.tsv");
+    await target.dispatchEvent("dragover", { dataTransfer: dt });
+    await target.dispatchEvent("drop", { dataTransfer: dt });
+    await page.waitForTimeout(1500);
+    const ask = dialog(page, "Replace the events file?");
+    check((await ask.count()) === 1, "B1.1 a file dropped on the events card asks first");
+    await ask.getByRole("button", { name: "Carry over" }).click();
+    await saved(page);
+    const notice = (await page.locator("[data-notice]").innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(
+      /Kept from your session: 1 evaluation/.test(notice) && (await overviewStats(page)).tp === 1,
+      "B1.1 …and Carry over keeps the evaluation",
+      notice.slice(0, 200),
+    );
+  });
+
+  /* B1.1 The run page's "Use these events + abundance in this session".
+     CroCoDeEL itself is not run: its worker is replaced by one that
+     answers with the demo's events file. */
+  await scenario("B1.1 run page", async (page, ctx) => {
+    const tsv = demo("contamination_events.tsv");
+    await ctx.route(/crocodeel\.worker-.*\.js/, (route) =>
+      route.fulfill({
+        contentType: "text/javascript",
+        body: `self.onmessage = (e) => { if (e.data && e.data.type === "run") self.postMessage({ type: "done", tsv: ${JSON.stringify(tsv)} }); };`,
+      }),
+    );
+    await mark(page, "true positive", 0);
+    await mark(page, "true positive", 1);
+    await saved(page);
+    const stats = await overviewStats(page);
+    await page.evaluate(() => {
+      window.location.hash = "#runCroCoDeEL";
+    });
+    const runPage = page.getByRole("dialog", { name: "Run CroCoDeEL in your browser" });
+    await runPage.waitFor({ state: "visible", timeout: 10000 });
+    await runPage.getByRole("button", { name: /^Run CroCoDeEL$/ }).first().click();
+    const use = runPage.getByRole("button", { name: /Use these events \+ abundance in this session/ });
+    await use.waitFor({ state: "visible", timeout: 30000 });
+    await use.click();
+    const ask = dialog(page, "Replace the events file?");
+    await ask.waitFor({ state: "visible", timeout: 10000 });
+    // Above the run page: what is at the centre of its buttons is them.
+    const onTop = await ask.getByRole("button").evaluateAll((buttons) =>
+      buttons.every((b) => {
+        const r = b.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return !!hit && b.contains(hit);
+      }),
+    );
+    check(onTop, "B1.1 run page: the question shows above the run page");
+    await ask.getByRole("button", { name: "Cancel" }).click();
+    await page.waitForTimeout(500);
+    check(
+      (await use.isVisible()) &&
+        (await storedSession(page)).rawEvents.filter((e) => e.verdict === "true_positive").length === 2,
+      "B1.1 run page: Cancel keeps the run page with its results, and the session",
+    );
+    await use.click();
+    await ask.getByRole("button", { name: "Carry over" }).click();
+    await saved(page);
+    check((await runPage.count()) === 0, "B1.1 run page: Carry over closes the run page");
+    const notice = (await page.locator("[data-notice]").innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(
+      /24 events in the new file: 24 matched an event of your session/.test(notice) &&
+        /Kept from your session: 2 evaluations/.test(notice) &&
+        JSON.stringify(await overviewStats(page)) === JSON.stringify(stats),
+      "B1.1 run page: …and keeps the curation",
+      notice.slice(0, 200),
+    );
+  });
+
   /* B1.1(e) + B1.5 Clearing the events file. */
   await scenario("B1.5 clear events", async (page) => {
     const events = card(page, "contamination_events.tsv");
@@ -975,6 +1063,27 @@ try {
     await page.reload({ waitUntil: "networkidle" });
     await page.waitForTimeout(1500);
     check((await overviewStats(page)).tp === 2, "B1.3c …and one pressed right before it too (saved when the page goes away)");
+  });
+
+  /* B1.3c An evaluation right before the tab is closed, or the page
+     left for another site. */
+  await scenario("B1.3c T then close or leave", async (page, ctx) => {
+    await saved(page);
+    await openTab(page, "Validate");
+    await page.keyboard.press("t");
+    await page.close({ runBeforeUnload: true });
+    const p2 = await ctx.newPage();
+    await p2.goto(BASE, { waitUntil: "networkidle" });
+    await p2.waitForTimeout(1500);
+    check((await overviewStats(p2)).tp === 1, "B1.3c a T pressed right before the tab is closed is kept");
+    await openTab(p2, "Validate");
+    await p2.keyboard.press("ArrowRight");
+    await p2.waitForTimeout(200);
+    await p2.keyboard.press("t");
+    await p2.goto("about:blank");
+    await p2.goto(BASE, { waitUntil: "networkidle" });
+    await p2.waitForTimeout(1500);
+    check((await overviewStats(p2)).tp === 2, "B1.3c …and one right before leaving for another page");
   });
 
   /* B1.3d A write the browser refuses. */

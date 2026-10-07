@@ -121,6 +121,63 @@ describe("sessionFromPayload — a session JSON round trip (B1.7)", () => {
   });
 });
 
+/* The session JSON is read by the previous version too (a colleague, an
+   older deployment), and this version reads the previous one's: the
+   fields keep their names and shapes, the only addition
+   (events_warnings) is optional both ways. */
+describe("the session JSON stays readable both ways", () => {
+  // exportJSON at commit 23cc74a, the version before the stored records.
+  const PREVIOUS_KEYS = [
+    "generated", "schema_version", "counts", "analysis_title", "has_metadata", "has_plate_map",
+    "has_abundance", "run_metadata", "metadata", "plate_map", "abundance", "ui_state",
+    "sample_curation", "sample_curation_version", "events",
+  ];
+
+  it("a file this version writes has what the previous version's importer reads", () => {
+    const s = session();
+    const json = exported(s);
+    expect(Object.keys(json).sort()).toEqual([...PREVIOUS_KEYS, "events_warnings"].sort());
+    expect(json.schema_version).toBe(2);
+    expect(Object.keys(json.ui_state).sort()).toEqual(["filter", "sel_id", "sort", "tab"]);
+    // The previous importer applied ui_state.filter as it was: it needs q.
+    expect(typeof json.ui_state.filter.q).toBe("string");
+    // Its reading of the events (importSessionFromJSON at 23cc74a).
+    const previous = json.events.map((e, i) => ({
+      id: e.id != null ? e.id : i,
+      source: e.source,
+      target: e.target,
+      rate: e.contamination_rate,
+      score: e.probability,
+      introduced: e.introduced_species || [],
+      verdict: e.verdict || "pending",
+      notes: e.notes || "",
+    }));
+    expect(previous).toEqual(s.rawEvents.map(({ id, source, target, rate, score, introduced, verdict, notes }) => ({ id, source, target, rate, score, introduced, verdict, notes })));
+    expect(json.sample_curation).toEqual(s.sampleCuration);
+    expect(json.abundance.matrix).toEqual(s.ab.matrix);
+    expect(json.metadata.bySample).toEqual(s.metadata.bySample);
+    expect(json.plate_map.bySample).toEqual(s.plateMap.bySample);
+  });
+
+  it("a file the previous version wrote is read whole", () => {
+    const s = session();
+    // What the previous exportJSON wrote: no events_warnings, and three
+    // per-event fields the importer ignores.
+    const json = exported(s);
+    delete json.events_warnings;
+    json.events.forEach((e) => Object.assign(e, { relatedness: { related: false }, plate_distance: null, cascade: null }));
+    const r = read(json);
+    expect(r.ok).toBe(true);
+    expect(r.session.rawEvents).toEqual(s.rawEvents);
+    expect(r.session.sampleCuration).toEqual(s.sampleCuration);
+    expect(r.session.ab.matrix).toEqual(s.ab.matrix);
+    expect(r.session.metadata.bySample).toEqual(s.metadata.bySample);
+    expect(r.session.plateMap.bySample).toEqual(s.plateMap.bySample);
+    expect(r.session.eventsWarnings).toEqual([]);
+    expect(r.changes).toBeNull();
+  });
+});
+
 describe("sessionFromPayload — the UI state is merged over the defaults", () => {
   it("a filter without q gets the defaults, lowAbFilter on included", () => {
     const json = exported();
