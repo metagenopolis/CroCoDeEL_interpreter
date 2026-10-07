@@ -4,7 +4,9 @@
    expected outcome is known exactly:
 
      1. an event whose target is missing from the abundance table is "not
-        evaluable" in Guided validation — never PROBABLY NOT CONTAMINATED;
+        evaluable" — never PROBABLY NOT CONTAMINATED — in Guided validation
+        and the HTML report, and neither a pass nor a fail in the bulk
+        dialog;
      2. the exported events HTML report prints a cascade's upstream rate,
         not "(NaN%)";
      3. species ids that CroCoDeEL rewrote as integers ("1" for the table's
@@ -241,6 +243,30 @@ try {
       /CONTAMINATED — CroCoDeEL is probably right|POSSIBLY NOT CONTAMINATED|PROBABLY NOT CONTAMINATED/i.test(next) &&
         !/NOT EVALUABLE/.test(next),
       "the next, resolvable event gets a grade",
+    );
+
+    // Neither a pass nor a fail in the bulk dialog: SRC → TGT has 20
+    // species on its line, the missing pair none to count.
+    await openBulk(page);
+    const pass = await bulkPick(page, "n on line", "pass");
+    const fail = await bulkPick(page, "n on line", "fail");
+    check(pass === 1 && fail === 0, "the bulk dialog matches the missing pair with neither pass nor fail", `pass ${pass}, fail ${fail}`);
+    await closeBulk(page);
+
+    // The HTML report says so too, rather than "abundance table required"
+    // (the table is loaded) or a grade: SRC → TGT is CONTAMINATED, so any
+    // other grade in the report would be the missing pair's.
+    await openTab(page, "Export");
+    const report = await downloadVia(page, page.getByRole("button", { name: /Download events HTML/i }).first());
+    const html = report?.text || "";
+    check(
+      /Not evaluable — Target sample &quot;NOT_IN_TABLE&quot; not found in abundance table/.test(html),
+      "the HTML report shows the pair as not evaluable and names the missing sample",
+    );
+    check(
+      !!report && !/abundance table required/i.test(html) && !/NOT CONTAMINATED/.test(html),
+      "…and gives it no grade",
+      (html.match(/[^>]*NOT CONTAMINATED[^<]*/) || [""])[0],
     );
     check(errors.length === 0, "no JS error on a missing-sample event", errors[0] || "");
     await ctx.close();
