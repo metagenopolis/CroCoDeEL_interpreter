@@ -313,27 +313,42 @@ const SPECIES_TITLE_WORDS = new Set([
   "name", "id",
 ]);
 
+/* Words of a taxon's name that no column title holds: SILVA's and GTDB's
+   "uncultured organism", "unclassified Bacteria", "gut metagenome", … A
+   title word among them ("organism") does not make such a name a title. */
+const TAXON_NAME_WORDS = new Set([
+  "uncultured", "unclassified", "unidentified", "unknown", "metagenome", "bacterium",
+  "bacteria", "archaea", "archaeon", "candidatus", "incertae", "sedis", "environmental",
+]);
+
 /** True when `cell`, the first cell of the line read as the header, names
     the species column, so that the line is the header and its sample ids
     are numbers ("species\t1\t2\t3", Qiita's "OTU_ID\t10317.000001\t…"):
     the cell is empty (R's write.table writes "" above the row names), or
-    words without a digit, one of them a usual title word, or it repeats
-    the first cell of a "#" line above (an old header commented out above
-    the renamed one). A data row starts with a species or an OTU instead:
-    "sp1", "otu1", a hash, "k__Bacteria", "Bacteroides vulgatus". */
+    words without a digit, one of them a usual title word and none a word
+    of a taxon's name, or it repeats the first cell of a "#" line above
+    (an old header commented out above the renamed one). A data row starts
+    with a species or an OTU instead: "sp1", "otu1", a hash, "k__Bacteria",
+    "Bacteroides vulgatus", a lineage. A lineage holds title words too —
+    "d__Bacteria;…;s__uncultured_organism", MetaPhlAn's "k__Bacteria|…|
+    s__…_organism" — and was taken for a title: a biom table whose header
+    is a "#" line then loaded with its first row's values for sample ids
+    and only a warning. A rank prefix ("s__") or a lineage separator
+    (";", "|") now marks a taxon, as splitSpeciesList reads them. */
 function namesSpeciesColumn(cell, tsv) {
   const t = cell.trim().toLowerCase();
   if (t === "") return true;
   const commented = (cells) => cells[0].replace(/^#\s*/, "").trim().toLowerCase();
   if (tsv.commentLines.some(({ cells }) => commented(cells) === t)) return true;
+  if (/\d/.test(t) || /[a-z]__|[;|]/i.test(t)) return false;
   // Words split on what is not a letter and inside camel case
   // ("FeatureID"); no lookbehind, which Safari reads only from 16.4.
+  const words = cell
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z]+/)
+    .map((w) => w.toLowerCase());
   return (
-    !/\d/.test(t) &&
-    cell
-      .replace(/([a-z])([A-Z])/g, "$1 $2")
-      .split(/[^A-Za-z]+/)
-      .some((w) => SPECIES_TITLE_WORDS.has(w.toLowerCase()))
+    words.some((w) => SPECIES_TITLE_WORDS.has(w)) && !words.some((w) => TAXON_NAME_WORDS.has(w))
   );
 }
 
