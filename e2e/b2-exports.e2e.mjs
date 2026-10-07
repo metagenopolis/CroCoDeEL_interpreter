@@ -415,9 +415,13 @@ try {
       "B2.1 its verdict column holds the evaluations",
       `TP ${marked.tp}, FP ${marked.fp}`,
     );
+    // A cell holding a quote is quoted the CSV way (tsvCell): R's
+    // read.delim took a quote inside an unquoted cell for the start of a
+    // quoted field and swallowed the rows after it.
     check(
-      rows.some((c) => c[8] === '<b>"Quoted"</b> & co with a tab and a second line'),
-      "B2.1 the note is on one line, in the notes column",
+      rows.some((c) => c[8] === '"<b>""Quoted""</b> & co with a tab and a second line"'),
+      "B2.1 the note is on one line, in the notes column, quoted the CSV way",
+      rows.map((c) => c[8]).find((n) => /Quoted/.test(n || "")) || "(no note)",
     );
 
     // Back through the events card: same evaluations, same notes. The
