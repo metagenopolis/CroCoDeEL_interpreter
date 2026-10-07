@@ -771,7 +771,8 @@ export function lowAbundanceFilterFactor(runMetadata) {
 }
 
 // A value within this relative distance of the threshold counts as ON it
-// (and is zeroed, as upstream's `<=` does). See applyLowAbundanceFilter.
+// (and is zeroed, as upstream's `<=` does on a raw tie). What this does and
+// does not reproduce exactly is spelled out in applyLowAbundanceFilter.
 const LOW_AB_TIE_TOLERANCE = 1e-12;
 
 /** CroCoDeEL's low-abundance filter, applied to a parsed abundance table.
@@ -783,14 +784,33 @@ const LOW_AB_TIE_TOLERANCE = 1e-12;
     line, the points above it and the missing-species test are judged on
     species CroCoDeEL had discarded.
 
-    The parsed table already holds per-sample fractions v / S. Because the
-    threshold is relative to the sample's own minimum m, the division moves
-    values and threshold together — v / S ≤ f × m / S ⇔ v ≤ f × m — and the
-    rescaled survivors are the same, (v / S) / Σ(kept v / S) = v / Σ kept v.
-    Only rounding differs: a raw tie (20 reads against a minimum of 1, at
-    20×) can land one ulp above the threshold once divided by S, so the
-    comparison treats a relative 1e-12 as a tie — far above that rounding,
-    far below any real gap between two abundances.
+    The parsed table only holds per-sample fractions v / S, not the raw
+    values CroCoDeEL compared. In exact arithmetic that changes nothing:
+    the threshold is relative to the sample's own minimum m, so the
+    division moves values and threshold together — v / S ≤ f × m / S ⇔
+    v ≤ f × m — and the rescaled survivors are the same,
+    (v / S) / Σ(kept v / S) = v / Σ kept v. In floating point the two can
+    only disagree on an exact tie, a value equal to f × m:
+      - raw integers (20 reads against a minimum of 1, at 20×): upstream
+        zeroes every tie, while the fractions can land one ulp either side
+        of the threshold. So the comparison treats a relative 1e-12 as a
+        tie and zeroes it — far above that rounding, far below any real
+        gap between two abundances;
+      - raw decimals: upstream's own product f × m may round below v —
+        20 × 0.00007 is 0.0013999999999999998, under 0.0014 — and then
+        CroCoDeEL KEEPS the tie. That happens to 13 % of the exact ties
+        between 5-decimal values (MetaPhlAn's format), and the raw values
+        it hinges on are gone from the parsed table, so such a species,
+        the one sitting at its sample's threshold, is zeroed here. The
+        bundled MetaPhlAn4 run (20×) has 13 exact ties, all zeroed
+        upstream as here: all 939,600 cells match;
+      - a run made with this app's in-browser runner filtered the fractions
+        as pandas read them back from abundanceToTSV's text; its default
+        parser keeps 17 digits, leading zeros included, so a fraction of
+        3e-6 is read with ~1e-11 relative error, and a value that close to
+        the threshold can fall either way (9 to 12 cells of 1.35 million
+        in a simulation of the bundled Sylph table at 20×, with or without
+        the tolerance).
 
     Returns a new table sharing `samples` and `species` with `ab`; its
     matrix holds only the non-zero cells (every reader already does

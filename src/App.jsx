@@ -21157,7 +21157,12 @@ const HelpTab = ({ onStartTour }) => {
             <em>Low-abundance filter F×</em> in the run parameters to
             compute them on the table as loaded (the choice is saved with
             the session). Exports, sample richness and the introduced %
-            always use the table as loaded.
+            always use the table as loaded. One rare case differs: a value
+            exactly F times its sample's smallest one is zeroed here, as
+            CroCoDeEL zeroes it in a count table, but in a table of
+            decimals CroCoDeEL's floating-point rounding keeps about one
+            such tie in eight (20 × 0.00007 falls just under 0.0014) —
+            the relative abundances loaded here no longer tell which.
           </p>
           <table className="w-full text-left mt-3">
             <thead>

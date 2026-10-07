@@ -22,13 +22,14 @@ import {
 
    (cross-checked: 10 ** read_filter_normalize(fh, F) gives the same
    numbers to 1e-14). The interpreter only holds per-sample FRACTIONS,
-   and applies the filter to those; matching GOLDEN cell for cell is the
-   proof that this is equivalent: the threshold is relative to each
+   and applies the filter to those. The threshold is relative to each
    sample's own minimum, so dividing a column by its total moves the
-   values and the threshold together. The table is built to hit exact
-   ties — a value equal to F × the minimum, which upstream zeroes:
-   S1 20 vs 20 × 1, S2 60 vs 20 × 3, S3 5 vs 20 × 0.25, and S6 the
-   MetaPhlAn-style 0.0002 vs 20 × 0.00001. */
+   values and the threshold together: only exact ties — a value equal to
+   F × the minimum — can come out differently, through rounding. The
+   table is built to hit them where upstream zeroes them: S1 20 vs
+   20 × 1, S2 60 vs 20 × 3, S3 5 vs 20 × 0.25, and S6 the MetaPhlAn-style
+   0.0002 vs 20 × 0.00001. The decimal ties upstream KEEPS are a known
+   divergence, pinned below. */
 const RAW_TSV = [
   "species\tS1\tS2\tS3\tS4\tS5\tS6",
   "sp_a\t1\t0\t0.5\t100\t7\t0.00001",
@@ -133,6 +134,52 @@ describe("applyLowAbundanceFilter — matches upstream CroCoDeEL", () => {
     const b = applyLowAbundanceFilter(sparse, 20);
     for (const sp of ab.species)
       for (const s of ab.samples) expect(cell(b, sp, s)).toBe(cell(a, sp, s));
+  });
+});
+
+describe("applyLowAbundanceFilter — known divergence on decimal ties", () => {
+  /* Upstream compares the raw values, and its own product F × min can
+     round below a tied value: 20 × 0.00007 = 0.0013999999999999998 in
+     doubles, under 0.0014, so CroCoDeEL KEEPS sp_b in S1 and S2 — about
+     13 % of exact ties between 5-decimal values go that way. The parsed
+     table no longer holds the raw values that decide it, so the
+     interpreter zeroes every tie, as upstream does for integer counts
+     and for S3 here (20 × 0.00003 = 0.0006000000000000001).
+
+     Upstream (same functions as GOLDEN, pandas 2.2.2) on this table: */
+  const TIES_TSV = [
+    "species\tS1\tS2\tS3",
+    "sp_a\t0.00007\t0.00014\t0.00003",
+    "sp_b\t0.0014\t0.0028\t0.0006",
+    "sp_c\t50.0\t50.0\t50.0",
+    "sp_d\t49.99853\t49.99706\t49.99937",
+  ].join("\n");
+  const UPSTREAM = {
+    S1: { sp_a: 0, sp_b: 1.4000009800006858e-5, sp_c: 0.500000350000245, sp_d: 0.499985649989955 },
+    S2: { sp_a: 0, sp_b: 2.800003920005488e-5, sp_c: 0.50000070000098, sp_d: 0.4999712999598199 },
+    S3: { sp_a: 0, sp_b: 0, sp_c: 0.5000031500198451, sp_d: 0.49999684998015487 },
+  };
+  const f = applyLowAbundanceFilter(parseAbundance(TIES_TSV), 20);
+
+  it("zeroes the decimal ties upstream keeps (S1, S2)", () => {
+    expect(20.0 * 0.00007 < 0.0014).toBe(true); // why upstream keeps sp_b
+    expect(UPSTREAM.S1.sp_b).toBeGreaterThan(0);
+    expect(cell(f, "sp_b", "S1")).toBe(0);
+    expect(cell(f, "sp_b", "S2")).toBe(0);
+    // The rest of those samples is rescaled without it: off by the share
+    // of the one species upstream kept (1.4e-5 and 2.8e-5).
+    for (const s of ["S1", "S2"])
+      for (const sp of ["sp_c", "sp_d"])
+        expect(Math.abs(cell(f, sp, s) - UPSTREAM[s][sp])).toBeLessThan(3e-5);
+  });
+
+  it("matches upstream where its rounding zeroes the tie too (S3)", () => {
+    expect(20.0 * 0.00003 < 0.0006).toBe(false);
+    for (const [sp, want] of Object.entries(UPSTREAM.S3)) {
+      const got = cell(f, sp, "S3");
+      if (want === 0) expect([sp, got]).toEqual([sp, 0]);
+      else expect(Math.abs(got - want) / want).toBeLessThan(1e-12);
+    }
   });
 });
 
