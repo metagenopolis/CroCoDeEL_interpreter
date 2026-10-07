@@ -303,6 +303,18 @@ function remigrateSession(db, session, { rev, savedAt, abToken, table }) {
   });
 }
 
+/** A session of an earlier layout brought up to date (persistence.js'
+    upgradedSession), or as it is should that fail: AppMain then migrates
+    its curation on mount, as it did before. */
+function upgradedOrAsIs(session) {
+  try {
+    return upgradedSession(session);
+  } catch (e) {
+    console.warn("[crocodeel] could not bring the stored session up to date:", e?.message);
+    return { session, notes: [], changes: null };
+  }
+}
+
 /** Stop naming a lost abundance table (persistence.js' forgetLostTable),
     in one transaction that reads the records again. Resolves true when
     it did. */
@@ -367,7 +379,7 @@ export async function readStoredSession() {
       return { session: null, rev: 0, abToken: null, inRecords: true, upgrade: null };
     }
     // Up to date before it is written, so that every tab reads it so.
-    const up = upgradedSession(session);
+    const up = upgradedOrAsIs(session);
     const table = fromLocal || up.session.ab !== session.ab ? up.session.ab : null;
     try {
       if (await migrateSession(db, up.session, table)) {
@@ -388,7 +400,7 @@ export async function readStoredSession() {
     // without a word at the next reload.
     const main = records[LEGACY_MAIN_KEY];
     const stored = sessionFromLegacyMain(main, records.ab);
-    const up = upgradedSession(stored);
+    const up = upgradedOrAsIs(stored);
     try {
       const done = await remigrateSession(db, up.session, {
         rev: records.curation.rev ?? 0,

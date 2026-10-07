@@ -32038,11 +32038,18 @@ export default function App() {
         // the autosave writes the new reading once. A session read from
         // an earlier layout whose migration failed is not in the current
         // records: nothing counts as stored, so the first save writes
-        // every record.
-        // A session of an earlier layout was brought up to date before
-        // it was written (`upgrade`, src/storage.js): this tab says what
-        // that changed.
-        const checked = checkStoredSession(session);
+        // every record. A session of an earlier layout was brought up to
+        // date before it was written (`upgrade`, src/storage.js): this
+        // tab says what that changed.
+        let checked;
+        try {
+          checked = checkStoredSession(session);
+        } catch (e) {
+          // Should the readers fail, the session opens as it was read,
+          // as it did before them.
+          console.warn("[crocodeel] could not check the stored session:", e?.message);
+          checked = { session, notes: [] };
+        }
         const read = checked.session;
         let initial = read?.metadata
           ? { ...read, metadata: remapMetadata(read.metadata) }

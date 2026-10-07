@@ -886,7 +886,7 @@ function readAbundance(ab, p) {
       p.repairs.push(
         `${plural(negative, "negative abundance")} ${negative === 1 ? "was" : "were"} read as 0, ` +
           "as the abundance parser reads them" +
-          (fractionsOnly ? ", each sample's relative abundances recomputed without them." : "."),
+          (fractionsOnly ? ", the relative abundances of their samples recomputed without them." : "."),
       );
     }
   }
