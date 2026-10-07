@@ -17700,12 +17700,13 @@ const ValidateTab = ({
                 <Criterion
                   n="06"
                   title="Biological similarity (ρ × relatedness)"
-                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects that share no group passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
+                  wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ is CroCoDeEL's own: over every species of the table, those absent from both samples included, as printed above each plot of its PDF report. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects that share no group passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
                   pass={passFor("biosim")}
                   value={(() => {
                     if (diag?.spearman == null) {
-                      // ρ is computed over the species present in either
-                      // sample (every point of the scatter).
+                      // ρ ranks every species of the table, but means
+                      // nothing with fewer than 3 present in either sample
+                      // (the points of the scatter).
                       const n = scatter?.points?.length ?? 0;
                       return pairOk
                         ? `${n === 1 ? "Only 1 species" : n === 0 ? "No species" : `Only ${n} species`} in source and target — ρ needs at least 3`
@@ -21848,8 +21849,13 @@ const HelpTab = ({ onStartTour }) => {
                 <td className="py-2.5 pr-4 align-top text-[13px]" style={{ fontWeight: 600, color: "var(--ink)" }}>Biological similarity (ρ × relatedness)</td>
                 <td className="py-2.5 align-top text-[13px]">
                   Spearman rank correlation ρ between source and target
-                  profiles, read jointly with the metadata-driven
-                  relatedness signal — because ρ alone is ambiguous:
+                  profiles — CroCoDeEL's own, the rho printed above each
+                  plot of its PDF report: over every species of the table,
+                  those absent from both samples tied below the others, on
+                  the table the diagnostics use (its low-abundance filter
+                  applied when the run declares one) — read jointly with
+                  the metadata-driven relatedness signal, because ρ alone
+                  is ambiguous:
                   high ρ can mean either same-subject biological
                   persistence (FP) <em>or</em> very strong contamination
                   (TP). Cross-referencing with{" "}

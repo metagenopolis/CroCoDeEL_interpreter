@@ -63,6 +63,9 @@ export function buildScatter(ab, event) {
     target,
     sourceRichness: richness[srcKey] ?? 0,
     targetRichness: richness[tgtKey] ?? 0,
+    // Every species of the table, the ones absent from both samples
+    // included: what CroCoDeEL's ρ ranks (spearmanRho).
+    nSpecies: ab.species.length,
     logRange: ab.logRange || null,
   };
 }
@@ -115,11 +118,32 @@ function rankArray(arr) {
   return ranks;
 }
 
-/** Spearman's rank correlation between source and target abundances
-    across every species present in at least one of the two samples.
-    A high ρ (≥ 0.7) means the two overall profiles are similar — typical
-    of longitudinal / same-subject pairs where the apparent contamination
-    line is biological persistence rather than mechanical transfer. */
+/** Spearman's rank correlation between the source and target profiles,
+    as CroCoDeEL computes it: over every species of the table — those
+    absent from both samples included, all absences tied below every
+    present species — on the table the diagnostics use (its low-abundance
+    filter applied when the run declares one). It is the rho printed
+    above each plot of CroCoDeEL's PDF report (plot_conta,
+    species_ab_table[target].corr(species_ab_table[source],
+    method="spearman"), absent species at a pseudo-zero) and the fifth
+    feature of its random forest (spearmanr over every species, -inf for
+    an absent one).
+
+    It used to rank only the species present in at least one of the two
+    samples, a different number under the same name: for the demo's
+    63D29 → 63D40, two samples of one infant, 0.50 where CroCoDeEL says
+    0.75, so criterion 06 passed a pair it would fail; 6 of the demo's 24
+    events fell on the other side of 0.7. A high ρ (≥ 0.7) means the two
+    profiles are similar — typical of longitudinal / same-subject pairs
+    where the apparent contamination line is biological persistence
+    rather than mechanical transfer.
+
+    `scatter` is buildScatter's: its points are the species present in
+    either sample, `nSpecies` the table's species count. The absences
+    are ranked as one tie, without listing the species, so the cost stays
+    that of the points. A scatter without `nSpecies` (one built by hand)
+    is ranked on its points only. Null with fewer than three species
+    present in either sample. */
 export function spearmanRho(scatter) {
   if (!scatter || !Array.isArray(scatter.points)) return null;
   const xs = [];
@@ -132,19 +156,40 @@ export function spearmanRho(scatter) {
   });
   const n = xs.length;
   if (n < 3) return null;
-  const rx = rankArray(xs);
-  const ry = rankArray(ys);
-  const mx = rx.reduce((s, v) => s + v, 0) / n;
-  const my = ry.reduce((s, v) => s + v, 0) / n;
-  let sxy = 0,
-    sxx = 0,
-    syy = 0;
+  const total = Number.isInteger(scatter.nSpecies) && scatter.nSpecies > n ? scatter.nSpecies : n;
+  // Species absent from both samples, each ranked as the zeros of x and y.
+  const both = total - n;
+  const rx = tiedZeroRanks(xs, total);
+  const ry = tiedZeroRanks(ys, total);
+  // Average ranks always have the mean (total + 1) / 2.
+  const m = (total + 1) / 2;
+  let sxy = both * (rx.zero - m) * (ry.zero - m);
+  let sxx = both * (rx.zero - m) ** 2;
+  let syy = both * (ry.zero - m) ** 2;
   for (let i = 0; i < n; i++) {
-    sxy += (rx[i] - mx) * (ry[i] - my);
-    sxx += (rx[i] - mx) ** 2;
-    syy += (ry[i] - my) ** 2;
+    sxy += (rx.ranks[i] - m) * (ry.ranks[i] - m);
+    sxx += (rx.ranks[i] - m) ** 2;
+    syy += (ry.ranks[i] - m) ** 2;
   }
   return sxx * syy > 0 ? sxy / Math.sqrt(sxx * syy) : 0;
+}
+
+/** The average ranks of `values` (each ≥ 0) among `total` values, the
+    ones not listed being 0: every 0 shares the rank `zero`, below every
+    positive value. */
+function tiedZeroRanks(values, total) {
+  const zeros = total - values.filter((v) => v > 0).length;
+  const zero = (zeros + 1) / 2;
+  const positive = [];
+  values.forEach((v, i) => {
+    if (v > 0) positive.push(i);
+  });
+  const r = rankArray(positive.map((i) => values[i]));
+  const ranks = values.map(() => zero);
+  positive.forEach((i, k) => {
+    ranks[i] = zeros + r[k];
+  });
+  return { ranks, zero };
 }
 
 export function lineDiagnostics(scatter) {
