@@ -20679,7 +20679,12 @@ const HelpTab = ({ onStartTour }) => {
               inside a line starts a comment too (outside a quoted cell), as
               CroCoDeEL reads that table (pandas,{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>comment="#"</code>
-              ), and a warning names the first line cut.
+              ), and a warning names the first line cut. Every file the
+              interpreter writes quotes a cell that holds a{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>#</code>{" "}
+              (as R's write.table quotes its ids), so an id such as{" "}
+              <code style={{ fontFamily: "ui-monospace, monospace" }}>Plate#1_A01</code>{" "}
+              loads back whole, here and in CroCoDeEL.
             </p>
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
               A sample or species id that names a property every JavaScript
@@ -20928,11 +20933,20 @@ const HelpTab = ({ onStartTour }) => {
             writes no cell above the row names — names samples only: the
             first cell of each row is then its species, as CroCoDeEL
             (pandas) reads it, the card says so and the downloads keep that
-            layout. Rows that end with one tab more than the header (an
+            layout. Rows that end with one tab more than the header line (an
             empty cell under no header) are read as the header says, with a
             warning: CroCoDeEL reads such a table as one without a species
             cell and names every sample one column off, so run it again on
-            the table without those tabs. The parser normalizes each sample
+            the table without those tabs. A tab at the end of every line,
+            the header's included, under a header that starts with a sample
+            (R's layout saved from a spreadsheet with an empty last column)
+            shifts nothing: CroCoDeEL reads it right, and so does the
+            interpreter. A table CroCoDeEL cannot read at all (pandas stops
+            on a first row two cells or more longer than the header, or on
+            a later row longer than every line above it) still loads, with
+            a warning naming that line, and cells past the header are left
+            out; R's layout whose rows end with tabs its header line lacks
+            is read without a cell above the species. The parser normalizes each sample
             column to relative abundances summing to 1 for the plots and the
             checks, and keeps each column's total: the card's Download and the curated
             abundance export write the file's own values back (counts stay
@@ -21654,9 +21668,10 @@ const HelpTab = ({ onStartTour }) => {
                   <code>read.delim(path, skip = n)</code>, with{" "}
                   <code>n</code> the number of lines that start with{" "}
                   <code>#</code> at the top (none to two) — rather than
-                  pass <code>comment="#"</code>, which cuts a note at its
-                  first <code>#</code>; a cell holding a <code>"</code> is
-                  quoted the CSV way, as both read it. Filter
+                  pass <code>comment="#"</code>, which cuts a note at a
+                  bare <code>#</code> in a file an earlier version
+                  exported; a cell holding a <code>"</code> or a{" "}
+                  <code>#</code> is quoted the CSV way, as both read it. Filter
                   downstream on the verdict / action columns if you only
                   want TPs or want to drop FPs, or load the file again
                   on the events card to restore the evaluations and

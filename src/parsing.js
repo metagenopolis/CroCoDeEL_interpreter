@@ -39,10 +39,22 @@ function unquoteCell(s) {
     `S"q"2` (read `Sq2`), and one lone quote (a note `tube labelled 2"
     short`) swallowed the rest of the file into that cell — 17 rows read
     of the samples TSV's 91. Quoted, unquoteCell, CroCoDeEL's csv reader,
-    pandas and R all give back the text as written. */
+    pandas and R all give back the text as written.
+
+    A cell that holds a "#" is quoted too. The abundance table is read
+    with comment="#" — by CroCoDeEL (pandas) and by parseAbundance — which
+    ends a line at a "#" outside a quoted cell, and every file this
+    interface reads takes a line that starts with "#" for a comment. R's
+    write.table quotes its ids, so a table with a sample "Plate#1_A01" or
+    a species "sp#1" loaded fine, but its downloads wrote them bare: read
+    back, the header ended at "Plate" (CroCoDeEL: "Expected 2 fields in
+    line 3, saw 4"), and a metadata, plate map or events row whose first
+    cell starts with "#" was skipped as a comment. Quoted, every one of
+    those readers, pandas' and R's own comment options included, reads
+    the "#" as text. */
 export function tsvCell(v) {
   const s = String(v ?? "").replace(/[\t\r\n]+/g, " ");
-  return s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+  return s.includes('"') || s.includes("#") ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /** Split a TSV text into its header cells, its rows (objects keyed by
@@ -76,11 +88,31 @@ export function tsvCell(v) {
                       (an implicit index): `implicitIndex` is then true
                       and `header` starts with "", the species column.
                       When that cell is an empty one at the end of the
-                      row instead, under no header cell in any row (each
-                      line ends with a tab), pandas still reads it so and
-                      shifts every sample name one column: the table is
-                      read as its header says, and `shiftedByPandas` is
-                      true for the parser to say so. */
+                      row instead, and no row holds a value past the
+                      header's last name, the row ends with a tab. If
+                      the header line ends with a name, or with a tab
+                      but its first cell names the species column
+                      (namesSpeciesColumn: "species", "id_msp", empty),
+                      the rows end with a tab the header does not have:
+                      pandas still reads an implicit index and shifts
+                      every sample name one column, so the table is read
+                      as its header says, and `shiftedByPandas` is true
+                      for the parser to say so. Otherwise the header
+                      line ends with a tab too and starts with a sample:
+                      R's layout with a tab at the end of every line,
+                      which pandas reads right, and so does this.
+                      pandas refuses a table whose first row is two
+                      cells or more longer than the header, or whose
+                      later row is longer than both the header line and
+                      the first row: `refusedByPandas` then gives that
+                      row's { line, cells } and the header's length
+                      (`header`) or the longest row pandas takes
+                      (`expected`), for the parser to say so. Such a
+                      first row is read without a cell above the species
+                      when a value sits past the header's last name and
+                      the header's first cell does not name the species
+                      column (R's layout, its rows ending with tabs), as
+                      the header says otherwise. */
 export function parseTSV(text, options = {}) {
   const { inlineComments = false, indexCol = false } = options;
   const allLines = text.replace(/\r/g, "").split("\n");
@@ -144,6 +176,7 @@ export function parseTSV(text, options = {}) {
       commentLines,
       implicitIndex: false,
       shiftedByPandas: false,
+      refusedByPandas: null,
       unnamed: [],
       inlineComment,
       inlineComments: cutLines,
@@ -153,11 +186,42 @@ export function parseTSV(text, options = {}) {
   // pandas' implicit index (see `indexCol` above).
   let implicitIndex = false;
   let shiftedByPandas = false;
-  if (indexCol && data.length > 0 && data[0].length === headerCells.length + 1) {
-    if (isBlankCell(data[0][headerCells.length]) && width <= headerCells.length) {
-      shiftedByPandas = true;
-    } else {
-      implicitIndex = true;
+  let refusedByPandas = null;
+  const h = headerCells.length;
+  if (indexCol && data.length > 0) {
+    // The header's cells up to its last name: a value past them (`width`)
+    // has a name only if the header has no cell above the species.
+    const named = withoutTrailingBlanks(headerCells).length;
+    const titled = () => namesSpeciesColumn(headerCells[0], { commentLines });
+    const first = data[0].length;
+    if (first === h + 1) {
+      // A header line ending with a tab used to count as a shift too: R's
+      // write.table output with a tab added to every line (a spreadsheet's
+      // empty last column) was read with its species column taken from
+      // the first sample and every sample holding the values of the one
+      // before it, with a warning that CroCoDeEL, which reads it right,
+      // did that.
+      const rowsOnlyTab = isBlankCell(data[0][h]) && width <= named && (named === h || titled());
+      if (rowsOnlyTab) shiftedByPandas = true;
+      else implicitIndex = true;
+    } else if (first > h + 1) {
+      // pandas cannot build its index from a first row two cells or more
+      // longer than the header: CroCoDeEL refuses the table. It was read
+      // as its header says, so R's layout with tabs at the end of its rows
+      // came in one column off, without a word: read without a cell above
+      // the species when a value sits past the header's last name and the
+      // header's first cell is not the species column's title.
+      implicitIndex = width > named && !titled();
+      refusedByPandas = { line: lineNumbers[0], cells: first, header: h };
+    }
+    // pandas pads a row shorter than the ones above it, but refuses one
+    // longer: "Expected N fields in line L, saw M", N the length of the
+    // header line or of the first row, whichever is longer. A value in
+    // such a row past the header was dropped without a word.
+    if (!refusedByPandas) {
+      const longest = Math.max(h, first);
+      const k = data.findIndex((cells) => cells.length > longest);
+      if (k > 0) refusedByPandas = { line: lineNumbers[k], cells: data[k].length, expected: longest };
     }
   }
   const offset = implicitIndex ? 1 : 0;
@@ -202,6 +266,7 @@ export function parseTSV(text, options = {}) {
     commentLines,
     implicitIndex,
     shiftedByPandas,
+    refusedByPandas,
     unnamed,
     inlineComment,
     inlineComments: cutLines,
@@ -1178,7 +1243,9 @@ export function parseAbundance(text) {
 function layoutWarnings(tsv) {
   const out = [];
   const { header, unnamed, inlineComment, inlineComments: cut } = tsv;
-  if (tsv.shiftedByPandas) {
+  // A later row too long for pandas makes it refuse the table rather
+  // than read it shifted: then only the refusal is said.
+  if (tsv.shiftedByPandas && !tsv.refusedByPandas) {
     const first = header[0].trim() ? ` ("${clip(header[0], 30)}")` : "";
     out.push(
       `The first row (line ${tsv.lineNumbers[0]}) has one cell more than the header, an empty ` +
@@ -1187,6 +1254,24 @@ function layoutWarnings(tsv) {
         `holding the values of the column after it: its events name the samples one column ` +
         `off. This reads the table as its header says. Remove the tabs at the end of the ` +
         `lines and run CroCoDeEL again on the fixed table.`,
+    );
+  }
+  const refused = tsv.refusedByPandas;
+  if (refused) {
+    const { line, cells } = refused;
+    const reading = tsv.implicitIndex
+      ? "with the species in the first cell of each row, the header naming the samples only (R's layout)"
+      : "as its header says";
+    out.push(
+      (refused.header !== undefined
+        ? `The first row (line ${line}) has ${cells - refused.header} cells more than the header: ` +
+          `CroCoDeEL cannot read such a table (pandas: "Could not construct index"). This reads ` +
+          `it ${reading}.`
+        : `Line ${line} has ${cells} cells, more than any line above it (${refused.expected}): ` +
+          `CroCoDeEL cannot read such a table (pandas: "Expected ${refused.expected} fields in ` +
+          `line …, saw ${cells}"). This reads the cells under the header and leaves the others out.`) +
+        ` Remove the extra cells (often tabs at the end of the lines) before running CroCoDeEL ` +
+        `on the table.`,
     );
   }
   if (unnamed.length > 0) {
