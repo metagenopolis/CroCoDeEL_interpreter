@@ -16939,6 +16939,22 @@ const ValidateTab = ({
   // grade says which, on or off.
   const lowAbFactor = lowAbundanceFilterFactor(runMetadata);
   const lowAbOn = lowAbFactor != null && filter?.lowAbFilter !== false;
+  // The filter can be switched from the grade's note too, where its state
+  // is shown, not only from Overview › Run parameters, which a curator
+  // may have collapsed (one state: filter.lowAbFilter). Switching
+  // recomputes every diagnostic in one synchronous render (a second or
+  // two on the largest runs), so the note says so first, as the Overview
+  // box does, and the change is applied once that has been painted.
+  const [lowAbPending, setLowAbPending] = useState(null);
+  const switchLowAb = (on) => {
+    setLowAbPending(on);
+    requestAnimationFrame(() =>
+      setTimeout(() => {
+        setFilter((f) => ({ ...f, lowAbFilter: on }));
+        setLowAbPending(null);
+      }, 0),
+    );
+  };
   useEffect(() => {
     const handler = (e) => {
       // Don't compete with the bulk-apply dialog's own input handling.
@@ -17615,11 +17631,35 @@ const ValidateTab = ({
                     <div
                       className="text-[10px] mt-0.5"
                       style={{ color: "var(--ink-muted)" }}
-                      title="Switched in Overview › Run parameters."
+                      title="Also switched in Overview › Run parameters."
                     >
-                      {lowAbOn
-                        ? `After CroCoDeEL's low-abundance filter (${lowAbFactor}×), as in the run`
-                        : `Low-abundance filter (${lowAbFactor}×) switched off — diagnostics on the table as loaded, unlike the run`}
+                      {lowAbPending != null
+                        ? "Recomputing the diagnostics…"
+                        : lowAbOn
+                          ? `After CroCoDeEL's low-abundance filter (${lowAbFactor}×), as in the run`
+                          : `Low-abundance filter (${lowAbFactor}×) switched off — diagnostics on the table as loaded, unlike the run`}{" "}
+                      <button
+                        type="button"
+                        data-low-ab-switch=""
+                        onClick={() => switchLowAb(!lowAbOn)}
+                        disabled={lowAbPending != null}
+                        className="underline"
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          color: "inherit",
+                          font: "inherit",
+                          cursor: lowAbPending != null ? "default" : "pointer",
+                        }}
+                        title={
+                          lowAbOn
+                            ? "Compute the diagnostics on the abundance table as loaded, unlike the CroCoDeEL run"
+                            : `Apply CroCoDeEL's low-abundance filter (${lowAbFactor}×) to the diagnostics, as in the run`
+                        }
+                      >
+                        {lowAbOn ? "switch off" : "switch on"}
+                      </button>
                     </div>
                   )}
                 </div>
@@ -21932,9 +21972,10 @@ const HelpTab = ({ onStartTour }) => {
             one, and rescaled the rest, before fitting anything. Every
             criterion, scatterplot and report plot here uses that same
             filtered table by default; untick{" "}
-            <em>Low-abundance filter F×</em> in the run parameters to
-            compute them on the table as loaded (the choice is saved with
-            the session). Exports, sample richness and the introduced %
+            <em>Low-abundance filter F×</em> in the run parameters, or
+            click <em>switch off</em> in the note under the grade in
+            Guided validation, to compute them on the table as loaded (the
+            choice is saved with the session). Exports, sample richness and the introduced %
             always use the table as loaded. One rare case differs: a value
             exactly F times its sample's smallest one is zeroed here, as
             CroCoDeEL zeroes it in a count table, but in a table of

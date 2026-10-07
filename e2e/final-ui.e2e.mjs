@@ -23,7 +23,9 @@
             caps, the benchmarks' ids and names over 12 characters read
             whole;
      - F.9  a metadata file without a subject column loads, with a
-            warning.
+            warning;
+     - F.10 the low-abundance filter can be switched from Guided
+            validation.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -694,6 +696,38 @@ try {
       /91 samples annotated/.test(body) && !/Metadata:/.test(errors) && !!warning,
       "F.9 a metadata file with host and biome but no subject loads, with a warning",
       (warning || errors || "(not loaded)").slice(0, 200),
+    );
+  });
+
+  /* F.10 — CroCoDeEL's low-abundance filter can be switched from Guided
+     validation, where its note shows the state, not only from Overview ›
+     Run parameters; both read one state. */
+  await scenario("F.10 low-abundance filter from Validate", async (page) => {
+    const events = demo("contamination_events.tsv").replace(
+      "filtering_ab_thr_factor: None",
+      "filtering_ab_thr_factor: 20.0",
+    );
+    await upload(page, 0, "contamination_events.tsv", events);
+    await upload(page, 1, "species_abundance.tsv", demo("species_abundance.tsv"));
+    await openTab(page, "Validate");
+    const note = () => page.locator("[data-low-ab-switch]").locator("xpath=..");
+    const before = (await note().count()) ? await note().innerText() : "";
+    await page.locator("[data-low-ab-switch]").click();
+    await page.waitForTimeout(800);
+    const after = await note().innerText();
+    await openTab(page, "Overview");
+    const box = page.getByRole("checkbox", { name: /low-abundance filter to the diagnostics/i });
+    const offInOverview = (await box.count()) === 1 && !(await box.isChecked());
+    await openTab(page, "Validate");
+    await page.locator("[data-low-ab-switch]").click();
+    await page.waitForTimeout(800);
+    const back = await note().innerText();
+    check(
+      /After CroCoDeEL's low-abundance filter \(20×\)/.test(before) && /switch off$/.test(before) &&
+        /switched off/.test(after) && /switch on$/.test(after) && offInOverview &&
+        /After CroCoDeEL's low-abundance filter \(20×\)/.test(back),
+      "F.10 Guided validation switches the filter off and on, and the Overview box follows",
+      JSON.stringify({ before, after, offInOverview, back }),
     );
   });
 
