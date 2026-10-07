@@ -20698,7 +20698,8 @@ const HelpTab = ({ onStartTour }) => {
               with an ellipsis: hover it to read it whole. The Samples tab
               and the Events table give their id columns the width of
               their longest id or name before widening any other column,
-              as long as the table fits the page. Past that an id wraps
+              as long as the table fits the page's content column. Past
+              that an id wraps
               onto more lines, at its separators (<code>_</code>,{" "}
               <code>-</code>, <code>/</code>, <code>:</code>, before an
               extension such as <code>.metaphlan4</code>), never narrower
@@ -20844,7 +20845,8 @@ const HelpTab = ({ onStartTour }) => {
             restores the event evaluations, their notes, the events added
             by hand and the targets' verdicts and keep / suppress actions,
             so an export reloaded into an empty session gives back the same
-            counts and the same curated abundance table. A curated file of
+            counts and the same curated abundance table, unless a sample no
+            event targets has a verdict or an action of its own. A curated file of
             an earlier version holds no target verdicts: a target with a
             true-positive event and no action in it comes back suppressed,
             and the banner names those targets. What the file does not
