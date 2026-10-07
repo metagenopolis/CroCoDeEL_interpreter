@@ -1253,9 +1253,10 @@ const Scatterplot = ({
   // The axis titles name the samples. SVG text has no ellipsis, and a
   // long id ran off the plot on both sides of its centred title: it is
   // cut to the room its title leaves along the axis (+40 px of margin), at
-  // ~5.5 px per character of the title's own words and ~6.4 px per
-  // character of an id (digits and capitals are wide) in this 11 px font.
-  // The whole title is its tooltip.
+  // ~5.5 px per character of the words before it, ~4.5 px of the richness
+  // after it (its runs of spaces collapse) and ~6.4 px of an id (digits
+  // and capitals are wide) in this 11 px font. The whole title is its
+  // tooltip.
   const xRichness =
     showRichness && typeof scatter.targetRichness === "number"
       ? `  ·  ${scatter.targetRichness} species`
@@ -1264,8 +1265,11 @@ const Scatterplot = ({
     showRichness && typeof scatter.sourceRichness === "number"
       ? `  ·  ${scatter.sourceRichness} species`
       : "";
-  const axisId = (id, words, axisPx) =>
-    clipId(id, Math.max(8, Math.floor((axisPx + 40 - words.length * 5.5) / 6.4)));
+  const axisId = (id, before, after, axisPx) =>
+    clipId(
+      id,
+      Math.max(8, Math.floor((axisPx + 40 - before.length * 5.5 - after.length * 4.5) / 6.4)),
+    );
   const xTitle = "Target (contaminated) — ";
   const yTitle = "Source — ";
 
@@ -1386,7 +1390,7 @@ const Scatterplot = ({
         >
           <title>{`${xTitle}${scatter.target}${xRichness}`}</title>
           {xTitle}
-          {axisId(scatter.target, xTitle + xRichness, w)}
+          {axisId(scatter.target, xTitle, xRichness, w)}
           {xRichness && (
             <tspan fill="#797870" fontWeight="500">
               {xRichness}
@@ -1405,7 +1409,7 @@ const Scatterplot = ({
         >
           <title>{`${yTitle}${scatter.source}${yRichness}`}</title>
           {yTitle}
-          {axisId(scatter.source, yTitle + yRichness, h)}
+          {axisId(scatter.source, yTitle, yRichness, h)}
           {yRichness && (
             <tspan fill="#797870" fontWeight="500">
               {yRichness}

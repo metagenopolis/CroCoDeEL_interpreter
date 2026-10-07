@@ -179,6 +179,25 @@ try {
       JSON.stringify({ ...sc, text: sc.text?.length, title: sc.title?.length }),
     );
 
+    // A drill-in from the Samples tab: the Events table scoped to 63D9,
+    // and the floating "Back to Samples" chip that names it.
+    const tgtRow = sampleRow(page, tgt0);
+    await tgtRow.locator(`button[title="Open the events where ${tgt0} is the target in the Events table"]`).click();
+    await page.waitForTimeout(1000);
+    await noScroll("Events table scoped from the Samples tab");
+    const chip = page.locator('button[title^="Return to Samples"]');
+    const chipState = await chip.evaluate((el) => ({
+      width: el.getBoundingClientRect().width,
+      title: el.getAttribute("title"),
+    }));
+    check(
+      chipState.width < 450 && chipState.title === `Return to Samples — ${tgt0}`,
+      "B3.1 the Back to Samples chip cuts the sample id, whole in its tooltip",
+      `${Math.round(chipState.width)} px wide`,
+    );
+    await page.locator('button[title^="Events are filtered to"]').click(); // clear the scope
+    await page.waitForTimeout(500);
+
     await openTab(page, "Events");
     await noScroll("Events table");
     const row = page.locator('tr[data-event-row="0"]');
