@@ -20201,13 +20201,13 @@ const HelpTab = ({ onStartTour }) => {
             session gives back the same counts and the same curated
             abundance table. What the file does not hold — sample verdicts
             and sample notes set by hand, the action of a sample no event
-            targets — only the session JSON (Download session) keeps. Its
-            first line,{" "}
-            <code style={{ fontFamily: "ui-monospace, monospace" }}># study: …</code>,
-            names the study when the session has none yet. It has no
-            CroCoDeEL run header: carried over into its session, the
-            session keeps its own run parameters, and so the same
-            diagnostics, cutoffs and low-abundance setting.
+            targets — only the session JSON (Download session) keeps. Its{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}># study: …</code>{" "}
+            line names the study when the session has none yet; it is not a
+            run parameter. An events file without CroCoDeEL's run header,
+            carried over into a session, leaves the session's run
+            parameters in place, and so the same diagnostics, cutoffs and
+            low-abundance setting.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Replacing the events
