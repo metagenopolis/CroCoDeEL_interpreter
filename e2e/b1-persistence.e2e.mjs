@@ -1,6 +1,8 @@
 /* Browser checks for the session's persistence: what the browser keeps of
    the curation, and what replacing or importing files does to it.
 
+     - the parsers' warnings (events, metadata, plate map) are in the
+       data-warnings banner and survive a reload;
      - a tab switch writes the small UI record only, an evaluation the
        curation record only;
      - two tabs of one browser: the second cannot overwrite the first's
@@ -81,6 +83,17 @@ async function storedSession(page) {
 /** Let the autosave (0.3 s after the last change) write. */
 const saved = (page) => page.waitForTimeout(1200);
 
+/** Upload `text` through the i-th file card (0 events, 1 abundance,
+    2 metadata, 3 plate map). */
+async function upload(page, i, name, text) {
+  await tsvInput(page, i).setInputFiles({
+    name,
+    mimeType: "text/tab-separated-values",
+    buffer: Buffer.from(text),
+  });
+  await page.waitForTimeout(1500);
+}
+
 /** Click a download button and return the file's text (null if none). */
 async function download(page, button) {
   const [file] = await Promise.all([
@@ -112,6 +125,12 @@ async function mark(page, title, i) {
   await openTab(page, "Events");
   await page.locator(`button[title="mark as ${title}"]`).nth(i).click();
   await page.waitForTimeout(250);
+}
+
+/** The banner text of the data warnings. */
+async function warningsBanner(page) {
+  const box = page.locator("div").filter({ has: page.getByText("Check the input files.", { exact: true }) }).last();
+  return (await box.count()) ? box.innerText() : "";
 }
 
 const banner = (page, state) => page.locator(`[data-save-banner="${state}"]`);
@@ -185,6 +204,41 @@ try {
     );
   });
 
+  /* B1.2 The parsers' warnings, in the banner, across a reload. */
+  await scenario(
+    "B1.2 warnings",
+    async (page) => {
+      const lines = demo("contamination_events.tsv").split("\n");
+      const i = lines.findIndex((l) => l.startsWith("63D29\t63D40\t"));
+      const c = lines[i].split("\t");
+      c[2] = "1.5";
+      lines[i] = c.join("\t");
+      lines.push("40D89\t\t0.1\t0.9\t");
+      await upload(page, 0, "contamination_events.tsv", lines.join("\n"));
+      await upload(page, 1, "species_abundance.tsv", demo("species_abundance.tsv"));
+      const md = demo("metadata.tsv").split("\n").filter((l) => l);
+      await upload(page, 2, "metadata.tsv", [...md, md.find((l) => l.startsWith("58M\t"))].join("\n"));
+      await upload(page, 3, "plate_map.tsv", [...demo("plate_map.tsv").split("\n").filter((l) => l), "83D239\tP3\tZ99"].join("\n"));
+      const want = [
+        /Events file: 1 event has a rate outside \(0, 1\] — first on line \d+ \(63D29 → 63D40\): 1\.5\./,
+        /Events file: 1 row with an empty source or target was skipped/,
+        /Metadata: .*more than one row \("58M"\)/,
+        /Plate map: 1 row with no readable well was skipped/,
+      ];
+      let text = await warningsBanner(page);
+      check(want.every((re) => re.test(text)), "B1.2 the events, metadata and plate-map warnings are in the data-warnings banner", text.replace(/\s+/g, " ").slice(0, 400));
+      await saved(page);
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(1500);
+      text = await warningsBanner(page);
+      check(want.every((re) => re.test(text)), "B1.2 …and still there after a reload", text.replace(/\s+/g, " ").slice(0, 400));
+      // Replaced by a clean file: its warnings go, the others stay.
+      await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+      text = await warningsBanner(page);
+      check(!/Events file:/.test(text) && /Metadata:/.test(text) && /Plate map:/.test(text), "B1.2 replacing the events file drops its warnings only", text.replace(/\s+/g, " ").slice(0, 300));
+    },
+    { demo: false },
+  );
 
   /* B1.3a A tab switch writes the UI record, an evaluation the curation. */
   await scenario("B1.3a records", async (page) => {

@@ -20084,7 +20084,12 @@ const HelpTab = ({ onStartTour }) => {
             </code>{" "}
             format — these are parsed and shown in the Overview tab.
             Blank lines (even of spaces or tabs) are ignored, and a row
-            without a source or a target is skipped.
+            without a source or a target is skipped. What the reader
+            reports about the file — rows skipped, rates or probabilities
+            out of range, verdicts or actions it does not recognise — is
+            listed in the <em>Check the input files</em> banner under the
+            file cards, with the metadata and plate-map warnings, and kept
+            with the session until the file is replaced or cleared.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -23950,9 +23955,11 @@ function AppMain({ initial, storage }) {
     rawEventsRef.current = rawEvents;
   }, [rawEvents]);
   const [runMetadata, setRunMetadata] = useState(initial?.runMetadata || null);
-  // What the events parser reported about the loaded file, saved with it
-  // in the events record (src/persistence.js).
-  const [eventsWarnings] = useState(
+  // What the events parser reported about the loaded file (rates or
+  // probabilities out of range, rows skipped, unrecognised verdicts or
+  // actions): kept with the file — replaced or cleared with it — saved
+  // with the session, and shown with the other data warnings.
+  const [eventsWarnings, setEventsWarnings] = useState(
     Array.isArray(initial?.eventsWarnings) ? initial.eventsWarnings : [],
   );
   const [ab, setAb] = useState(initial?.ab || null);
@@ -24852,9 +24859,29 @@ const defaultFilter = () => ({
      zero resolvable species simply has zero on-line points and gets graded
      "PROBABLY NOT CONTAMINATED" with the contamination line still drawn.
      The split is fixed, but the class of failure (any name mismatch between
-     the two files) deserves a permanent detector rather than a one-off fix. */
+     the two files) deserves a permanent detector rather than a one-off fix.
+
+     The parsers' own warnings come first, each prefixed with the file it
+     is about (parserWarnings): the events file's — rates or
+     probabilities out of range, rows skipped, verdicts or actions not
+     recognised — used to be dropped by every loader; the metadata and
+     plate-map ones were only on their cards. */
+  const parserWarnings = useMemo(() => {
+    // A hand-edited session may hold a single string, or anything.
+    const lines = (v) =>
+      Array.isArray(v)
+        ? v.filter((w) => typeof w === "string" && w)
+        : typeof v === "string" && v
+          ? [v]
+          : [];
+    return [
+      ...lines(eventsWarnings).map((w) => `Events file: ${w}`),
+      ...lines(metadata?.warnings).map((w) => `Metadata: ${w}`),
+      ...lines(plateMap?.warnings).map((w) => `Plate map: ${w}`),
+    ];
+  }, [eventsWarnings, metadata, plateMap]);
   const dataWarnings = useMemo(() => {
-    const out = [];
+    const out = [...parserWarnings];
     if (ab?.warnings?.length) out.push(...ab.warnings);
     if (rawEvents.length > 0 && rawEvents.every((e) => !(e.rate > 0))) {
       out.push(
@@ -24884,7 +24911,7 @@ const defaultFilter = () => ({
       }
     }
     return out;
-  }, [ab, rawEvents]);
+  }, [ab, rawEvents, parserWarnings]);
 
   const filtered = useMemo(() => {
     const q = filter.q.trim().toLowerCase();
@@ -25589,6 +25616,7 @@ const defaultFilter = () => ({
       const parsed = parseEvents(text);
       setRawEvents(parsed.events);
       setSampleCuration({});
+      setEventsWarnings(parsed.warnings || []);
       // Reset the filter so any scope / sliders / sample-verdict
       // selection from a previous study don't silently hide every
       // event in the new file.
@@ -25677,6 +25705,7 @@ const defaultFilter = () => ({
       const parsedEvents = parseEvents(evText);
       setRawEvents(parsedEvents.events);
       setSampleCuration({});
+      setEventsWarnings(parsedEvents.warnings || []);
       // Reset the filter so any scope / sliders / sample-verdict
       // selection from a previous study don't silently hide every
       // event of the demo, seeded with the run header's own cutoffs.
@@ -25762,6 +25791,7 @@ const defaultFilter = () => ({
         // Reset session state to avoid mixing files from different datasets
         setRawEvents(parsedEvents.events);
         setSampleCuration({});
+        setEventsWarnings(parsedEvents.warnings || []);
         // Reset the filter so any scope / sliders / sample-verdict
         // selection from the previous study don't silently hide every
         // event of the new one (a stale scopeSamples list is the most
@@ -25853,6 +25883,7 @@ const defaultFilter = () => ({
         // Clear current session so the welcome step can load demo cleanly
         setRawEvents([]);
         setSampleCuration({});
+        setEventsWarnings([]);
         setRunMetadata(null);
         setAb(null);
         setMetadata(null);
@@ -26463,6 +26494,7 @@ const defaultFilter = () => ({
     // saved when it goes (src/autosave.js).
     setRawEvents(restoredEvents);
     setSampleCuration(migratedFromEvents.sampleCuration);
+    setEventsWarnings([]);
     setRunMetadata(json.run_metadata || null);
     setMetadata(remapMetadata(json.metadata) || null);
     setPlateMap(json.plate_map || null);
@@ -27804,6 +27836,7 @@ const defaultFilter = () => ({
                         onConfirm: () => {
                           setRawEvents([]);
                           setSampleCuration({});
+                          setEventsWarnings([]);
                           setRunMetadata(null);
                           setAb(null);
                           setMetadata(null);
@@ -27913,6 +27946,7 @@ const defaultFilter = () => ({
                   ? () => {
                       setRawEvents([]);
                       setSampleCuration({});
+                      setEventsWarnings([]);
                       setRunMetadata(null);
                       setSelId(null);
                     }
@@ -28978,6 +29012,7 @@ const defaultFilter = () => ({
           onAdoptEvents={(parsed) => {
             setRawEvents(parsed.events);
             setSampleCuration({});
+            setEventsWarnings(parsed.warnings || []);
             setFilter(withRunCutoffs(defaultFilter(), parsed.runMetadata));
             setRunMetadata(parsed.runMetadata);
             if (!analysisTitle) {
