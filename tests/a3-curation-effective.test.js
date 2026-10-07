@@ -5,6 +5,7 @@ import {
   sampleActionCounts,
   migrateSampleCuration,
   withManualVerdict,
+  SAMPLE_CURATION_VERSION,
 } from "../src/curation.js";
 
 /* A sample no event targets has nothing calling it contaminated: every
@@ -121,7 +122,10 @@ describe("migrateSampleCuration — stamps of never-targeted samples", () => {
     expect(touched).toBe(true);
   });
 
-  it("keeps anything that is not exactly a stamp", () => {
+  it("keeps what is not the stamp: the notes added to it, a targeted sample's values", () => {
+    // The stamp's values go also from an entry changed since (a note);
+    // a Not contaminated alone is the stamp's verdict too: a click on it
+    // only repeated it (tests/final-state-migration.test.js).
     const kept = {
       A: { ...stamp, notes: "checked by hand" },
       B: { verdict: "correct" },
@@ -129,7 +133,9 @@ describe("migrateSampleCuration — stamps of never-targeted samples", () => {
       U: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true },
     };
     const { sampleCuration, touched } = migrateSampleCuration(events, kept);
-    expect(sampleCuration).toEqual(kept);
-    expect(touched).toBe(false);
+    expect(sampleCuration).toEqual({ A: { notes: "checked by hand" }, T: kept.T, U: kept.U });
+    expect(touched).toBe(true);
+    // In a session of the current model, every one of them is a decision.
+    expect(migrateSampleCuration(events, kept, SAMPLE_CURATION_VERSION).sampleCuration).toEqual(kept);
   });
 });

@@ -21601,9 +21601,13 @@ const HelpTab = ({ onStartTour }) => {
             <em>Keep</em>, so the curated abundance table still keeps
             it; the Not contaminated + Keep that the Samples tab used to
             write on every sample no event targets is dropped (that
-            default is derived now). A message lists the samples whose
-            suppression changed. A session saved by this version comes
-            back exactly as it was saved.
+            default is derived now), also when you had changed the
+            sample since: its notes and any other verdict are kept, and
+            so is a Keep on a sample you made Contaminated (that version
+            showed the action chips on Contaminated samples only). A
+            message lists the samples whose suppression changed. A
+            session saved by this version comes back exactly as it was
+            saved.
           </p>
           <h4
             className="mt-3 text-[14px]"
