@@ -387,6 +387,10 @@ export function restoreFilter(saved, defaults) {
     scopeSide: side(f.scopeSide),
     // Sessions saved before the toggle existed get it on.
     lowAbFilter: f.lowAbFilter !== false,
+    // The Action filter (keep / suppress only; absent: any action). It
+    // used to be left out, so a reload or an imported session lost it,
+    // and every export covered all the events again.
+    ...(f.action === "keep" || f.action === "suppress" ? { action: f.action } : {}),
   };
 }
 
