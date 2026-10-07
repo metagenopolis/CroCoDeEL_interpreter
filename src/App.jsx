@@ -28598,8 +28598,8 @@ const defaultFilter = () => ({
         transition: "padding-right 0.2s ease-out",
       }}
     >
+      {/* Raleway and Nunito Sans are served with the app (src/index.css). */}
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Raleway:wght@400;500;600;700;800&family=Nunito+Sans:opsz,wght@6..12,400;6..12,500;6..12,600;6..12,700&display=swap');
         .tabular { font-variant-numeric: tabular-nums; }
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-thumb { background: #c4c0b3; border-radius: 4px; }

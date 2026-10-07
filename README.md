@@ -60,6 +60,7 @@ The repository ships with `.github/workflows/deploy.yml` &mdash; pushing to `mai
 - D3 for color interpolation and the network force-layout
 - `react-range` for dual-thumb sliders
 - `lucide-react` icons
+- Raleway and Nunito Sans, served with the app (`public/fonts`, SIL Open Font License): the page makes no request to another site
 - IndexedDB for the session, one record per part (inputs, curation, UI state) so that a click rewrites only what it changed, with a one-shot migration from earlier layouts (including the legacy `lz-string`-compressed `localStorage` payload); without IndexedDB (or with site data blocked) the app runs in memory and says the session is not saved
 
 ## Citing

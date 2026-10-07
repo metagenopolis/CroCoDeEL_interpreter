@@ -25,7 +25,8 @@
      - F.9  a metadata file without a subject column loads, with a
             warning;
      - F.10 the low-abundance filter can be switched from Guided
-            validation.
+            validation;
+     - F.11 the web fonts are served with the app: no request leaves it.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -728,6 +729,30 @@ try {
         /After CroCoDeEL's low-abundance filter \(20×\)/.test(back),
       "F.10 Guided validation switches the filter off and on, and the Overview box follows",
       JSON.stringify({ before, after, offInOverview, back }),
+    );
+  });
+
+  /* F.11 — the web fonts come with the app. They were imported from
+     fonts.googleapis.com: every visit made a third-party request, and
+     where it failed (offline, a proxy, a blocked CDN) the text fell back
+     to other fonts — the Events table then scrolled the page by 20 px at
+     1500 px, and six layout checks of the b3 suite failed. */
+  await scenario("F.11 fonts served with the app", async (page) => {
+    const elsewhere = [];
+    page.on("request", (r) => {
+      if (new URL(r.url()).origin !== new URL(BASE).origin) elsewhere.push(r.url());
+    });
+    await page.reload({ waitUntil: "networkidle" });
+    await loadDemo(page);
+    await openTab(page, "Events");
+    const faces = await page.evaluate(async () => {
+      await document.fonts.ready;
+      return [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family.replace(/"/g, ""));
+    });
+    check(
+      elsewhere.length === 0 && faces.includes("Raleway") && faces.includes("Nunito Sans"),
+      "F.11 Raleway and Nunito Sans load from the app itself, nothing from another origin",
+      JSON.stringify({ elsewhere: elsewhere.slice(0, 3), faces }),
     );
   });
 

@@ -87,6 +87,9 @@ export async function newPage(browser, contextOptions = {}) {
     localStorage.setItem("crocodeel-tutorial-seen", "1"),
   );
   await page.goto(BASE, { waitUntil: "networkidle" });
+  // The web fonts (served with the app, src/index.css) loaded before any
+  // check measures text: the layout depends on their widths.
+  await page.evaluate(() => document.fonts.ready.then(() => null));
   return { ctx, page, errors };
 }
 
