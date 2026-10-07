@@ -56,6 +56,16 @@ try {
       "F.1 Help, criterion 04: the p-value is the exact Poisson-binomial tail",
       (c04.match(/Across the full source profile[^.]*\.[^.]*\./)?.[0] || "(no criterion 04 text)").slice(0, 240),
     );
+    // The curated events TSV starts with "#" lines: pandas and R read it
+    // with their defaults only once those are skipped, and comment="#"
+    // cuts a note at its first "#".
+    const tabs = await helpSection(page, "Tabs walkthrough");
+    const eventsTsv = tabs.match(/Events TSV — every matched event(.*?)Samples TSV/)?.[1] || "";
+    check(
+      /skiprows=n/.test(eventsTsv) && /skip = n/.test(eventsTsv) && /rather than pass comment="#"/.test(eventsTsv),
+      "F.1 Help, Events TSV: how to read it in pandas and R (skip the # lines, not comment=\"#\")",
+      eventsTsv.match(/To read the file[^;]*/)?.[0] || "(no reading advice)",
+    );
   });
 } finally {
   await browser.close();

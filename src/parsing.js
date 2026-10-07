@@ -30,15 +30,18 @@ function unquoteCell(s) {
     make `pandas.read_csv(sep='\t')` either raise or invent rows. Every
     field of every writer goes through here.
 
-    A cell that starts with a double quote is quoted the CSV way (wrapped
-    in quotes, inner quotes doubled). Read back, unquoteCell strips one
-    layer of quotes from a cell that starts and ends with one, so a note
-    such as `"Quoted" ... "end"` came back as `Quoted" ... "end`; pandas
-    and R, whose quote character is `"` too, misread such a cell as well.
-    Quoted, all three give back the text as written. */
+    A cell that holds a double quote is quoted the CSV way (wrapped in
+    quotes, inner quotes doubled). Read back, unquoteCell strips one layer
+    of quotes from a cell that starts and ends with one, so a note such as
+    `"Quoted" ... "end"` came back as `Quoted" ... "end`; pandas and R,
+    whose quote character is `"` too, misread such a cell as well. R's
+    read.delim also takes a quote inside a cell for the start of a quoted
+    field: a note `well 5" from the edge` swallowed the rows after it up
+    to the next quote. Quoted, all three — and CroCoDeEL's csv reader —
+    give back the text as written. */
 export function tsvCell(v) {
   const s = String(v ?? "").replace(/[\t\r\n]+/g, " ");
-  return s.charCodeAt(0) === 34 ? `"${s.replace(/"/g, '""')}"` : s;
+  return s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /** Split a TSV text into its header cells, its rows (objects keyed by
@@ -289,7 +292,7 @@ function parseRunMetadata(headerComments) {
       if (idx < 0) return;
       const key = kv.slice(0, idx).trim();
       // Unquoted like any cell: the curated exports write "# study: …"
-      // through tsvCell, which quotes a title that starts with a quote.
+      // through tsvCell, which quotes a title that holds a quote.
       const val = unquoteCell(kv.slice(idx + 1).trim());
       if (key) meta[key] = val;
     });

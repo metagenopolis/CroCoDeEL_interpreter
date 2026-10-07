@@ -215,9 +215,9 @@ describe("tsvCell → parseEvents keeps every note as written", () => {
     "plain",
   ];
 
-  it("quotes a cell that starts with a double quote, the CSV way", () => {
+  it("quotes a cell that holds a double quote, the CSV way", () => {
     expect(tsvCell('"a" b')).toBe('"""a"" b"');
-    expect(tsvCell('a "b"')).toBe('a "b"');
+    expect(tsvCell('a "b"')).toBe('"a ""b"""');
     expect(tsvCell('"')).toBe('""""');
     expect(tsvCell("x\t\ny")).toBe("x y");
   });

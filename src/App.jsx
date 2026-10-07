@@ -21333,7 +21333,15 @@ const HelpTab = ({ onStartTour }) => {
                   run's <code>#</code> parameter line and a{" "}
                   <code># study:</code> line come first (a <code>|</code>{" "}
                   in the title is written <code>/</code>: the reader
-                  splits <code>#</code> lines on it). Filter
+                  splits <code>#</code> lines on it). To read the file in
+                  pandas or R, skip those leading <code>#</code> lines —{" "}
+                  <code>pd.read_csv(path, sep="\t", skiprows=n)</code>,{" "}
+                  <code>read.delim(path, skip = n)</code>, with{" "}
+                  <code>n</code> the number of lines that start with{" "}
+                  <code>#</code> at the top (none to two) — rather than
+                  pass <code>comment="#"</code>, which cuts a note at its
+                  first <code>#</code>; a cell holding a <code>"</code> is
+                  quoted the CSV way, as both read it. Filter
                   downstream on the verdict / action columns if you only
                   want TPs or want to drop FPs, or load the file again
                   on the events card to restore the evaluations and
