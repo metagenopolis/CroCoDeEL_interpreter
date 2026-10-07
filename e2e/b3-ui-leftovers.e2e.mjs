@@ -1,5 +1,9 @@
 /* UI leftovers of the review, as a curator meets them in the browser.
 
+     - B3.1  with 150-character sample ids, no tab scrolls sideways at
+             1500 px: ids are cut with an ellipsis, the whole id in their
+             tooltip, and the Guided validation header keeps it selectable;
+             short ids are still shown whole;
      - B3.2  the criterion cards say why a value is missing when the table
              is loaded (too few species on the line or in the pair, no
              rate), and the scatter's error box describes the sample-name
@@ -68,6 +72,55 @@ function sampleRow(page, id) {
     .filter({ has: page.getByText(id, { exact: true }) });
 }
 
+/* ---- 150-character sample ids ----
+   The demo files with every sample renamed "<id>_LongSample…" up to 150
+   characters, with nothing to break a line on — what a LIMS export gives. */
+const FILL = "LongSampleIdentifierFromALimsExport";
+const longId = (id) => {
+  let t = `${id}_`;
+  while (t.length < 150) t += FILL;
+  return t.slice(0, 150);
+};
+/** `text` (a demo TSV) with the sample ids of `columns` made long. */
+function withLongIds(text, columns) {
+  return text
+    .split("\n")
+    .map((line, i) => {
+      if (!line || line.startsWith("#") || i === 0 || /^source\t/.test(line)) return line;
+      const cells = line.split("\t");
+      for (const c of columns) cells[c] = longId(cells[c]);
+      return cells.join("\t");
+    })
+    .join("\n");
+}
+function longAbundance() {
+  const [header, ...rows] = demo("species_abundance.tsv").split("\n");
+  const cells = header.split("\t");
+  return [[cells[0], ...cells.slice(1).map(longId)].join("\t"), ...rows].join("\n");
+}
+
+/** How far the page scrolls sideways, and how far the tabs' content
+    runs past its column (the box around the tab bar): ≤ 0 when it does
+    not. A column can overflow without the page scrolling, while the
+    window is wider than the column. */
+const pageOverflow = (page) =>
+  page.evaluate(() => {
+    const box = document.querySelector("nav").parentElement;
+    return {
+      page: document.scrollingElement.scrollWidth - window.innerWidth,
+      column: box.scrollWidth - box.clientWidth,
+    };
+  });
+
+/** Cut, ellipsis and tooltip of the text element `locator`. */
+const cutState = (locator) =>
+  locator.evaluate((el) => ({
+    text: el.textContent,
+    cut: el.scrollWidth > el.clientWidth + 1,
+    ellipsis: getComputedStyle(el).textOverflow === "ellipsis",
+    title: el.closest("[title]")?.getAttribute("title") ?? null,
+  }));
+
 await startServer();
 const browser = await launchBrowser();
 
@@ -88,6 +141,223 @@ async function scenario(name, run, { demo: withDemo = false } = {}) {
 }
 
 try {
+  /* B3.1 — every tab, and the views that show ids in their own way, with
+     events, abundance table, metadata and plate map all using 150-character
+     ids. The page used to scroll sideways by 1,600 px on the Events table,
+     900 px on the Samples tab and 1,100 px on Guided validation. */
+  await scenario("B3.1 long sample ids", async (page) => {
+    await upload(page, 0, "contamination_events.tsv", withLongIds(demo("contamination_events.tsv"), [0, 1]));
+    await upload(page, 1, "species_abundance.tsv", longAbundance());
+    await upload(page, 2, "metadata.tsv", withLongIds(demo("metadata.tsv"), [0]));
+    await upload(page, 3, "plate_map.tsv", withLongIds(demo("plate_map.tsv"), [0]));
+    const loaded = await page.locator("body").innerText();
+    check(
+      /24 events loaded/.test(loaded) && /91 samples × 927 species/.test(loaded),
+      "B3.1 the long-id files load",
+    );
+    const noScroll = async (where) => {
+      const over = await pageOverflow(page);
+      check(
+        over.page <= 0 && over.column <= 0,
+        `B3.1 ${where}: no horizontal page scroll, nothing past the column`,
+        `page ${over.page} px, column ${over.column} px`,
+      );
+    };
+    const src0 = longId("63D250");
+    const tgt0 = longId("63D9");
+
+    await openTab(page, "Overview");
+    await noScroll("Overview");
+
+    await openTab(page, "Samples");
+    await noScroll("Samples");
+    const sampleCell = sampleRow(page, src0).locator("span.truncate", { hasText: src0 }).first();
+    const sc = await cutState(sampleCell);
+    check(
+      sc.cut && sc.ellipsis && sc.title === src0 && sc.text === src0,
+      "B3.1 Samples: the id is cut with an ellipsis, whole in its tooltip",
+      JSON.stringify({ ...sc, text: sc.text?.length, title: sc.title?.length }),
+    );
+
+    await openTab(page, "Events");
+    await noScroll("Events table");
+    const row = page.locator('tr[data-event-row="0"]');
+    const ev = [
+      await cutState(row.locator("td").nth(0).locator("span.truncate").first()),
+      await cutState(row.locator("td").nth(2).locator("span.truncate").first()),
+    ];
+    check(
+      ev.every((c) => c.cut && c.ellipsis) && ev[0].title === src0 && ev[1].title === tgt0,
+      "B3.1 Events table: source and target cut, each whole in its tooltip",
+      JSON.stringify(ev.map((c) => [c.cut, c.ellipsis, c.title?.slice(0, 12)])),
+    );
+
+    await openTab(page, "Scatter");
+    await noScroll("Scatter gallery");
+    const caption = page.locator('[data-event-card="0"] span.grid').first();
+    const capText = await caption.locator("span.truncate").allTextContents();
+    const capTitle = await caption.evaluate((el) => el.closest("[title]")?.getAttribute("title") ?? "");
+    check(
+      capText.length === 2 && capText[0] === src0 && capText[1] === tgt0 &&
+        capTitle.includes(src0) && capTitle.includes(tgt0),
+      "B3.1 gallery card: both ids shown, each cut on its own, the pair in the tooltip",
+      `${capText.length} ids; tooltip ${capTitle.length} chars`,
+    );
+    await page.getByRole("button", { name: /Explore new pairs/ }).click();
+    await page.waitForTimeout(600);
+    const pick = async (placeholder, prefix) => {
+      const input = page.locator(`input[placeholder="${placeholder}"]`);
+      await input.click();
+      await input.fill(prefix);
+      await page.waitForTimeout(300);
+      await noScroll(`Explore new pairs, list of ${prefix}…`);
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(500);
+    };
+    await pick("Type to search… e.g. ERS848718", "63D250_");
+    await pick("Pick from neighbors / same subject / others…", "40D89_");
+    await noScroll("Explore new pairs, pair picked");
+
+    await openTab(page, "Validate");
+    await noScroll("Validate");
+    const header = page.locator("h2 [data-sample-id]");
+    const hd = [await cutState(header.nth(0)), await cutState(header.nth(1))];
+    check(
+      hd[0].cut && hd[0].ellipsis && hd[0].title === src0 && hd[1].title === tgt0,
+      "B3.1 Validate header: both ids cut, each whole in its tooltip",
+      JSON.stringify(hd.map((c) => [c.cut, c.ellipsis, c.title?.slice(0, 12)])),
+    );
+    const selected = await header.nth(0).evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return { text: sel.toString(), userSelect: getComputedStyle(el).userSelect };
+    });
+    check(
+      selected.text === src0 && selected.userSelect !== "none",
+      "B3.1 Validate header: selecting the source id gives the whole id",
+      `${selected.text.length} chars, user-select ${selected.userSelect}`,
+    );
+    // The text shown, without the <title> inside the <text>.
+    const axis = await page.evaluate(() =>
+      [...document.querySelectorAll("svg text")]
+        .map((t) => ({
+          shown: [...t.childNodes]
+            .filter((n) => n.nodeName !== "title")
+            .map((n) => n.textContent)
+            .join(""),
+          title: t.querySelector("title")?.textContent || "",
+        }))
+        .filter((t) => /^Target \(contaminated\) — /.test(t.shown)),
+    );
+    check(
+      axis.length === 1 && axis[0].title.startsWith(`Target (contaminated) — ${tgt0}`) &&
+        axis[0].shown.includes("…") && !axis[0].shown.includes(tgt0),
+      "B3.1 Validate scatter: the axis title cuts the id and its tooltip has it whole",
+      axis[0]?.shown.slice(0, 90) || "(no axis title)",
+    );
+    await page.getByText(/plate position & sample context/i).first().click();
+    await page.waitForTimeout(500);
+    await noScroll("Validate, sample context open");
+
+    await openTab(page, "Network");
+    await noScroll("Network");
+    const labels = await page.evaluate(() =>
+      [...document.querySelectorAll("svg g > text")]
+        .filter((t) => /LongSample/.test(t.textContent))
+        .map((t) => ({ text: t.textContent, title: t.parentNode.querySelector(":scope > title")?.textContent || "" })),
+    );
+    check(
+      labels.length > 0 &&
+        labels.every((l) => l.text.length <= 32 && l.text.endsWith("…") && l.title.length === 150 && l.title.startsWith(l.text.slice(0, -1))),
+      "B3.1 Network: node labels cut to 32 characters, the node's tooltip whole",
+      `${labels.length} labels; first "${labels[0]?.text}"`,
+    );
+    const node = page.locator("svg g circle").first();
+    await node.hover();
+    await page.waitForTimeout(300);
+    await noScroll("Network, node hovered");
+    await node.click();
+    await page.waitForTimeout(500);
+    await noScroll("Network, node popover open");
+    await page.mouse.click(5, 5);
+    await page.waitForTimeout(300);
+
+    await openTab(page, "Plate");
+    await noScroll("Plate overview");
+    await page.getByRole("button", { name: /^Inspect$/ }).click();
+    await page.waitForTimeout(600);
+    await noScroll("Plate inspect");
+    await page.getByRole("button", { name: /^Edit$/ }).click();
+    await page.waitForTimeout(600);
+    await noScroll("Plate edit");
+
+    await openTab(page, "Export");
+    await noScroll("Export");
+  });
+
+  /* B3.1 — the cascade banner names the upstream sample inside a
+     sentence: a long one is cut there too. */
+  await scenario("B3.1 long ids in the cascade banner", async (page) => {
+    const [C, A, B] = ["C", "A", "B"].map(longId);
+    const rows = [["species", C, A, B]];
+    for (let i = 0; i < 20; i++) {
+      const a = 10 ** (-3 * (i / 19));
+      rows.push([`s_${i}`, 0, a, 0.05 * a]);
+    }
+    for (let i = 0; i < 6; i++) {
+      const c = 10 ** (-1 - i / 3);
+      rows.push([`m_${i}`, c, 0.2 * c, 0.0005 * 0.2 * c]);
+    }
+    const line = rows.slice(1, 21).map((r) => r[0]).join(",");
+    const markers = rows.slice(21).map((r) => r[0]).join(",");
+    await upload(page, 0, "events.tsv", tsv([EVENTS_HEADER, [C, A, "0.2", "0.6", markers], [A, B, "0.05", "0.9", line]]));
+    await upload(page, 1, "species_abundance.tsv", tsv(rows));
+    await openEvent(page, 1);
+    const over = await pageOverflow(page);
+    const up = page.locator("button.underline", { hasText: "C_LongSample" });
+    const st = (await up.count()) === 1 ? await cutState(up) : null;
+    check(
+      over.page <= 0 && over.column <= 0 && st && st.cut && st.ellipsis && st.title === C,
+      "B3.1 the cascade banner cuts the upstream id, whole in its tooltip, within the column",
+      `page ${over.page} px, column ${over.column} px; ${JSON.stringify(st && [st.cut, st.ellipsis, st.title?.length])}`,
+    );
+  });
+
+  /* B3.1 — ids that fit are shown whole: the demo's are never cut. */
+  await scenario(
+    "B3.1 short ids stay whole",
+    async (page) => {
+      await openTab(page, "Events");
+      const cells = page.locator('tr[data-event-row] td span.truncate');
+      const n = await cells.count();
+      const cut = await cells.evaluateAll((els) =>
+        els.filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent),
+      );
+      check(n >= 48 && cut.length === 0, "B3.1 Events table: no demo id is cut", `${n} ids, cut: ${cut.join(", ")}`);
+      await openTab(page, "Validate");
+      const hd = await page.locator("h2 [data-sample-id]").evaluateAll((els) =>
+        els.map((el) => ({ text: el.textContent, cut: el.scrollWidth > el.clientWidth + 1 })),
+      );
+      check(
+        hd.length === 2 && hd.every((h) => !h.cut),
+        "B3.1 Validate header: the demo pair is shown whole",
+        JSON.stringify(hd),
+      );
+      const axis = await page.evaluate(() =>
+        [...document.querySelectorAll("svg text")].some((t) =>
+          /^(Target|Source) .*…/.test(
+            [...t.childNodes].filter((n) => n.nodeName !== "title").map((n) => n.textContent).join(""),
+          ),
+        ),
+      );
+      check(!axis, "B3.1 Validate scatter: the demo's axis titles are not cut");
+    },
+    { demo: true },
+  );
+
   /* B3.2 — S1 → S2 has one species on its line and two in the pair: no R²,
      no spread, no ρ. S3 → S2 has no rate, hence no line to put points
      above. S9 → S2 names a sample the table does not have. The table is

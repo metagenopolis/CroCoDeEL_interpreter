@@ -709,6 +709,75 @@ export function plateDistance(plateMap, source, target) {
    4. UI PRIMITIVES
    ============================================================================ */
 
+/* ---------- long sample ids ----------
+   A sample id is whatever the abundance table's header says, and a LIMS
+   export can make it 150 characters long with nothing to break a line on.
+   Written out whole it pushed the page sideways (by 1,600 px on the
+   Events table at a 1500 px window) or ran over its neighbours. Wherever
+   an id may not fit, it is cut with an ellipsis and the whole id is its
+   tooltip. The page still holds the whole id: selecting it (double- or
+   triple-click) and copying gives all of it. */
+
+/** One sample id, cut to the width it is given. The one-track grid around
+    it is what lets a table column or a flex row narrow it: an auto-layout
+    table never makes a column narrower than the min-content width of its
+    cells, which for one line of text is the whole text. In a
+    minmax(0, 1fr) track the id adds nothing to the min-content width and
+    its full width to the max-content one, so a short id is shown whole
+    and a long one is cut only as far as the row has to. */
+const SampleId = ({ id, title, className = "", style }) => (
+  <span className="grid" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
+    <span
+      className={`truncate ${className}`}
+      style={style}
+      title={title === undefined ? String(id ?? "") : title || undefined}
+    >
+      {id}
+    </span>
+  </span>
+);
+
+/** Grid columns of a "source → target" line: each id takes at most its
+    own width, and the width the line lacks is taken from both in turn
+    (the grid's free space grows the two tracks equally), so a short id
+    stays whole next to a long one, which takes the rest. */
+const SAMPLE_PAIR_COLUMNS = "minmax(0, max-content) auto minmax(0, max-content)";
+
+/** "source → target" on one line, both ids cut as needed; the tooltip
+    (`title`, null for none) is the whole pair. The spaces around a text
+    arrow do not show (the grid lays it out alone) but keep the pair's
+    text "source → target" for a copy or a screen reader. */
+const SamplePair = ({ source, target, arrow = "→", title, className = "", style }) => (
+  <span
+    className={`grid items-center ${className}`}
+    style={{ gridTemplateColumns: SAMPLE_PAIR_COLUMNS, columnGap: "0.3em", ...style }}
+    title={title === undefined ? `${source} → ${target}` : title || undefined}
+  >
+    <span className="truncate">{source}</span>
+    {typeof arrow === "string" ? <span>{` ${arrow} `}</span> : arrow}
+    <span className="truncate">{target}</span>
+  </span>
+);
+
+/** A sample id inside running text: cut at the width of the line. */
+const InlineSampleId = ({ id, className = "", style }) => (
+  <span
+    className={`inline-block max-w-full truncate align-bottom ${className}`}
+    style={style}
+    title={String(id ?? "")}
+  >
+    {id}
+  </span>
+);
+
+/** An id for an SVG label, which has no ellipsis: cut to `max`
+    characters, the last one an ellipsis. The caller puts the whole id in
+    a <title>. */
+function clipId(id, max) {
+  const s = String(id ?? "");
+  return s.length > max ? `${s.slice(0, Math.max(1, max - 1))}…` : s;
+}
+
 const Pill = ({ children, tone = "neutral", className = "" }) => {
   // Backgrounds use rgba overlays so they tint whatever surface sits
   // underneath (light or dark). Text uses the brand accent colour
@@ -1165,7 +1234,10 @@ const Scatterplot = ({
         }}
       >
         <AlertCircle className="w-5 h-5" />
-        <div style={{ fontSize: 13, fontWeight: 600 }}>{scatter.error}</div>
+        {/* The message names the sample: a long id wraps inside the box. */}
+        <div style={{ fontSize: 13, fontWeight: 600, overflowWrap: "anywhere" }}>
+          {scatter.error}
+        </div>
         <div style={{ fontSize: 11, color: "#8a2422", opacity: 0.8, maxWidth: 380 }}>
           Check that the sample IDs in contamination_events.tsv match the
           column names in species_abundance.tsv. Letter case and spaces
@@ -1177,6 +1249,25 @@ const Scatterplot = ({
   const pad = { l: 56, r: 20, t: 20, b: 50 };
   const w = width - pad.l - pad.r;
   const h = height - pad.t - pad.b;
+
+  // The axis titles name the samples. SVG text has no ellipsis, and a
+  // long id ran off the plot on both sides of its centred title: it is
+  // cut to the room its title leaves along the axis (+40 px of margin), at
+  // ~5.5 px per character of the title's own words and ~6.4 px per
+  // character of an id (digits and capitals are wide) in this 11 px font.
+  // The whole title is its tooltip.
+  const xRichness =
+    showRichness && typeof scatter.targetRichness === "number"
+      ? `  ·  ${scatter.targetRichness} species`
+      : "";
+  const yRichness =
+    showRichness && typeof scatter.sourceRichness === "number"
+      ? `  ·  ${scatter.sourceRichness} species`
+      : "";
+  const axisId = (id, words, axisPx) =>
+    clipId(id, Math.max(8, Math.floor((axisPx + 40 - words.length * 5.5) / 6.4)));
+  const xTitle = "Target (contaminated) — ";
+  const yTitle = "Source — ";
 
   // Use the per-dataset log10 range when the scatter object carries one
   // (parseAbundance attaches it to ab.logRange and buildScatter forwards
@@ -1293,11 +1384,12 @@ const Scatterplot = ({
           fontWeight="600"
           fill="#275662"
         >
-          Target (contaminated) — {scatter.target}
-          {showRichness && typeof scatter.targetRichness === "number" && (
+          <title>{`${xTitle}${scatter.target}${xRichness}`}</title>
+          {xTitle}
+          {axisId(scatter.target, xTitle + xRichness, w)}
+          {xRichness && (
             <tspan fill="#797870" fontWeight="500">
-              {"  ·  "}
-              {scatter.targetRichness} species
+              {xRichness}
             </tspan>
           )}
         </text>
@@ -1311,11 +1403,12 @@ const Scatterplot = ({
           fontWeight="600"
           fill="#275662"
         >
-          Source — {scatter.source}
-          {showRichness && typeof scatter.sourceRichness === "number" && (
+          <title>{`${yTitle}${scatter.source}${yRichness}`}</title>
+          {yTitle}
+          {axisId(scatter.source, yTitle + yRichness, h)}
+          {yRichness && (
             <tspan fill="#797870" fontWeight="500">
-              {"  ·  "}
-              {scatter.sourceRichness} species
+              {yRichness}
             </tspan>
           )}
         </text>
@@ -1580,6 +1673,12 @@ function layoutComponent(comp, cellWidth, cellHeight) {
     edges,
   };
 }
+
+/** Longest node label of the network, in characters (clipId): ids up to
+    this length — those of every study dataset bundled here — are written
+    whole under their node; longer ones (the benchmark runs' 41- to
+    52-character ids, a LIMS export's 150) are cut. */
+const NETWORK_LABEL_CHARS = 32;
 
 const NetworkGraph = ({
   events,
@@ -2454,6 +2553,7 @@ const NetworkGraph = ({
               }}
               style={{ cursor: "pointer" }}
             >
+              <title>{n.id}</title>
               <circle
                 cx={n.x}
                 cy={n.y}
@@ -2467,7 +2567,10 @@ const NetworkGraph = ({
                 }
               />
               {/* External label below node — white halo for readability over
-                  edges. Hidden in dense components when not zoomed/hovered. */}
+                  edges. Hidden in dense components when not zoomed/hovered.
+                  A long id is cut (NETWORK_LABEL_CHARS): written whole, a
+                  150-character id ran across the whole graph. The node's
+                  tooltip and the hover line below give it whole. */}
               {showLabel && (
                 <text
                   x={n.x}
@@ -2483,7 +2586,7 @@ const NetworkGraph = ({
                   paintOrder="stroke fill"
                   style={{ pointerEvents: "none" }}
                 >
-                  {n.id}
+                  {clipId(n.id, NETWORK_LABEL_CHARS)}
                 </text>
               )}
             </g>
@@ -2531,6 +2634,8 @@ const NetworkGraph = ({
         </g>
       </svg>
 
+      {/* These lines give a hovered node's or edge's ids whole: a long
+          id wraps rather than run past the graph. */}
       {hover?.kind === "node" && (
         <div
           className="px-3 py-2 text-[12px]"
@@ -2538,6 +2643,7 @@ const NetworkGraph = ({
             borderTop: "1px solid var(--border)",
             background: "var(--bg-soft)",
             color: "var(--ink)",
+            overflowWrap: "anywhere",
           }}
         >
           <span style={{ color: "var(--ink-muted)" }}>sample:</span>{" "}
@@ -2561,6 +2667,7 @@ const NetworkGraph = ({
             borderTop: "1px solid var(--border)",
             background: "var(--bg-soft)",
             color: "var(--ink)",
+            overflowWrap: "anywhere",
           }}
         >
           <span className="font-semibold" style={{ color: "var(--ink)" }}>
@@ -2930,11 +3037,11 @@ const NodeBulkPopover = ({
             style={{ color: "var(--ink)", fontWeight: 700 }}
             title={name ? `${sampleId} (${name})` : sampleId}
           >
-            <span>
-              {sampleId}
+            <span className="flex items-baseline min-w-0 max-w-full">
+              <span className="truncate">{sampleId}</span>
               {name && (
                 <span
-                  className="ml-1.5 text-[12px]"
+                  className="ml-1.5 text-[12px] truncate"
                   style={{ color: "var(--ink-muted)", fontWeight: 500 }}
                 >
                   ({name})
@@ -3026,9 +3133,7 @@ const NodeBulkPopover = ({
       >
         Updates the <strong>{counts.asTarget}</strong> event
         {counts.asTarget === 1 ? "" : "s"} where{" "}
-        <code style={{ fontFamily: "ui-monospace, monospace" }}>
-          {sampleId}
-        </code>{" "}
+        <InlineSampleId id={sampleId} style={{ fontFamily: "ui-monospace, monospace" }} />{" "}
         is the target (the contaminations flowing into it). With{" "}
         <em>Automatic</em>, the sample's verdict and action follow those
         events as when clicking each one; pick a value to set it as your
@@ -3911,9 +4016,11 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
               />
             )}
             <div className="flex-1 min-w-0">
-              <div className="truncate" style={{ fontWeight: 600 }}>
-                {e.source} → {e.target}
-              </div>
+              <SamplePair
+                source={e.source}
+                target={e.target}
+                style={{ fontWeight: 600 }}
+              />
               <div
                 className="flex mt-0.5 tabular gap-2"
                 style={{
@@ -3964,7 +4071,7 @@ const CascadeBanner = ({ cascade, onJumpToUpstream }) => {
           className="w-4 h-4 shrink-0 mt-0.5"
           style={{ color: "#9c8be8" }}
         />
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <div
             className="text-[12px] tracking-[0.1em] uppercase mb-1"
             style={{
@@ -3982,8 +4089,9 @@ const CascadeBanner = ({ cascade, onJumpToUpstream }) => {
               onClick={() =>
                 onJumpToUpstream && onJumpToUpstream(upstream.upstream_event_id)
               }
-              className="font-semibold underline"
+              className="font-semibold underline inline-block max-w-full truncate align-bottom"
               style={{ color: "#9c8be8", background: "transparent", border: 0, cursor: "pointer", padding: 0 }}
+              title={upstream.upstream_source}
             >
               {upstream.upstream_source}
             </button>
@@ -4621,11 +4729,13 @@ const TopList = ({ title, items, onOpen, fmt }) => (
           >
             {String(i + 1).padStart(2, "0")}
           </span>
-          <span className="text-[13px] flex-1 truncate" style={{ color: "var(--ink)" }}>
-            <span style={{ fontWeight: 600 }}>{e.source}</span>
-            <ArrowRight className="inline w-3 h-3 mx-1.5" style={{ color: "#00a3a6" }} />
-            <span style={{ fontWeight: 600 }}>{e.target}</span>
-          </span>
+          <SamplePair
+            source={e.source}
+            target={e.target}
+            arrow={<ArrowRight className="w-3 h-3 mx-0.5" style={{ color: "#00a3a6" }} />}
+            className="text-[13px] flex-1 min-w-0"
+            style={{ color: "var(--ink)", fontWeight: 600 }}
+          />
           <span
             className="text-[13px] tabular"
             style={{
@@ -6476,15 +6586,13 @@ const EventsTable = ({
                     onClick={() => onPick(e.id)}
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
-                    {e.source}
+                    <SampleId id={e.source} />
                     {sampleName(metadata, e.source) && (
-                      <div
-                        className="text-[11px] truncate"
+                      <SampleId
+                        id={sampleName(metadata, e.source)}
+                        className="text-[11px]"
                         style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
-                        title={sampleName(metadata, e.source)}
-                      >
-                        {sampleName(metadata, e.source)}
-                      </div>
+                      />
                     )}
                     {metadata && (
                       <div className="mt-1">
@@ -6501,15 +6609,13 @@ const EventsTable = ({
                     onClick={() => onPick(e.id)}
                     style={{ fontWeight: 600, color: "var(--ink)" }}
                   >
-                    {e.target}
+                    <SampleId id={e.target} />
                     {sampleName(metadata, e.target) && (
-                      <div
-                        className="text-[11px] truncate"
+                      <SampleId
+                        id={sampleName(metadata, e.target)}
+                        className="text-[11px]"
                         style={{ color: "var(--ink-muted)", fontWeight: 400, maxWidth: 220 }}
-                        title={sampleName(metadata, e.target)}
-                      >
-                        {sampleName(metadata, e.target)}
-                      </div>
+                      />
                     )}
                     {metadata && (
                       <div className="mt-1">
@@ -7496,28 +7602,31 @@ const GalleryCard = React.memo(function GalleryCard({
               return `${event.source}${s ? ` (${s})` : ""} → ${event.target}${t ? ` (${t})` : ""}`;
             })()}
           >
-            <div
-              className="text-[11px] truncate"
+            {/* One line cut as a whole lost the target behind a long
+                source: each id is cut on its own. */}
+            <SamplePair
+              source={event.source}
+              target={event.target}
+              title={null}
+              className="text-[11px]"
               style={{
                 color: "var(--ink)",
                 fontWeight: 700,
                 fontFamily: '"Raleway", sans-serif',
               }}
-            >
-              {event.source} → {event.target}
-            </div>
+            />
             {(sampleName(metadata, event.source) ||
               sampleName(metadata, event.target)) && (
-              <div
-                className="text-[10px] truncate"
+              <SamplePair
+                source={sampleName(metadata, event.source) || event.source}
+                target={sampleName(metadata, event.target) || event.target}
+                title={null}
+                className="text-[10px]"
                 style={{
                   color: "var(--ink-muted)",
                   fontFamily: '"Raleway", sans-serif',
                 }}
-              >
-                {sampleName(metadata, event.source) || event.source} →{" "}
-                {sampleName(metadata, event.target) || event.target}
-              </div>
+              />
             )}
           </div>
         </div>
@@ -7787,6 +7896,7 @@ const SampleCombobox = ({
                         selectSample(s);
                       }}
                       onMouseEnter={() => setHighlightIdx(flatIdx)}
+                      className="truncate"
                       style={{
                         padding: "6px 12px",
                         fontSize: 12,
@@ -7795,6 +7905,7 @@ const SampleCombobox = ({
                         background: isHi ? "var(--bg-info)" : "transparent",
                         cursor: "pointer",
                       }}
+                      title={s}
                     >
                       {s}
                     </div>
@@ -8390,7 +8501,11 @@ const ExplorePairs = ({
               This pair is already in your events list.
             </span>
           ) : (
-            <span className="text-[11px]" style={{ color: "var(--ink-muted)" }}>
+            // These two lines name the target: a long id wraps.
+            <span
+              className="text-[11px]"
+              style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+            >
               {introducedFromLine.length} species fall on the line you placed
               {(() => {
                 if (!ab || !tgt) return null;
@@ -8413,6 +8528,7 @@ const ExplorePairs = ({
                 background: "#d8f0f1",
                 color: "#00787a",
                 fontWeight: 600,
+                overflowWrap: "anywhere",
               }}
             >
               ✓ {feedback.message}
@@ -8535,14 +8651,17 @@ const ExplorePairs = ({
                 }}
               >
                 <div
-                  className="text-[10px] tracking-[0.1em] uppercase"
+                  className="text-[10px] tracking-[0.1em] uppercase flex gap-[0.4em]"
                   style={{
                     color: "var(--ink-muted)",
                     fontWeight: 700,
                     fontFamily: '"Raleway", sans-serif',
                   }}
+                  title={`% of ${tgt || "target"} species`}
                 >
-                  % of {tgt || "target"} species
+                  <span className="shrink-0">% of</span>
+                  <span className="truncate">{tgt || "target"}</span>
+                  <span className="shrink-0">species</span>
                 </div>
                 <div
                   className="tabular mt-1"
@@ -9526,7 +9645,8 @@ const SampleContextCell = ({
     the Events table) so it doesn't need a dedicated column. */
 const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
   <>
-    <div
+    <SampleId
+      id={row.id}
       style={{
         fontFamily: "ui-monospace, monospace",
         color: "var(--ink)",
@@ -9534,22 +9654,18 @@ const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
         fontSize: 13,
         lineHeight: 1.2,
       }}
-    >
-      {row.id}
-    </div>
+    />
     {row.name && (
-      <div
-        className="text-[11px] truncate"
+      <SampleId
+        id={row.name}
+        className="text-[11px]"
         style={{
           color: "var(--ink-muted)",
           fontWeight: 400,
           maxWidth: 220,
           marginTop: 2,
         }}
-        title={row.name}
-      >
-        {row.name}
-      </div>
+      />
     )}
     <button
       type="button"
@@ -13450,26 +13566,30 @@ const PlateEditor = ({ samples, plateMap, setPlateMap }) => {
               >
                 <button
                   onClick={() => setSelectedSample(isSelected ? null : s)}
-                  className="flex-1 text-left"
+                  className="flex-1 min-w-0 truncate text-left"
                   style={{ fontWeight: 600 }}
+                  title={s}
                 >
                   {s}
                 </button>
                 {pos ? (
                   <>
-                    <Pill tone={isSelected ? "ink" : "primary"}>
+                    <Pill tone={isSelected ? "ink" : "primary"} className="shrink-0">
                       {pos.plate} · {wellLabel(pos.row, pos.col)}
                     </Pill>
                     <button
                       onClick={() => clearWell(s)}
                       title="remove"
+                      className="shrink-0"
                       style={{ color: isSelected ? "#fff" : "#797870" }}
                     >
                       <X className="w-3 h-3" />
                     </button>
                   </>
                 ) : (
-                  <Pill tone={isSelected ? "ink" : "neutral"}>to place</Pill>
+                  <Pill tone={isSelected ? "ink" : "neutral"} className="shrink-0">
+                    to place
+                  </Pill>
                 )}
               </div>
             );
@@ -14372,13 +14492,16 @@ const PlateTab = ({ events, plateMap, setPlateMap, samples, onPick, metadata, fo
                       )}
                     </div>
                     <div
-                      className="text-[11px] mt-0.5"
+                      className="text-[11px] mt-0.5 flex items-baseline gap-1"
                       style={{ color: "var(--ink-muted)" }}
                     >
-                      {e.source} → {e.target} · probability {e.score.toFixed(2)}
-                      {e.introducedPct != null && (
-                        <> · introduced {formatIntroducedPct(e.introducedPct)}</>
-                      )}
+                      <SamplePair source={e.source} target={e.target} className="min-w-0" />
+                      <span className="shrink-0">
+                        · probability {e.score.toFixed(2)}
+                        {e.introducedPct != null && (
+                          <> · introduced {formatIntroducedPct(e.introducedPct)}</>
+                        )}
+                      </span>
                     </div>
                   </button>
                 );
@@ -14873,20 +14996,16 @@ const BulkPreviewOverlay = ({
                     }}
                   >
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div
+                      <SamplePair
+                        source={e.source}
+                        target={e.target}
                         style={{
                           fontSize: 12,
                           color: "var(--ink)",
                           fontWeight: 700,
                           fontFamily: '"Raleway", sans-serif',
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
                         }}
-                        title={`${e.source} → ${e.target}`}
-                      >
-                        {e.source} → {e.target}
-                      </div>
+                      />
                       <div style={{ marginTop: 2 }}>
                         <RowMeta e={e} />
                       </div>
@@ -16511,7 +16630,11 @@ const ValidateTab = ({
           </div>
         </EventFilterBar>
       )}
-      <div className="grid lg:grid-cols-[260px_1fr] gap-8">
+      {/* minmax(0, 1fr), not 1fr: a 1fr column is at least as wide as its
+          content's longest unbreakable line, and the cascade banner's
+          150-character upstream id pushed the panel out of the page's
+          column. */}
+      <div className="grid lg:grid-cols-[260px_minmax(0,1fr)] gap-8">
       <aside>
         <div
           className="text-[10px] tracking-[0.15em] uppercase mb-3 flex items-center justify-between"
@@ -16770,27 +16893,37 @@ const ValidateTab = ({
         <SectionTitle
           eyebrow={`Event ${idx + 1} of ${events.length}`}
           title={
-            <>
-              {sel.source}
-              {sampleName(metadata, sel.source) && (
-                <span
-                  className="text-[18px] ml-2"
-                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                >
-                  ({sampleName(metadata, sel.source)})
-                </span>
-              )}
-              {" → "}
-              {sel.target}
-              {sampleName(metadata, sel.target) && (
-                <span
-                  className="text-[18px] ml-2"
-                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                >
-                  ({sampleName(metadata, sel.target)})
-                </span>
-              )}
-            </>
+            // The pair is this page's subject: two long ids share the
+            // line, each cut only as far as it has to be, with the whole
+            // id in its tooltip and in the page (a double-click selects
+            // all of it, and a copy copies all of it).
+            <span
+              className="grid items-baseline"
+              style={{ gridTemplateColumns: SAMPLE_PAIR_COLUMNS, columnGap: "0.3em" }}
+            >
+              {[sel.source, sel.target].map((id, i) => {
+                const name = sampleName(metadata, id);
+                return (
+                  <React.Fragment key={i}>
+                    {i === 1 && <span>{" → "}</span>}
+                    <span className="flex items-baseline min-w-0">
+                      <span className="truncate" title={id} data-sample-id={id}>
+                        {id}
+                      </span>
+                      {name && (
+                        <span
+                          className="text-[18px] ml-2 truncate"
+                          style={{ color: "var(--ink-muted)", fontWeight: 500 }}
+                          title={name}
+                        >
+                          ({name})
+                        </span>
+                      )}
+                    </span>
+                  </React.Fragment>
+                );
+              })}
+            </span>
           }
         />
 
@@ -17132,7 +17265,10 @@ const ValidateTab = ({
                 </div>
               )}
               {autoScore.reasons.length === 0 && (
-                <div className="text-[12px]" style={{ color: "var(--ink-muted)" }}>
+                <div
+                  className="text-[12px]"
+                  style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+                >
                   {scatter?.error
                     ? `${scatter.error}, so none of the checks below can be computed for this pair — it is neither a pass nor a fail. Expected after a CroCoDeEL -s2 run when only one of its two abundance tables is loaded.`
                     : "Open the abundance table to compute."}
@@ -17525,23 +17661,26 @@ const ValidateTab = ({
                           <div>
                             <div className="flex items-center gap-2 mb-1">
                               <span
-                                className="w-2 h-2 rounded-full"
+                                className="w-2 h-2 rounded-full shrink-0"
                                 style={{ background: "#00a3a6" }}
                               />
-                              <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>
+                              <span
+                                className="shrink-0"
+                                style={{ color: "var(--ink-muted)", fontSize: 11 }}
+                              >
                                 source
                               </span>
-                              <span
+                              <SampleId
+                                id={sel.source}
                                 style={{
                                   color: "var(--ink)",
                                   fontWeight: 600,
                                   fontFamily: '"Raleway", sans-serif',
                                 }}
-                              >
-                                {sel.source}
-                              </span>
+                              />
                               {sampleName(metadata, sel.source) && (
                                 <span
+                                  className="truncate"
                                   style={{
                                     color: "var(--ink-muted)",
                                     fontSize: 11,
@@ -17558,23 +17697,26 @@ const ValidateTab = ({
                           <div>
                             <div className="flex items-center gap-2 mb-1">
                               <span
-                                className="w-2 h-2 rounded-full"
+                                className="w-2 h-2 rounded-full shrink-0"
                                 style={{ background: "#ed6e6c" }}
                               />
-                              <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>
+                              <span
+                                className="shrink-0"
+                                style={{ color: "var(--ink-muted)", fontSize: 11 }}
+                              >
                                 target
                               </span>
-                              <span
+                              <SampleId
+                                id={sel.target}
                                 style={{
                                   color: "var(--ink)",
                                   fontWeight: 600,
                                   fontFamily: '"Raleway", sans-serif',
                                 }}
-                              >
-                                {sel.target}
-                              </span>
+                              />
                               {sampleName(metadata, sel.target) && (
                                 <span
+                                  className="truncate"
                                   style={{
                                     color: "var(--ink-muted)",
                                     fontSize: 11,
@@ -20073,6 +20215,13 @@ const HelpTab = ({ onStartTour }) => {
               empty header cell between two named ones is named{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>Unnamed: N</code>{" "}
               (N its column, counted from 0), as CroCoDeEL names it.
+            </p>
+            <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
+              Sample ids are shown as the abundance table writes them. An
+              id too long for its place — a 150-character LIMS id, say —
+              is cut with an ellipsis: hover it to read it whole. The
+              Guided validation header holds the whole pair, so selecting
+              an id there copies all of it.
             </p>
             <p style={{ color: "var(--ink-muted)" }}>
               Files are parsed entirely in your browser. Nothing is sent
@@ -28157,7 +28306,7 @@ const defaultFilter = () => ({
                     {sampleMismatches.missingCount > 1 ? "s are" : " is"}{" "}
                     missing — scatterplots will show an error for those events.
                     First few:{" "}
-                    <code style={{ fontFamily: "system-ui, monospace" }}>
+                    <code style={{ fontFamily: "system-ui, monospace", overflowWrap: "anywhere" }}>
                       {sampleMismatches.missing.join(", ")}
                       {sampleMismatches.missingCount > 10 ? " …" : ""}
                     </code>
@@ -28593,6 +28742,8 @@ const defaultFilter = () => ({
                 color: "var(--ink-soft)",
                 lineHeight: 1.6,
                 whiteSpace: "pre-wrap",
+                // The body can list sample ids: a long one wraps.
+                overflowWrap: "anywhere",
                 marginBottom: 20,
               }}
             >
@@ -29201,7 +29352,10 @@ const defaultFilter = () => ({
               />
               Back to {label}
               {sampleHint && (
+                // Cut, like every long sample id; the button's title
+                // has it whole.
                 <span
+                  className="truncate"
                   style={{
                     fontFamily: "ui-monospace, monospace",
                     fontWeight: 600,
@@ -29209,6 +29363,7 @@ const defaultFilter = () => ({
                     marginLeft: 2,
                     textTransform: "none",
                     letterSpacing: 0,
+                    maxWidth: 240,
                   }}
                 >
                   {sampleHint}
