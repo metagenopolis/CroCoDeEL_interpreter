@@ -21756,10 +21756,13 @@ const HelpTab = ({ onStartTour }) => {
                   <code style={{ fontFamily: "ui-monospace, monospace" }}>λ = N × rate × source_abundance</code>{" "}
                   and is missed by Poisson chance alone with probability{" "}
                   <code style={{ fontFamily: "ui-monospace, monospace" }}>e^(−λ)</code>.
-                  Across the full source profile, the observed miss
-                  count is compared to its expectation under{" "}
-                  <em>H<sub>real</sub></em> (genuine contamination) via
-                  a Poisson-binomial sum (one-sided normal approximation).
+                  Across the full source profile, the number of misses
+                  under <em>H<sub>real</sub></em> (genuine contamination)
+                  follows a Poisson-binomial distribution, and the
+                  observed miss count is compared with it exactly: the
+                  p-value is its one-sided upper tail,{" "}
+                  <code style={{ fontFamily: "ui-monospace, monospace" }}>P(X ≥ observed misses)</code>,
+                  summed term by term rather than approximated.
                   No abundance pre-filter is needed: rare species
                   contribute almost nothing to the test variance and
                   cancel out in expectation, so the test self-regulates.
