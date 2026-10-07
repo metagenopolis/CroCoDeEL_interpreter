@@ -273,8 +273,15 @@ export function inputValue(fraction, colSum, integer) {
     in R and in Python's float()); as 1.0630384344999e-6 it reads back to
     its last digit everywhere. */
 function cellNumber(v) {
+  // An integer below 1e17 has at most 17 digits, all of them in String's
+  // fixed notation: no need to look (a count table is all integers).
+  if (Number.isInteger(v) && v < 1e17 && v > -1e17) return String(v);
   const s = String(v);
-  if (!s.includes("e") && s.replace(/^-/, "").replace(".", "").length <= 17) return s;
+  if (s.indexOf("e") < 0) {
+    // The digits: the text without its sign and its point.
+    const digits = s.length - (s.charCodeAt(0) === 45 ? 1 : 0) - (s.indexOf(".") >= 0 ? 1 : 0);
+    if (digits <= 17) return s;
+  }
   return v.toExponential();
 }
 
@@ -295,7 +302,14 @@ function cellNumber(v) {
 
     No "#" line: pandas' read_csv(sep="\t", index_col=0) and R's
     read.delim read one as a data row (pandas refuses the file, R reports
-    duplicate row names). */
+    duplicate row names).
+
+    Only the samples and species `ab` lists are written, so `ab.matrix`
+    may hold more: the curated table is written from the input's own rows
+    (buildCuratedAbundance's `matrix: false`), without a copy of them.
+    Writing the input's values made the Meteor benchmark's export take
+    0.46 s instead of 0.24 s; a zero, a count and a value written with up
+    to 15 digits now take the short paths of inputValue and cellNumber. */
 export function abundanceToTSV(ab) {
   if (!ab) return "";
   const input = hasInputValues(ab);
@@ -303,18 +317,23 @@ export function abundanceToTSV(ab) {
     input && ab.implicitIndex === true
       ? [...ab.samples]
       : [input ? ab.firstHeader : "species", ...ab.samples];
-  const sums = ab.samples.map((s) => (input ? ab.colSums[s] : 0));
-  const ints = ab.samples.map((s) => input && ab.integerCols[s] === true);
+  const samples = ab.samples;
+  const sums = samples.map((s) => (input ? ab.colSums[s] : 0));
+  const ints = samples.map((s) => input && ab.integerCols[s] === true);
   const lines = [header.map(tsvCell).join("\t")];
   for (const sp of ab.species) {
     const row = ab.matrix[sp] || {};
-    const cells = [tsvCell(sp)];
-    for (let j = 0; j < ab.samples.length; j++) {
-      const v = row[ab.samples[j]];
-      if (!Number.isFinite(v)) cells.push("0");
-      else cells.push(cellNumber(input ? inputValue(v, sums[j], ints[j]) : v));
+    let line = tsvCell(sp);
+    for (let j = 0; j < samples.length; j++) {
+      const v = row[samples[j]];
+      // A fraction is ≥ 0: a zero, an empty cell of a sparse row, or a
+      // value that is not a number is a 0.
+      if (!(v > 0)) line += "\t0";
+      else if (!input) line += `\t${cellNumber(v)}`;
+      else if (ints[j]) line += `\t${cellNumber(Math.round(v * sums[j]))}`;
+      else line += `\t${cellNumber(inputValue(v, sums[j], false))}`;
     }
-    lines.push(cells.join("\t"));
+    lines.push(line);
   }
   return lines.join("\n");
 }

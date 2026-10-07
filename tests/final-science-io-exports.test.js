@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { parseAbundance, parseMetadata } from "../src/parsing.js";
+import { sparsifyAbundance } from "../src/persistence.js";
 import {
+  abundanceToTSV,
   buildCuratedAbundance,
   curatedAbundanceProvenance,
   sampleFlagCells,
@@ -111,5 +115,37 @@ describe("buildContaminationGraph — where a sample's verdict and action come f
     const ev = [{ id: 2, source: "T", target: "U", rate: 0.1, score: 0.9, verdict: "pending" }];
     const t = buildContaminationGraph(ev, { sampleCuration: effective, neverTargeted: never }).nodes.find((n) => n.id === "T");
     expect([t.sample_verdict, t.sample_verdict_origin]).toEqual(["contaminated", "automatic"]);
+  });
+});
+
+/* The curated abundance export rebuilt a dense copy of the whole matrix
+   and formatted every cell through the general path: 0.46 s on the
+   Meteor benchmark against 0.24 s for main. It now writes the kept
+   samples and species straight from the input's rows, zeros and counts
+   by their short paths: the same bytes. */
+describe("abundanceToTSV from the input's own rows", () => {
+  const ab = parseAbundance(readFileSync(join(import.meta.dirname, "..", "public", "demo", "species_abundance.tsv"), "utf8"));
+  const sup = Object.fromEntries(ab.samples.filter((_, i) => i % 4 === 0).map((s) => [s, { action: "suppress" }]));
+
+  it("writes the curated table the dense copy wrote, from a dense or a sparse matrix", () => {
+    const dense = abundanceToTSV(buildCuratedAbundance(ab, sup));
+    const cur = buildCuratedAbundance(ab, sup, { matrix: false });
+    expect(cur.matrix).toBeNull();
+    expect(abundanceToTSV({ ...cur, matrix: ab.matrix })).toBe(dense);
+    const sparse = sparsifyAbundance(ab);
+    expect(abundanceToTSV({ ...buildCuratedAbundance(sparse, sup, { matrix: false }), matrix: sparse.matrix })).toBe(dense);
+  });
+
+  it("writes counts, zeros and long values as before", () => {
+    const t = parseAbundance(
+      ["id\tC\tF\tB", "a\t1500\t0.0000010630384344999\t123456789012345678", "b\t0\t0.3\t0", "c\t7\t\t1"].join("\n"),
+    );
+    expect(abundanceToTSV(t)).toBe(
+      ["id\tC\tF\tB", "a\t1500\t1.0630384344999e-6\t1.2345678901234568e+17", "b\t0\t0.3\t0", "c\t7\t0\t1"].join("\n"),
+    );
+    // A session saved before the column sums: fractions, by the same paths.
+    const { colSums: _drop, ...old } = t;
+    expect(abundanceToTSV(old).split("\n")[2]).toBe(`b\t0\t${String(t.matrix.b.F)}\t0`);
+    expect(abundanceToTSV(old).split("\n")[1]).toBe(`a\t${String(t.matrix.a.C)}\t${t.matrix.a.F.toExponential()}\t${String(t.matrix.a.B)}`);
   });
 });

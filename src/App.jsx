@@ -26883,8 +26883,10 @@ const defaultFilter = () => ({
       before. */
   const exportCuratedAbundance = (opts = {}) => {
     if (!ab) return;
-    const cur = buildCuratedAbundance(ab, effectiveSampleCuration, opts);
-    const table = abundanceToTSV(cur);
+    // Written from the input's own rows (abundanceToTSV writes only the
+    // kept samples and species): no copy of the matrix is built.
+    const cur = buildCuratedAbundance(ab, effectiveSampleCuration, { ...opts, matrix: false });
+    const table = abundanceToTSV({ ...cur, matrix: ab.matrix });
     const provenance = curatedAbundanceProvenance(ab, cur, {
       study: analysisTitle,
       curated: new Date().toISOString(),
