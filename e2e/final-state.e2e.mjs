@@ -6,6 +6,9 @@
        events file's "# study:" line names the study;
      - a session file whose filter holds markup brings none of it into
        the events HTML report;
+     - while the abundance table's write keeps failing, a tab switch
+       neither rewrites the curation record nor makes another tab stale,
+       and the table is written once there is room again;
 
    The stored state is read from IndexedDB, as the app reads it
    (src/persistence.js).
@@ -105,6 +108,29 @@ async function exportSession(page) {
   return download(page, page.getByRole("button", { name: /^Download session$/ }).first());
 }
 
+/* Abort every write of the abundance record while window.__failAb is
+   set, once its request has succeeded — how a full quota arrives (an
+   abort at commit, no error event). */
+const FAIL_AB = () => {
+  const put = IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put = function (...args) {
+    const req = put.apply(this, args);
+    if (window.__failAb && args[1] === "ab") {
+      const tx = this.transaction;
+      req.addEventListener("success", () => {
+        try {
+          tx.abort();
+        } catch {
+          // already finished
+        }
+      });
+    }
+    return req;
+  };
+};
+
+const banner = (page, state) => page.locator(`[data-save-banner="${state}"]`);
+
 /** The title in the study pill of the files bar ("" when it is hidden). */
 async function studyLabel(page) {
   const pill = page.locator('[title^="Inline study label"]');
@@ -191,6 +217,61 @@ try {
     },
     { demo: false },
   );
+
+  /* The abundance table's write keeps failing (a full quota). */
+  await scenario("FS failing table write and two tabs", async (page, ctx) => {
+    await ctx.addInitScript(FAIL_AB);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => (window.__failAb = true));
+    await upload(page, 1, "species_abundance.tsv", demo("species_abundance.tsv"));
+    await saved(page);
+    const before = await storedRecords(page);
+    check(
+      !!before.curation?.abToken && !before.ab,
+      "FS the table's write failed after the session's (its token named, no table stored)",
+      `token ${before.curation?.abToken}, table ${!!before.ab}`,
+    );
+    // Another tab of the same session.
+    const other = await ctx.newPage();
+    await other.goto(page.url().replace(/#.*$/, ""), { waitUntil: "networkidle" });
+    await other.waitForTimeout(1500);
+    const rev = (await storedRecords(page)).curation.rev;
+    // The first tab only switches tabs, each time after the retry pause.
+    for (const t of ["Samples", "Overview", "Events"]) {
+      await page.waitForTimeout(5300);
+      await openTab(page, t);
+    }
+    await page.waitForTimeout(1500);
+    check(
+      (await storedRecords(page)).curation.rev === rev,
+      "FS tab switches while the table waits do not rewrite the curation record",
+      `${rev} -> ${(await storedRecords(page)).curation.rev}`,
+    );
+    check((await banner(other, "conflict").count()) === 0, "FS and the other tab is not told the session changed");
+    // Room again: the table is stored, and the curation record names it
+    // again (the other tab, which found the session without its table,
+    // stopped naming it): the session has its table back, which the
+    // other tab's copy lacks, so that tab is told.
+    await page.evaluate(() => (window.__failAb = false));
+    await page.waitForTimeout(5300);
+    await openTab(page, "Overview");
+    await page.waitForTimeout(1500);
+    const after = await storedRecords(page);
+    check(
+      !!after.ab && after.ab.storageToken === after.curation.abToken && after.curation.rev === rev + 1,
+      "FS once there is room, the table is stored and named by the curation record again",
+      `token ${after.curation.abToken}, table ${after.ab?.storageToken}, rev ${rev} -> ${after.curation.rev}`,
+    );
+    check((await banner(other, "conflict").count()) === 1, "FS only then is the other tab told the session changed");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    await openTab(page, "Export");
+    check(
+      /Curated abundance table — \d+ of 91 samples/.test(await page.locator("body").innerText()),
+      "FS and the table comes back with the session after a reload",
+    );
+  });
 } finally {
   await browser.close();
   stopServer();

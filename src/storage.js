@@ -414,9 +414,36 @@ export function writeSessionNow({ writes, rev, ab, ui }) {
   }
 }
 
-/** Write the abundance record (persistence.js' abundanceRecord). */
-export function writeAb(record) {
-  return idbSet(RECORD_KEYS.ab, record);
+/** Write the abundance record (persistence.js' abundanceRecord). With
+    `expectedRev` — the autosave writing again a table whose write
+    failed — only if the stored revision is still that one, in the same
+    transaction: resolves { status: "conflict", rev } with nothing
+    written when another tab has written the session since (its curation
+    record names its own table), { status: "ok", named } otherwise.
+    `named` is false when the curation record no longer names the
+    table's token: a tab that opened the session meanwhile found it
+    without its table and stopped naming it (forgetLostTable). */
+export function writeAb(record, expectedRev) {
+  if (expectedRev == null) return idbSet(RECORD_KEYS.ab, record);
+  return withDB((db) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    let conflict = null;
+    let named = false;
+    const get = store.get(RECORD_KEYS.curation);
+    get.onsuccess = () => {
+      const stored = get.result?.rev ?? 0;
+      if (stored !== expectedRev) {
+        conflict = stored;
+        return;
+      }
+      named = (get.result?.abToken ?? null) === (record.storageToken ?? null);
+      store.put(record, RECORD_KEYS.ab);
+    };
+    return settled(tx).then(() =>
+      conflict !== null ? { status: "conflict", rev: conflict } : { status: "ok", named },
+    );
+  });
 }
 
 /** Delete the abundance record: after a failed write, so that an older

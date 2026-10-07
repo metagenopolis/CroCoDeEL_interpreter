@@ -22,7 +22,8 @@
      - a failed write (full quota, storage gone) is reported and retried
        on the next change, at most every RETRY_AFTER_FAILURE_MS: the
        session stays "not saved" until a write succeeds. The abundance
-       table, written on its own, is retried the same way.
+       table, written on its own, is retried the same way — on its own
+       too: the curation record already names it.
 
    The status goes to `onStatus({ state, savedAt, abFailed, error })`:
    state "idle" (nothing written yet), "saved", "failed", "conflict" or,
@@ -77,7 +78,8 @@ const pick = (s, fields) => Object.fromEntries(fields.map((f) => [f, s?.[f]]));
 
       backend       { writer, writeSession, writeSessionNow, peekRev,
                       writeAb, deleteAb, writeUi, openChannel }
-                      (src/storage.js)
+                      (src/storage.js); writeAb(record, expectedRev)
+                      checks the revision when given one
       initialState  the state the stored records hold, as read on boot
                     (null when nothing is stored)
       rev, abToken  the stored revision and abundance-table token
@@ -109,6 +111,9 @@ export function createAutosave({
   let inFlight = null;
   let again = false;
   let failedAt = null;
+  // The abundance table whose write failed (the session's `ab`), and
+  // when: the curation record written just before names its token.
+  let failedTable = null;
   let tableFailedAt = null;
   let stopped = !available;
   let status = {
@@ -162,25 +167,32 @@ export function createAutosave({
     timer = setTimeout(flush, Math.max(0, ms));
   };
 
-  /** What the next write holds, or null when nothing changed. A table
-      whose write failed is retried at most every `retryAfter`; until
-      then, the other records are written as if the table were saved —
-      a tab switch writes the UI record only. Counting the waiting table
-      as a change rewrote the curation record on every switch, bumping
-      the revision, and every other open tab took it for another tab's
-      work ("changed in another tab"). */
+  /** What the next write holds, or null when nothing changed.
+
+      A table whose write failed, still the session's, is not a change of
+      the session: the curation record written with it already names its
+      token. The other records are written as if it were saved — a tab
+      switch writes the UI record only — and the table alone is written
+      again (`retryTable`), with that token, at most every `retryAfter`.
+      Counting it as a change rewrote the curation record on every tab
+      switch once that pause was over, bumping the revision, and every
+      other open tab took it for another tab's work ("changed in another
+      tab") although nobody had changed the curation. */
   const plan = () => {
     const s = latest;
     if (!s || (!saved && isEmptySession(s))) return null;
     let d = dirtyRecords(saved, s);
-    if (d.ab && s.ab && tableFailedAt != null && now() - tableFailedAt < retryAfter) {
+    let retryTable = false;
+    if (d.ab && s.ab && s.ab === failedTable) {
       d = { ...dirtyRecords({ ...saved, ab: s.ab }, s), ab: false };
-      schedule(retryAfter - (now() - tableFailedAt));
+      const wait = retryAfter - (now() - tableFailedAt);
+      if (wait > 0) schedule(wait);
+      else retryTable = true;
     }
     const session = d.events || d.ab || d.metadata || d.plate || d.curation;
-    if (!session && !d.ui) return null;
+    if (!session && !d.ui && !retryTable) return null;
     const nextToken = d.ab ? (s.ab ? newToken() : null) : token;
-    return { s, d, session, nextToken };
+    return { s, d, session, nextToken, retryTable };
   };
 
   /** Another tab's notice can arrive while one of this tab's writes is in
@@ -192,7 +204,14 @@ export function createAutosave({
       table.) */
   const inConflict = () => status.state === "conflict";
 
-  async function write({ s, d, session, nextToken }) {
+  /** A failed write of the table `ab`: say so, and retry it later. */
+  const tableFailed = (ab, e) => {
+    console.warn("[crocodeel] saving the abundance table failed:", e?.message || e);
+    failedTable = ab;
+    tableFailedAt = now();
+  };
+
+  async function write({ s, d, session, nextToken, retryTable }) {
     let abFailed = status.abFailed;
     if (session) {
       const res = await backend.writeSession(sessionWrites(s, d, nextToken), confirmedRev);
@@ -207,11 +226,11 @@ export function createAutosave({
       if (d.ab && s.ab) {
         try {
           await backend.writeAb(abundanceRecord(s.ab, nextToken));
+          failedTable = null;
           tableFailedAt = null;
           abFailed = false;
         } catch (e) {
-          console.warn("[crocodeel] saving the abundance table failed:", e?.message || e);
-          tableFailedAt = now();
+          tableFailed(s.ab, e);
           abFailed = true;
           table = UNSAVED_TABLE;
           // The token already keeps an older table from coming back with
@@ -224,11 +243,48 @@ export function createAutosave({
         }
       } else if (d.ab) {
         abFailed = false;
+        failedTable = null;
         tableFailedAt = null;
       }
       saved = { ...saved, ...pick(s, SESSION_FIELDS), ab: table };
     }
     if (inConflict()) return;
+    if (retryTable) {
+      // The table alone, with the token the curation record names, if the
+      // stored revision is still this tab's: a tab that wrote since has
+      // its own table, which this one must not replace. A tab that opened
+      // the session meanwhile found it without its table and stopped
+      // naming it: once the table is stored, the curation record names it
+      // again — a new revision, since the stored session has its table
+      // back, which that tab's copy lacks.
+      try {
+        const res = await backend.writeAb(abundanceRecord(s.ab, token), confirmedRev);
+        if (res?.status === "conflict") {
+          conflict();
+          return;
+        }
+        if (res && res.named === false) {
+          const again = await backend.writeSession(
+            sessionWrites(s, { curation: true }, token),
+            confirmedRev,
+          );
+          if (again.status === "conflict") {
+            conflict();
+            return;
+          }
+          confirmedRev = again.rev;
+          announce(again.rev);
+          saved = { ...saved, ...pick(s, SESSION_FIELDS) };
+        }
+        failedTable = null;
+        tableFailedAt = null;
+        abFailed = false;
+        saved = { ...saved, ab: s.ab };
+      } catch (e) {
+        tableFailed(s.ab, e);
+        abFailed = true;
+      }
+    }
     if (d.ui) {
       await backend.writeUi(uiRecord(s));
       if (inConflict()) return;
@@ -291,7 +347,8 @@ export function createAutosave({
       clearTimeout(timer);
       timer = null;
       const next = plan();
-      if (!next) return;
+      // A table waiting for its retry waits: the page is going away.
+      if (!next || (!next.session && !next.d.ui)) return;
       const ahead = backend.peekRev?.();
       if (ahead != null && ahead > confirmedRev) {
         conflict();
