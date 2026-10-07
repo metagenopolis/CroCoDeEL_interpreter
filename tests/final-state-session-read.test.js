@@ -281,4 +281,26 @@ describe("Stored sessions are read by the same readers", () => {
     // Its session JSON (the error screen's download) imports.
     expect(read(JSON.parse(JSON.stringify(sessionToJSON(session)))).ok).toBe(true);
   });
+
+  it("leaves out a damaged metadata row or well, and keeps the others", () => {
+    const metadata = parseMetadata(["sample_id\tsubject_id", "S1\tP1", "S2\tP1", "T1\tP2"].join("\n"));
+    const plateMap = parsePlateMap(["sample_id\tplate\twell", "S1\tP1\tA01", "S2\tP1\tA02", "T1\tP1\tA03"].join("\n"));
+    const stored = sessionFromLegacyMain(
+      {
+        ...previousMainRecord(),
+        metadata: { ...metadata, bySample: { ...metadata.bySample, S2: "P1" } },
+        plateMap: { ...plateMap, bySample: { ...plateMap.bySample, S2: null } },
+      },
+      null,
+    );
+    const { session, notes } = checkStoredSession(stored);
+    expect(Object.keys(session.metadata.bySample)).toEqual(["S1", "T1"]);
+    expect(session.metadata.nSamples).toBe(2);
+    expect(Object.keys(session.plateMap.bySample)).toEqual(["S1", "T1"]);
+    expect(notes.join(" ")).toMatch(/metadata: the annotations of S2 are not an object\. plate_map: S2 has no valid well\./);
+    // A session file holding them is still refused, saying where.
+    const json = previousSessionJSON();
+    json.metadata = { ...metadata, bySample: { ...metadata.bySample, S2: "P1" } };
+    expect(read(json).errors.join(" ")).toMatch(/metadata: the annotations of S2 are not an object/);
+  });
 });

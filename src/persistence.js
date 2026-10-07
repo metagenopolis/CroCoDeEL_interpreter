@@ -927,10 +927,12 @@ const METADATA_FLAGS = ["lowBiomassExplicit", "lowSequencingDepthExplicit"];
 /** The metadata of a session. Every entry is read the way parseMetadata
     writes it: its text fields as text — a number becomes text, a missing
     field "" — its flags as true / false, the cells of its row (`extra`)
-    as text or numbers. Anything else is refused (null): a subject or a
-    sample name written as a number, or a cell holding an object, passed
-    unchecked and then broke the Samples, Events, Scatter and Validate
-    tabs at every visit. The metadata itself when it is read as it is. */
+    as text or numbers. Anything else is an error: a subject or a sample
+    name written as an object, or a cell holding one, passed unchecked and
+    then broke the Samples, Events, Scatter and Validate tabs at every
+    visit. Such an entry is left out — a stored session keeps the others
+    — and null comes back when no entry is left. The metadata itself
+    when it is read as it is. */
 function readMetadata(md, p) {
   if (md == null) return null;
   if (!isObj(md) || !isObj(md.bySample)) {
@@ -938,11 +940,41 @@ function readMetadata(md, p) {
     return null;
   }
   let bySample = null;
-  for (const [id, m] of Object.entries(md.bySample)) {
+  const ids = Object.keys(md.bySample);
+  let left = ids.length;
+  const put = (id, entry) => {
+    if (!bySample) bySample = { ...md.bySample };
+    if (entry) bySample[id] = entry;
+    else {
+      delete bySample[id];
+      left--;
+    }
+  };
+  for (const id of ids) {
+    const m = md.bySample[id];
     const name = id.slice(0, 60);
+    const wrong = (msg) => {
+      p.errors.push(`metadata: ${msg}`);
+      put(id, null);
+    };
     if (!isObj(m) || (m.extra != null && !isObj(m.extra))) {
-      p.errors.push(`metadata: the annotations of ${name} are not an object.`);
-      return null;
+      wrong(`the annotations of ${name} are not an object.`);
+      continue;
+    }
+    const text = METADATA_TEXT.find((f) => !isCell(m[f]));
+    if (text) {
+      wrong(`the ${text} of ${name} is not text.`);
+      continue;
+    }
+    const flag = ["isControl", ...METADATA_FLAGS].find((f) => m[f] != null && typeof m[f] !== "boolean");
+    if (flag) {
+      wrong(`${flag} of ${name} is neither true nor false.`);
+      continue;
+    }
+    const cell = m.extra != null ? Object.entries(m.extra).find(([, v]) => !isCell(v)) : null;
+    if (cell) {
+      wrong(`the "${cell[0].slice(0, 60)}" cell of ${name} is not text.`);
+      continue;
     }
     let entry = m;
     const set = (k, v) => {
@@ -950,32 +982,12 @@ function readMetadata(md, p) {
       if (entry === m) entry = { ...m };
       entry[k] = v;
     };
-    for (const f of METADATA_TEXT) {
-      if (!isCell(m[f])) {
-        p.errors.push(`metadata: the ${f} of ${name} is not text.`);
-        return null;
-      }
-      set(f, m[f] == null ? "" : String(m[f]));
-    }
-    for (const f of ["isControl", ...METADATA_FLAGS]) {
-      if (m[f] != null && typeof m[f] !== "boolean") {
-        p.errors.push(`metadata: ${f} of ${name} is neither true nor false.`);
-        return null;
-      }
-    }
+    for (const f of METADATA_TEXT) set(f, m[f] == null ? "" : String(m[f]));
     set("isControl", m.isControl === true);
     for (const f of METADATA_FLAGS) set(f, m[f] ?? null);
-    if (m.extra != null) {
-      const cell = Object.entries(m.extra).find(([, v]) => !isCell(v));
-      if (cell) {
-        p.errors.push(`metadata: the "${cell[0].slice(0, 60)}" cell of ${name} is not text.`);
-        return null;
-      }
-    }
-    if (entry === m) continue;
-    if (!bySample) bySample = { ...md.bySample };
-    bySample[id] = entry;
+    if (entry !== m) put(id, entry);
   }
+  if (ids.length > 0 && left === 0) return null;
   let out = md;
   const patch = (fields) => {
     if (out === md) out = { ...md };
@@ -988,12 +1000,16 @@ function readMetadata(md, p) {
     patch({});
     delete out.cols;
   }
-  if (typeof md.nSamples !== "number") patch({ nSamples: Object.keys(md.bySample).length });
+  if (typeof md.nSamples !== "number" || left !== ids.length) {
+    patch({ nSamples: Object.keys(out.bySample).length });
+  }
   return out;
 }
 
 /** The plate map of a session; the plate map itself when it is read as
-    it is. A missing or wrong format is given from the wells. */
+    it is. A missing or wrong format is given from the wells. A sample
+    without a valid well is an error, and is left out — a stored session
+    keeps the other wells — and null comes back when no well is left. */
 function readPlateMap(pm, p) {
   if (pm == null) return null;
   if (!isObj(pm) || !isObj(pm.bySample)) {
@@ -1003,7 +1019,10 @@ function readPlateMap(pm, p) {
   let maxRow = 7;
   let maxCol = 11;
   let bySample = null;
-  for (const [id, w] of Object.entries(pm.bySample)) {
+  const ids = Object.keys(pm.bySample);
+  let left = ids.length;
+  for (const id of ids) {
+    const w = pm.bySample[id];
     const okWell =
       isObj(w) &&
       Number.isInteger(w.row) &&
@@ -1015,7 +1034,10 @@ function readPlateMap(pm, p) {
       (w.plate == null || typeof w.plate === "string" || typeof w.plate === "number");
     if (!okWell) {
       p.errors.push(`plate_map: ${id} has no valid well.`);
-      return null;
+      if (!bySample) bySample = { ...pm.bySample };
+      delete bySample[id];
+      left--;
+      continue;
     }
     maxRow = Math.max(maxRow, w.row);
     maxCol = Math.max(maxCol, w.col);
@@ -1025,6 +1047,7 @@ function readPlateMap(pm, p) {
     if (!bySample) bySample = { ...pm.bySample };
     bySample[id] = { ...w, plate };
   }
+  if (ids.length > 0 && left === 0) return null;
   const big = maxRow > 7 || maxCol > 11;
   const f = pm.format;
   const formatOk =
