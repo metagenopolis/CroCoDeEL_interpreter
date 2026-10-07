@@ -16,8 +16,8 @@
        decisions, and says so;
      - a T pressed half a second before a reload — or right before it —
        is kept;
-     - a failed write shows "Not saved"; without IndexedDB the app runs in
-       memory and says so;
+     - a failed write shows "Not saved"; without IndexedDB, or with site
+       data blocked, the app runs in memory and says so;
      - a malformed session JSON is refused and the previous session stays,
        across a reload; the error screen says what is really stored;
      - clearing the events file keeps the abundance table and the metadata
@@ -673,6 +673,28 @@ try {
         Object.defineProperty(window, "indexedDB", { get: () => ({ open }), configurable: true });
       },
     ],
+    [
+      // What Chrome does when the user blocks site data: localStorage
+      // throws on every access, IndexedDB refuses to open.
+      "blocked site data",
+      () => {
+        Object.defineProperty(window, "localStorage", {
+          get() {
+            throw new DOMException(
+              "Failed to read the 'localStorage' property from 'Window': Access is denied for this document.",
+              "SecurityError",
+            );
+          },
+          configurable: true,
+        });
+        const open = () => {
+          const req = { error: new DOMException("The user denied permission to access the database.", "UnknownError") };
+          setTimeout(() => req.onerror?.(), 0);
+          return req;
+        };
+        Object.defineProperty(window, "indexedDB", { get: () => ({ open, deleteDatabase: open }), configurable: true });
+      },
+    ],
   ]) {
     await scenario(
       `B1.3e ${label}`,
@@ -683,8 +705,12 @@ try {
         await page.addInitScript(init);
         await page.goto(BASE, { waitUntil: "networkidle" });
         await page.waitForTimeout(800);
-        const body = await page.locator("body").innerText();
-        check(!/Browser not supported|IndexedDB is required/.test(body), `B1.3e ${label}: no "unsupported" screen`);
+        // Without localStorage the tutorial cannot be marked as seen.
+        const skip = page.getByRole("button", { name: "Skip", exact: true });
+        if (await skip.count()) await skip.click();
+        const body = (await page.locator("body").innerText()).replace(/\s+/g, " ");
+        const stopped = body.match(/(Browser not supported|IndexedDB is required|Something went wrong while rendering).{0,200}/);
+        check(!stopped, `B1.3e ${label}: no "unsupported" or error screen`, stopped?.[0] || "");
         const unavailable = banner(page, "unavailable");
         check(
           (await unavailable.count()) === 1 && /Not saved — this browser's storage is unavailable/.test(await unavailable.innerText()),

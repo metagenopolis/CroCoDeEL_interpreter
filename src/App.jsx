@@ -21904,11 +21904,14 @@ const HelpTab = ({ onStartTour }) => {
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Private / incognito
-            windows.</strong>{" "}
-            Browsers may restrict or fully disable IndexedDB in private mode.
-            Without it — or when the database cannot be opened — the app
-            runs in memory: everything works, but nothing survives closing
-            or reloading the tab, and a <em>Not saved</em> banner says so.
+            windows, blocked site data.</strong>{" "}
+            Browsers may restrict or fully disable IndexedDB in private mode,
+            and a browser set to block site data refuses both IndexedDB and
+            localStorage. Without IndexedDB — or when the database cannot be
+            opened — the app runs in memory: everything works, but nothing
+            survives closing or reloading the tab (display preferences such
+            as the theme and page sizes are not kept either without
+            localStorage), and a <em>Not saved</em> banner says so.
             Download the session to keep your work, and import it later (or
             open the page in a normal window).
           </p>
@@ -24016,6 +24019,28 @@ const TutorialWelcome = ({ onStart, onSkip }) => (
   </div>
 );
 
+/** The display preferences kept in localStorage (theme, dark window,
+    page sizes, cards per row): read and written through these, which
+    never throw. When the browser blocks site data, every localStorage
+    access throws a SecurityError — IndexedDB fails too, so the app runs
+    in memory (StorageBanner) — and an unguarded read in a state
+    initialiser stopped the whole app on every load instead. The defaults
+    are used, and nothing is kept. */
+function readPref(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function writePref(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // not kept: the next visit uses the defaults
+  }
+}
+
 function AppMain({ initial, storage }) {
   // The session is loaded asynchronously by the outer App wrapper
   // before this component mounts, so `initial` is already populated
@@ -24372,23 +24397,23 @@ function AppMain({ initial, storage }) {
   // 07:00).
   const [theme, setTheme] = useState(() => {
     if (typeof window === "undefined") return "light";
-    const v = window.localStorage.getItem("crocodeel-theme") || "light";
+    const v = readPref("crocodeel-theme") || "light";
     // Backwards compat: the old "auto" key meant time-based.
     if (v === "auto") return "auto-time";
     return v;
   });
   const [darkStart, setDarkStart] = useState(() => {
     if (typeof window === "undefined") return "19:00";
-    return window.localStorage.getItem("crocodeel-theme-dark-start") || "19:00";
+    return readPref("crocodeel-theme-dark-start") || "19:00";
   });
   const [darkEnd, setDarkEnd] = useState(() => {
     if (typeof window === "undefined") return "07:00";
-    return window.localStorage.getItem("crocodeel-theme-dark-end") || "07:00";
+    return readPref("crocodeel-theme-dark-end") || "07:00";
   });
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem("crocodeel-theme-dark-start", darkStart);
-    window.localStorage.setItem("crocodeel-theme-dark-end", darkEnd);
+    writePref("crocodeel-theme-dark-start", darkStart);
+    writePref("crocodeel-theme-dark-end", darkEnd);
   }, [darkStart, darkEnd]);
   // Suppress / keep action — always available. Every TP-targeted
   // sample defaults to `action: "suppress"` and the curator can flip
@@ -24400,7 +24425,7 @@ function AppMain({ initial, storage }) {
   const readPageSize = (key, fallback) => {
     if (typeof window === "undefined") return fallback;
     const v = parseInt(
-      window.localStorage.getItem(`crocodeel-page-size-${key}`) || "",
+      readPref(`crocodeel-page-size-${key}`) || "",
       10,
     );
     return Number.isFinite(v) && v > 0 ? v : fallback;
@@ -24423,7 +24448,7 @@ function AppMain({ initial, storage }) {
   const [galleryCardsPerRow, setGalleryCardsPerRow] = useState(() => {
     if (typeof window === "undefined") return 5;
     const v = parseInt(
-      window.localStorage.getItem("crocodeel-cards-per-row-gallery") || "",
+      readPref("crocodeel-cards-per-row-gallery") || "",
       10,
     );
     if (!Number.isFinite(v)) return 5;
@@ -24431,14 +24456,11 @@ function AppMain({ initial, storage }) {
   });
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem("crocodeel-page-size-events", String(eventsPageSize));
-    window.localStorage.setItem("crocodeel-page-size-gallery", String(galleryPageSize));
-    window.localStorage.setItem("crocodeel-page-size-datasets", String(datasetsPageSize));
-    window.localStorage.setItem("crocodeel-page-size-samples", String(samplesPageSize));
-    window.localStorage.setItem(
-      "crocodeel-cards-per-row-gallery",
-      String(galleryCardsPerRow),
-    );
+    writePref("crocodeel-page-size-events", String(eventsPageSize));
+    writePref("crocodeel-page-size-gallery", String(galleryPageSize));
+    writePref("crocodeel-page-size-datasets", String(datasetsPageSize));
+    writePref("crocodeel-page-size-samples", String(samplesPageSize));
+    writePref("crocodeel-cards-per-row-gallery", String(galleryCardsPerRow));
   }, [
     eventsPageSize,
     galleryPageSize,
@@ -24448,7 +24470,7 @@ function AppMain({ initial, storage }) {
   ]);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem("crocodeel-theme", theme);
+    writePref("crocodeel-theme", theme);
     const mql = window.matchMedia("(prefers-color-scheme: dark)");
     // Time `HH:MM` -> minutes since midnight. Used to test whether the
     // current local time falls inside the user-defined dark window.
