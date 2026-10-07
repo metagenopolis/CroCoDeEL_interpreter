@@ -6726,7 +6726,7 @@ const EventsTable = ({
               <Th
                 divider
                 onClick={() => toggleSort("targetVerdict")}
-                title="Sample-level verdict recorded on the TARGET sample (contaminated / not contaminated / uncertain / pending). Set from the Samples tab. Click to sort."
+                title="Sample-level verdict recorded on the TARGET sample (contaminated / not contaminated / uncertain / pending). Its chips set it, as the Samples tab does. Click the header to sort."
               >
                 Target verdict <SortIcon col="targetVerdict" />
               </Th>
@@ -6734,7 +6734,7 @@ const EventsTable = ({
                 <Th
                   divider
                   onClick={() => toggleSort("action")}
-                  title="Suppress / keep — action recorded on the TARGET sample. Set from the Samples tab. Click to sort."
+                  title="Suppress / keep — action recorded on the TARGET sample. Its chips set it, as the Samples tab does. Click the header to sort."
                 >
                   Target action <SortIcon col="action" />
                 </Th>
@@ -20988,9 +20988,10 @@ const HelpTab = ({ onStartTour }) => {
                 gradient). Every column is click-sortable except Context
                 — including <strong>Evaluation</strong>,{" "}
                 <strong>Target verdict</strong> (sample-level verdict
-                of the event's target — read-only badge sourced from
-                the Samples tab) and <strong>Target action</strong>{" "}
-                (Keep / Suppress badge, also read-only). Species count
+                of the event's target, editable inline: its chips set
+                the target's verdict, as the Samples tab does) and{" "}
+                <strong>Target action</strong> (its Keep / Suppress
+                chips, editable the same way). Species count
                 is sortable too. Default sort:{" "}
                 <strong>rate (descending)</strong>. Pagination size is
                 configurable (default 100) under the gear icon → Items

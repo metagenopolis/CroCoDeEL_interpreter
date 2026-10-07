@@ -3,7 +3,8 @@
      - F.1  the Help and the in-app texts say what the app does: the
             missing-species p-value is the exact Poisson-binomial tail;
             the curated events TSV is read in pandas and R by skipping its
-            "#" lines, and filtered on its verdict / action columns.
+            "#" lines, and filtered on its verdict / action columns; the
+            Events table's Target verdict / action chips are editable.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -14,6 +15,7 @@ import {
   stopServer,
   launchBrowser,
   newPage,
+  loadDemo,
   openTab,
   check,
   finish,
@@ -67,6 +69,30 @@ try {
       /skiprows=n/.test(eventsTsv) && /skip = n/.test(eventsTsv) && /rather than pass comment="#"/.test(eventsTsv),
       "F.1 Help, Events TSV: how to read it in pandas and R (skip the # lines, not comment=\"#\")",
       eventsTsv.match(/To read the file[^;]*/)?.[0] || "(no reading advice)",
+    );
+  });
+
+  /* F.1 — the Events table's Target verdict and Target action cells are
+     chips that set the target's values; the Help called them read-only
+     badges, and their headers said "Set from the Samples tab". */
+  await scenario("F.1 editable target columns", async (page) => {
+    await loadDemo(page);
+    await openTab(page, "Help");
+    const tabs = await helpSection(page, "Tabs walkthrough");
+    const events = tabs.match(/Events table Filterable list(.*?)Scatterplots/)?.[1] || "";
+    check(
+      /Target verdict \(sample-level verdict of the event's target, editable inline/.test(events) && !/read-only/.test(events),
+      "F.1 Help, Events table: Target verdict and Target action are editable inline",
+      events.match(/Target verdict[^.]*\./)?.[0] || "(no Events table text)",
+    );
+    await openTab(page, "Events");
+    const titles = await page.locator("thead th").evaluateAll((ths) =>
+      ths.filter((th) => /^Target (verdict|action)/i.test(th.textContent.trim())).map((th) => th.title),
+    );
+    check(
+      titles.length === 2 && titles.every((t) => /Its chips set it/.test(t) && !/Set from the Samples tab/.test(t)),
+      "F.1 Events table: the Target verdict / action headers say their chips set the value",
+      titles.join(" | "),
     );
   });
 
