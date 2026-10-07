@@ -205,6 +205,61 @@ describe("tabs at the end of an abundance table's lines", () => {
     expect(ab.warnings).toEqual([]);
   });
 
+  it("are named where CroCoDeEL cannot read the table at all", () => {
+    for (const [key, up] of Object.entries(UPSTREAM)) {
+      const ab = parseAbundance(variant(key));
+      const refusal = ab.warnings.filter((w) => /CroCoDeEL cannot read such a table/.test(w));
+      expect(refusal, key).toHaveLength(typeof up === "string" ? 1 : 0);
+      if (up === "index") {
+        expect(refusal[0], key).toMatch(/^The first row \(line 2\) has [23] cells more than the header: CroCoDeEL cannot read such a table \(pandas: "Could not construct index"\)/);
+      } else if (up === "fields") {
+        expect(refusal[0], key).toMatch(/^Line 3 has \d cells, more than any line above it \(\d\): CroCoDeEL cannot read such a table \(pandas: "Expected \d fields in line …, saw \d"\)/);
+      }
+    }
+  });
+
+  it("read R's layout whose rows end with tabs its header line lacks without a cell above the species", () => {
+    // pandas refuses it. The parser read it as its header says, without a
+    // word: the species from the S1 column, S1's values under S2, S2's
+    // under S3, S3's lost.
+    for (const key of ["none h0 r1 all", "none h0 r2 first", "none h1 r2 all"]) {
+      const ab = parseAbundance(variant(key));
+      expect(ab.samples, key).toEqual(["S1", "S2", "S3"]);
+      expect(ab.species, key).toEqual(["sp1", "sp2", "sp3"]);
+      expect(ab.colSums, key).toEqual({ S1: 12, S2: 15, S3: 18 });
+      expect(ab.implicitIndex, key).toBe(true);
+    }
+    expect(parseAbundance(variant("none h0 r1 all")).warnings).toEqual([
+      'The first row (line 2) has 2 cells more than the header: CroCoDeEL cannot read such a table (pandas: "Could not construct index"). This reads it with the species in the first cell of each row, the header naming the samples only (R\'s layout). Remove the extra cells (often tabs at the end of the lines) before running CroCoDeEL on the table.',
+    ]);
+    // Under a species-column title, the same row is a stray tab or value.
+    for (const text of ["species\tS1\tS2\nsp1\t1\t2\t\t\nsp2\t3\t4\t\t\n", "species\tS1\tS2\nsp1\t1\t2\t9\t\nsp2\t3\t4\n"]) {
+      const ab = parseAbundance(text);
+      expect(ab.samples, JSON.stringify(text)).toEqual(["S1", "S2"]);
+      expect(ab.colSums, JSON.stringify(text)).toEqual({ S1: 4, S2: 6 });
+      expect(ab.warnings[0], JSON.stringify(text)).toMatch(/cells more than the header: CroCoDeEL cannot read such a table .* This reads it as its header says\./);
+    }
+  });
+
+  it("name a value past the header in a later row, which was dropped without a word", () => {
+    // ab_table_utils.read: "Expected 3 fields in line 3, saw 4".
+    const ab = parseAbundance("species\tS1\tS2\nsp1\t1\t2\nsp2\t3\t4\t9\nsp3\t5\t6\n");
+    expect(ab.samples).toEqual(["S1", "S2"]);
+    expect(ab.colSums).toEqual({ S1: 9, S2: 12 });
+    expect(ab.warnings).toEqual([
+      'Line 3 has 4 cells, more than any line above it (3): CroCoDeEL cannot read such a table (pandas: "Expected 3 fields in line …, saw 4"). This reads the cells under the header and leaves the others out. Remove the extra cells (often tabs at the end of the lines) before running CroCoDeEL on the table.',
+    ]);
+  });
+
+  it("say only that CroCoDeEL cannot read a table it would otherwise read shifted", () => {
+    // The first row reads as a shift, but pandas stops on line 3:
+    // "Expected 4 fields in line 3, saw 5".
+    const ab = parseAbundance("species\tS1\tS2\nsp1\t1\t2\t\nsp2\t3\t4\t\t\nsp3\t5\t6\n");
+    expect(ab.samples).toEqual(["S1", "S2"]);
+    expect(ab.warnings).toHaveLength(1);
+    expect(ab.warnings[0]).toMatch(/^Line 3 has 5 cells, more than any line above it \(4\): CroCoDeEL cannot read such a table/);
+  });
+
   it("still warn where CroCoDeEL shifts the samples", () => {
     const ab = parseAbundance(variant("species h1 r2 all"));
     expect(ab.samples).toEqual(["S1", "S2", "S3"]);

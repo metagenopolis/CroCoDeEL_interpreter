@@ -9,7 +9,11 @@
      - LS.2  the demo table as R's write.table writes it by default (ids
              quoted), with a sample and a species holding a "#", loads as
              written, and its card's Download and its curated export load
-             back the same: the "#" ids are quoted.
+             back the same: the "#" ids are quoted;
+     - LS.3  the demo table in R's layout whose rows, not its header line,
+             end with a tab, which CroCoDeEL cannot read, loads as the demo
+             table with a warning saying so, and Guided validation grades
+             the first event as with the original table.
 
    Usage:  npm run build && node e2e/last-science-io.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -72,6 +76,13 @@ function card(page, label) {
 const R_TABLE_TABBED = (() => {
   const lines = demo("species_abundance.tsv").replace(/\n$/, "").split("\n");
   return [lines[0].split("\t").slice(1).join("\t"), ...lines.slice(1)].map((l) => `${l}\t`).join("\n") + "\n";
+})();
+
+/** The demo table as R's write.table writes it (no cell above the row
+    names), with a tab at the end of each row but not of the header line. */
+const R_TABLE_ROWS_TABBED = (() => {
+  const lines = demo("species_abundance.tsv").replace(/\n$/, "").split("\n");
+  return [lines[0].split("\t").slice(1).join("\t"), ...lines.slice(1).map((l) => `${l}\t`)].join("\n") + "\n";
 })();
 
 /** The demo table as R's write.table writes it by default — no cell
@@ -178,6 +189,32 @@ try {
     check(table.startsWith('"Plate#1_40D89"\t') && /\n"msp#0001"\t/.test(table), "LS.2 the curated export quotes them too", table.slice(0, 60));
     await upload(page, 1, "species_abundance.tsv", table);
     await loaded("the curated export");
+  });
+
+  /* ---------------- LS.3 R's layout, its rows ending with a tab
+     pandas refuses it ("Could not construct index"). It loaded as 90
+     samples, the species column taken from 40D89, every sample holding
+     the values of the one before it and NC3's lost, without a word. */
+  await scenario("LS.3 R layout, tab-ended rows", async (page) => {
+    await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+    await upload(page, 1, "species_abundance.tsv", R_TABLE_ROWS_TABBED);
+    const abCard = await card(page, "species_abundance.tsv").innerText();
+    check(
+      /91 samples × 927 species/.test(abCard),
+      "LS.3 the table loads as 91 samples × 927 species",
+      abCard.split("\n").find((l) => /samples ×/.test(l)) || "",
+    );
+    check(/Columns: species from the first cell of each row/.test(abCard), "LS.3 its card names R's layout");
+    const body = await page.locator("body").innerText();
+    check(
+      /The first row \(line 2\) has 2 cells more than the header: CroCoDeEL cannot read such a table/.test(body),
+      "LS.3 a warning says CroCoDeEL cannot read it",
+      (body.match(/[^\n]*cannot read such a table[^\n]*/) || [""])[0].slice(0, 160),
+    );
+    await openTab(page, "Validate");
+    const v = await page.locator("body").innerText();
+    check(/CONTAMINATED — CroCoDeEL is probably right/.test(v), "LS.3 the first event is graded as with the original table");
+    check(/Straight line \(R² = 0\.99\)/.test(v), "LS.3 …its line R² is 0.99", (v.match(/R² = [\d.]+/) || [""])[0]);
   });
 } finally {
   await browser.close();

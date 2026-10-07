@@ -20941,7 +20941,12 @@ const HelpTab = ({ onStartTour }) => {
             the header's included, under a header that starts with a sample
             (R's layout saved from a spreadsheet with an empty last column)
             shifts nothing: CroCoDeEL reads it right, and so does the
-            interpreter. The parser normalizes each sample
+            interpreter. A table CroCoDeEL cannot read at all (pandas stops
+            on a first row two cells or more longer than the header, or on
+            a later row longer than every line above it) still loads, with
+            a warning naming that line, and cells past the header are left
+            out; R's layout whose rows end with tabs its header line lacks
+            is read without a cell above the species. The parser normalizes each sample
             column to relative abundances summing to 1 for the plots and the
             checks, and keeps each column's total: the card's Download and the curated
             abundance export write the file's own values back (counts stay
