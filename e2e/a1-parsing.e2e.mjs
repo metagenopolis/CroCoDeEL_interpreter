@@ -22,8 +22,8 @@
      - a hand-edited session whose card warnings are not a list loads;
      - a comma-separated events file is refused with a short message, and
        the session it would have replaced stays;
-     - the metadata card names a repeated sample id, and both cards keep
-       their lines across a page reload;
+     - the cards name a repeated sample id and an unreadable well, and
+       keep their lines across a page reload;
      - header-only, repeated-column and negative abundance tables, and the
        fields the session keeps to rebuild the original values.
 
@@ -442,8 +442,20 @@ try {
   {
     const { ctx, page, errors } = await newPage(browser);
     await loadDemo(page);
-    const plate = ["sample_id\tplate\twell", "40D89\tP3\tA01", "58M\tP3\tC03", "58M\tP3\tC04", "NC3\tP3\tH06"].join("\n");
+    const plate = [
+      "sample_id\tplate\twell",
+      "40D89\tP3\tA01",
+      "58M\tP3\tC03",
+      "58M\tP3\tC04",
+      "NC3\tP3\tH06",
+      "83D239\tP3\tZ99",
+    ].join("\n");
     await upload(page, 3, "plate_map.tsv", plate);
+    const unreadable = '1 row with no readable well was skipped (first on line 6: "Z99")';
+    check(
+      (await cardText(page, "plate_map.tsv")).includes(unreadable),
+      "the plate card names the row whose well cannot be read",
+    );
     // The metadata repeats a sample too.
     const md = demo("metadata.tsv").split("\n").filter((l) => l);
     await upload(page, 2, "metadata.tsv", [...md, md.find((l) => l.startsWith("58M\t"))].join("\n"));
@@ -479,8 +491,11 @@ try {
     await page.waitForTimeout(3000);
     const reloaded = await cardText(page, "plate_map.tsv");
     check(
-      reloaded.includes("2 wells (8×12)") && reloaded.includes("Columns: sample_id · plate · well") && reloaded.includes(repeated),
-      "the plate card's mapping and warning survive a page reload",
+      reloaded.includes("2 wells (8×12)") &&
+        reloaded.includes("Columns: sample_id · plate · well") &&
+        reloaded.includes(repeated) &&
+        reloaded.includes(unreadable),
+      "the plate card's mapping and warnings survive a page reload",
       reloaded.replace(/\s+/g, " ").slice(0, 200),
     );
     const mdReloaded = await cardText(page, "metadata.tsv");
