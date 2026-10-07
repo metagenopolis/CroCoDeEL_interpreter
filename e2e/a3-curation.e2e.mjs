@@ -591,6 +591,79 @@ try {
     await checkRule(page, "presets: after the NC preset");
   });
 
+  /* The other paths that change evaluations — keyboard shortcuts in
+     Validate, the gallery card buttons, Reset — leave the stored
+     curation where the rule, recomputed from the stored events, puts
+     it. Each step is checked, so a path that skipped the sync, or synced
+     from stale events, fails here. */
+  await scenario("keyboard", async (page) => {
+    await openTab(page, "Validate");
+    const decided = async () =>
+      (await storedSession(page)).rawEvents.filter((e) => e.verdict && e.verdict !== "pending");
+    const expected = { t: 1, f: 1, u: 1, p: 0 };
+    for (const key of ["t", "f", "u", "p", "f", "p", "t"]) {
+      await page.keyboard.press(key);
+      await page.waitForTimeout(200);
+      const d = await decided();
+      check(d.length === expected[key], `keyboard ${key.toUpperCase()}: ${expected[key]} event evaluated`, d.map((e) => `${e.target}=${e.verdict}`).join(" "));
+      await checkRule(page, `keyboard ${key.toUpperCase()}`);
+    }
+    const target = (await decided())[0]?.target;
+    const sc = await storedCuration(page);
+    check(isAutoContaminated(sc[target]), `keyboard: its target ${target} ends Contaminated + Suppress`, show(sc[target]));
+    await page.keyboard.press("ArrowRight"); // next pending event
+    await page.waitForTimeout(300);
+    await page.keyboard.press("f");
+    await page.waitForTimeout(300);
+    check((await decided()).length === 2, "keyboard → then F: a second event evaluated");
+    await checkRule(page, "keyboard → F");
+  });
+
+  await scenario("gallery", async (page) => {
+    await openTab(page, "Scatter");
+    await page.locator("[data-event-card]").first().waitFor({ timeout: 20000 });
+    const cards = page.locator("[data-event-card]");
+    for (let i = 0; i < 6; i++) {
+      await cards.nth(i).locator('button[title="mark as true positive"]').click();
+      await page.waitForTimeout(250);
+      await page.mouse.click(5, 5); // close the card's popover
+    }
+    for (let i = 3; i < 9; i += 2) {
+      await cards.nth(i).locator('button[title="mark as false positive"]').click();
+      await page.waitForTimeout(250);
+      await page.mouse.click(5, 5);
+    }
+    const session = await storedSession(page);
+    const n = (v) => session.rawEvents.filter((e) => e.verdict === v).length;
+    // Cards 3 and 5 go from TP to FP (if the gallery kept its order).
+    check(
+      n("false_positive") === 3 && n("true_positive") >= 4,
+      "gallery: the TP and FP clicks landed",
+      `tp=${n("true_positive")} fp=${n("false_positive")}`,
+    );
+    await checkRule(page, "gallery");
+  });
+
+  await scenario("reset", async (page) => {
+    await openTab(page, "Events");
+    await clickEvent(page, "60D38", "63D9", "tp");
+    await clickEvent(page, "82D361", "NC3", "fp");
+    await setSampleVerdictInTable(page, "63D40", "Uncertain"); // by hand
+    await openTab(page, "Validate");
+    await page.getByRole("button", { name: /Reset all evaluations/ }).first().click();
+    await page.getByRole("button", { name: /^Reset everything$/ }).click();
+    await page.waitForTimeout(600);
+    const session = await storedSession(page);
+    const s = await overviewStats(page);
+    check(
+      Object.keys(session.sampleCuration || {}).length === 0 &&
+        session.rawEvents.every((e) => e.verdict === "pending") &&
+        s.tp === 0 && s.keep === 0 && s.suppress === 0,
+      "reset: every event pending, no sample entry left, 0 to keep / suppress",
+      `${Object.keys(session.sampleCuration || {}).length} entries, tp=${s.tp} keep=${s.keep} suppress=${s.suppress}`,
+    );
+  });
+
   /* A3.2 "Don't overwrite …" protects what the curator set by hand,
      not the automatic values: an automatic Suppress must not make a
      bulk Keep skip the sample. Events dialog first. */
