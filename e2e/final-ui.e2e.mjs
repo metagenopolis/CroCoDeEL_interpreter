@@ -9,17 +9,20 @@
             named;
      - F.2  the Reset question counts the curation as the other questions
             that would lose it do: automatic sample values are not
-            decisions.
+            decisions;
+     - F.3  without storage the header says nothing is auto-saved.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
            E2E_ONLY=<regex> runs only the matching scenarios) */
 
 import {
+  BASE,
   startServer,
   stopServer,
   launchBrowser,
   newPage,
+  trackErrors,
   loadDemo,
   openTab,
   check,
@@ -158,6 +161,42 @@ try {
       again.slice(0, 120),
     );
   });
+
+  /* F.3 — without storage the header no longer promises an auto-save:
+     its green chip said "Your work is auto-saved locally so you can close
+     the tab and come back anytime" right above the red "Not saved — …
+     lost when you close or reload it" banner. */
+  await scenario("F.3 auto-save note", async (page) => {
+    const note = page.locator("[data-autosave-note]");
+    check(
+      /auto-saved locally so you can close the tab/.test(await note.innerText()),
+      "F.3 with storage, the header says the work is auto-saved",
+      await note.innerText(),
+    );
+  });
+  await scenario(
+    "F.3 auto-save note without storage",
+    async (_page, ctx) => {
+      const page = await ctx.newPage();
+      const errors = trackErrors(page);
+      await page.addInitScript(() => localStorage.setItem("crocodeel-tutorial-seen", "1"));
+      await page.addInitScript(() =>
+        Object.defineProperty(window, "indexedDB", { get: () => undefined, configurable: true }),
+      );
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      await page.waitForTimeout(800);
+      const note = page.locator("[data-autosave-note]");
+      const text = (await note.count()) ? await note.innerText() : "";
+      check(
+        (await page.locator('[data-save-banner="unavailable"]').count()) === 1 &&
+          (await note.getAttribute("data-autosave-note")) === "unavailable" &&
+          /nothing is auto-saved/.test(text) && !/close the tab and come back/.test(text),
+        "F.3 without IndexedDB, the header says nothing is auto-saved, as the banner does",
+        text,
+      );
+      check(errors.filter((e) => !/IndexedDB/.test(e)).length === 0, "F.3 without IndexedDB, no JS error", errors[0] || "");
+    },
+  );
 
   /* F.1 — the events TSV's column is "verdict": the Export card and the
      guided tour told to filter on an "evaluation" column. */

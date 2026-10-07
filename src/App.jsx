@@ -28541,9 +28541,23 @@ const defaultFilter = () => ({
                   style={{ color: "var(--ink-soft)", lineHeight: 1.5 }}
                 >
                   All parsing, image generation, and computation happen entirely in
-                  your browser. No data is sent to any server.
-                  Your work is auto-saved locally so you can close the tab and come
-                  back anytime (unless your browser cache is cleared). Use{" "}
+                  your browser. No data is sent to any server.{" "}
+                  {/* What the auto-save does for this tab (saveStatus): the
+                      promise to come back to the work only holds while it
+                      is stored. Without storage, or once a write failed or
+                      another tab took the session over, the red banner
+                      under the files bar says why; this sentence no longer
+                      contradicts it. */}
+                  <span data-autosave-note={saveStatus.state}>
+                    {saveStatus.state === "unavailable"
+                      ? "This browser's storage is unavailable, so nothing is auto-saved: your work lives in this tab only and is lost when you close or reload it — Download session (files bar) keeps it."
+                      : saveStatus.state === "failed"
+                        ? "Auto-save failed (see the banner under the files bar): your latest changes are not stored — Download session (files bar) keeps them."
+                        : saveStatus.state === "conflict"
+                          ? "This tab no longer auto-saves: the session was changed in another tab (see the banner under the files bar)."
+                          : "Your work is auto-saved locally so you can close the tab and come back anytime (unless your browser cache is cleared)."}
+                  </span>{" "}
+                  Use{" "}
                   <strong style={{ color: "var(--ink)" }}>Clear session</strong>{" "}
                   on the files bar to wipe everything and start fresh.
                 </div>
