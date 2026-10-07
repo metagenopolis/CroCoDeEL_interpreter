@@ -1,8 +1,9 @@
 name: Tests
 
+# No push trigger: a push to main runs these jobs through deploy.yml,
+# which calls this workflow before it builds and deploys. With both
+# triggers every push to main ran the whole browser suite twice.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -13,6 +14,7 @@ jobs:
   unit:
     name: Lint, unit tests, build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -24,8 +26,9 @@ jobs:
       - run: npm ci
 
       # The FULL lint is intentionally NOT in this gate yet — the codebase
-      # has ~140 pre-existing errors (mostly no-unused-vars) that need a
-      # dedicated cleanup pass. Run `npm run lint` locally.
+      # has ~130 pre-existing errors (mostly the React Compiler rules:
+      # react-hooks/refs, set-state-in-effect) that need a dedicated
+      # cleanup pass. Run `npm run lint` locally.
       #
       # rules-of-hooks is gated on its own: it is at zero, and it is the
       # rule that catches a hook called after an early return — which
@@ -41,8 +44,11 @@ jobs:
         run: npm run build
 
   e2e:
-    name: Browser smoke test
+    name: Browser tests
     runs-on: ubuntu-latest
+    # The suites take about 10 minutes side by side (run-all.mjs stops a
+    # suite after 20); a hang must not hold the runner for the default 6 h.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -53,16 +59,19 @@ jobs:
 
       - run: npm ci
 
-      # Only chromium: the app is a static SPA and the smoke test is about
-      # render-phase crashes, not cross-browser behaviour.
+      # Only chromium: the app is a static SPA and the browser suites are
+      # about what a curator does in it, not cross-browser behaviour.
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
       - run: npm run build
 
-      # Drives a real browser through the paths unit tests cannot reach:
-      # every tab mounting, the hook-order regression in ScatterTab, the
-      # error-object regression on session import, and the curated
-      # abundance export read back from the downloaded file.
-      - name: Smoke test
+      # Every browser suite (e2e/run-all.mjs): the smoke test — every tab
+      # mounting, the session import, the curated abundance export read
+      # back — then the suites of each fix (e2e/*.e2e.mjs): parsing,
+      # diagnostics, curation, persistence, exports, layout and texts.
+      # They run four at a time, one per core of the runner.
+      - name: Browser tests
         run: npm run test:e2e
+        env:
+          E2E_JOBS: 4

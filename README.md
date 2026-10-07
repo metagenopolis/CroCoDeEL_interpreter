@@ -51,7 +51,7 @@ The output is fully static and can be served from any HTTP host. The build embed
 
 ### Deployment
 
-The repository ships with `.github/workflows/deploy.yml` &mdash; pushing to `main` automatically builds the bundle and deploys it to GitHub Pages. The Vite `base` is set to `/CroCoDeEL_interpreter/` to match the public URL.
+The repository ships with `.github/workflows/deploy.yml` &mdash; pushing to `main` runs the tests (`.github/workflows/test.yml`: lint of the rules of hooks, unit tests, build, then every browser suite), and once they pass builds the bundle and deploys it to GitHub Pages. Pull requests run the same tests. Locally, `npm run test:e2e` runs the browser suites four at a time (`E2E_JOBS` sets how many; `node e2e/run-all.mjs <suite> …` runs only those). The Vite `base` is set to `/CroCoDeEL_interpreter/` to match the public URL.
 
 ## Tech stack
 
