@@ -75,3 +75,37 @@ describe("sampleActionCounts against the curated abundance export", () => {
     expect(sampleActionCounts(effective, Object.keys(effective))).toEqual(counts);
   });
 });
+
+/* Once an abundance table is loaded, "to suppress" must still be what the
+   curated export drops when the events name samples the table does not
+   have, or name a column with another case / spacing: the counts match
+   ids to the table's columns as the export does. */
+describe("sampleActionCounts matched to the abundance table", () => {
+  const ab = parseAbundance(TSV); // columns A B C T U V
+  // The column the curated export matches an id to, or null.
+  const tableSample = (id) =>
+    buildCuratedAbundance(ab, { [id]: { action: "suppress" } }).droppedSamples[0] ?? null;
+
+  it("does not count a sample the table lacks", () => {
+    const eff = {
+      GHOST1: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true },
+      T: { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true },
+      GHOST2: { action: "keep" },
+    };
+    expect(sampleActionCounts(eff)).toEqual({ keep: 1, suppress: 2 }); // no table: every decision
+    const counts = sampleActionCounts(eff, undefined, tableSample);
+    expect(counts).toEqual({ keep: 0, suppress: 1 });
+    expect(counts.suppress).toBe(buildCuratedAbundance(ab, eff).droppedSamples.length);
+  });
+
+  it("counts a column once, as Suppress if any id naming it says so", () => {
+    const eff = { t: { action: "suppress" }, T: { action: "keep" }, " u ": { action: "keep" } };
+    expect(buildCuratedAbundance(ab, eff).droppedSamples).toEqual(["T"]);
+    expect(sampleActionCounts(eff, undefined, tableSample)).toEqual({ keep: 1, suppress: 1 });
+  });
+
+  it("restricts to the given rows as before", () => {
+    const eff = { T: { action: "suppress" }, GHOST1: { action: "suppress" }, U: { action: "keep" } };
+    expect(sampleActionCounts(eff, ["T", "GHOST1"], tableSample)).toEqual({ keep: 0, suppress: 1 });
+  });
+});

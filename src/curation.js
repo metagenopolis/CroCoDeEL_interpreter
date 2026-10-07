@@ -349,16 +349,37 @@ export function buildEffectiveSampleCuration(curation, neverTargeted) {
                 loading.
 
     `ids` restricts the count to some samples (e.g. the rows on screen);
-    by default every entry counts. */
-export function sampleActionCounts(curation, ids) {
+    by default every entry counts.
+
+    `tableSample`, when an abundance table is loaded, maps a sample id to
+    its column in that table, or to null when the table lacks it — the
+    matching the curated export itself does. Then only the table's
+    samples count: one it lacks cannot be dropped from it, and two ids
+    naming one column count once (as Suppress if either says so, as the
+    export drops the column). */
+export function sampleActionCounts(curation, ids, tableSample) {
+  const decided = new Map(); // sample (table column) → "keep" | "suppress"
+  const visit = (id) => {
+    const c = curation?.[id];
+    const action =
+      c?.action === "suppress"
+        ? "suppress"
+        : c?.action === "keep" && !c.actionAuto
+          ? "keep"
+          : null;
+    if (!action) return;
+    const key = tableSample ? tableSample(id) : id;
+    if (key == null) return;
+    if (action === "suppress" || !decided.has(key)) decided.set(key, action);
+  };
+  if (ids) for (const id of ids) visit(id);
+  else for (const id of Object.keys(curation || {})) visit(id);
   let keep = 0;
   let suppress = 0;
-  const visit = (c) => {
-    if (c?.action === "suppress") suppress++;
-    else if (c?.action === "keep" && !c.actionAuto) keep++;
-  };
-  if (ids) for (const id of ids) visit(curation?.[id]);
-  else for (const id of Object.keys(curation || {})) visit(curation[id]);
+  for (const action of decided.values()) {
+    if (action === "suppress") suppress++;
+    else keep++;
+  }
   return { keep, suppress };
 }
 

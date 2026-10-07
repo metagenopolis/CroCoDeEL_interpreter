@@ -2019,9 +2019,13 @@ const Chevron = ({ size = 16, color = "#00a3a6" }) => (
 /* What the keep / suppress counters count, wherever they appear (Overview,
    Samples, Export, HTML reports — all through sampleActionCounts). */
 const SAMPLES_TO_SUPPRESS_HINT =
-  "Samples whose action is Suppress, set by hand or paired automatically with Contaminated — exactly the samples the curated abundance table drops.";
+  "Samples whose action is Suppress, set by hand or paired automatically with Contaminated — exactly the samples the curated abundance table drops. Once an abundance table is loaded, a sample it does not contain is not counted: there is nothing to drop.";
+// Which samples the Samples tab's own counters cover: its rows before the
+// context filters narrow them.
+const SAMPLES_TAB_COUNT_SCOPE =
+  "Counted over this tab's samples before its context filters (subject, timepoint, control…): every sample of the abundance table, and those touched by the events the filter bar keeps.";
 const SAMPLES_TO_KEEP_HINT =
-  "Samples whose action is Keep. The automatic Keep of a sample no event targets is a default, not a decision, and is not counted.";
+  "Samples whose action is Keep. The automatic Keep of a sample no event targets is a default, not a decision, and is not counted. Once an abundance table is loaded, only its samples are counted.";
 
 const Stat = ({ label, value, tone = "neutral", hint }) => {
   const styles = {
@@ -5777,7 +5781,7 @@ const RunMetadataBlock = ({ meta }) => {
   );
 };
 
-const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOpen, onLoadDemo, demoLoading, actionEnabled, sampleCuration }) => {
+const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOpen, onLoadDemo, demoLoading, actionEnabled, actionTotals }) => {
   const topByScore = [...events].sort((a, b) => b.score - a.score).slice(0, 5);
   const topByRate = [...events].sort((a, b) => b.rate - a.rate).slice(0, 5);
   const bottomByScore = [...events].sort((a, b) => a.score - b.score).slice(0, 5);
@@ -5809,13 +5813,10 @@ const Overview = ({ counts, events, hasAb, metadata, plateMap, runMetadata, onOp
   // Suppress / keep counts. Action lives on the sample now — count
   // distinct samples by their sample-level action, so the overview
   // cards reflect the curator's downstream decisions (independent of
-  // any specific event's evaluation). `sampleCuration` is the effective
-  // curation; the default Keep of a never-targeted sample is not a
-  // decision and does not count (sampleActionCounts).
-  const { keep: keepCount, suppress: suppressCount } = useMemo(
-    () => sampleActionCounts(sampleCuration),
-    [sampleCuration],
-  );
+  // any specific event's evaluation). Counted once in AppMain
+  // (sampleActionCounts), like in the Export tab and the reports: the
+  // default Keep of a never-targeted sample is not a decision.
+  const { keep: keepCount, suppress: suppressCount } = actionTotals;
 
   // Number of connected components in the contamination network — gives
   // a sense of how clustered the events are.
@@ -11609,6 +11610,7 @@ const SamplesTab = ({
   ab,
   hasAb,
   sampleCuration,
+  tableSample,
   setSampleVerdict,
   setSampleAction,
   setSampleNote,
@@ -12039,16 +12041,18 @@ const SamplesTab = ({
       correct: 0,
       uncertain: 0,
       pending: 0,
-      // Keep / suppress counted like everywhere else (sampleActionCounts):
-      // the default Keep of a never-targeted sample is not a decision.
+      // Keep / suppress counted like everywhere else (sampleActionCounts,
+      // matched to the abundance table as the curated export is): the
+      // default Keep of a never-targeted sample is not a decision.
       ...sampleActionCounts(
         sampleCuration,
         sampleRows.map((r) => r.id),
+        tableSample,
       ),
     };
     for (const r of sampleRows) t[r.verdict]++;
     return t;
-  }, [sampleRows, sampleCuration]);
+  }, [sampleRows, sampleCuration, tableSample]);
 
   // Visible columns derived from what's loaded. The Context column
   // hosts every metadata field as compact pills (cf. SampleContextCell);
@@ -12381,13 +12385,13 @@ const SamplesTab = ({
               label="To keep"
               value={totals.keep}
               tone={totals.keep > 0 ? "keep" : "neutral"}
-              hint={`${SAMPLES_TO_KEEP_HINT} Counted over the samples listed below.`}
+              hint={`${SAMPLES_TO_KEEP_HINT} ${SAMPLES_TAB_COUNT_SCOPE}`}
             />
             <Stat
               label="To suppress"
               value={totals.suppress}
               tone={totals.suppress > 0 ? "suppress" : "neutral"}
-              hint={`${SAMPLES_TO_SUPPRESS_HINT} Counted over the samples listed below.`}
+              hint={`${SAMPLES_TO_SUPPRESS_HINT} ${SAMPLES_TAB_COUNT_SCOPE}`}
             />
           </>
         )}
@@ -21720,7 +21724,12 @@ const HelpTab = ({ onStartTour }) => {
             every sample whose action is Suppress, automatic or not —
             exactly the samples the curated abundance table drops; to
             keep counts Keep decisions, so the default Keep of a sample
-            no event targets is not included.
+            no event targets is not included. Once an abundance table is
+            loaded, only its samples count (a sample it lacks cannot be
+            dropped from it). The Samples tab counts its own samples,
+            before its context filters. The samples HTML report prints
+            these definitions and marks each value derived from the
+            events (<em>auto</em>) or by default (<em>default</em>).
           </p>
           <p style={{ marginTop: 6 }}>
             The Bulk-apply by criteria dialog (Validate sidebar) lets
@@ -23124,7 +23133,7 @@ const ExportTab = ({
   runMetadata,
   hasAb,
   actionEnabled,
-  sampleCuration,
+  actionTotals,
   onBulkApply,
   onExportTSV,
   onExportHTML,
@@ -23150,7 +23159,7 @@ const ExportTab = ({
       fp: 0,
       uncertain: 0,
       pending: 0,
-      ...sampleActionCounts(sampleCuration),
+      ...actionTotals,
     };
     filteredEvents.forEach((e) => {
       if (e.verdict === "true_positive") c.tp++;
@@ -23159,7 +23168,7 @@ const ExportTab = ({
       else c.pending++;
     });
     return c;
-  }, [filteredEvents, sampleCuration]);
+  }, [filteredEvents, actionTotals]);
 
   const totalLoaded = events.length;
   const isFiltered = filteredEvents.length !== totalLoaded;
@@ -24658,6 +24667,18 @@ function AppMain({ initial }) {
         neverTargetedKey ? neverTargetedKey.split("\n") : [],
       ),
     [sampleCuration, neverTargetedKey],
+  );
+  // Samples to keep / to suppress, the same numbers in the Overview, the
+  // Export tab and the HTML reports: matched to the abundance table's
+  // columns the way the curated abundance export matches them, so "to
+  // suppress" is exactly what that export drops.
+  const tableSample = useMemo(
+    () => (ab ? (id) => resolveSample(ab, id) : null),
+    [ab],
+  );
+  const sampleActionTotals = useMemo(
+    () => sampleActionCounts(effectiveSampleCuration, undefined, tableSample),
+    [effectiveSampleCuration, tableSample],
   );
   // Tab can be deep-linked via the URL fragment: `#learn`, `#help`,
   // `#scatter`, etc. all land the curator on the matching tab. Lets
@@ -26872,8 +26893,9 @@ const defaultFilter = () => ({
     const rows = Array.from(sampleIds).sort((a, b) => a.localeCompare(b));
 
     // Summary counts — verdict distribution + action distribution. Keep
-    // / suppress are counted like everywhere else (sampleActionCounts):
-    // the default Keep of a never-targeted sample is not a decision.
+    // / suppress are counted like everywhere else (sampleActionCounts,
+    // matched to the abundance table as the curated export is): the
+    // default Keep of a never-targeted sample is not a decision.
     const summary = rows.reduce(
       (acc, id) => {
         acc.total++;
@@ -26891,7 +26913,7 @@ const defaultFilter = () => ({
         correct: 0,
         uncertain: 0,
         pending: 0,
-        ...sampleActionCounts(effectiveSampleCuration, rows),
+        ...sampleActionCounts(effectiveSampleCuration, rows, tableSample),
       },
     );
 
@@ -26922,6 +26944,13 @@ const defaultFilter = () => ({
           : { bg: "#e0b13a", label: "Keep" };
       return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
+    // Values the curator did not set: "auto" when derived from the events
+    // that target the sample, "default" for the Not contaminated + Keep
+    // of a sample no event targets. Printed, so a saved PDF keeps it.
+    const autoTag = (on, targeted) =>
+      on
+        ? `<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#797870;">${targeted ? "auto" : "default"}</span>`
+        : "";
     const flagChip = (label, on, color) => {
       if (!on) return "";
       return `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:2px;font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;margin-right:2px;">${label}</span>`;
@@ -26980,8 +27009,8 @@ const defaultFilter = () => ({
             </td>
             <td style="text-align:right;font-family:ui-monospace,monospace;">${ratePct(a.maxTargetRate)}</td>
             <td style="text-align:right;font-family:ui-monospace,monospace;">${introPct(a.maxTargetIntroducedPct)}</td>
-            <td>${verdictPill(c.verdict)}</td>
-            <td>${actionPill(c.action)}</td>
+            <td>${verdictPill(c.verdict)}${autoTag(c.verdict && c.verdictAuto, a.asTarget > 0)}</td>
+            <td>${actionPill(c.action)}${autoTag(c.action && c.actionAuto, a.asTarget > 0)}</td>
             <td style="font-size:10px;color:#5a5550;white-space:pre-wrap;">${escapeHTML(c.notes || "")}</td>
           </tr>
         `;
@@ -27034,6 +27063,7 @@ const defaultFilter = () => ({
     <div class="stat keep" title="${escapeHTML(SAMPLES_TO_KEEP_HINT)}"><div class="label">Keep</div><div class="value">${summary.keep}</div></div>
     <div class="stat suppress" title="${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)}"><div class="label">Suppress</div><div class="value">${summary.suppress}</div></div>
   </div>
+  <div class="meta">Keep: ${escapeHTML(SAMPLES_TO_KEEP_HINT)} Suppress: ${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)} In the table, <em>auto</em> marks a verdict or an action derived from the event evaluations and <em>default</em> the Not contaminated + Keep of a sample no event targets; the others were set by hand.</div>
 
   <h2>Samples</h2>
   <table>
@@ -27210,9 +27240,10 @@ const defaultFilter = () => ({
     const reportFilter = opts && opts.filter ? opts.filter : null;
     // Recompute the verdict tally over the filtered subset so the
     // header in the report matches what's actually rendered below.
-    // The suppress / keep counts are per sample, over ALL samples, as
-    // in the Overview and Export tabs (sampleActionCounts): "to
-    // suppress" is what the curated abundance export drops.
+    // The suppress / keep counts are per sample, over ALL samples, the
+    // same numbers as in the Overview and Export tabs
+    // (sampleActionTotals): "to suppress" is what the curated abundance
+    // export drops.
     const counts = list.reduce(
       (acc, e) => {
         acc.total++;
@@ -27228,7 +27259,7 @@ const defaultFilter = () => ({
         fp: 0,
         uncertain: 0,
         pending: 0,
-        ...sampleActionCounts(effectiveSampleCuration),
+        ...sampleActionTotals,
       },
     );
     const escapeHTML = (s) =>
@@ -27940,9 +27971,10 @@ const defaultFilter = () => ({
     <div class="stat suppress" title="${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)}"><div class="label">To suppress</div><div class="value">${counts.suppress}</div></div>
     <div class="stat keep" title="${escapeHTML(SAMPLES_TO_KEEP_HINT)}"><div class="label">To keep</div><div class="value">${counts.keep}</div></div>
   </div>
+  <div class="meta">Samples to suppress: ${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)} Samples to keep: ${escapeHTML(SAMPLES_TO_KEEP_HINT)}</div>
   ${
     filterSummary
-      ? `<div class="filter-banner"><strong>Filter applied:</strong> ${filterSummary}. Counts above and the per-event detail below cover only the matching subset.</div>`
+      ? `<div class="filter-banner"><strong>Filter applied:</strong> ${filterSummary}. The event counts above and the per-event detail below cover only the matching subset; the samples to suppress / keep are counted over every sample.</div>`
       : ""
   }
 
@@ -28782,7 +28814,7 @@ const defaultFilter = () => ({
               onLoadDemo={loadDemo}
               demoLoading={demoLoading}
               actionEnabled={actionEnabled}
-              sampleCuration={effectiveSampleCuration}
+              actionTotals={sampleActionTotals}
             />
           )}
           {tab === "table" && (
@@ -28942,6 +28974,7 @@ const defaultFilter = () => ({
               ab={ab}
               hasAb={!!ab}
               sampleCuration={effectiveSampleCuration}
+              tableSample={tableSample}
               setSampleVerdict={setSampleVerdict}
               setSampleAction={setSampleAction}
               setSampleNote={setSampleNote}
@@ -28969,7 +29002,7 @@ const defaultFilter = () => ({
               runMetadata={runMetadata}
               hasAb={!!ab}
               actionEnabled={actionEnabled}
-              sampleCuration={effectiveSampleCuration}
+              actionTotals={sampleActionTotals}
               onBulkApply={
                 bulkApplyToEvents ? () => setBulkApplyOpen(true) : undefined
               }

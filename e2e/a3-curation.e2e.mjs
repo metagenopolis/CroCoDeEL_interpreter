@@ -1138,6 +1138,71 @@ try {
       `${value(samplesHtml, "Suppress")} / ${value(samplesHtml, "Keep")}`,
     );
   });
+  /* A3.6, the edges of the counts. A sample the abundance table does not
+     have cannot be dropped from it, so it is not "to suppress"; the
+     Samples tab says over which samples it counts (not "the samples
+     listed below": its context filters do not narrow the counters); the
+     samples HTML report prints its definitions and marks the values the
+     curator did not set. */
+  await scenario("A3.6 counts", async (page) => {
+    await openTab(page, "Events");
+    await clickEvent(page, "63D250", "63D9", "tp"); // 63D9: automatic Suppress
+    const session = JSON.parse(await download(page, /^Download session$/));
+    // An event toward a sample the abundance table does not have.
+    session.events.push({
+      ...session.events[0],
+      id: 999,
+      target: "GHOST1",
+      verdict: "true_positive",
+      action: "suppress",
+    });
+    session.sample_curation.GHOST1 = {
+      verdict: "contaminated",
+      verdictAuto: true,
+      action: "suppress",
+      actionAuto: true,
+    };
+    await importSession(page, session);
+    const s = await overviewStats(page);
+    const card = await curatedCard(page);
+    const exportText = await page.locator("body").innerText();
+    const exp = Number(exportText.match(/To suppress\s*(\d+)/i)?.[1] ?? NaN);
+    check(
+      card && card.total - card.kept === 1 && s.suppress === 1 && exp === 1,
+      "A3.6 counts: GHOST1, absent from the abundance table, is not counted to suppress",
+      `card=${JSON.stringify(card)} overview=${s.suppress} export=${exp}`,
+    );
+    await openTab(page, "Samples");
+    const hint = await page
+      .locator('[title^="Samples whose action is Suppress"]')
+      .first()
+      .getAttribute("title");
+    check(
+      /before its context filters/.test(hint || "") && !/listed below/.test(hint || ""),
+      "A3.6 counts: the Samples tab says which samples its counters cover",
+      hint || "",
+    );
+    const samplesText = await page.locator("body").innerText();
+    check(
+      Number(samplesText.match(/To suppress\s*(\d+)/i)?.[1]) === 1,
+      "A3.6 counts: the Samples tab counts 1 to suppress too",
+      samplesText.match(/To suppress\s*\d+/i)?.[0] || "",
+    );
+    await openTab(page, "Export");
+    const html = await download(page, /Download samples HTML/i);
+    const row = (id) => html.match(new RegExp(`>${id}</div>[\\s\\S]*?</tr>`))?.[0] || "";
+    check(
+      /Keep<\/span><span[^>]*>default</.test(row("63D250")) &&
+        /Contaminated<\/span><span[^>]*>auto</.test(row("63D9")),
+      "A3.6 counts: the samples report marks default and automatic values",
+      `${row("63D250").length} / ${row("63D9").length}`,
+    );
+    check(
+      /is a default, not a decision/.test(html) && /<em>default<\/em>/.test(html),
+      "A3.6 counts: the samples report prints how it counts",
+    );
+  });
+
   /* A3.8 Drilling from the Network into one sample of the Samples tab
      is recognised as a drill-in: the row is focused, and the scroll
      position saved when the Samples tab was left is NOT restored over
