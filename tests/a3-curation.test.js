@@ -9,6 +9,7 @@ import {
   applyTargetSideEffects,
   hasManualVerdict,
   hasManualAction,
+  actionChipState,
 } from "../src/curation.js";
 
 /* The event → sample rule (src/curation.js): every path that changes an
@@ -399,5 +400,47 @@ describe("applyTargetSideEffects — the bulk dialog's sample side", () => {
     expect(hasManualAction({ action: "suppress", actionAuto: true })).toBe(false);
     expect(hasManualAction({ action: "keep" })).toBe(true);
     expect(hasManualAction(undefined)).toBe(false);
+  });
+});
+
+/* One click semantics for the Keep / Suppress chips of a sample, in the
+   Samples tab, the Events table and the gallery cards. A click used to
+   "clear" whatever was active: on an automatic Suppress the rule put it
+   straight back (nothing happened), and "Clear keep" on a Contaminated
+   sample quietly suppressed it. */
+describe("actionChipState — what a click on a Keep / Suppress chip does", () => {
+  const events = [{ id: 0, source: "S", target: "T", verdict: TP }];
+  const auto = syncSampleCuration({}, events); // T: Contaminated + Suppress, automatic
+  const click = (sc, chip) =>
+    withManualAction(sc, "T", actionChipState(sc.T, chip).next, events).T;
+
+  it("sets an action that is not active, by hand", () => {
+    expect(actionChipState(auto.T, "keep")).toMatchObject({ active: false, next: "keep" });
+    expect(click(auto, "keep")).toMatchObject({ action: "keep" });
+    expect(click(auto, "keep").actionAuto).toBeUndefined();
+  });
+
+  it("makes an automatic action the curator's own instead of 'clearing' it", () => {
+    expect(actionChipState(auto.T, "suppress")).toMatchObject({ active: true, auto: true, next: "suppress" });
+    const t = click(auto, "suppress");
+    expect(t.action).toBe("suppress");
+    expect(t.actionAuto).toBeUndefined();
+  });
+
+  it("removes the curator's own action and says what the rule puts back", () => {
+    const kept = withManualAction(auto, "T", "keep", events);
+    expect(actionChipState(kept.T, "keep")).toMatchObject({ active: true, auto: false, next: null, returnsTo: "suppress" });
+    expect(click(kept, "keep")).toMatchObject({ action: "suppress", actionAuto: true });
+
+    const own = withManualAction(auto, "T", "suppress", events);
+    expect(actionChipState(own.T, "suppress")).toMatchObject({ next: null, returnsTo: "suppress" });
+    expect(click(own, "suppress")).toMatchObject({ action: "suppress", actionAuto: true });
+  });
+
+  it("clears for good on a sample that is not Contaminated", () => {
+    let sc = withManualVerdict(auto, "T", "correct", events);
+    sc = withManualAction(sc, "T", "suppress", events); // the unusual combination
+    expect(actionChipState(sc.T, "suppress")).toMatchObject({ next: null, returnsTo: null });
+    expect(click(sc, "suppress")).toEqual({ verdict: "correct" });
   });
 });

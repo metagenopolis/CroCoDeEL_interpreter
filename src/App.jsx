@@ -7,6 +7,7 @@ import {
   syncSampleCuration,
   withManualVerdict,
   withManualAction,
+  actionChipState,
   applyTargetSideEffects,
   migrateSampleCuration,
   SAMPLE_CURATION_VERSION,
@@ -7628,24 +7629,21 @@ const EventsTable = ({
                         textAlign: "center",
                       }}
                     >
-                      {sampleCuration?.[e.target]?.verdict === "contaminated" ? (
-                        <div className="flex gap-0.5 justify-center">
+                      {sampleCuration?.[e.target]?.verdict === "contaminated" ||
+                      sampleCuration?.[e.target]?.action ? (
+                        // Shown whenever an action is set: a Suppress
+                        // drops the sample from the curated table even
+                        // when it is not Contaminated (flagged).
+                        <div className="flex gap-0.5 justify-center items-center">
                           {[
-                            {
-                              id: "keep",
-                              Icon: Save,
-                              color: "#e0b13a",
-                              label: "Keep",
-                            },
-                            {
-                              id: "suppress",
-                              Icon: Trash2,
-                              color: "#ed6e6c",
-                              label: "Suppress",
-                            },
+                            { id: "keep", Icon: Save, color: "#e0b13a" },
+                            { id: "suppress", Icon: Trash2, color: "#ed6e6c" },
                           ].map((opt) => {
-                            const cur = sampleCuration?.[e.target]?.action;
-                            const active = cur === opt.id;
+                            const chip = sampleActionChip(
+                              e.target,
+                              sampleCuration[e.target],
+                              opt.id,
+                            );
                             const Icon = opt.Icon;
                             return (
                               <button
@@ -7653,28 +7651,17 @@ const EventsTable = ({
                                 type="button"
                                 onClick={(ev) => {
                                   ev.stopPropagation();
-                                  if (setAction)
-                                    setAction(
-                                      e.id,
-                                      active ? null : opt.id,
-                                    );
+                                  if (setAction) setAction(e.id, chip.next);
                                 }}
-                                title={
-                                  active
-                                    ? `Clear ${opt.label.toLowerCase()} on ${e.target}`
-                                    : `Mark ${e.target} as ${opt.label.toLowerCase()}`
-                                }
+                                title={chip.title}
+                                aria-label={chip.ariaLabel}
                                 className="flex items-center justify-center"
                                 style={{
                                   width: 24,
                                   height: 24,
                                   padding: 0,
                                   borderRadius: 12,
-                                  background: active
-                                    ? opt.color
-                                    : "var(--bg-card)",
-                                  color: active ? "#fff" : opt.color,
-                                  border: `1px solid ${active ? opt.color : "var(--border)"}`,
+                                  ...sampleChipColors(opt.color, chip.active, chip.auto),
                                   cursor: "pointer",
                                 }}
                               >
@@ -7682,6 +7669,14 @@ const EventsTable = ({
                               </button>
                             );
                           })}
+                          {sampleCuration[e.target].action &&
+                            sampleCuration[e.target].actionAuto && (
+                              <SampleAutoMark title="Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick Keep to keep the sample in the curated table." />
+                            )}
+                          {sampleCuration[e.target].action === "suppress" &&
+                            sampleCuration[e.target].verdict !== "contaminated" && (
+                              <SuppressedNotContaminatedFlag />
+                            )}
                         </div>
                       ) : (
                         <span
@@ -7940,6 +7935,7 @@ const GalleryCard = React.memo(function GalleryCard({
   actionEnabled,
   setAction,
   sampleAction,
+  sampleActionAuto = false,
   sampleVerdict,
   setSampleVerdict,
   onPopoverOpen,
@@ -8341,9 +8337,12 @@ const GalleryCard = React.memo(function GalleryCard({
               </>
             )}
 
-            {/* Section 3 — sample-level action on the target. Only
-                shown when the target sample is marked Contaminated. */}
-            {sampleVerdict === "contaminated" && (
+            {/* Section 3 — sample-level action on the target. Offered
+                once the target is Contaminated, and shown whenever an
+                action is set (a Suppress on a target that is not
+                Contaminated still drops it from the curated table:
+                flagged). */}
+            {(sampleVerdict === "contaminated" || sampleAction) && (
               <>
                 <div
                   className="text-[9px] tracking-[0.1em] uppercase mt-1 mb-0.5"
@@ -8356,12 +8355,20 @@ const GalleryCard = React.memo(function GalleryCard({
                 >
                   Action on target
                 </div>
-                <div className="flex gap-1">
+                <div className="flex gap-1 items-center">
                   {[
                     { id: "keep", Icon: Save, color: "#e0b13a", label: "Keep" },
                     { id: "suppress", Icon: Trash2, color: "#ed6e6c", label: "Suppress" },
                   ].map((opt) => {
-                    const active = sampleAction === opt.id;
+                    const chip = sampleActionChip(
+                      event.target,
+                      {
+                        verdict: sampleVerdict,
+                        action: sampleAction,
+                        actionAuto: sampleActionAuto,
+                      },
+                      opt.id,
+                    );
                     const Icon = opt.Icon;
                     return (
                       <button
@@ -8369,7 +8376,7 @@ const GalleryCard = React.memo(function GalleryCard({
                         type="button"
                         onClick={(ev) => {
                           ev.stopPropagation();
-                          setAction(event.id, active ? null : opt.id);
+                          setAction(event.id, chip.next);
                         }}
                         style={{
                           display: "inline-flex",
@@ -8378,9 +8385,8 @@ const GalleryCard = React.memo(function GalleryCard({
                           height: 22,
                           padding: "0 9px",
                           borderRadius: 11,
-                          background: active ? opt.color : "var(--bg-card)",
-                          color: active ? "#fff" : "var(--ink)",
-                          border: `1px solid ${active ? opt.color : "var(--border)"}`,
+                          ...sampleChipColors(opt.color, chip.active, chip.auto),
+                          color: chip.active ? "#fff" : "var(--ink)",
                           cursor: "pointer",
                           fontWeight: 700,
                           letterSpacing: "0.04em",
@@ -8388,17 +8394,19 @@ const GalleryCard = React.memo(function GalleryCard({
                           fontFamily: '"Raleway", sans-serif',
                           fontSize: 10,
                         }}
-                        title={
-                          active
-                            ? `Clear ${opt.label.toLowerCase()} on ${event.target}`
-                            : `Set target action to ${opt.label.toLowerCase()}`
-                        }
+                        title={chip.title}
+                        aria-label={chip.ariaLabel}
                       >
                         <Icon className="w-3 h-3" />
                         {opt.label}
+                        {chip.auto ? " · auto" : ""}
                       </button>
                     );
                   })}
+                  {sampleAction === "suppress" &&
+                    sampleVerdict !== "contaminated" && (
+                      <SuppressedNotContaminatedFlag />
+                    )}
                 </div>
               </>
             )}
@@ -9968,6 +9976,12 @@ const ScatterTabInner = ({
             actionEnabled={actionEnabled}
             setAction={setAction}
             sampleAction={sampleCuration?.[e.target]?.action || null}
+            sampleActionAuto={
+              !!(
+                sampleCuration?.[e.target]?.action &&
+                sampleCuration[e.target].actionAuto
+              )
+            }
             sampleVerdict={sampleCuration?.[e.target]?.verdict || null}
             setSampleVerdict={setSampleVerdict}
             onPopoverOpen={onPopoverOpen}
@@ -10924,16 +10938,66 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
   );
 });
 
+/** The Keep / Suppress chips of a sample, as the Samples tab, the Events
+    table and the gallery cards all show them: which one is drawn active,
+    whether that value is automatic, the action a click writes
+    (actionChipState in src/curation.js) and how the chip says so. A
+    click on the curator's own action removes it, and the label tells
+    what the rule leaves instead: on a Contaminated sample, Suppress —
+    Keep is how not to suppress it. */
+function sampleActionChip(sampleId, entry, chip) {
+  const label = chip === "keep" ? "Keep" : "Suppress";
+  const state = actionChipState(entry, chip);
+  if (!state.active)
+    return {
+      ...state,
+      ariaLabel: `${label} ${sampleId}`,
+      title: `Mark ${sampleId} as ${label.toLowerCase()} (your own decision)`,
+    };
+  if (state.auto)
+    return {
+      ...state,
+      ariaLabel: `${label} ${sampleId}`,
+      title:
+        chip === "suppress"
+          ? `Suppress (automatic, paired with Contaminated) — click to make it your own decision; pick Keep to keep ${sampleId} in the curated table`
+          : `Keep (automatic default of a sample no event targets) — click to make it your own decision`,
+    };
+  const ariaLabel = `Clear ${label.toLowerCase()} on ${sampleId}`;
+  if (state.returnsTo === "suppress")
+    return {
+      ...state,
+      ariaLabel,
+      title:
+        chip === "suppress"
+          ? `Make ${sampleId}'s Suppress automatic again: it stays suppressed while ${sampleId} is Contaminated (pick Keep to keep it in the curated table)`
+          : `Clear keep on ${sampleId}: ${sampleId} is Contaminated, so it goes back to the automatic Suppress`,
+    };
+  return { ...state, ariaLabel, title: ariaLabel };
+}
+
+/** The warning next to a Suppress on a sample that is not Contaminated:
+    unusual, and the sample is still dropped from the curated table. */
+const SuppressedNotContaminatedFlag = () => (
+  <span
+    role="img"
+    aria-label="Suppressed but not marked Contaminated"
+    title="Suppressed although not marked Contaminated: this sample is still dropped from the curated abundance table. Clear the action, or change the verdict, if that is not what you meant."
+    style={{ display: "inline-flex", alignSelf: "center", color: "#d97a3c" }}
+  >
+    <AlertCircle className="w-4 h-4" />
+  </span>
+);
+
 /** Action picker — keep / suppress icon-only chips. Offered once the
     sample is Contaminated, and shown whenever an action is set, whatever
     the verdict: a Suppress drops the sample from the curated abundance
     table even when it is not marked Contaminated, so it must stay in
     sight — flagged as unusual — and clearable. Otherwise a faint dash
     keeps the column's width without offering a decision the curator
-    hasn't motivated yet. Clicking the curator's own action clears it;
-    an automatic one (the Suppress paired with Contaminated, the Keep
-    default of a never-targeted sample) has nothing to clear, so the
-    click makes it the curator's own. Memoised. */
+    hasn't motivated yet. What a click does is the same in every view
+    (sampleActionChip): an automatic action becomes the curator's own,
+    the curator's own one goes back to the rule. Memoised. */
 const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAction }) {
   if (row.verdict !== "contaminated" && !row.action) {
     return (
@@ -10948,26 +11012,24 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
       </span>
     );
   }
-  const suppressedNotContaminated =
-    row.action === "suppress" && row.verdict !== "contaminated";
+  const entry = {
+    verdict: row.verdict,
+    action: row.action,
+    actionAuto: row.actionAuto,
+  };
   return (
   <div className="flex gap-1">
     {[
-      { id: "keep", color: "#e0b13a", Icon: Save, label: "Keep" },
-      { id: "suppress", color: "#ed6e6c", Icon: Trash2, label: "Suppress" },
+      { id: "keep", color: "#e0b13a", Icon: Save },
+      { id: "suppress", color: "#ed6e6c", Icon: Trash2 },
     ].map((opt) => {
-      const active = row.action === opt.id;
-      const auto = active && row.actionAuto;
-      const clears = active && !auto;
-      const label = clears
-        ? `Clear ${opt.label.toLowerCase()} on ${row.id}`
-        : `${opt.label} ${row.id}`;
+      const chip = sampleActionChip(row.id, entry, opt.id);
       const Icon = opt.Icon;
       return (
         <button
           key={opt.id}
           type="button"
-          onClick={() => setSampleAction(row.id, clears ? null : opt.id)}
+          onClick={() => setSampleAction(row.id, chip.next)}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -10976,15 +11038,11 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
             height: 24,
             padding: 0,
             borderRadius: 12,
-            ...sampleChipColors(opt.color, active, auto),
+            ...sampleChipColors(opt.color, chip.active, chip.auto),
             cursor: "pointer",
           }}
-          title={
-            auto
-              ? `${opt.label} (automatic) — click to make it your own decision`
-              : label
-          }
-          aria-label={label}
+          title={chip.title}
+          aria-label={chip.ariaLabel}
         >
           <Icon className="w-3.5 h-3.5" />
         </button>
@@ -10993,15 +11051,8 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
     {row.actionAuto && (
       <SampleAutoMark title="Automatic action: Suppress goes with a Contaminated verdict; Keep is the default of a sample no event targets (not counted as a Keep decision). Click it to make it your own; pick the other one to change it." />
     )}
-    {suppressedNotContaminated && (
-      <span
-        role="img"
-        aria-label="Suppressed but not marked Contaminated"
-        title="Suppressed although not marked Contaminated: this sample is still dropped from the curated abundance table. Clear the action, or change the verdict, if that is not what you meant."
-        style={{ display: "inline-flex", alignSelf: "center", color: "#d97a3c" }}
-      >
-        <AlertCircle className="w-4 h-4" />
-      </span>
+    {row.action === "suppress" && row.verdict !== "contaminated" && (
+      <SuppressedNotContaminatedFlag />
     )}
   </div>
   );
@@ -21615,15 +21666,18 @@ const HelpTab = ({ onStartTour }) => {
             action gets <em>Suppress</em> automatically; once its verdict
             is no longer Contaminated, that automatic Suppress goes away.
             An action you set by hand stays whatever the verdict (a
-            Suppress on a sample that is not Contaminated is flagged in
-            the Samples tab: the sample is still dropped from the curated
-            abundance table).
+            Suppress on a sample that is not Contaminated is shown and
+            flagged wherever the action is: the sample is still dropped
+            from the curated abundance table).
           </p>
           <p style={{ marginTop: 6 }}>
-            Automatic values carry an <em>auto</em> tag in the Samples
-            tab. Clicking a sample-level verdict or action makes it
+            Automatic values are drawn lighter, with a dashed rim, and
+            tagged <em>auto</em> (Samples tab, Events table, scatter card
+            popover). Clicking a sample-level verdict or action makes it
             yours; choosing <em>Pending</em>, or clearing your action,
-            hands the sample back to the automatic rule.
+            hands the sample back to the automatic rule. On a
+            Contaminated sample that means Suppress again: to keep it in
+            the curated table, pick <em>Keep</em>.
           </p>
           <p style={{ marginTop: 6 }}>
             <strong>Sessions saved by an earlier version</strong> are
@@ -21654,10 +21708,10 @@ const HelpTab = ({ onStartTour }) => {
             preserve the sample) or <strong>suppress</strong> (drop the
             sample from analyses). Lives on the sample, not on the
             event — so in case of multiple events targeting the same
-            sample, the action is set once. Surfaces as a read-only
-            badge in the Events table's <em>Target action</em> column,
-            as a halo on TP scatter cards and as the node border in
-            the Network's curation scheme.
+            sample, the action is set once. Set from the Samples tab,
+            the Events table's <em>Target action</em> column or the
+            scatter card popover; shown as a halo on TP scatter cards
+            and as the node border in the Network's curation scheme.
           </p>
           <p style={{ marginTop: 6 }}>
             The <em>to suppress</em> / <em>to keep</em> counters

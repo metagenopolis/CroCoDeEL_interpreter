@@ -706,6 +706,92 @@ try {
       show(sc["63D40"]),
     );
   });
+  /* The Keep / Suppress chips mean the same in the Events table, the
+     gallery cards and the Samples tab. A click on an automatic action
+     makes it the curator's own: it used to "clear" it, and the rule put
+     it straight back, so nothing happened. A click on the curator's own
+     action hands the sample back to the rule, which on a Contaminated
+     sample means Suppress — the label says so (a "Clear keep" used to
+     suppress the sample silently). A Suppress on a target that is not
+     Contaminated is shown, flagged, in the Events table and the gallery
+     as well (A3.4). */
+  await scenario("action chips", async (page) => {
+    await openTab(page, "Events");
+    await clickEvent(page, "63D250", "63D9", "tp"); // 63D9: automatic Contaminated + Suppress
+    const row = page.locator('tr[data-event-row="0"]'); // 63D250 → 63D9
+    const chip = (where, label) => where.locator(`button[aria-label="${label}"]`);
+    const title = async (where, label) =>
+      (await chip(where, label).count()) === 1 ? chip(where, label).getAttribute("title") : null;
+    check(
+      /automatic/i.test((await title(row, "Suppress 63D9")) || ""),
+      "Events table: 63D9's automatic Suppress is labelled automatic",
+      String(await title(row, "Suppress 63D9")),
+    );
+    await chip(row, "Suppress 63D9").click();
+    await page.waitForTimeout(300);
+    let sc = await storedCuration(page);
+    check(
+      sc["63D9"]?.action === "suppress" && !sc["63D9"].actionAuto,
+      "Events table: clicking it makes the Suppress the curator's own",
+      show(sc["63D9"]),
+    );
+    await chip(row, "Keep 63D9").click();
+    await page.waitForTimeout(300);
+    let card = await curatedCard(page);
+    check(card?.kept === card?.total, "Events table: Keep keeps 63D9 in the curated table", JSON.stringify(card));
+    await openTab(page, "Events");
+    const clearKeep = (await title(row, "Clear keep on 63D9")) || "";
+    check(
+      /automatic Suppress/.test(clearKeep),
+      "Events table: 'Clear keep' on Contaminated 63D9 says it goes back to the automatic Suppress",
+      clearKeep,
+    );
+    await chip(row, "Clear keep on 63D9").click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(isAutoContaminated(sc["63D9"]), "…and does", show(sc["63D9"]));
+
+    // Suppress set by hand on a target then marked Not contaminated.
+    await chip(row, "Suppress 63D9").click(); // automatic → the curator's own
+    await row.locator(`button[title="Set 63D9's sample-level verdict to Not contaminated"]`).click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(
+      sc["63D9"]?.verdict === "correct" && sc["63D9"].action === "suppress" && !sc["63D9"].actionAuto,
+      "63D9 is Not contaminated with a Suppress set by hand",
+      show(sc["63D9"]),
+    );
+    check(
+      (await chip(row, "Clear suppress on 63D9").count()) === 1 &&
+        (await row.locator('[aria-label="Suppressed but not marked Contaminated"]').count()) === 1,
+      "Events table: that Suppress is shown, flagged, instead of a dash",
+    );
+    card = await curatedCard(page);
+    check(card?.kept === card?.total - 1, "…and the curated table drops 63D9, as shown", JSON.stringify(card));
+
+    // The gallery card's popover: same chips, same meaning.
+    await openTab(page, "Scatter");
+    const nc3 = page.locator('[data-event-card="5"]'); // 83D88 → NC3
+    await nc3.waitFor({ timeout: 20000 });
+    await nc3.locator('button[title="mark as true positive"]').click();
+    await page.waitForTimeout(500);
+    check(
+      /automatic/i.test((await title(nc3, "Suppress NC3")) || ""),
+      "gallery: NC3's automatic Suppress is labelled automatic",
+      String(await title(nc3, "Suppress NC3")),
+    );
+    await chip(nc3, "Suppress NC3").click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(
+      sc.NC3?.action === "suppress" && !sc.NC3.actionAuto,
+      "gallery: clicking it makes the Suppress the curator's own",
+      show(sc.NC3),
+    );
+    const s = await overviewStats(page);
+    check(s.suppress === 2, "Overview: 63D9 and NC3 to suppress", `suppress=${s.suppress}`);
+  });
+
   /* A3.7 A legacy session (actions stored on the events) whose events
      disagree about one target migrates to Suppress, as the legacy app
      read it. */

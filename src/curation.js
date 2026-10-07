@@ -206,6 +206,34 @@ export function withManualAction(curation, sampleId, action, events) {
   );
 }
 
+/** What a click on the Keep or the Suppress chip (`chip`) of a sample
+    does, given its effective entry — the same in every view:
+
+      not active          → that action, set by hand;
+      active, automatic   → the same action, made the curator's own
+                            (there is nothing to clear: the rule would
+                            put it straight back);
+      active, set by hand → removed: the sample goes back to the rule,
+                            which pairs a Contaminated sample with
+                            Suppress again.
+
+    Returns { active, auto, next, returnsTo }: `next` is the action to
+    write with withManualAction (null removes the curator's), and
+    `returnsTo`, for a removal, the action the rule leaves in its place
+    ("suppress" on a Contaminated sample, else null) — what the chip's
+    label must announce, since "clear" then does not mean "no action". */
+export function actionChipState(entry, chip) {
+  const active = entry?.action === chip;
+  const auto = active && !!entry.actionAuto;
+  if (!active || auto) return { active, auto, next: chip, returnsTo: undefined };
+  return {
+    active,
+    auto,
+    next: null,
+    returnsTo: entry.verdict === "contaminated" ? "suppress" : null,
+  };
+}
+
 /** The sample side of a bulk evaluation: for each target of the matched
     events, write the dialog's explicit choices as the curator's own values
     and re-apply the rule.
