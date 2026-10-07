@@ -20539,25 +20539,41 @@ const HelpTab = ({ onStartTour }) => {
                 aliases={["note", "comment", "comments"]}
               />
               <HelpCol
+                name="sample_verdict"
+                recognized
+                type="contaminated / correct / uncertain"
+                desc="The target sample's verdict in the curated events TSV (correct is Not contaminated; empty: none). Restored on the target when all its rows give the same one: as your own value where it differs from the automatic one — a Not contaminated or Uncertain you set although a true positive targets the sample, which then stays in the curated table."
+              />
+              <HelpCol
                 name="action"
                 recognized
                 type="keep / suppress"
                 desc="The target sample's action in the curated events TSV. Restored on the target when all its rows give the same keep / suppress: as your own value where it differs from the automatic one (a Keep on a contaminated sample, a Suppress on one that is not)."
               />
+              <HelpCol
+                name="origin"
+                recognized
+                type="manual / empty"
+                desc="manual for an event you added by hand (Explore new pairs) in the curated events TSV: reloaded, it is yours again, so a later CroCoDeEL file without its pair keeps it."
+              />
             </tbody>
           </table>
           <p>
-            These three columns are matched exactly (ignoring case,
+            These columns are matched exactly (ignoring case,
             spaces, underscores, hyphens and dots), never as part of a
             longer header: an{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}>extraction_batch</code>{" "}
             column is not an action. Reloading the curated events TSV
-            restores the event evaluations, their notes and the targets'
-            keep / suppress actions, so an export reloaded into an empty
-            session gives back the same counts and the same curated
-            abundance table. What the file does not hold — sample verdicts
-            and sample notes set by hand, the action of a sample no event
-            targets — only the session JSON (Download session) keeps. Its{" "}
+            restores the event evaluations, their notes, the events added
+            by hand and the targets' verdicts and keep / suppress actions,
+            so an export reloaded into an empty session gives back the same
+            counts and the same curated abundance table. A curated file of
+            an earlier version holds no target verdicts: a target with a
+            true-positive event and no action in it comes back suppressed,
+            and the banner names those targets. What the file does not
+            hold — the notes of the samples, the verdict and the action of
+            a sample no event targets — only the session JSON (Download
+            session) keeps. Its{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}># study: …</code>{" "}
             line names the study when the session has none yet; it is not a
             run parameter. An events file without CroCoDeEL's run header,
@@ -20575,7 +20591,8 @@ const HelpTab = ({ onStartTour }) => {
             of every event whose source and target are in the new file
             (repeated pairs are matched in file order), the events you
             added by hand (Explore new pairs: no CroCoDeEL file holds them)
-            whose pair the new file does not have, and the sample
+            — still yours when the new file has their pair, so that a later
+            file without it keeps them too — and the sample
             verdicts, actions and notes you set for the samples still
             present (in the new events or the abundance table); the
             automatic sample values are then recomputed from the new events.
@@ -20594,7 +20611,8 @@ const HelpTab = ({ onStartTour }) => {
             under the names above and with CroCoDeEL's own number
             formatting, so CroCoDeEL reads it back too (to plot the curated
             events with <code style={{ fontFamily: "ui-monospace, monospace" }}>plot_conta</code>,
-            say); introduced_pct, verdict, action and notes follow. A
+            say); introduced_pct, verdict, action, notes, sample_verdict
+            and origin follow. A
             curated file exported by an earlier version, whose columns were
             named{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}>contamination_rate</code> and{" "}
@@ -26370,6 +26388,7 @@ const defaultFilter = () => ({
       sampleIds: ab?.samples,
       carryOver,
       fileHasCuration: !!parsed.curation,
+      fileColumns: parsed.curationColumns,
     });
     // Seen by any handler that runs before the next commit (commitEvents
     // does the same).
@@ -26435,6 +26454,7 @@ const defaultFilter = () => ({
       sampleIds: ab?.samples,
       carryOver: true,
       fileHasCuration,
+      fileColumns: parsed.curationColumns,
     }).report;
     const { dropped, droppedCurated, keptManual, manual } = preview;
     const carried = [];

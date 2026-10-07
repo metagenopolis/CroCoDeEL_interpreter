@@ -19,6 +19,10 @@
        both save: it is brought up to date once, when it is migrated;
      - what a tab still running the previous version saves after the
        migration is brought in at the next boot, and said;
+     - the curated events TSV, reloaded into a fresh session, gives back
+       the targets' verdicts set by hand (and so the curated table), the
+       study and the automatic actions at once, and the events added by
+       hand, which a later rerun's carry-over keeps;
 
    The stored state is read from IndexedDB, as the app reads it
    (src/persistence.js).
@@ -241,6 +245,63 @@ function asPreviousVersion(json) {
     notes: "",
   });
   return out;
+}
+
+/** The curated events TSV of the Export tab. */
+async function exportEventsTSV(page) {
+  await openTab(page, "Export");
+  return download(page, page.getByRole("button", { name: /Download events TSV/i }).first());
+}
+
+/** Load an events file through the card, answering the question it asks
+    when the session holds curation (`choice`: "Carry over" or "Start
+    fresh"). */
+async function loadEvents(page, name, text, choice = "Carry over") {
+  await upload(page, 0, name, text);
+  const ask = page.getByRole("dialog", { name: "Replace the events file?" });
+  if (await ask.count()) {
+    await ask.getByRole("button", { name: choice }).click();
+    await page.waitForTimeout(1500);
+  }
+}
+
+/** The headline counters of the Overview tab. */
+async function overview(page) {
+  await openTab(page, "Overview");
+  const text = await page.locator("body").innerText();
+  const stat = (re) => Number(text.match(re)?.[1] ?? NaN);
+  return {
+    tp: stat(/Validated \(TP\)\s*(\d+)/i),
+    keep: stat(/Samples to keep\s*(\d+)/i),
+    suppress: stat(/Samples to suppress\s*(\d+)/i),
+  };
+}
+
+/** Click a button of a Samples-tab row, by its label. */
+async function sampleButton(page, id, label) {
+  await openTab(page, "Samples");
+  await page.locator(`#samplerow-${id} button[aria-label="${label}"]`).first().click();
+  await page.waitForTimeout(300);
+}
+
+/** Add an event through Scatter › Explore new pairs (a true positive by
+    default). */
+async function addEventByHand(page, source, target) {
+  await openTab(page, "Scatter");
+  await page.getByRole("button", { name: /^Explore new pairs$/ }).first().click();
+  await page.waitForTimeout(800);
+  const src = page.locator('input[placeholder="Type to search… e.g. ERS848718"]');
+  await src.click();
+  await src.fill(source);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(400);
+  const tgt = page.locator('input[placeholder="Pick from neighbors / same subject / others…"]');
+  await tgt.click();
+  await tgt.fill(target);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(600);
+  await page.getByRole("button", { name: /Save as new contamination event/ }).click();
+  await page.waitForTimeout(1500);
 }
 
 /** The title in the study pill of the files bar ("" when it is hidden). */
@@ -597,6 +658,80 @@ try {
       "FS an older save of that tab does not replace this version's",
       `8: ${last.curation.verdicts["8"]}`,
     );
+  });
+
+  /* The curated events TSV, reloaded into a colleague's fresh session. */
+  await scenario("FS curated TSV round trip", async (page) => {
+    // 58M → 58D7 (event 2) is a true positive, yet the curator keeps
+    // 58D7: Not contaminated, set by hand. 63D29 → 63D40 (event 1) too.
+    await openTab(page, "Events");
+    for (const id of [2, 1]) {
+      await page.locator(`tr[data-event-row="${id}"] button[title="mark as true positive"]`).click();
+      await page.waitForTimeout(300);
+    }
+    await sampleButton(page, "58D7", "Set verdict to Not contaminated");
+    await page.locator('button[title="Click to rename this study"]').first().click();
+    await page.locator('input[placeholder="Study title"]').fill("Plate 3, curated");
+    await page.keyboard.press("Enter");
+    await saved(page);
+    const before = { card: await curatedCard(page), ...(await overview(page)) };
+    check(before.card === "90 of 91" && before.suppress === 1, "FS the curated session keeps 58D7", JSON.stringify(before));
+    const text = await exportEventsTSV(page);
+    const { ctx: ctx2, page: fresh } = await newPage(browser);
+    try {
+      await loadEvents(fresh, "contamination_events_curated.tsv", text);
+      await upload(fresh, 1, "species_abundance.tsv", demo("species_abundance.tsv"));
+      await saved(fresh);
+      const after = { card: await curatedCard(fresh), ...(await overview(fresh)) };
+      check(
+        JSON.stringify(after) === JSON.stringify(before),
+        "FS reloaded into a fresh session: the same counts and curated table, 58D7 kept",
+        `${JSON.stringify(before)} -> ${JSON.stringify(after)}`,
+      );
+      check((await studyLabel(fresh)) === "Plate 3, curated", "FS and its study, without a reload", await studyLabel(fresh));
+      const sc = (await storedRecords(fresh)).curation.sampleCuration;
+      check(
+        JSON.stringify(sc["58D7"]) === JSON.stringify({ verdict: "correct" }) && sc["63D40"]?.action === "suppress",
+        "FS 58D7 is Not contaminated by hand again, 63D40 suppressed automatically",
+        JSON.stringify([sc["58D7"], sc["63D40"]]),
+      );
+    } finally {
+      await ctx2.close();
+    }
+  });
+
+  /* An event added by hand, through the curated TSV and two reruns. */
+  await scenario("FS curated TSV keeps the events added by hand", async (page) => {
+    await addEventByHand(page, "69M", "69D49");
+    await saved(page);
+    const manualPair = async (p) => {
+      const r = await storedRecords(p);
+      const e = (r.events?.events || []).find((x) => x.source === "69M" && x.target === "69D49");
+      return { id: e?.id, verdict: e ? r.curation.verdicts[String(e.id)] : undefined, action: r.curation.sampleCuration["69D49"]?.action };
+    };
+    const added = await manualPair(page);
+    check(added.id === "manual-1" && added.verdict === "true_positive", "FS the event added by hand is stored", JSON.stringify(added));
+    const text = await exportEventsTSV(page);
+    // Carried over: the session's own export, then the next CroCoDeEL run.
+    await loadEvents(page, "contamination_events_curated.tsv", text);
+    await saved(page);
+    check(JSON.stringify(await manualPair(page)) === JSON.stringify(added), "FS its own export carried over keeps it added by hand", JSON.stringify(await manualPair(page)));
+    await loadEvents(page, "contamination_events.tsv", demo("contamination_events.tsv"));
+    await saved(page);
+    const rerun = await manualPair(page);
+    check(
+      rerun.id === "manual-1" && rerun.verdict === "true_positive" && rerun.action === "suppress",
+      "FS the next run, which does not have it, keeps it with its TP and its target suppressed",
+      JSON.stringify(rerun),
+    );
+    // A colleague's fresh session.
+    const { ctx: ctx2, page: fresh } = await newPage(browser);
+    try {
+      await loadEvents(fresh, "contamination_events_curated.tsv", text);
+      check(JSON.stringify(await manualPair(fresh)) === JSON.stringify(added), "FS reloaded into a fresh session, it is added by hand there too", JSON.stringify(await manualPair(fresh)));
+    } finally {
+      await ctx2.close();
+    }
   });
 } finally {
   await browser.close();

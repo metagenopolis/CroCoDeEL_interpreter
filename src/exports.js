@@ -17,6 +17,7 @@
 
 import { tsvCell } from "./parsing.js";
 import { resolveSample } from "./diagnostics.js";
+import { isManualEvent } from "./carryOver.js";
 
 /* ---------- contamination events ---------- */
 
@@ -39,6 +40,10 @@ export const CURATED_EVENT_COLUMNS = [
   "verdict",
   "action",
   "notes",
+  // Added after the columns of the first curated layout, so that a reader
+  // of that layout finds them where they were.
+  "sample_verdict",
+  "origin",
 ];
 
 /** A number written the way Python's str() writes a float, which is how
@@ -150,25 +155,41 @@ export function eventsToTSV(rawEvents, runMetadata) {
                       false_positive, uncertain or pending;
       action          the target sample's keep / suppress (from
                       `sampleCuration`, empty when none);
-      notes           the event's notes, on one line.
+      notes           the event's notes, on one line;
+      sample_verdict  the target sample's verdict (from `sampleCuration`:
+                      contaminated, correct — Not contaminated — or
+                      uncertain; empty when none);
+      origin          "manual" for an event the curator added by hand
+                      (Explore new pairs), empty for CroCoDeEL's.
 
     The run's "#" header line and the "# study:" line come first
     (eventsHeaderLines). CroCoDeEL reads the file like its own output and
     ignores the extra columns; this interface reads it back with its
-    verdicts and notes (parseEvents), and still reads the files of the
-    earlier layout. */
+    verdicts, notes, target verdicts and actions and the events added by
+    hand (parseEvents, replaceEvents), and still reads the files of the
+    earlier layout. Without sample_verdict, a target whose verdict the
+    curator set against its events (Not contaminated, Uncertain, with a
+    true positive among them) came back Contaminated + Suppress, and the
+    reloaded curated table lost it; without origin, an event added by
+    hand came back as CroCoDeEL's, and the next rerun's carry-over
+    dropped it. */
 export function curatedEventsToTSV(events, { runMetadata, study, sampleCuration } = {}) {
   const lines = eventsHeaderLines(runMetadata, study);
   lines.push(CURATED_EVENT_COLUMNS.join("\t"));
   for (const e of events || []) {
+    // The verdict and the action belong to the target sample; the event
+    // row repeats them so a tool reading this file alone can filter on
+    // them, and so that a reload gives the target back.
+    const target = sampleCuration?.[e.target];
+    const sampleVerdict = target?.verdict;
     const cells = [
       ...crocodeelCells(e),
       Number.isFinite(e.introducedPct) ? e.introducedPct.toFixed(2) : "",
       e.verdict || "pending",
-      // The action belongs to the target sample; the event row repeats it
-      // so a tool reading this file alone can filter on it.
-      sampleCuration?.[e.target]?.action || "",
+      target?.action || "",
       e.notes || "",
+      sampleVerdict && sampleVerdict !== "pending" ? sampleVerdict : "",
+      isManualEvent(e) ? "manual" : "",
     ];
     lines.push(cells.map(tsvCell).join("\t"));
   }

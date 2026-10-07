@@ -390,7 +390,7 @@ try {
       lines[0] === demo("contamination_events.tsv").split("\n")[0] &&
         /^# study: Demo/.test(lines[1]) &&
         lines[2] ===
-          [...CROCODEEL_COLUMNS, "introduced_pct", "verdict", "action", "notes"].join("\t"),
+          [...CROCODEEL_COLUMNS, "introduced_pct", "verdict", "action", "notes", "sample_verdict", "origin"].join("\t"),
       "B2.1 the curated events TSV keeps the run's # line and the study, then CroCoDeEL's five columns",
       JSON.stringify(lines.slice(1, 3)),
     );

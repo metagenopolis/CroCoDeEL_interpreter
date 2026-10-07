@@ -124,6 +124,8 @@ describe("curatedEventsToTSV — CroCoDeEL's columns first", () => {
       "verdict",
       "action",
       "notes",
+      "sample_verdict",
+      "origin",
     ]);
     expect(CURATED_EVENT_COLUMNS.slice(0, 5)).toEqual(CROCODEEL_EVENT_COLUMNS);
   });
