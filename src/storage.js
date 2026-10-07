@@ -26,6 +26,7 @@ import {
   LEGACY_MAIN_KEY,
   RECORD_KEYS,
   abundanceRecord,
+  checkStoredSession,
   forgetLostTable,
   sessionFromLegacyMain,
   sessionFromRecords,
@@ -475,17 +476,25 @@ export const idbBackend = {
   openChannel: openSessionChannel,
 };
 
-/** What this browser has stored, read without migrating anything — for
-    the error screen, which offers it as a session JSON. Null when
-    nothing is stored or storage cannot be read. */
+/** What this browser has stored, read without migrating or writing
+    anything — for the error screen, which offers it as a session JSON.
+    It is checked by the readers of the session import
+    (checkStoredSession), so that this file always imports: one written
+    from a session that holds what the import refuses was a dead end.
+    Null when nothing is stored or storage cannot be read. */
 export async function readStoredSessionForRescue() {
   if (!indexedDBSupported()) return null;
   try {
     const db = await openDB();
     const records = await readRecords(db);
-    return records.curation
+    const session = records.curation
       ? sessionFromRecords(records)
       : sessionFromLegacyMain(records[LEGACY_MAIN_KEY], records.ab);
+    try {
+      return checkStoredSession(session).session;
+    } catch {
+      return session;
+    }
   } catch {
     return null;
   }

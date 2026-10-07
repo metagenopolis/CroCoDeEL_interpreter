@@ -9,6 +9,12 @@
      - while the abundance table's write keeps failing, a tab switch
        neither rewrites the curation record nor makes another tab stale,
        and the table is written once there is room again;
+     - a session file of the previous version holding what its parser
+       kept (a sample column with an empty name, an event of a blank
+       line, a negative cell) imports, repaired and said; so does the
+       session this version downloads after opening such a stored
+       session; a damaged stored session opens instead of blanking the
+       app;
 
    The stored state is read from IndexedDB, as the app reads it
    (src/persistence.js).
@@ -58,6 +64,29 @@ function storedRecords(page) {
           };
         };
       }),
+  );
+}
+
+/** Put and delete stored records in one transaction. */
+function writeRecords(page, puts, dels = []) {
+  return page.evaluate(
+    ([puts, dels]) =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open("crocodeel-interpreter");
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction("kv", "readwrite");
+          for (const [k, v] of Object.entries(puts)) tx.objectStore("kv").put(v, k);
+          for (const k of dels) tx.objectStore("kv").delete(k);
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onabort = () => reject(tx.error);
+        };
+      }),
+    [puts, dels],
   );
 }
 
@@ -130,6 +159,51 @@ const FAIL_AB = () => {
 };
 
 const banner = (page, state) => page.locator(`[data-save-banner="${state}"]`);
+
+/** The text of the notice banner ("" when there is none). */
+async function noticeText(page) {
+  const n = page.locator("[data-notice]");
+  return (await n.count()) ? (await n.first().innerText()).replace(/\s+/g, " ") : "";
+}
+
+/** The "N of M samples" of the Export tab's curated abundance card. */
+async function curatedCard(page) {
+  await openTab(page, "Export");
+  const text = await page.locator("body").innerText();
+  const m = text.match(/Curated abundance table — (\d+) of (\d+) samples/);
+  return m ? `${m[1]} of ${m[2]}` : null;
+}
+
+/** What the previous version's parser kept in a session of the demo,
+    put into a session JSON of this version: no curation version nor
+    parser warnings, no column sums, a sample "" holding 0 everywhere
+    (tabs at the end of every abundance line), an event with an empty
+    source and target (a line of tabs at the end of the events file),
+    and a negative fraction. */
+function asPreviousVersion(json) {
+  const out = structuredClone(json);
+  delete out.sample_curation_version;
+  delete out.events_warnings;
+  const ab = out.abundance;
+  delete ab.colSums;
+  delete ab.integerCols;
+  delete ab.firstHeader;
+  ab.samples.push("");
+  for (const sp of ab.species) ab.matrix[sp][""] = 0;
+  ab.matrix[ab.species[0]][ab.samples[0]] = -0.001;
+  out.events.push({
+    id: out.events.length,
+    source: "",
+    target: "",
+    contamination_rate: 0,
+    probability: 0,
+    introduced_species: [],
+    verdict: "pending",
+    action: null,
+    notes: "",
+  });
+  return out;
+}
 
 /** The title in the study pill of the files bar ("" when it is hidden). */
 async function studyLabel(page) {
@@ -270,6 +344,123 @@ try {
     check(
       /Curated abundance table — \d+ of 91 samples/.test(await page.locator("body").innerText()),
       "FS and the table comes back with the session after a reload",
+    );
+  });
+
+  /* The previous version's session files and stored sessions. */
+  let previous = null;
+  await scenario("FS previous session (export)", async (page) => {
+    await openTab(page, "Events");
+    await page.locator('button[title="mark as true positive"]').first().click();
+    await saved(page);
+    previous = asPreviousVersion(JSON.parse(await exportSession(page)));
+  });
+  await scenario(
+    "FS previous session file imports, repaired",
+    async (page) => {
+      await importSession(page, previous);
+      check(
+        (await page.getByText("Failed to import session").count()) === 0,
+        "FS a session file of the previous version imports",
+      );
+      const said = await noticeText(page);
+      check(
+        /left out/.test(said) && /negative abundance was read as 0/.test(said),
+        "FS and the notice says what was repaired",
+        said.slice(0, 260),
+      );
+      check((await curatedCard(page)) === "90 of 91", "FS the empty column is gone, the TP's target suppressed", await curatedCard(page));
+      const r = await storedRecords(page);
+      check(
+        r.events?.events?.length === 24 && !r.ab.samples.includes(""),
+        "FS the stored session has the 24 events and the 91 samples",
+        `${r.events?.events?.length} events, ${r.ab?.samples?.length} samples`,
+      );
+    },
+    { demo: false },
+  );
+  await scenario("FS previous stored session opens repaired, and its download imports", async (page) => {
+    // The previous version's layout: one "main" record and the table.
+    await page.goto(page.url().replace(/#.*$/, "") + "favicon.svg");
+    const r = await storedRecords(page);
+    const cur = r.curation;
+    const ab = structuredClone(r.ab);
+    delete ab.storageToken;
+    delete ab.colSums;
+    delete ab.integerCols;
+    ab.samples.push("");
+    const main = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      rawEvents: [
+        ...r.events.events.map((e) => ({ ...e, verdict: cur.verdicts[String(e.id)] || "pending", notes: cur.notes[String(e.id)] || "" })),
+        { id: r.events.events.length, source: "", target: "", rate: 0, score: 0, introduced: [], verdict: "pending", notes: "" },
+      ],
+      sampleCuration: cur.sampleCuration,
+      runMetadata: r.events.runMetadata,
+      metadata: r.metadata || null,
+      plateMap: r.plate || null,
+      analysisTitle: cur.analysisTitle,
+      tab: "overview",
+      selId: null,
+      filter: r.ui?.filter,
+      sort: r.ui?.sort,
+    };
+    await writeRecords(page, { main, ab }, ["events", "curation", "metadata", "plate", "ui"]);
+    await page.goto(page.url().replace(/favicon\.svg$/, ""), { waitUntil: "networkidle" });
+    await page.waitForTimeout(2500);
+    const close = page.getByRole("button", { name: /^Close$/ });
+    if (await close.count()) await close.first().click();
+    check(
+      /left out/.test(await noticeText(page)),
+      "FS the previous version's stored session opens, the notice says what was repaired",
+      (await noticeText(page)).slice(0, 200),
+    );
+    await saved(page);
+    const json = JSON.parse(await exportSession(page));
+    check(
+      json.events.length === 24 && !json.abundance.samples.includes(""),
+      "FS its download holds 24 events and no empty sample name",
+      `${json.events.length} events`,
+    );
+    // Into a fresh page.
+    const { ctx: ctx2, page: fresh } = await newPage(browser);
+    await importSession(fresh, json);
+    check(
+      (await fresh.getByText("Failed to import session").count()) === 0 &&
+        (await curatedCard(fresh)) === (await curatedCard(page)),
+      "FS and that download imports, with the same curated table",
+      await curatedCard(fresh),
+    );
+    await ctx2.close();
+  });
+  await scenario("FS damaged stored session opens", async (page) => {
+    await saved(page);
+    await page.goto(page.url().replace(/#.*$/, "") + "favicon.svg");
+    const r = await storedRecords(page);
+    const events = structuredClone(r.events);
+    events.events[0].introduced = events.events[0].introduced.join(",");
+    const plate = { ...r.plate, format: null };
+    const metadata = structuredClone(r.metadata);
+    metadata.bySample[Object.keys(metadata.bySample)[0]] = "P1";
+    await writeRecords(page, { events, plate, metadata });
+    await page.goto(page.url().replace(/favicon\.svg$/, ""), { waitUntil: "networkidle" });
+    await page.waitForTimeout(2500);
+    check(
+      (await page.getByText("Something went wrong while rendering").count()) === 0,
+      "FS a stored species list kept as one text, a plate map without its format and a metadata row that is not an object do not blank the app",
+    );
+    const said = await noticeText(page);
+    check(
+      /split at the commas/.test(said) && /metadata/.test(said),
+      "FS the notice says what was repaired and what was left out",
+      said.slice(0, 260),
+    );
+    await openTab(page, "Plate");
+    await openTab(page, "Samples");
+    check(
+      (await page.getByText("Something went wrong").count()) === 0,
+      "FS the Plate and Samples tabs show",
     );
   });
 } finally {

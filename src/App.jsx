@@ -65,6 +65,7 @@ import {
   curationOrigin,
 } from "./exports.js";
 import {
+  checkStoredSession,
   restoreFilter,
   restoreSort,
   sessionFromPayload,
@@ -25132,16 +25133,22 @@ const defaultFilter = () => ({
   // Dismissable notice over the tabs (NoticeBanner): what loading another
   // events file did to the curation, or a session restored without its
   // abundance table (the table's last save had failed).
-  const [notice, setNotice] = useState(() =>
-    initial?.abLost && !initial?.ab
-      ? {
-          title: "The abundance table was not restored.",
-          lines: [
-            "Its last save to this browser's storage failed, so the session came back without it: load species_abundance.tsv again for the scatterplots and the diagnostics.",
-          ],
-        }
-      : null,
-  );
+  // What reopening the stored session found: its table lost, or parts
+  // the readers of src/persistence.js repaired (checkStoredSession).
+  const [notice, setNotice] = useState(() => {
+    const lost =
+      initial?.abLost && !initial?.ab
+        ? "Its last save to this browser's storage failed, so the session came back without it: load species_abundance.tsv again for the scatterplots and the diagnostics."
+        : null;
+    const repaired = Array.isArray(initial?.storageNotes) ? initial.storageNotes : [];
+    if (repaired.length > 0) {
+      return {
+        title: "This browser's copy of the session was repaired when it was opened.",
+        lines: lost ? [...repaired, `The abundance table was not restored. ${lost}`] : repaired,
+      };
+    }
+    return lost ? { title: "The abundance table was not restored.", lines: [lost] } : null;
+  });
 
   /* Tutorial state — two pieces:
      - welcomeOpen: the first-visit popup that asks "Take the tour or
@@ -27352,7 +27359,13 @@ const defaultFilter = () => ({
       setFilter(s.filter);
       setSort(s.sort);
       setErr(null);
-      setNotice(null);
+      // What the readers repaired in the file — what an earlier version's
+      // parser left in it — is said, not refused.
+      setNotice(
+        read.repairs.length > 0
+          ? { title: "Session imported. The file was repaired while it was read:", lines: read.repairs }
+          : null,
+      );
       // A session saved by an earlier version: say what its migration
       // changed in the curated output.
       const migration = sessionMigrationNotice(read.changes);
@@ -32004,15 +32017,25 @@ export default function App() {
     let cancelled = false;
     readStoredSession()
       .then(({ session, rev, abToken, inRecords }) => {
-        // Metadata saved by an earlier version is read again with the
-        // current header rules (remapMetadata, src/parsing.js). The
-        // stored copy stays as read (`stored`), so the autosave writes
-        // the new reading once. A session read from an earlier layout
-        // whose migration failed is not in the current records: nothing
-        // counts as stored, so the first save writes every record.
-        const initial = session?.metadata
-          ? { ...session, metadata: remapMetadata(session.metadata) }
-          : session;
+        // The stored session is read by the readers of the session
+        // import (checkStoredSession, src/persistence.js): what an
+        // earlier version or a damaged profile left in it is repaired,
+        // reset or left out, and said — it used to blank the whole app
+        // at every reload. Metadata saved by an earlier version is read
+        // again with the current header rules (remapMetadata,
+        // src/parsing.js). The stored copy stays as read (`stored`), so
+        // the autosave writes the new reading once. A session read from
+        // an earlier layout whose migration failed is not in the current
+        // records: nothing counts as stored, so the first save writes
+        // every record.
+        const checked = checkStoredSession(session);
+        const read = checked.session;
+        let initial = read?.metadata
+          ? { ...read, metadata: remapMetadata(read.metadata) }
+          : read;
+        if (initial && checked.notes.length > 0) {
+          initial = { ...initial, storageNotes: checked.notes };
+        }
         if (!cancelled)
           setBoot({
             status: "ready",

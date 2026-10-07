@@ -39,9 +39,12 @@
    The session JSON (Download / Import session) is the same session under
    the field names exportJSON has always written (sessionToJSON), read
    back by sessionFromPayload, which validates the whole file before
-   anything replaces the current session. */
+   anything replaces the current session. A stored session goes through
+   the same readers at every boot (checkStoredSession): both repair what
+   the earlier versions left in a session, and say so. */
 
 import { migrateSampleCuration, SAMPLE_CURATION_VERSION } from "./curation.js";
+import { splitSpeciesList } from "./parsing.js";
 
 export const LAYOUT_VERSION = 2;
 
@@ -488,10 +491,36 @@ export function sessionToJSON(s, { events = s.rawEvents || [], counts, eventFiel
   };
 }
 
+/* ------------------------------------------------------ reading a session
+
+   A session is read back from two places: a session JSON (Import
+   session) and this browser's storage, at every boot. Both go through
+   the same readers, which check every part and say what they found:
+
+     errors   what cannot be shown as it is. An import refuses the file —
+              nothing replaces the current session. A stored session
+              must open whatever it holds: it gets a safe value instead
+              (the value reset, the event or the file left out), and the
+              notice of the boot lists them. Stored sessions used to skip
+              every check: one whose species list was a single text, or
+              whose metadata rows were not objects, blanked the whole app
+              at every reload;
+     repairs  what the earlier versions' parsers left in a session, which
+              this one never writes and which is repaired, saying so: an
+              event of a blank line (no source, no target), a sample
+              column with an empty name, a negative abundance, a species
+              list kept as one text. The import refused such files whole —
+              a session saved by the previous version and downloaded from
+              it, or from this one after it opened that session — while
+              the same session opened from storage. */
+
 const EVENT_VERDICTS = new Set(["pending", "true_positive", "false_positive", "uncertain"]);
 const SAMPLE_VERDICTS = new Set(["contaminated", "correct", "uncertain", "pending"]);
 const SAMPLE_ACTIONS = new Set(["keep", "suppress"]);
 const MAX_LISTED = 6;
+
+const problems = () => ({ errors: [], repairs: [] });
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** A sample / event id read from a session file: a string, or a finite
     number written without quotes; null otherwise. */
@@ -502,110 +531,202 @@ function idOf(v) {
 }
 
 /** Warnings as a list of strings (a hand-edited file may hold a single
-    string, or anything). */
+    string, or anything): the list itself when it already is one. */
 function warningList(v) {
+  if (Array.isArray(v) && v.every((w) => typeof w === "string" && w)) return v;
   if (typeof v === "string") return v ? [v] : [];
   return Array.isArray(v) ? v.filter((w) => typeof w === "string" && w) : [];
 }
 
-/** The events of a session file, as the app keeps them, and whether their
-    ids had to be renumbered. */
-function readEvents(list, errors) {
+/** True when the stored event `e` holds exactly the fields read from it. */
+function readAsItIs(e, ev) {
+  for (const k of ["id", "source", "target", "rate", "score", "verdict", "notes"]) {
+    if (e[k] !== ev[k]) return false;
+  }
+  const list = e.introduced;
+  return (
+    Array.isArray(list) &&
+    list.length === ev.introduced.length &&
+    list.every((sp, i) => sp === ev.introduced[i])
+  );
+}
+
+/** The events of a session, as the app keeps them, and whether their ids
+    had to be renumbered. A session file names the fields as exportJSON
+    writes them (contamination_rate, probability, introduced_species),
+    a stored session as the app keeps them (rate, score, introduced);
+    `stored` keeps a stored event's other fields, and returns the list
+    itself when every event was read as it is. */
+function readEvents(list, p, { stored = false } = {}) {
   if (!Array.isArray(list)) {
-    errors.push('"events" must be a list of events.');
+    p.errors.push('"events" must be a list of events.');
     return { events: [], renumbered: false };
   }
   const out = [];
+  let changed = false;
+  let blank = 0;
+  let joined = 0;
   list.forEach((e, i) => {
-    if (errors.length > 50) return;
     const where = `event ${i + 1}`;
     if (!isObj(e)) {
-      errors.push(`${where} is not an object.`);
+      p.errors.push(`${where} is not an object.`);
+      changed = true;
       return;
     }
     const source = idOf(e.source);
     const target = idOf(e.target);
-    if (!source || !target) {
-      errors.push(`${where} has no source or no target.`);
+    if ((source == null && e.source != null) || (target == null && e.target != null)) {
+      p.errors.push(`${where}: its source or its target is neither text nor a number.`);
+      changed = true;
+      return;
+    }
+    // What the previous parser made of a line of tabs (a cleared
+    // spreadsheet row): an event with an empty source and target. The
+    // events parser skips such a row now; so does this.
+    if (!source?.trim() || !target?.trim()) {
+      blank++;
+      changed = true;
       return;
     }
     const number = (v, name) => {
       if (v == null) return 0;
       if (typeof v === "number" && Number.isFinite(v)) return v;
-      errors.push(`${where} (${source} → ${target}): ${name} is not a number.`);
+      p.errors.push(`${where} (${source} → ${target}): ${name} is not a number.`);
       return 0;
     };
     const rate = number(e.contamination_rate ?? e.rate, "contamination_rate");
     const score = number(e.probability ?? e.score, "probability");
-    const species = e.introduced_species ?? e.introduced ?? [];
+    let species = e.introduced_species ?? e.introduced ?? [];
+    if (typeof species === "string") {
+      // The species cell as one text, split as the events parser splits
+      // it.
+      species = splitSpeciesList(species);
+      joined++;
+    }
     let introduced = [];
     if (Array.isArray(species) && species.every((sp) => idOf(sp) != null)) {
       introduced = species.map(idOf);
     } else {
-      errors.push(`${where} (${source} → ${target}): introduced_species is not a list of names.`);
+      p.errors.push(`${where} (${source} → ${target}): introduced_species is not a list of names.`);
     }
-    const verdict = e.verdict == null || e.verdict === "" ? "pending" : e.verdict;
+    let verdict = e.verdict == null || e.verdict === "" ? "pending" : e.verdict;
     if (!EVENT_VERDICTS.has(verdict)) {
-      errors.push(`${where} (${source} → ${target}): unknown verdict "${String(verdict).slice(0, 40)}".`);
+      p.errors.push(`${where} (${source} → ${target}): unknown verdict "${String(verdict).slice(0, 40)}".`);
+      verdict = "pending";
     }
     let notes = "";
     if (typeof e.notes === "string") notes = e.notes;
     else if (e.notes != null) {
-      errors.push(`${where} (${source} → ${target}): notes are not text.`);
+      p.errors.push(`${where} (${source} → ${target}): notes are not text.`);
     }
-    const id = e.id == null ? i : e.id;
-    if (idOf(id) == null) errors.push(`${where}: its id is neither text nor a number.`);
+    let id = e.id == null ? i : e.id;
+    if (idOf(id) == null) {
+      p.errors.push(`${where}: its id is neither text nor a number.`);
+      id = i;
+    }
     const ev = { id, source, target, rate, score, introduced, verdict, notes };
     // A session saved before the sample-level model kept the action on
     // its events: migrateSampleCuration moves it to the target sample.
     if (SAMPLE_ACTIONS.has(e.action)) ev.action = e.action;
-    out.push(ev);
+    if (!stored) out.push(ev);
+    else if (readAsItIs(e, ev)) out.push(e);
+    else {
+      out.push({ ...e, ...ev });
+      changed = true;
+    }
   });
+  if (blank > 0) {
+    p.repairs.push(
+      `${plural(blank, "event")} without a source or a target (what an earlier version made of an ` +
+        `empty line of the events file) ${blank === 1 ? "was" : "were"} left out.`,
+    );
+    if (out.length === 0 && blank === list.length) {
+      p.errors.push("No event has both a source and a target.");
+    }
+  }
+  if (joined > 0) {
+    p.repairs.push(
+      `The introduced species of ${plural(joined, "event")}, kept as one text, ` +
+        `${joined === 1 ? "was" : "were"} split at the commas.`,
+    );
+  }
   // Ids key the curation record, the selection and the per-event caches:
   // a hand-edited file with repeated ids gets them renumbered.
   const ids = new Set(out.map((e) => String(e.id)));
   const renumbered = ids.size !== out.length;
-  return { events: renumbered ? out.map((e, i) => ({ ...e, id: i })) : out, renumbered };
+  if (renumbered) return { events: out.map((e, i) => ({ ...e, id: i })), renumbered };
+  return { events: stored && !changed ? list : out, renumbered };
 }
 
-function readSampleCuration(sc, errors) {
+/** The sample curation of a session: an entry that is not an object is
+    left out, a value that is not one the model knows is removed. The
+    map itself when nothing had to be. */
+function readSampleCuration(sc, p) {
   if (sc == null) return {};
   if (!isObj(sc)) {
-    errors.push('"sample_curation" must map sample ids to their verdict / action / notes.');
+    p.errors.push('"sample_curation" must map sample ids to their verdict / action / notes.');
     return {};
   }
-  const out = {};
+  let out = null;
   for (const [id, entry] of Object.entries(sc)) {
     if (!isObj(entry)) {
-      errors.push(`sample_curation of ${id} is not an object.`);
+      p.errors.push(`sample_curation of ${id} is not an object.`);
+      if (!out) out = { ...sc };
+      delete out[id];
       continue;
     }
+    let next = entry;
+    const drop = (...keys) => {
+      if (next === entry) next = { ...entry };
+      for (const k of keys) delete next[k];
+    };
     if (entry.verdict != null && !SAMPLE_VERDICTS.has(entry.verdict)) {
-      errors.push(`sample_curation of ${id}: unknown verdict "${String(entry.verdict).slice(0, 40)}".`);
+      p.errors.push(`sample_curation of ${id}: unknown verdict "${String(entry.verdict).slice(0, 40)}".`);
+      drop("verdict", "verdictAuto");
     }
     if (entry.action != null && entry.action !== "" && !SAMPLE_ACTIONS.has(entry.action)) {
-      errors.push(`sample_curation of ${id}: unknown action "${String(entry.action).slice(0, 40)}".`);
+      p.errors.push(`sample_curation of ${id}: unknown action "${String(entry.action).slice(0, 40)}".`);
+      drop("action", "actionAuto");
     }
     if (entry.notes != null && typeof entry.notes !== "string") {
-      errors.push(`sample_curation of ${id}: notes are not text.`);
+      p.errors.push(`sample_curation of ${id}: notes are not text.`);
+      drop("notes");
     }
-    out[id] = entry;
+    if (next === entry) continue;
+    if (!out) out = { ...sc };
+    out[id] = next;
   }
-  return out;
+  return out || sc;
 }
 
-function readAbundance(ab, errors) {
-  if (ab == null) return null;
+/** The abundance table of a session, and the samples it renamed or left
+    out (`renamed`: old name → new name, null when left out; null when
+    none). The table itself when it is read as it is.
+
+    The previous parser kept two things the current one never writes: a
+    sample with an empty name — an empty header cell, from trailing tabs
+    on the header line above an empty column — and negative values, kept
+    as negative fractions. An empty-named column holding no value is left
+    out, as the parser now drops trailing empty header cells; one holding
+    values is named "Unnamed: N" (its column in the file, counted from
+    0), as the parser and CroCoDeEL (pandas) name it. A negative value
+    reads as 0, as the parser reads it; in a table of fractions only (no
+    column sums: a session of that version), the column it was in is
+    made a fraction of its positive values again, which is what the
+    parser gives for the same file. */
+function readAbundance(ab, p) {
+  if (ab == null) return { ab: null, renamed: null };
   const bad = (msg) => {
-    errors.push(`abundance: ${msg}`);
-    return null;
+    p.errors.push(`abundance: ${msg}`);
+    return { ab: null, renamed: null };
   };
   if (!isObj(ab)) return bad("not a species × sample table.");
-  const { samples, matrix } = ab;
-  if (!Array.isArray(samples) || samples.length === 0 || samples.some((s) => typeof s !== "string" || !s)) {
+  const { matrix } = ab;
+  if (!Array.isArray(ab.samples) || ab.samples.length === 0 || ab.samples.some((s) => idOf(s) == null)) {
     return bad('"samples" must be a list of sample names.');
   }
-  if (new Set(samples).size !== samples.length) return bad("a sample appears twice.");
+  const names = ab.samples.map(idOf);
+  if (new Set(names).size !== names.length) return bad("a sample appears twice.");
   if (!isObj(matrix)) {
     return bad('"matrix" (species → sample → abundance) is missing or is not an object.');
   }
@@ -616,15 +737,22 @@ function readAbundance(ab, errors) {
   if (new Set(species).size !== species.length) return bad("a species appears twice.");
   let min = Infinity;
   let max = -Infinity;
+  let negative = 0;
+  // Per sample: the sum of its positive values, for the columns that hold
+  // a negative one.
+  const positiveSums = new Map();
   for (const sp of species) {
     const row = matrix[sp];
     if (!isObj(row)) return bad(`species "${sp.slice(0, 60)}" has no row in the matrix.`);
     for (const s in row) {
       const v = row[s];
-      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
         return bad(`the value of "${sp.slice(0, 60)}" in "${s.slice(0, 60)}" is not an abundance.`);
       }
-      if (v > 0) {
+      if (v < 0) {
+        negative++;
+        if (!positiveSums.has(s)) positiveSums.set(s, 0);
+      } else if (v > 0) {
         if (v < min) min = v;
         if (v > max) max = v;
       }
@@ -638,13 +766,6 @@ function readAbundance(ab, errors) {
     if (stray !== undefined) {
       return bad(`"matrix" has a row for "${stray.slice(0, 60)}", which "species" does not list.`);
     }
-  }
-  const out = { ...ab, samples, species, matrix, warnings: warningList(ab.warnings) };
-  const lr = ab.logRange;
-  if (!(isObj(lr) && Number.isFinite(lr.min) && Number.isFinite(lr.max))) {
-    out.logRange = Number.isFinite(min)
-      ? { min: Math.floor(Math.log10(min)), max: Math.min(0, Math.ceil(Math.log10(max))) }
-      : { min: -8, max: 0 };
   }
   // What an export needs to give the user's own values back (see
   // parseAbundance): optional — a session saved before they existed has
@@ -662,6 +783,118 @@ function readAbundance(ab, errors) {
       return bad('"integerCols" must map samples to true / false.');
     }
   }
+
+  // Samples with an empty name: left out when empty, named otherwise.
+  const renamed = new Map();
+  names.forEach((s, i) => {
+    if (s.trim()) return;
+    if (!species.some((sp) => matrix[sp][s] > 0)) {
+      renamed.set(s, null);
+      return;
+    }
+    const taken = new Set([...names, ...renamed.values()]);
+    let name = `Unnamed: ${i + 1}`;
+    for (let k = 1; taken.has(name); k++) name = `Unnamed: ${i + 1}.${k}`;
+    renamed.set(s, name);
+  });
+  const fractionsOnly = ab.colSums == null;
+  if (fractionsOnly) {
+    for (const s of positiveSums.keys()) {
+      let sum = 0;
+      for (const sp of species) {
+        const v = matrix[sp][s];
+        if (v > 0) sum += v;
+      }
+      positiveSums.set(s, sum);
+    }
+  }
+
+  let out = ab;
+  const patch = (fields) => {
+    if (out === ab) out = { ...ab };
+    Object.assign(out, fields);
+  };
+  if (ab.species == null) patch({ species });
+  if (names.some((s, i) => s !== ab.samples[i])) patch({ samples: names });
+  if (renamed.size > 0 || negative > 0) {
+    const to = (s) => (renamed.has(s) ? renamed.get(s) : s);
+    const fixed = {};
+    for (const sp of species) {
+      const row = matrix[sp];
+      let next = row;
+      for (const s in row) {
+        const v = row[s];
+        const name = to(s);
+        const scale = positiveSums.get(s);
+        if (name === s && !(v < 0) && !(fractionsOnly && scale > 0)) continue;
+        if (next === row) next = { ...row };
+        delete next[s];
+        if (name === null) continue;
+        next[name] = v < 0 ? 0 : fractionsOnly && scale > 0 ? v / scale : v;
+      }
+      fixed[sp] = next;
+    }
+    const renameKeys = (map) => {
+      if (!isObj(map)) return map;
+      const next = {};
+      for (const [s, v] of Object.entries(map)) {
+        const name = to(s);
+        if (name !== null) next[name] = v;
+      }
+      return next;
+    };
+    patch({
+      samples: names.map(to).filter((s) => s !== null),
+      matrix: fixed,
+      ...(ab.colSums != null ? { colSums: renameKeys(ab.colSums) } : {}),
+      ...(ab.integerCols != null ? { integerCols: renameKeys(ab.integerCols) } : {}),
+    });
+    const dropped = [...renamed.values()].filter((s) => s === null).length;
+    const named = [...renamed.values()].filter((s) => s !== null);
+    if (dropped > 0) {
+      p.repairs.push(
+        `The abundance table's ${plural(dropped, "column")} with an empty name and no value ` +
+          `(trailing tabs on its header line) ${dropped === 1 ? "was" : "were"} left out.`,
+      );
+    }
+    if (named.length > 0) {
+      p.repairs.push(
+        `The abundance table's ${plural(named.length, "column")} with an empty name ` +
+          `${named.length === 1 ? "was" : "were"} named ${named.map((s) => `"${s}"`).join(", ")}, ` +
+          "as CroCoDeEL names an empty header cell (its column, counted from 0).",
+      );
+    }
+    if (negative > 0) {
+      p.repairs.push(
+        `${plural(negative, "negative abundance")} ${negative === 1 ? "was" : "were"} read as 0, ` +
+          "as the abundance parser reads them" +
+          (fractionsOnly ? ", each sample's relative abundances recomputed without them." : "."),
+      );
+    }
+  }
+  const warnings = warningList(ab.warnings);
+  if (warnings !== ab.warnings) patch({ warnings });
+  const lr = ab.logRange;
+  if (!(isObj(lr) && Number.isFinite(lr.min) && Number.isFinite(lr.max))) {
+    patch({
+      logRange: Number.isFinite(min)
+        ? { min: Math.floor(Math.log10(min)), max: Math.min(0, Math.ceil(Math.log10(max))) }
+        : { min: -8, max: 0 },
+    });
+  }
+  return { ab: out, renamed: renamed.size > 0 ? renamed : null };
+}
+
+/** The sample curation with the samples the abundance table renamed or
+    left out (readAbundance's `renamed`) renamed or left out too. */
+function renameCuratedSamples(sc, renamed) {
+  if (!renamed || ![...renamed.keys()].some((s) => s in sc)) return sc;
+  const out = { ...sc };
+  for (const [from, to] of renamed) {
+    if (!(from in out)) continue;
+    if (to !== null && !(to in out)) out[to] = out[from];
+    delete out[from];
+  }
   return out;
 }
 
@@ -673,96 +906,216 @@ const isCell = (v) => v == null || typeof v === "string" || (typeof v === "numbe
 const METADATA_TEXT = ["sampleName", "subject", "timepoint", "biome", "groupId"];
 const METADATA_FLAGS = ["lowBiomassExplicit", "lowSequencingDepthExplicit"];
 
-/** The metadata of a session file. Every entry is read the way
-    parseMetadata writes it: its text fields as text — a number becomes
-    text, a missing field "" — its flags as true / false, the cells of its
-    row (`extra`) as text or numbers. Anything else is refused: a subject
-    or a sample name written as a number, or a cell holding an object,
-    passed unchecked and then broke the Samples, Events, Scatter and
-    Validate tabs at every visit. */
-function readMetadata(md, errors) {
+/** The metadata of a session. Every entry is read the way parseMetadata
+    writes it: its text fields as text — a number becomes text, a missing
+    field "" — its flags as true / false, the cells of its row (`extra`)
+    as text or numbers. Anything else is refused (null): a subject or a
+    sample name written as a number, or a cell holding an object, passed
+    unchecked and then broke the Samples, Events, Scatter and Validate
+    tabs at every visit. The metadata itself when it is read as it is. */
+function readMetadata(md, p) {
   if (md == null) return null;
   if (!isObj(md) || !isObj(md.bySample)) {
-    errors.push('metadata: "bySample" (the per-sample annotations) is missing.');
+    p.errors.push('metadata: "bySample" (the per-sample annotations) is missing.');
     return null;
   }
-  const bySample = {};
+  let bySample = null;
   for (const [id, m] of Object.entries(md.bySample)) {
     const name = id.slice(0, 60);
     if (!isObj(m) || (m.extra != null && !isObj(m.extra))) {
-      errors.push(`metadata: the annotations of ${name} are not an object.`);
+      p.errors.push(`metadata: the annotations of ${name} are not an object.`);
       return null;
     }
-    const entry = { ...m };
+    let entry = m;
+    const set = (k, v) => {
+      if (entry[k] === v) return;
+      if (entry === m) entry = { ...m };
+      entry[k] = v;
+    };
     for (const f of METADATA_TEXT) {
       if (!isCell(m[f])) {
-        errors.push(`metadata: the ${f} of ${name} is not text.`);
+        p.errors.push(`metadata: the ${f} of ${name} is not text.`);
         return null;
       }
-      entry[f] = m[f] == null ? "" : String(m[f]);
+      set(f, m[f] == null ? "" : String(m[f]));
     }
     for (const f of ["isControl", ...METADATA_FLAGS]) {
       if (m[f] != null && typeof m[f] !== "boolean") {
-        errors.push(`metadata: ${f} of ${name} is neither true nor false.`);
+        p.errors.push(`metadata: ${f} of ${name} is neither true nor false.`);
         return null;
       }
     }
-    entry.isControl = m.isControl === true;
-    for (const f of METADATA_FLAGS) entry[f] = m[f] ?? null;
+    set("isControl", m.isControl === true);
+    for (const f of METADATA_FLAGS) set(f, m[f] ?? null);
     if (m.extra != null) {
       const cell = Object.entries(m.extra).find(([, v]) => !isCell(v));
       if (cell) {
-        errors.push(`metadata: the "${cell[0].slice(0, 60)}" cell of ${name} is not text.`);
+        p.errors.push(`metadata: the "${cell[0].slice(0, 60)}" cell of ${name} is not text.`);
         return null;
       }
     }
+    if (entry === m) continue;
+    if (!bySample) bySample = { ...md.bySample };
     bySample[id] = entry;
   }
-  const out = { ...md, bySample, warnings: warningList(md.warnings) };
-  if (md.cols != null && !isObj(md.cols)) delete out.cols;
-  if (typeof md.nSamples !== "number") out.nSamples = Object.keys(md.bySample).length;
+  let out = md;
+  const patch = (fields) => {
+    if (out === md) out = { ...md };
+    Object.assign(out, fields);
+  };
+  if (bySample) patch({ bySample });
+  const warnings = warningList(md.warnings);
+  if (warnings !== md.warnings) patch({ warnings });
+  if (md.cols != null && !isObj(md.cols)) {
+    patch({});
+    delete out.cols;
+  }
+  if (typeof md.nSamples !== "number") patch({ nSamples: Object.keys(md.bySample).length });
   return out;
 }
 
-function readPlateMap(pm, errors) {
+/** The plate map of a session; the plate map itself when it is read as
+    it is. A missing or wrong format is given from the wells. */
+function readPlateMap(pm, p) {
   if (pm == null) return null;
   if (!isObj(pm) || !isObj(pm.bySample)) {
-    errors.push('plate_map: "bySample" (the sample → well placement) is missing.');
+    p.errors.push('plate_map: "bySample" (the sample → well placement) is missing.');
     return null;
   }
   let maxRow = 7;
   let maxCol = 11;
-  for (const [id, p] of Object.entries(pm.bySample)) {
+  let bySample = null;
+  for (const [id, w] of Object.entries(pm.bySample)) {
     const okWell =
-      isObj(p) &&
-      Number.isInteger(p.row) &&
-      Number.isInteger(p.col) &&
-      p.row >= 0 &&
-      p.row <= 15 &&
-      p.col >= 0 &&
-      p.col <= 23 &&
-      (p.plate == null || typeof p.plate === "string" || typeof p.plate === "number");
+      isObj(w) &&
+      Number.isInteger(w.row) &&
+      Number.isInteger(w.col) &&
+      w.row >= 0 &&
+      w.row <= 15 &&
+      w.col >= 0 &&
+      w.col <= 23 &&
+      (w.plate == null || typeof w.plate === "string" || typeof w.plate === "number");
     if (!okWell) {
-      errors.push(`plate_map: ${id} has no valid well.`);
+      p.errors.push(`plate_map: ${id} has no valid well.`);
       return null;
     }
-    maxRow = Math.max(maxRow, p.row);
-    maxCol = Math.max(maxCol, p.col);
+    maxRow = Math.max(maxRow, w.row);
+    maxCol = Math.max(maxCol, w.col);
+    // The plate as parsePlateMap names it: text, "P1" when none is given.
+    const plate = w.plate == null || w.plate === "" ? "P1" : String(w.plate);
+    if (plate === w.plate) continue;
+    if (!bySample) bySample = { ...pm.bySample };
+    bySample[id] = { ...w, plate };
   }
   const big = maxRow > 7 || maxCol > 11;
   const f = pm.format;
   const formatOk =
     isObj(f) &&
     ((f.rows === 8 && f.cols === 12 && !big) || (f.rows === 16 && f.cols === 24));
-  // The plate as parsePlateMap names it: text, "P1" when none is given.
-  const bySample = {};
-  for (const [id, p] of Object.entries(pm.bySample)) {
-    bySample[id] = { ...p, plate: p.plate == null || p.plate === "" ? "P1" : String(p.plate) };
+  let out = pm;
+  const patch = (fields) => {
+    if (out === pm) out = { ...pm };
+    Object.assign(out, fields);
+  };
+  if (bySample) patch({ bySample });
+  const warnings = warningList(pm.warnings);
+  if (warnings !== pm.warnings) patch({ warnings });
+  if (!formatOk) patch({ format: big ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 } });
+  if (pm.cols != null && !isObj(pm.cols)) {
+    patch({});
+    delete out.cols;
   }
-  const out = { ...pm, bySample, warnings: warningList(pm.warnings) };
-  if (!formatOk) out.format = big ? { rows: 16, cols: 24 } : { rows: 8, cols: 12 };
-  if (pm.cols != null && !isObj(pm.cols)) delete out.cols;
   return out;
+}
+
+/** The run metadata of a session: the run header's parameters, shown as
+    they are in the Overview — a value that is an object stopped that
+    tab, and is left out. */
+function readRunMetadata(rm, p) {
+  if (rm == null) return null;
+  if (!isObj(rm)) {
+    p.errors.push('"run_metadata" must be an object.');
+    return null;
+  }
+  const wrong = Object.keys(rm).filter((k) => !isCell(rm[k]));
+  if (wrong.length === 0) return rm;
+  for (const k of wrong) p.errors.push(`run_metadata: "${k.slice(0, 60)}" is not text.`);
+  const out = { ...rm };
+  for (const k of wrong) delete out[k];
+  return out;
+}
+
+/** Every part of a session, read (see above). */
+function readParts(parts, p, { stored }) {
+  const { events, renumbered } = readEvents(parts.events, p, { stored });
+  const ab = readAbundance(parts.ab, p);
+  return {
+    events,
+    renumbered,
+    sampleCuration: renameCuratedSamples(readSampleCuration(parts.sampleCuration, p), ab.renamed),
+    ab: ab.ab,
+    metadata: readMetadata(parts.metadata, p),
+    plateMap: readPlateMap(parts.plateMap, p),
+    runMetadata: readRunMetadata(parts.runMetadata, p),
+    eventsWarnings: warningList(parts.eventsWarnings),
+  };
+}
+
+/** The first few problems, each naming where it is. */
+const listed = (errors) => {
+  const more = errors.length - MAX_LISTED;
+  return more > 0
+    ? [...errors.slice(0, MAX_LISTED), `… and ${more} more problem${more > 1 ? "s" : ""}.`]
+    : errors;
+};
+
+/** A session read from this browser's storage, checked by the readers
+    of the session import (see above), so that whatever an earlier
+    version, a damaged profile or a file that version imported unchecked
+    left in it opens. Returns { session, notes }: `session` is `s` with
+    the parts the readers had to change replaced — every part read as it
+    is stays the very object read, so the autosave writes only what
+    changed, once — and `notes` the lines of the notice that says what
+    was repaired, reset or left out (empty when nothing was). */
+export function checkStoredSession(s) {
+  if (!s) return { session: s, notes: [] };
+  const p = problems();
+  const parts = readParts(
+    {
+      events: s.rawEvents ?? [],
+      sampleCuration: s.sampleCuration,
+      ab: s.ab,
+      metadata: s.metadata,
+      plateMap: s.plateMap,
+      runMetadata: s.runMetadata,
+      eventsWarnings: s.eventsWarnings,
+    },
+    p,
+    { stored: true },
+  );
+  const session = {
+    ...s,
+    rawEvents: parts.events,
+    sampleCuration: parts.sampleCuration,
+    ab: parts.ab,
+    metadata: parts.metadata,
+    plateMap: parts.plateMap,
+    runMetadata: parts.runMetadata,
+    eventsWarnings: parts.eventsWarnings,
+    analysisTitle: typeof s.analysisTitle === "string" ? s.analysisTitle : "",
+  };
+  // The selection named an event by an id that is gone.
+  if (parts.renumbered) session.selId = null;
+  const notes = [...p.repairs];
+  if (p.errors.length > 0) {
+    notes.push(
+      "Some of it could not be read, and was reset (an event's value) or left out (an event, " +
+        "a file — load it again): " +
+        listed(p.errors).join(" "),
+    );
+  }
+  const same = Object.keys(session).every((k) => session[k] === s[k]);
+  return { session: same ? s : session, notes };
 }
 
 /** Read a session JSON (exportJSON's format, any version) into a session,
@@ -773,11 +1126,12 @@ function readPlateMap(pm, errors) {
     over it), `tabs` the tab ids the app knows.
 
     Returns { ok: false, errors } (the first few problems, each naming
-    where it is), or { ok: true, session, changes }: `session` has the
-    shape every reader of this module uses, its sample curation brought
-    up to date with the current model (migrateSampleCuration), and
+    where it is), or { ok: true, session, changes, repairs }: `session`
+    has the shape every reader of this module uses, its sample curation
+    brought up to date with the current model (migrateSampleCuration),
     `changes` what that migration changed in the curated output (null:
-    nothing to tell). */
+    nothing to tell), and `repairs` what was repaired in the file (see
+    above), for the notice of the import. */
 export function sessionFromPayload(json, { defaults, tabs } = {}) {
   if (!isObj(json)) {
     return {
@@ -785,35 +1139,25 @@ export function sessionFromPayload(json, { defaults, tabs } = {}) {
       errors: ['This is not a session file: expected a JSON object with an "events" list.'],
     };
   }
-  const errors = [];
-  if (!("events" in json)) errors.push('Missing "events" list.');
-  const { events, renumbered } =
-    "events" in json ? readEvents(json.events, errors) : { events: [], renumbered: false };
-  const sampleCuration = readSampleCuration(json.sample_curation, errors);
-  const ab = readAbundance(json.abundance, errors);
-  const metadata = readMetadata(json.metadata, errors);
-  const plateMap = readPlateMap(json.plate_map, errors);
-  const runMetadata = json.run_metadata == null ? null : json.run_metadata;
-  if (runMetadata !== null && !isObj(runMetadata)) {
-    errors.push('"run_metadata" must be an object.');
-  } else if (runMetadata !== null) {
-    // Shown as they are in the Overview: a value that is an object
-    // stopped that tab.
-    const value = Object.entries(runMetadata).find(([, v]) => !isCell(v));
-    if (value) errors.push(`run_metadata: "${value[0].slice(0, 60)}" is not text.`);
-  }
+  const p = problems();
+  if (!("events" in json)) p.errors.push('Missing "events" list.');
+  const parts = readParts(
+    {
+      events: "events" in json ? json.events : [],
+      sampleCuration: json.sample_curation,
+      ab: json.abundance,
+      metadata: json.metadata,
+      plateMap: json.plate_map,
+      runMetadata: json.run_metadata,
+      eventsWarnings: json.events_warnings,
+    },
+    p,
+    { stored: false },
+  );
+  const { events, renumbered, sampleCuration, ab, metadata, plateMap, runMetadata } = parts;
   const ui = json.ui_state == null ? {} : json.ui_state;
-  if (!isObj(ui)) errors.push('"ui_state" must be an object.');
-  if (errors.length > 0) {
-    const more = errors.length - MAX_LISTED;
-    return {
-      ok: false,
-      errors:
-        more > 0
-          ? [...errors.slice(0, MAX_LISTED), `… and ${more} more problem${more > 1 ? "s" : ""}.`]
-          : errors,
-    };
-  }
+  if (!isObj(ui)) p.errors.push('"ui_state" must be an object.');
+  if (p.errors.length > 0) return { ok: false, errors: listed(p.errors) };
   if (events.length === 0 && !ab && !metadata && !plateMap) {
     return {
       ok: false,
@@ -836,13 +1180,14 @@ export function sessionFromPayload(json, { defaults, tabs } = {}) {
   return {
     ok: true,
     changes: migrated.changes,
+    repairs: p.repairs,
     session: {
       rawEvents,
       // Brought up to date by the migration above.
       sampleCuration: migrated.sampleCuration,
       sampleCurationVersion: SAMPLE_CURATION_VERSION,
       runMetadata,
-      eventsWarnings: warningList(json.events_warnings),
+      eventsWarnings: parts.eventsWarnings,
       metadata,
       plateMap,
       ab,
