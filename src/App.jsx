@@ -21238,8 +21238,10 @@ const HelpTab = ({ onStartTour }) => {
                 to inspect pairs that CroCoDeEL did not flag — the
                 form mirrors the same three layers (event evaluation +
                 Verdict on target sample + Action on target sample,
-                auto-synced from the event verdict) and stamps both
-                the event and the target sample on save.
+                both on <em>Automatic</em> by default: the target then
+                follows its events, as after a click) and adds the
+                event on save, with any target value you picked as your
+                own.
               </p>
             </div>
             <div>
@@ -21289,7 +21291,8 @@ const HelpTab = ({ onStartTour }) => {
                 sample (i.e. the contaminations flowing into it). It
                 exposes: an event Evaluation picker, a Verdict on
                 target sample picker, an Action on target sample
-                picker, and three
+                picker (both <em>Automatic</em> by default, as when
+                clicking each event), and three
                 drill-ins → Scatter / → Events / → Samples that scope
                 to that sample and switch tabs.
               </p>
@@ -21631,7 +21634,7 @@ const HelpTab = ({ onStartTour }) => {
           </h4>
           <p>
             Whenever an event's evaluation changes — a click, a keyboard
-            shortcut, a gallery card, the two presets, a reset, the
+            shortcut, a gallery card, the two presets, the
             Bulk-apply dialog, the Network node popover or a pair added
             from <em>Explore new pairs</em> (the last three with the
             target verdict and action on <em>Automatic</em>, their
