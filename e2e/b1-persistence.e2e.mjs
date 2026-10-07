@@ -1264,7 +1264,9 @@ try {
     const firstSample = Object.keys(good.metadata.bySample)[0];
     for (const [what, edit, re] of [
       ["an abundance table that is not one", (j) => (j.abundance.matrix = "oops"), /abundance: "matrix"/],
-      ["an event without a target", (j) => delete j.events[3].target, /event 4 has no source or no target/],
+      // An event without a target is what the previous version's parser
+      // made of a blank line: left out, said (e2e/final-state.e2e.mjs).
+      ["an event whose target is not text", (j) => (j.events[3].target = { id: 1 }), /event 4: its source or its target is neither text nor a number/],
       ["metadata without its samples", (j) => (j.metadata = { nSamples: 3 }), /metadata: "bySample"/],
       // These passed the check, then broke a tab at every visit.
       ["a matrix row the species list does not name", (j) => (j.abundance.matrix.__ghost = null), /abundance: "matrix" has a row for "__ghost"/],
