@@ -22,6 +22,13 @@
              the views show them, each with its origin (manual, automatic,
              default), in agreement with the samples HTML report's "auto"
              and "default" tags;
+     - B2.5  the events and samples HTML reports, of the demo (filtered
+             or not) and of a session with a cascade, an event whose
+             target and one whose source are not in the abundance table,
+             metadata, a plate map and notes with HTML characters, tabs
+             and line breaks, print no NaN, undefined, null or Infinity,
+             escape the notes, and give the introduced share in percent,
+             as the events TSV does;
      - B2.6  a hand-edited session whose metadata entry keeps a string as
              its row: the metadata card does not list its characters as
              columns, the Validate panel shows no "0: a" pill, and the
@@ -205,6 +212,28 @@ function htmlReportTags(html) {
   }
   return tags;
 }
+
+/** The words a report must never print: a value that went missing. */
+const MISSING = /\b(NaN|undefined|null|Infinity)\b/;
+
+/** Where `MISSING` occurs in an HTML report, with its context. */
+function missingIn(html) {
+  const m = MISSING.exec(html || "");
+  return m ? html.slice(Math.max(0, m.index - 80), m.index + 20).replace(/\s+/g, " ") : null;
+}
+
+/** The overview table of the events HTML report: { "src→tgt": the
+    introduced % cell }. */
+function reportIntroduced(html) {
+  const out = {};
+  const re =
+    /<td class="num">\d+<\/td>\s*<td>([^<]*)<\/td>\s*<td>([^<]*)<\/td>\s*<td class="num">[^<]*<\/td>\s*<td class="num">[^<]*<\/td>\s*<td class="num">([^<]*)<\/td>/g;
+  for (const m of (html || "").matchAll(re)) out[`${m[1]}→${m[2]}`] = m[3];
+  return out;
+}
+
+/** A note with HTML special characters, a tab and a line break. */
+const HTML_NOTE = `<b>"Quoted"</b> & 'single'\twith a tab\nsecond line`;
 
 /** Import a session JSON through the files bar. */
 async function importSession(page, json) {
@@ -577,6 +606,103 @@ try {
       disagree.slice(0, 3).map((r) => `${r.sample_id}: ${JSON.stringify(tags[r.sample_id])}`).join("; "),
     );
   });
+
+  /* ---------------- B2.5 HTML reports without a missing value
+     Both reports of the demo, curated, with a note full of HTML
+     characters, then the events report of a filtered subset. */
+  await scenario("B2.5 demo", async (page) => {
+    await openTab(page, "Events");
+    const mark = (title) => page.locator(`button[title="mark as ${title}"]`);
+    await mark("true positive").nth(0).click();
+    await mark("false positive").nth(1).click();
+    await mark("uncertain").nth(2).click();
+    await openTab(page, "Validate");
+    await page.locator('textarea[placeholder^="Notes: related samples"]').fill(HTML_NOTE);
+    await page.waitForTimeout(1500);
+    const eventsHtml = (await exportFile(page, /Download events HTML/i))?.text;
+    const samplesHtml = (await exportFile(page, /Download samples HTML/i))?.text;
+    const tsv = table((await exportFile(page, /Download events TSV/i))?.text);
+    check(
+      !!eventsHtml && !!samplesHtml && !missingIn(eventsHtml) && !missingIn(samplesHtml),
+      "B2.5 the demo's events and samples HTML reports print no NaN / undefined / null",
+      missingIn(eventsHtml) || missingIn(samplesHtml) || "",
+    );
+    check(
+      eventsHtml?.includes("&lt;b&gt;&quot;Quoted&quot;&lt;/b&gt; &amp; 'single'") && !eventsHtml.includes('<b>"Quoted"'),
+      "B2.5 the note is escaped, not markup",
+    );
+    const intro = reportIntroduced(eventsHtml);
+    check(
+      tsv.length === 24 &&
+        tsv.every((r) => intro[`${r.source}→${r.target}`] === `${Number(r.introduced_pct).toFixed(1)}%`),
+      "B2.5 its introduced % is the events TSV's introduced_pct, in percent",
+      Object.entries(intro).slice(0, 2).map(([k, v]) => `${k} ${v}`).join("; "),
+    );
+    // A filtered subset: the report names the filter.
+    await page.locator('input[placeholder="sample id or name…"]').first().fill("63D");
+    await page.waitForTimeout(800);
+    const filtered = (await exportFile(page, /Download events HTML/i))?.text;
+    check(
+      /Filter applied:<\/strong> search: "63D"/.test(filtered || "") && !missingIn(filtered),
+      "B2.5 the report of a filtered subset names the filter and prints no missing value",
+      missingIn(filtered) || "",
+    );
+  });
+
+  /* A cascade C → A → B, an event whose target and one whose source are
+     not in the abundance table, metadata, a plate map, a note. */
+  await scenario("B2.5 crafted", async (page) => {
+    const ab = ["id_mgs\tC\tA\tB\tSRC"];
+    for (let i = 0; i < 20; i++) {
+      const a = 10 ** (-3 * (i / 19));
+      ab.push(`s_${i}\t0\t${a.toPrecision(6)}\t${(0.05 * a).toPrecision(6)}\t${(i % 4) + 1}`);
+    }
+    for (let i = 0; i < 6; i++) {
+      const c = 10 ** (-1 - i / 3);
+      ab.push(`m_${i}\t${c.toPrecision(6)}\t${(0.2 * c).toPrecision(6)}\t${(1e-4 * c).toPrecision(6)}\t0`);
+    }
+    const list = (p, n) => Array.from({ length: n }, (_, i) => `${p}_${i}`).join(",");
+    await upload(page, 0, "contamination_events.tsv", [
+      "# crocodeel version: 1.2.1 | filtering_ab_thr_factor: None",
+      "source\ttarget\trate\tprobability\tcontamination_specific_species",
+      `C\tA\t0.2\t0.99\t${list("m", 6)}`,
+      `A\tB\t0.05\t0.95\t${list("s", 20)}`,
+      "SRC\tMISSING\t0.01\t0.6\ts_1,s_2",
+      "GHOST\tB\t0.03\t0.7\ts_3",
+    ].join("\n"));
+    await upload(page, 1, "species_abundance.tsv", ab.join("\n"));
+    await upload(page, 2, "metadata.tsv", [
+      "sample_id\tsubject_id\tbiome",
+      "C\tp1\tgut",
+      "A\tp2\tgut",
+      "B\tp3\tnegative control",
+    ].join("\n"));
+    await upload(page, 3, "plate_map.tsv", ["sample_id\tplate\twell", "C\tP1\tA01", "A\tP1\tA02", "B\tP1\tB02"].join("\n"));
+    await openTab(page, "Events");
+    const mark = (title) => page.locator(`button[title="mark as ${title}"]`);
+    await mark("true positive").nth(0).click();
+    await mark("false positive").nth(2).click();
+    await openTab(page, "Validate");
+    await page.locator('textarea[placeholder^="Notes: related samples"]').fill(HTML_NOTE);
+    await page.waitForTimeout(1500);
+    const eventsHtml = (await exportFile(page, /Download events HTML/i))?.text || "";
+    const samplesHtml = (await exportFile(page, /Download samples HTML/i))?.text || "";
+    check(
+      eventsHtml.includes("Cascade detected") && (eventsHtml.match(/Not evaluable/g) || []).length >= 2,
+      "B2.5 the crafted report holds a cascade and the two events the table cannot evaluate",
+    );
+    check(
+      !missingIn(eventsHtml) && !missingIn(samplesHtml),
+      "B2.5 and neither report prints NaN / undefined / null",
+      missingIn(eventsHtml) || missingIn(samplesHtml) || "",
+    );
+    const intro = reportIntroduced(eventsHtml);
+    check(
+      intro["SRC→MISSING"] === "—" && /^\d+\.\d%$/.test(intro["A→B"] || ""),
+      "B2.5 the introduced % is a percentage, and a dash for the target missing from the table",
+      JSON.stringify(intro),
+    );
+  }, { demo: false });
 
   /* ---------------- B2.6 metadata entries whose row is not a row
      Every entry but the last keeps the string "abc" as its row, as a
