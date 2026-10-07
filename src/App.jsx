@@ -20246,7 +20246,7 @@ const HelpTab = ({ onStartTour }) => {
             </code>{" "}
             format — these are parsed and shown in the Overview tab.
             Blank lines (even of spaces or tabs) are ignored, and a row
-            without a source or a target is skipped and counted.
+            without a source or a target is skipped.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -20290,14 +20290,14 @@ const HelpTab = ({ onStartTour }) => {
                 name="rate"
                 required
                 type="float [0..1]"
-                desc="Estimated proportion of the contaminated sample that originates from the source. A value that is not a number (e.g. 0,41 written with a decimal comma) refuses the whole file, naming the row; an empty or NA cell reads as 0; values outside (0, 1] are reported."
+                desc="Estimated proportion of the contaminated sample that originates from the source. A value that is not a number (e.g. 0,41 written with a decimal comma) refuses the whole file, naming the row; an empty or NA cell reads as 0. A value outside (0, 1] is kept as read: check that the rates are fractions, not percentages."
                 aliases={["contamination_rate"]}
               />
               <HelpCol
                 name="probability"
                 required
                 type="float [0..1]"
-                desc="CroCoDeEL Random-Forest probability that the event is real. Older CroCoDeEL outputs may write this value into a column named `score` instead — both are accepted; the first value that is neither empty nor NA is used. Read as strictly as the rate; values outside [0, 1] are reported."
+                desc="CroCoDeEL Random-Forest probability that the event is real. Older CroCoDeEL outputs may write this value into a column named `score` instead — both are accepted; the first value that is neither empty nor NA is used. Read as strictly as the rate; a value outside [0, 1] is kept as read."
                 aliases={["score", "rf_score", "proba"]}
               />
               <HelpCol
@@ -20311,7 +20311,7 @@ const HelpTab = ({ onStartTour }) => {
                 name="verdict"
                 recognized
                 type="TP / FP / U / pending"
-                desc="Not in CroCoDeEL's output: written by the curated events TSV of the Export tab, so that reloading that file restores every evaluation instead of resetting them to pending. Accepts true_positive, false_positive, uncertain, pending, TP, FP, U and 'true positive' / 'false positive', in any case; anything else reads as pending and is counted."
+                desc="Not in CroCoDeEL's output: written by the curated events TSV of the Export tab, so that reloading that file restores the event evaluations instead of resetting them to pending. Accepts true_positive, false_positive, uncertain, pending, TP, FP, U and 'true positive' / 'false positive', in any case; anything else reads as pending."
                 aliases={["evaluation"]}
               />
               <HelpCol
@@ -20334,7 +20334,11 @@ const HelpTab = ({ onStartTour }) => {
             spaces, underscores, hyphens and dots), never as part of a
             longer header: an{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}>extraction_batch</code>{" "}
-            column is not an action.
+            column is not an action. Reloading the curated events TSV
+            restores the event evaluations and notes only: the samples'
+            verdicts and keep / suppress actions are not restored, so
+            review the Samples tab before exporting the curated abundance
+            table.
           </p>
         </HelpSection>
 
