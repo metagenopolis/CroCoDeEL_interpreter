@@ -54,6 +54,16 @@ import {
   buildEffectiveSampleCuration,
   sampleActionCounts,
 } from "./curation.js";
+// The text of the exported files (src/exports.js).
+import {
+  eventsToTSV,
+  curatedEventsToTSV,
+  abundanceToTSV,
+  buildCuratedAbundance,
+  curatedAbundanceProvenance,
+  hasInputValues,
+  curationOrigin,
+} from "./exports.js";
 import {
   restoreFilter,
   restoreSort,
@@ -205,8 +215,10 @@ export function flagSample(sampleId, metadata) {
   if (meta.timepoint) flags.timepoint = meta.timepoint;
   if (meta.groupId) flags.groupId = meta.groupId;
 
-  // Other extra columns the user provided that aren't in our standard set
-  if (meta.extra) {
+  // Other extra columns the user provided that aren't in our standard set.
+  // Only a plain object is a row: a hand-edited `extra` string listed its
+  // characters as "0: a", "1: b" pills.
+  if (meta.extra && typeof meta.extra === "object" && !Array.isArray(meta.extra)) {
     // `cols` records which header each standard field came from, so those
     // columns are not repeated in `other`. It is always present on a
     // parseMetadata result, but a hand-edited session JSON can carry a
@@ -280,130 +292,12 @@ export function sampleName(metadata, sampleId) {
   return n;
 }
 
-/** Serialize the loaded events back to a CroCoDeEL-compatible TSV.
-    Optionally prepend the original `# key: value | ...` header line if it
-    was captured at parse time. */
-function eventsToTSV(rawEvents, runMetadata) {
-  const lines = [];
-  if (runMetadata && Object.keys(runMetadata).length > 0) {
-    const parts = Object.entries(runMetadata).map(([k, v]) => `${k}: ${v}`);
-    lines.push(`# ${parts.join(" | ")}`);
-  }
-  // Canonical CroCoDeEL output header (5 columns).
-  lines.push(
-    [
-      "source",
-      "target",
-      "rate",
-      "probability",
-      "contamination_specific_species",
-    ].join("\t"),
-  );
-  rawEvents.forEach((e) => {
-    lines.push(
-      [
-        e.source,
-        e.target,
-        e.rate ?? "",
-        e.score ?? "",
-        Array.isArray(e.introduced) ? e.introduced.join(",") : (e.species ?? ""),
-      ].join("\t"),
-    );
-  });
-  return lines.join("\n");
-}
-
-/** Serialize the in-memory abundance matrix back to TSV. NOTE: the parser
-    normalizes columns to relative abundances per sample, so the output here
-    is RE-NORMALIZED relative abundances — not the exact original counts. */
-export function abundanceToTSV(ab) {
-  if (!ab) return "";
-  const header = ["species", ...ab.samples].join("\t");
-  const lines = [header];
-  ab.species.forEach((sp) => {
-    const row = [sp];
-    ab.samples.forEach((s) => {
-      const v = ab.matrix[sp]?.[s];
-      row.push(Number.isFinite(v) ? v : 0);
-    });
-    lines.push(row.join("\t"));
-  });
-  return lines.join("\n");
-}
-
-/** Apply the sample-level curation to the abundance table.
-
-    Samples the curator flagged `suppress` are removed entirely — that is
-    what the action means: the sample carries too much contamination to be
-    usable. Everything else passes through untouched, including samples
-    flagged `keep` and samples never reviewed.
-
-    No renormalisation happens, and none is needed: in a relative-abundance
-    table each column is closed independently, so removing a whole column
-    leaves every other column summing to exactly what it did before. (This
-    is the opposite of subtracting contamination WITHIN a column, which does
-    break the closure.)
-
-    `dropEmptySpecies` additionally removes species rows left at zero
-    everywhere once the suppressed columns are gone — taxa that were only
-    ever observed in a discarded sample. Off by default would keep the row
-    count comparable with the input; on by default keeps the output clean.
-    Both are defensible, so it is exposed to the user rather than decided
-    here. */
-export function buildCuratedAbundance(ab, sampleCuration, opts = {}) {
-  if (!ab) return null;
-  const dropEmptySpecies = opts.dropEmptySpecies ?? true;
-
-  // Curation is keyed by the sample names that appear in the events file;
-  // map them onto the abundance table's own keys the way every other join
-  // in this file does, so a case or whitespace difference does not silently
-  // fail to suppress a sample.
-  const suppressed = new Set();
-  if (sampleCuration) {
-    for (const name of Object.keys(sampleCuration)) {
-      if (sampleCuration[name]?.action !== "suppress") continue;
-      const key = resolveSample(ab, name);
-      if (key) suppressed.add(key);
-    }
-  }
-
-  const samples = ab.samples.filter((s) => !suppressed.has(s));
-  const droppedSamples = ab.samples.filter((s) => suppressed.has(s));
-
-  let species = ab.species;
-  const droppedSpecies = [];
-  if (dropEmptySpecies) {
-    const kept = [];
-    for (const sp of ab.species) {
-      let seen = false;
-      for (const s of samples) {
-        if ((ab.matrix[sp]?.[s] || 0) > 0) {
-          seen = true;
-          break;
-        }
-      }
-      if (seen) kept.push(sp);
-      else droppedSpecies.push(sp);
-    }
-    species = kept;
-  }
-
-  const matrix = {};
-  for (const sp of species) {
-    const row = {};
-    for (const s of samples) row[s] = ab.matrix[sp]?.[s] ?? 0;
-    matrix[sp] = row;
-  }
-
-  return {
-    samples,
-    species,
-    matrix,
-    logRange: ab.logRange,
-    droppedSamples,
-    droppedSpecies,
-  };
-}
+/* The export builders live in src/exports.js: eventsToTSV (the loaded
+   events written back as CroCoDeEL writes them), the curated events TSV,
+   and abundanceToTSV / buildCuratedAbundance (the abundance table with
+   the input's own values, without the suppressed samples). These two were
+   exported from here before they moved, and still are. */
+export { abundanceToTSV, buildCuratedAbundance } from "./exports.js";
 
 /* ---------- contamination graph export ----------
    The Network tab already treats the events as a directed graph
@@ -453,7 +347,7 @@ export function buildContaminationGraph(events, opts = {}) {
     else if (e.verdict === "false_positive") t.fp++;
     else if (e.verdict === "uncertain") t.uncertain++;
     else t.pending++;
-    if (typeof e.rate === "number") {
+    if (Number.isFinite(e.rate)) {
       if (t.maxIncomingRate == null || e.rate > t.maxIncomingRate) {
         t.maxIncomingRate = e.rate;
       }
@@ -504,8 +398,13 @@ export function buildContaminationGraph(events, opts = {}) {
         fp_as_target: a.fp,
         uncertain_as_target: a.uncertain,
         pending_as_target: a.pending,
-        max_incoming_rate: a.maxIncomingRate ?? 0,
-        max_introduced_pct: a.maxIntroducedPct ?? 0,
+        // -1 when no event targets the sample, where 0 read as a measured
+        // rate next to the -1 of max_introduced_pct.
+        max_incoming_rate: a.maxIncomingRate ?? -1,
+        // A percentage, like the edges' introduced_pct; -1 when unknown (no
+        // event targets the sample, or it is not in the abundance table),
+        // where 0 read as "no species introduced".
+        max_introduced_pct: a.maxIntroducedPct ?? -1,
         species_richness: richness ?? -1,
         in_abundance_table: !!abKey,
       };
@@ -514,15 +413,19 @@ export function buildContaminationGraph(events, opts = {}) {
   const edges = list.map((e, i) => {
     const rel = areRelated(metadata, e.source, e.target);
     const pd = plateDistance(plateMap, e.source, e.target);
+    // -1 for a rate or a probability that is not a number, as for every
+    // other unknown here (only a hand-edited session has one: the parser
+    // reads a missing cell as 0, with a warning).
+    const rate = Number.isFinite(e.rate) ? e.rate : -1;
     return {
       id: `e${e.id ?? i}`,
       source: e.source,
       target: e.target,
       // Gephi and Cytoscape both read `weight` for edge thickness by
       // convention; the contamination rate is the natural quantity.
-      weight: e.rate ?? 0,
-      rate: e.rate ?? 0,
-      probability: e.score ?? 0,
+      weight: rate,
+      rate,
+      probability: Number.isFinite(e.score) ? e.score : -1,
       introduced_pct: typeof e.introducedPct === "number" ? e.introducedPct : -1,
       n_introduced: e.introduced?.length ?? 0,
       event_verdict: e.verdict || "pending",
@@ -20233,6 +20136,18 @@ const HelpTab = ({ onStartTour }) => {
             restored, added and dropped. Clearing the events file asks too,
             and says the curation goes with it.
           </p>
+          <p style={{ marginTop: 6 }}>
+            The curated events TSV starts with CroCoDeEL's five columns,
+            under the names above and with CroCoDeEL's own number
+            formatting, so CroCoDeEL reads it back too (to plot the curated
+            events with <code style={{ fontFamily: "ui-monospace, monospace" }}>plot_conta</code>,
+            say); introduced_pct, verdict, action and notes follow. A
+            curated file exported by an earlier version, whose columns were
+            named{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>contamination_rate</code> and{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace" }}>introduced_species</code>,
+            still loads here.
+          </p>
         </HelpSection>
 
         {/* ---------- species_abundance.tsv ---------- */}
@@ -20259,7 +20174,10 @@ const HelpTab = ({ onStartTour }) => {
           <p>
             Format: first column lists species names, every other column is a
             sample. The parser normalizes each sample column to relative
-            abundances summing to 1. Each sample column and each species row
+            abundances summing to 1 for the plots and the checks, and keeps
+            each column's total: the card's Download and the curated
+            abundance export write the file's own values back (counts stay
+            counts). Each sample column and each species row
             must appear once: a table repeating one is refused, with the
             repeated names. A table with a header but no species rows is
             refused too.
@@ -20500,9 +20418,13 @@ const HelpTab = ({ onStartTour }) => {
             are matched like the metadata's: exactly, ignoring case, spaces,
             underscores, hyphens and dots. A sample placed on more than one
             row keeps its first well; the plate map card names the repeated
-            ids. It also says when two samples share a well, and when no
-            plate column was recognized: every sample is then on one plate,
-            so samples of different plates would look adjacent.
+            ids. It also says when two samples share a well. A file without
+            a plate column is read as a single plate, P1 (the card's column
+            line then lists no plate): that is the usual one-plate study, so
+            the card warns about it only when the file suggests several
+            plates — a header containing "plate" that is not one of the
+            names below, or two samples in one well — since samples of
+            different plates would then look adjacent.
           </p>
           <table className="w-full text-left mt-3">
             <thead>
@@ -20932,18 +20854,35 @@ const HelpTab = ({ onStartTour }) => {
             <div>
               <h4 style={{ color: "var(--ink)", fontWeight: 700 }}>Export</h4>
               <p>
-                Four downloads. The two event-level exports respect
-                the Events filter bar at the top of the tab; the two
-                sample-level exports always cover the full sample
-                table (every sample that appears in the events list or
-                the abundance matrix):
+                Six downloads. The event-level ones (events TSV, events
+                HTML report, contamination graph) follow the Events
+                filter bar at the top of the tab; the sample-level ones
+                (samples TSV, samples HTML report, curated abundance
+                table) always cover every sample — every sample that
+                appears in the events list or the abundance matrix:
               </p>
               <ul className="list-disc pl-5 mt-2 space-y-1">
                 <li>
-                  <strong>Events TSV</strong> — every matched event
-                  with its evaluation, action and notes. Filter
-                  downstream using the evaluation / action columns if
-                  you only want TPs or want to drop FPs.
+                  <strong>Events TSV</strong> — every matched event,
+                  in CroCoDeEL's own layout followed by the curation:{" "}
+                  <code>source</code>, <code>target</code>,{" "}
+                  <code>rate</code>, <code>probability</code> and{" "}
+                  <code>contamination_specific_species</code> written as
+                  CroCoDeEL writes them, so CroCoDeEL reads the file
+                  back, then <code>introduced_pct</code>,{" "}
+                  <code>verdict</code> (true_positive / false_positive /
+                  uncertain / pending), <code>action</code> (the target
+                  sample's keep / suppress) and <code>notes</code>. The
+                  run's <code>#</code> parameter line and a{" "}
+                  <code># study:</code> line come first (a <code>|</code>{" "}
+                  in the title is written <code>/</code>: the reader
+                  splits <code>#</code> lines on it). Filter
+                  downstream on the verdict / action columns if you only
+                  want TPs or want to drop FPs, or load the file again
+                  on the events card to restore the evaluations and
+                  notes; a file exported by an earlier version (with{" "}
+                  <code>contamination_rate</code> and{" "}
+                  <code>introduced_species</code>) still loads.
                 </li>
                 <li>
                   <strong>Samples TSV — full table</strong> — one row
@@ -20953,8 +20892,22 @@ const HelpTab = ({ onStartTour }) => {
                   plate position, per-side event counts, per-side TP /
                   FP / Uncertain / Pending breakdown, max
                   contamination rate, max introduced %, plus the
-                  sample-level verdict, action and notes. Same data
-                  the Samples-tab toolbar export produces.
+                  sample-level verdict and action as every view shows
+                  them — automatic values and the Not contaminated +
+                  Keep default of a sample no event targets included —
+                  each followed by its origin (<code>verdict_origin</code>,{" "}
+                  <code>action_origin</code>: <em>manual</em> when you
+                  set it; <em>automatic</em> when the rule sets it — the
+                  verdict the events that target the sample call for, the
+                  Suppress that goes with a Contaminated verdict, yours
+                  included; <em>default</em> for the Not contaminated +
+                  Keep of a sample no event targets; empty without a
+                  value), the notes, and the study (the session's title,
+                  on every row). The header is the first line, with no{" "}
+                  <code>#</code> line above it, so pandas and R read the
+                  file with their default options. The samples HTML
+                  report tags the same values <em>auto</em> and{" "}
+                  <em>default</em>.
                 </li>
                 <li>
                   <strong>Events HTML report</strong> — self-contained
@@ -20971,7 +20924,71 @@ const HelpTab = ({ onStartTour }) => {
                   metadata flags, event-aggregate columns). Use the
                   browser's print dialog to save as PDF.
                 </li>
+                <li>
+                  <strong>Curated abundance table</strong> — the
+                  abundance table without the samples whose action is
+                  Suppress (and, unless you untick the box, without the
+                  species observed only in those samples; a species at
+                  zero in every sample of the input stays). Each
+                  remaining column holds the input file's own values —
+                  counts stay integers, percentages stay percentages,
+                  nothing is renormalised — under the input's first
+                  header and in its species order. The file holds the
+                  data only, so CroCoDeEL, pandas{" "}
+                  (<code>read_csv(path, sep="\t", index_col=0)</code>)
+                  and R (<code>read.delim</code>) read it with their
+                  default options. The same click writes its provenance
+                  next to it, <code>species_abundance_curated.provenance.txt</code>{" "}
+                  — suppressed samples, species dropped with them, date,
+                  study — built from that very table (the browser may ask
+                  before this second download). A cell read as 0
+                  (empty, NA, not a number, negative) is written as 0. A
+                  value written with up to 15 significant digits comes
+                  back exactly. One written with 16 or 17, more digits
+                  than a number holds, comes back as the same number,
+                  sometimes in fewer digits, or — when the number next to
+                  it makes the same relative abundance — as that one: a
+                  relative difference of about 2e-16, which can change its
+                  last one or two digits. The abundance card's Download
+                  writes the whole table the same way. A session saved by
+                  an earlier version lacks the input's column totals: both
+                  files are then written as relative abundances under a{" "}
+                  <code>species</code> header, and both cards say so —
+                  load the abundance table again to export its own
+                  values.
+                </li>
+                <li>
+                  <strong>Contamination graph</strong> — the directed
+                  source → target graph as GraphML (Gephi and Cytoscape
+                  open it natively) or as a node + edge CSV pair, every
+                  annotation a typed attribute: per sample its verdict,
+                  action, notes, metadata, plate position, event counts
+                  and species richness; per event its rate (also as{" "}
+                  <code>weight</code>), probability, introduced share,
+                  evaluation, notes, cascade flag, relatedness and plate
+                  distance. A missing number is −1, never 0, which would
+                  read as a measurement: a sample no event targets has a{" "}
+                  <code>max_incoming_rate</code> and a{" "}
+                  <code>max_introduced_pct</code> of −1, a sample outside
+                  the abundance table a <code>species_richness</code> of
+                  −1.
+                </li>
               </ul>
+              <p style={{ marginTop: 6 }}>
+                <strong>Units.</strong> Rates are fractions (0.704) in
+                the TSV and graph files, as in CroCoDeEL's files, and
+                percentages with a % sign (70.40%) in the HTML reports,
+                as on screen. The introduced share is a percentage of
+                the target's species (61.54 for 8 of 13), the same in
+                every export:{" "}
+                <code>introduced_pct</code> in the events TSV and the
+                graph files, <code>max_target_introduced_pct</code> in
+                the samples TSV, <code>max_introduced_pct</code> on the
+                graph's nodes, "introduced %" in the HTML reports. When
+                it is unknown — the target is not in the abundance
+                table, or no event targets the sample — the TSVs leave
+                it empty and the graph files write −1.
+              </p>
               <p style={{ marginTop: 6 }}>
                 For a full reproducibility-grade backup of the entire
                 session (events + every loaded file + UI state), use{" "}
@@ -22773,8 +22790,8 @@ const ExportTab = ({
           title={`Events TSV — ${counts.total} event${counts.total === 1 ? "" : "s"}`}
           desc={
             isFiltered
-              ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). Verdict, action and notes columns are included.`
-              : "Every event with its evaluation, action and notes. Filter downstream using the evaluation / action columns if you want to drop FPs or keep TPs only."
+              ? `Exports the ${counts.total} event${counts.total === 1 ? "" : "s"} matching the current filter (out of ${totalLoaded}). CroCoDeEL's own columns come first, so CroCoDeEL reads the file too; verdict, action and notes columns follow.`
+              : "Every event with its evaluation, action and notes, after CroCoDeEL's own columns: CroCoDeEL reads the file too, and so does this interface (reload it to restore the evaluations). Filter downstream using the evaluation / action columns if you want to drop FPs or keep TPs only."
           }
           action="Download events TSV"
           onClick={() => onExportTSV(filteredEvents)}
@@ -22789,7 +22806,11 @@ const ExportTab = ({
               "plate position, per-side event counts, per-side TP / " +
               "FP / Uncertain / Pending breakdown, max contamination " +
               "rate and max introduced %, plus the sample-level " +
-              "verdict, action and notes."
+              "verdict and action, each with its origin (manual; " +
+              "automatic, set by the rule from the events or paired " +
+              "with Contaminated; or the default Not contaminated + " +
+              "Keep of a sample no event targets), the notes and the " +
+              "study. No # line: pandas and R read it as it is."
             }
             action="Download samples TSV"
             onClick={onExportSamplesTSV}
@@ -22817,33 +22838,59 @@ const ExportTab = ({
             desc={
               !hasAb ? (
                 "Load species_abundance.tsv to enable this export."
-              ) : curatedAbundanceStats?.suppressedSamples === 0 ? (
-                <>
-                  The abundance table with every sample set to{" "}
-                  <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
-                  removed. Nothing is set to suppress yet, so this would
-                  export the table unchanged — mark a sample{" "}
-                  <em>Contaminated</em> from the Samples, Validate or Network
-                  tab (which defaults its action to Suppress), or set the
-                  action by hand.
-                </>
               ) : (
                 <>
-                  The abundance table with the{" "}
-                  <strong style={{ color: "var(--ink)" }}>
-                    {curatedAbundanceStats.suppressedSamples} sample
-                    {curatedAbundanceStats.suppressedSamples === 1 ? "" : "s"}
-                  </strong>{" "}
-                  set to <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
-                  removed — which includes every sample you marked{" "}
-                  <em>Contaminated</em> without then choosing <em>Keep</em>
-                  {curatedAbundanceStats.droppedSpecies > 0 && dropEmptySpecies
-                    ? `, and ${curatedAbundanceStats.droppedSpecies} species that are left at zero everywhere`
-                    : ""}
-                  . Remaining columns are untouched — dropping a sample does
-                  not change any other sample's relative abundances, so no
-                  renormalisation is applied. The suppressed ids are recorded
-                  in the file header.
+                  {curatedAbundanceStats?.suppressedSamples === 0 ? (
+                    <>
+                      The abundance table with every sample set to{" "}
+                      <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
+                      removed. Nothing is set to suppress yet, so this would
+                      export every sample — mark a sample{" "}
+                      <em>Contaminated</em> from the Samples, Validate or
+                      Network tab (which defaults its action to Suppress), or
+                      set the action by hand.
+                    </>
+                  ) : (
+                    <>
+                      The abundance table with the{" "}
+                      <strong style={{ color: "var(--ink)" }}>
+                        {curatedAbundanceStats.suppressedSamples} sample
+                        {curatedAbundanceStats.suppressedSamples === 1 ? "" : "s"}
+                      </strong>{" "}
+                      set to <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
+                      removed — which includes every sample you marked{" "}
+                      <em>Contaminated</em> without then choosing <em>Keep</em>
+                      {curatedAbundanceStats.droppedSpecies > 0 && dropEmptySpecies
+                        ? `, and the ${curatedAbundanceStats.droppedSpecies} species observed only in those samples`
+                        : ""}
+                      .
+                    </>
+                  )}{" "}
+                  {curatedAbundanceStats?.inputValues ? (
+                    <>
+                      Every remaining column holds the input file's own
+                      values — counts stay counts, nothing is renormalised —
+                      under its first header and in its species order, so the
+                      table loads in CroCoDeEL, pandas and R just as the input
+                      did.
+                    </>
+                  ) : (
+                    <>
+                      <strong style={{ color: "var(--ink)" }}>
+                        Written as relative abundances:
+                      </strong>{" "}
+                      this session was saved before the interface kept the
+                      input's column totals, so each value is the sample's
+                      fraction of its total, under a <code>species</code>{" "}
+                      header. Load species_abundance.tsv again to export the
+                      input's own values.
+                    </>
+                  )}{" "}
+                  Its provenance comes with it, in a second file (
+                  <code>species_abundance_curated.provenance.txt</code>):
+                  the suppressed samples, the species dropped with them,
+                  the date and the study of that very table. Your browser
+                  may ask before the second download.
                 </>
               )
             }
@@ -24741,7 +24788,7 @@ const defaultFilter = () => ({
       {
         title: "Export your curated report",
         body:
-          "When done, the Export tab produces four downloads: a curated events TSV (evaluation, action, notes), a full samples TSV (one row per sample with metadata facets, plate position, per-side event counts and breakdown, max rate / introduced %, plus verdict / action / notes), a printable events HTML report and a printable samples HTML report. Filter downstream using the evaluation / action columns if needed.",
+          "When done, the Export tab produces six downloads: a curated events TSV (CroCoDeEL's own columns, which CroCoDeEL reads back, then evaluation, action, notes), a full samples TSV (one row per sample with metadata facets, plate position, per-side event counts and breakdown, max rate / introduced %, plus verdict / action / notes), a printable events HTML report, a printable samples HTML report, the curated abundance table (the input's own values, without the samples set to Suppress) and the contamination graph for Gephi or Cytoscape. Filter downstream using the evaluation / action columns if needed.",
         action: "tabExport",
         highlight: '[data-tutorial="tab-export"]',
       },
@@ -26274,64 +26321,28 @@ const defaultFilter = () => ({
     // filter bar). When omitted we dump every loaded event so downstream
     // tools can do their own filtering on the verdict/action columns.
     const list = Array.isArray(eventsList) ? eventsList : events;
-    const header = [
-      "source",
-      "target",
-      "contamination_rate",
-      "probability",
-      "introduced_pct",
-      "introduced_species",
-      "verdict",
-      "action",
-      "notes",
-    ];
-    const lines = [];
-    // CroCoDeEL-style header comments — the study name lets downstream
-    // tools or readers identify which dataset this curation belongs to.
-    if (analysisTitle) {
-      lines.push(`# study: ${tsvCell(analysisTitle)}`);
-    }
-    lines.push(header.join("\t"));
-    list.forEach((e) => {
-      lines.push(
-        [
-          e.source,
-          e.target,
-          e.rate,
-          e.score,
-          e.introducedPct == null ? "" : (e.introducedPct / 100).toFixed(4),
-          e.introduced.join(","),
-          e.verdict,
-          // Action lives on the target sample; surface it on the event
-          // row so downstream tools that consume this TSV see the same
-          // shape they did before the sample-level refactor.
-          sampleCuration?.[e.target]?.action || "",
-          e.notes,
-        ]
-          .map(tsvCell)
-          .join("\t"),
-      );
-    });
+    // CroCoDeEL's own columns first, so CroCoDeEL reads the file back,
+    // then introduced_pct, verdict, action and notes; the run's "#" line
+    // and the study name on top (curatedEventsToTSV, src/exports.js).
     downloadFile(
-      lines.join("\n"),
+      curatedEventsToTSV(list, {
+        runMetadata,
+        study: analysisTitle,
+        sampleCuration: effectiveSampleCuration,
+      }),
       `contamination_events_curated.tsv`,
       "text/tab-separated-values",
     );
   };
 
-  /** Sample-level curation export. One row per sample in the union of
-      events (source or target) and the abundance table, with every
-      column the Samples tab surfaces: metadata facets, plate position,
-      per-side event counts and evaluation breakdown, max rate, max
-      introduced %, plus the curation triplet (verdict, action, notes).
-      Empty / missing values become empty cells; the rows aren't
-      filtered so downstream tooling can pivot on whatever it needs. */
-  /** Preview counts for the Export tab card. Cheap: one pass over the
-      matrix, and only when an abundance table is loaded. */
+  /** Preview counts for the Export tab card, recomputed on every curation
+      change: no table is built (`matrix: false`), only the samples and
+      species it would drop are counted. */
   const curatedAbundanceStats = useMemo(() => {
     if (!ab) return null;
     const cur = buildCuratedAbundance(ab, effectiveSampleCuration, {
       dropEmptySpecies: true,
+      matrix: false,
     });
     return {
       totalSamples: ab.samples.length,
@@ -26339,39 +26350,42 @@ const defaultFilter = () => ({
       suppressedSamples: cur.droppedSamples.length,
       totalSpecies: ab.species.length,
       droppedSpecies: cur.droppedSpecies.length,
+      // False for a session saved before the parser kept the column sums:
+      // the table is then written as fractions, and the card says so.
+      inputValues: hasInputValues(ab),
     };
   }, [ab, effectiveSampleCuration]);
 
+  /** The curated abundance table and the text file that records how it
+      was made — the suppressed samples, the species that went with them,
+      the date, the study — both written from the same
+      buildCuratedAbundance result, on the same click. The provenance used
+      to be "#" lines at the top of the table, which pandas' and R's
+      default readers take for data: the table now holds the data only
+      (abundanceToTSV), with the input's own values. It then came from a
+      link of its own, which a curator could skip, and which described the
+      curation of the moment it was clicked, not the table downloaded
+      before. */
   const exportCuratedAbundance = (opts = {}) => {
     if (!ab) return;
     const cur = buildCuratedAbundance(ab, effectiveSampleCuration, opts);
-    const head = [
-      `# curated abundance table — ${cur.samples.length} of ${ab.samples.length} samples kept`,
-    ];
-    if (analysisTitle) head.push(`# study: ${tsvCell(analysisTitle)}`);
-    head.push(`# curated: ${new Date().toISOString()}`);
-    // Provenance: which samples were dropped and why the species list may
-    // be shorter. A reader must be able to reconstruct the input.
-    if (cur.droppedSamples.length > 0) {
-      head.push(
-        `# suppressed samples (${cur.droppedSamples.length}): ${cur.droppedSamples
-          .map(tsvCell)
-          .join(", ")}`,
-      );
-    } else {
-      head.push("# suppressed samples (0): none — table is unchanged");
-    }
-    if (cur.droppedSpecies.length > 0) {
-      head.push(
-        `# species dropped as all-zero after suppression (${cur.droppedSpecies.length})`,
-      );
-    }
-    head.push(
-      "# relative abundances are unchanged: removing a sample column does not affect the others",
-    );
-    downloadText(
-      head.join("\n") + "\n" + abundanceToTSV(cur),
-      "species_abundance_curated.tsv",
+    const table = abundanceToTSV(cur);
+    const provenance = curatedAbundanceProvenance(ab, cur, {
+      study: analysisTitle,
+      curated: new Date().toISOString(),
+      build: `${__APP_VERSION__.hash} (${__APP_VERSION__.date})`,
+    });
+    downloadText(table, "species_abundance_curated.tsv");
+    // Two files, like the graph's CSV pair; the browser may ask before the
+    // second one.
+    setTimeout(
+      () =>
+        downloadFile(
+          provenance,
+          "species_abundance_curated.provenance.txt",
+          "text/plain",
+        ),
+      350,
     );
   };
 
@@ -26416,6 +26430,20 @@ const defaultFilter = () => ({
     return { nodes: ids.size, edges: filtered.length };
   }, [filtered]);
 
+  /** Sample-level curation export. One row per sample in the union of
+      events (source or target) and the abundance table, with every
+      column the Samples tab surfaces: metadata facets, plate position,
+      per-side event counts and evaluation breakdown, max rate, max
+      introduced %, plus the curation: verdict and action as every view
+      shows them (the effective curation: automatic values and the
+      default of a never-targeted sample included), each followed by its
+      origin — manual, automatic or default (curationOrigin) — the notes
+      and the study. Empty / missing values become empty cells; the rows
+      aren't filtered so downstream tooling can pivot on whatever it
+      needs. The header is the first line: the "# study:" line the file
+      used to start with is a data row to pandas' and R's default readers
+      (pandas silently took the 23 first columns for an index, R refused
+      the file), so the study is a column of its own. */
   const exportSamplesReport = () => {
     const sampleIds = new Set();
     (events || []).forEach((e) => {
@@ -26487,14 +26515,13 @@ const defaultFilter = () => ({
       "max_target_rate",
       "max_target_introduced_pct",
       "verdict",
+      "verdict_origin",
       "action",
+      "action_origin",
       "notes",
+      "study",
     ];
-    const lines = [];
-    if (analysisTitle) {
-      lines.push(`# study: ${tsvCell(analysisTitle)}`);
-    }
-    lines.push(header.join("\t"));
+    const lines = [header.join("\t")];
 
     // Letter columns are 1-based when re-emitted to plate map style,
     // matching plateMapToTSV (e.g. row 0 col 0 → "A01").
@@ -26536,8 +26563,11 @@ const defaultFilter = () => ({
             num(a.maxTargetRate, 6),
             num(a.maxTargetIntroducedPct, 2),
             c.verdict || "",
+            curationOrigin(c, "verdict", a.asTarget > 0),
             c.action || "",
+            curationOrigin(c, "action", a.asTarget > 0),
             c.notes,
+            analysisTitle || "",
           ]
             .map(tsvCell)
             .join("\t"),
@@ -26658,13 +26688,17 @@ const defaultFilter = () => ({
           : { bg: "#e0b13a", label: "Keep" };
       return `<span style="background:${tone.bg};color:#fff;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">${tone.label}</span>`;
     };
-    // Values the curator did not set: "auto" when derived from the events
-    // that target the sample, "default" for the Not contaminated + Keep
-    // of a sample no event targets. Printed, so a saved PDF keeps it.
-    const autoTag = (on, targeted) =>
-      on
-        ? `<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#797870;">${targeted ? "auto" : "default"}</span>`
+    // Values the curator did not set, as the samples TSV's origin columns
+    // name them (curationOrigin): "auto" for the rule's — from the events
+    // that target the sample, or the Suppress paired with Contaminated —
+    // and "default" for the Not contaminated + Keep of a sample no event
+    // targets. Printed, so a saved PDF keeps it.
+    const originTag = (c, field, targeted) => {
+      const origin = curationOrigin(c, field, targeted);
+      return origin === "automatic" || origin === "default"
+        ? `<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#797870;">${origin === "automatic" ? "auto" : "default"}</span>`
         : "";
+    };
     const flagChip = (label, on, color) => {
       if (!on) return "";
       return `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:2px;font-size:9px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;margin-right:2px;">${label}</span>`;
@@ -26723,8 +26757,8 @@ const defaultFilter = () => ({
             </td>
             <td style="text-align:right;font-family:ui-monospace,monospace;">${ratePct(a.maxTargetRate)}</td>
             <td style="text-align:right;font-family:ui-monospace,monospace;">${introPct(a.maxTargetIntroducedPct)}</td>
-            <td>${verdictPill(c.verdict)}${autoTag(c.verdict && c.verdictAuto, a.asTarget > 0)}</td>
-            <td>${actionPill(c.action)}${autoTag(c.action && c.actionAuto, a.asTarget > 0)}</td>
+            <td>${verdictPill(c.verdict)}${originTag(c, "verdict", a.asTarget > 0)}</td>
+            <td>${actionPill(c.action)}${originTag(c, "action", a.asTarget > 0)}</td>
             <td style="font-size:10px;color:#5a5550;white-space:pre-wrap;">${escapeHTML(c.notes || "")}</td>
           </tr>
         `;
@@ -26777,7 +26811,7 @@ const defaultFilter = () => ({
     <div class="stat keep" title="${escapeHTML(SAMPLES_TO_KEEP_HINT)}"><div class="label">Keep</div><div class="value">${summary.keep}</div></div>
     <div class="stat suppress" title="${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)}"><div class="label">Suppress</div><div class="value">${summary.suppress}</div></div>
   </div>
-  <div class="meta">Keep: ${escapeHTML(SAMPLES_TO_KEEP_HINT)} Suppress: ${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)} In the table, <em>auto</em> marks a verdict or an action derived from the event evaluations and <em>default</em> the Not contaminated + Keep of a sample no event targets; the others were set by hand.</div>
+  <div class="meta">Keep: ${escapeHTML(SAMPLES_TO_KEEP_HINT)} Suppress: ${escapeHTML(SAMPLES_TO_SUPPRESS_HINT)} In the table, <em>auto</em> marks a verdict or an action set by the rule — a verdict derived from the event evaluations, or the Suppress that goes with a Contaminated verdict — and <em>default</em> the Not contaminated + Keep of a sample no event targets; the others were set by hand.</div>
 
   <h2>Samples</h2>
   <table>
@@ -28339,6 +28373,16 @@ const defaultFilter = () => ({
                   ? () =>
                       downloadText(abundanceToTSV(ab), "species_abundance.tsv")
                   : undefined
+              }
+              // A session saved before the parser kept the column totals
+              // has only the fractions: the Download writes those, which
+              // the card must say, as the Export tab's card does.
+              details={
+                ab && !hasInputValues(ab)
+                  ? uploadCardDetails(null, [
+                      'Its Download writes relative abundances under a "species" header: this session was saved before the interface kept the table\'s column totals. Load species_abundance.tsv again to download its own values.',
+                    ])
+                  : null
               }
               onClear={ab ? () => setAb(null) : undefined}
               confirmDialog={setBulkConfirm}

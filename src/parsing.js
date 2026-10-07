@@ -902,6 +902,17 @@ export function parseMetadata(text) {
   return metadataResult(cols, bySample, warnings);
 }
 
+/** The row a metadata entry keeps (`extra`: its cells keyed by header), or
+    null when it keeps none. A session file can be edited by hand, and an
+    `extra` that is not a plain object is not a row: a string made
+    metadataToTSV throw (`col in "abc"`) and the metadata card list its
+    characters as columns ("other: 0, 1, 2"); a list was read as a row
+    whose headers are "0", "1", … and lost the entry's subject. */
+function entryRow(entry) {
+  const extra = entry?.extra;
+  return extra && typeof extra === "object" && !Array.isArray(extra) ? extra : null;
+}
+
 /** The values of a metadata entry that the app reads. */
 const ENTRY_FIELDS = [
   "sampleName",
@@ -935,10 +946,7 @@ export function remapMetadata(metadata) {
   const bySample = metadata?.bySample;
   if (!bySample || typeof bySample !== "object") return metadata;
   const ids = Object.keys(bySample);
-  const rowOf = (id) => {
-    const extra = bySample[id]?.extra;
-    return extra && typeof extra === "object" ? extra : null;
-  };
+  const rowOf = (id) => entryRow(bySample[id]);
   // The file's header, from the rows the entries keep.
   const headerSet = new Set();
   for (const id of ids) Object.keys(rowOf(id) || {}).forEach((k) => headerSet.add(k));
@@ -1010,10 +1018,11 @@ export function metadataToTSV(stored) {
   if (!metadata?.bySample || typeof metadata.bySample !== "object") return "";
   const sampleIds = Object.keys(metadata.bySample);
   if (sampleIds.length === 0) return "";
-  // Collect the union of all extra keys from the original rows
+  // Collect the union of all extra keys from the original rows (an entry
+  // without a readable row contributes none: see entryRow).
   const allKeys = new Set();
   sampleIds.forEach((id) => {
-    const extras = metadata.bySample[id]?.extra || {};
+    const extras = entryRow(metadata.bySample[id]) || {};
     Object.keys(extras).forEach((k) => allKeys.add(k));
   });
   const header = [...allKeys];
@@ -1034,8 +1043,9 @@ export function metadataToTSV(stored) {
   };
   const valueOf = (k, id) => {
     const m = metadata.bySample[id] || {};
+    const row = entryRow(m);
     const col = colOf[k];
-    if (k !== "sample" && col && m.extra && col in m.extra) return m.extra[col] ?? "";
+    if (k !== "sample" && col && row && col in row) return row[col] ?? "";
     return parsedValue[k](m, id) ?? "";
   };
   // sample_id and subject_id always (parseMetadata requires both), the
@@ -1061,7 +1071,7 @@ export function metadataToTSV(stored) {
   });
   const lines = [[...names, ...extraNames].map(tsvCell).join("\t")];
   sampleIds.forEach((id) => {
-    const extra = metadata.bySample[id]?.extra || {};
+    const extra = entryRow(metadata.bySample[id]) || {};
     const cells = [
       ...fields.map((k) => valueOf(k, id)),
       ...extras.map((k) => extra[k] ?? ""),
@@ -1275,8 +1285,13 @@ export function metadataColumnsLine(metadata) {
   if (!cols) return null;
   const parts = mappedFields(cols, METADATA_COLS);
   const used = new Set(Object.values(cols).filter(Boolean));
-  const first = Object.values(metadata.bySample || {})[0];
-  const other = Object.keys(first?.extra || {}).filter((k) => !used.has(k));
+  // The header, from the first entry that keeps a row (see entryRow).
+  let row = null;
+  for (const entry of Object.values(metadata.bySample || {})) {
+    row = entryRow(entry);
+    if (row) break;
+  }
+  const other = Object.keys(row || {}).filter((k) => !used.has(k));
   if (other.length > 0) {
     const more = other.length > 4 ? `, +${other.length - 4}` : "";
     parts.push(`other: ${other.slice(0, 4).join(", ")}${more}`);
