@@ -63,6 +63,8 @@ import {
   curatedAbundanceProvenance,
   hasInputValues,
   curationOrigin,
+  samplesReportCuration,
+  samplesReportIndex,
 } from "./exports.js";
 import {
   checkStoredSession,
@@ -24703,7 +24705,14 @@ function AppMain({ initial, storage }) {
   // string so a verdict click (new events, same targets) does not hand
   // every reader a new map.
   const neverTargetedKey = useMemo(
-    () => neverTargetedSamples(rawEvents, ab?.samples).join("\n"),
+    () =>
+      neverTargetedSamples(
+        rawEvents,
+        ab?.samples,
+        // A table sample that an event targets under another spelling is
+        // targeted.
+        ab ? (id) => resolveSample(ab, id) : null,
+      ).join("\n"),
     [rawEvents, ab],
   );
   const neverTargeted = useMemo(
@@ -26950,12 +26959,10 @@ const defaultFilter = () => ({
       (pandas silently took the 23 first columns for an index, R refused
       the file), so the study is a column of its own. */
   const exportSamplesReport = () => {
-    const sampleIds = new Set();
-    (events || []).forEach((e) => {
-      if (e.source) sampleIds.add(e.source);
-      if (e.target) sampleIds.add(e.target);
-    });
-    if (ab?.samples) for (const s of ab.samples) sampleIds.add(s);
+    // One row per sample: a name the abundance table holds under another
+    // spelling is that table sample (samplesReportIndex, src/exports.js).
+    const index = samplesReportIndex(events, ab);
+    const sampleIds = new Set(index.ids);
 
     // Pre-compute per-sample aggregates in a single pass over events.
     const agg = new Map();
@@ -26973,11 +26980,11 @@ const defaultFilter = () => ({
     }
     (events || []).forEach((e) => {
       if (e.source) {
-        const a = agg.get(e.source);
+        const a = agg.get(index.rowOf(e.source));
         if (a) a.asSource++;
       }
       if (e.target) {
-        const a = agg.get(e.target);
+        const a = agg.get(index.rowOf(e.target));
         if (a) {
           a.asTarget++;
           if (e.verdict === "true_positive") a.tpAsTarget++;
@@ -27045,7 +27052,7 @@ const defaultFilter = () => ({
         const flags = flagSample(id, metadata);
         const placement = plateMap?.bySample?.[id] || null;
         const a = agg.get(id) || {};
-        const c = effectiveSampleCuration?.[id] || {};
+        const c = samplesReportCuration(effectiveSampleCuration, index.names(id));
         lines.push(
           [
             id,
@@ -27091,12 +27098,9 @@ const defaultFilter = () => ({
       conventions of the events HTML report (palette, page header,
       "save as PDF" footer). */
   const exportSamplesHTMLReport = () => {
-    const sampleIds = new Set();
-    (events || []).forEach((e) => {
-      if (e.source) sampleIds.add(e.source);
-      if (e.target) sampleIds.add(e.target);
-    });
-    if (ab?.samples) for (const s of ab.samples) sampleIds.add(s);
+    // One row per sample, as in the samples TSV.
+    const index = samplesReportIndex(events, ab);
+    const sampleIds = new Set(index.ids);
 
     const agg = new Map();
     for (const id of sampleIds) {
@@ -27113,11 +27117,11 @@ const defaultFilter = () => ({
     }
     (events || []).forEach((e) => {
       if (e.source) {
-        const a = agg.get(e.source);
+        const a = agg.get(index.rowOf(e.source));
         if (a) a.asSource++;
       }
       if (e.target) {
-        const a = agg.get(e.target);
+        const a = agg.get(index.rowOf(e.target));
         if (a) {
           a.asTarget++;
           if (e.verdict === "true_positive") a.tpAsTarget++;
@@ -27148,7 +27152,7 @@ const defaultFilter = () => ({
     const summary = rows.reduce(
       (acc, id) => {
         acc.total++;
-        const c = effectiveSampleCuration?.[id] || {};
+        const c = samplesReportCuration(effectiveSampleCuration, index.names(id));
         const v = c.verdict || "pending";
         if (v === "contaminated") acc.contaminated++;
         else if (v === "correct") acc.correct++;
@@ -27162,7 +27166,11 @@ const defaultFilter = () => ({
         correct: 0,
         uncertain: 0,
         pending: 0,
-        ...sampleActionCounts(effectiveSampleCuration, rows, tableSample),
+        ...sampleActionCounts(
+          effectiveSampleCuration,
+          rows.flatMap((id) => index.names(id)),
+          tableSample,
+        ),
       },
     );
 
@@ -27222,7 +27230,7 @@ const defaultFilter = () => ({
         const flags = flagSample(id, metadata);
         const placement = plateMap?.bySample?.[id] || null;
         const a = agg.get(id) || {};
-        const c = effectiveSampleCuration?.[id] || {};
+        const c = samplesReportCuration(effectiveSampleCuration, index.names(id));
         const name = sampleName(metadata, id) || "";
         const facets = [
           flags.subject ? `subj: ${escapeHTML(flags.subject)}` : null,

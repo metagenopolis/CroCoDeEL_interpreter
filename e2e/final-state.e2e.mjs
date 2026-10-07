@@ -23,6 +23,9 @@
        the targets' verdicts set by hand (and so the curated table), the
        study and the automatic actions at once, and the events added by
        hand, which a later rerun's carry-over keeps;
+     - a sample an event targets under another spelling than the table's
+       is one row of the samples TSV and report, with that event's
+       curation;
 
    The stored state is read from IndexedDB, as the app reads it
    (src/persistence.js).
@@ -733,6 +736,56 @@ try {
       await ctx2.close();
     }
   });
+
+  /* An event targets "s2", the abundance table names it "S2". */
+  await scenario(
+    "FS a target written in another case",
+    async (page) => {
+      await upload(
+        page,
+        0,
+        "contamination_events.tsv",
+        [
+          "source\ttarget\trate\tprobability\tcontamination_specific_species",
+          "S1\ts2\t0.25\t0.97\tsp_A,sp_B",
+          "S3\tS4\t0.1\t0.8\tsp_C",
+        ].join("\n"),
+      );
+      await upload(
+        page,
+        1,
+        "species_abundance.tsv",
+        [
+          "OTU_ID\tS1\tS2\tS3\tS4\tS5\tS6\tS7\tS8",
+          "sp_A\t5\t1\t0\t3\t9\t3\t0\t1",
+          "sp_B\t6\t1\t6\t9\t0\t5\t4\t4",
+          "sp_C\t1\t2\t3\t4\t5\t6\t7\t8",
+        ].join("\n"),
+      );
+      await openTab(page, "Events");
+      await page.locator('tr[data-event-row="0"] button[title="mark as true positive"]').click();
+      await saved(page);
+      await openTab(page, "Export");
+      const tsv = await download(page, page.getByRole("button", { name: /Download samples TSV/i }).first());
+      const rows = (tsv || "").split("\n").filter(Boolean).map((l) => l.split("\t"));
+      const h = rows[0] || [];
+      const row = (id) => rows.find((r) => r[0] === id);
+      const cells = (r) => ["events_as_target", "verdict", "verdict_origin", "action", "action_origin"].map((k) => r?.[h.indexOf(k)]);
+      check(
+        rows.length === 9 && !row("s2") && JSON.stringify(cells(row("S2"))) === JSON.stringify(["1", "contaminated", "automatic", "suppress", "automatic"]),
+        "FS the samples TSV has one row for S2, with its event and its automatic Suppress",
+        JSON.stringify([rows.length - 1, cells(row("S2")), cells(row("s2"))]),
+      );
+      const html = await download(page, page.getByRole("button", { name: /Download samples HTML/i }).first());
+      const summary = [...(html || "").matchAll(/<div class="label">([^<]*)<\/div><div class="value">(\d+)/g)].map((m) => `${m[1]}=${m[2]}`);
+      check(
+        summary.includes("Total=8") || summary.some((x) => /^Total.*=8$/.test(x)),
+        "FS the samples HTML report counts the table's 8 samples",
+        summary.join(" "),
+      );
+    },
+    { demo: false },
+  );
 } finally {
   await browser.close();
   stopServer();

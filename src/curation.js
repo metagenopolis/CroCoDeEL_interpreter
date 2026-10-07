@@ -339,20 +339,30 @@ export function applyTargetSideEffects(curation, events, targets, opts = {}) {
 /** Samples no event targets: event sources that are never a target, plus
     every id of `extraSampleIds` (the abundance table's columns) that no
     event targets. Sorted. Computed over the FULL event list — a filter
-    must not turn a targeted sample into a "never targeted" one. */
-export function neverTargetedSamples(events, extraSampleIds) {
+    must not turn a targeted sample into a "never targeted" one.
+
+    `tableSample` (when an abundance table is loaded: a name → its column
+    in the table, or null — resolveSample, the matching the curated
+    export makes) makes an event target count for the table sample it
+    names under another spelling (case, whitespace). The table's "S2",
+    targeted by an event written "s2", used to get the default Not
+    contaminated + Keep of a sample no event targets, which the samples
+    TSV and HTML report showed while the curated table dropped "S2" with
+    the event's Suppress. */
+export function neverTargetedSamples(events, extraSampleIds, tableSample = null) {
+  const key = (id) => (tableSample && tableSample(id)) || id;
   const targeted = new Set();
   const universe = new Set();
   for (const e of events || []) {
     if (e?.source) universe.add(e.source);
     if (e?.target) {
       universe.add(e.target);
-      targeted.add(e.target);
+      targeted.add(key(e.target));
     }
   }
   for (const s of extraSampleIds || []) if (s) universe.add(s);
   const out = [];
-  for (const id of universe) if (!targeted.has(id)) out.push(id);
+  for (const id of universe) if (!targeted.has(key(id))) out.push(id);
   return out.sort();
 }
 

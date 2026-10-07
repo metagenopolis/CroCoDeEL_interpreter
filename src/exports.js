@@ -472,6 +472,54 @@ export function curatedAbundanceProvenance(ab, cur, opts = {}) {
 
 /* ---------- samples ---------- */
 
+/** The samples of the samples TSV and its HTML report, one row each: the
+    samples of the events and the abundance table's. A name the table
+    holds under another spelling (case, whitespace: resolveSample, the
+    matching the curated export makes) is that table sample, under the
+    table's spelling: the events file's "s2" and the table's "S2" used to
+    be two rows, the second reading Not contaminated + Keep while the
+    curated table dropped the sample. Returns { ids, rowOf, names }: the
+    row ids, sorted; the row of a name; the names of a row (its own
+    first). */
+export function samplesReportIndex(events, ab) {
+  const rowOf = (name) => (ab ? resolveSample(ab, name) : null) || name;
+  const names = new Map();
+  const add = (name) => {
+    if (!name) return;
+    const id = rowOf(name);
+    if (!names.has(id)) names.set(id, new Set([id]));
+    names.get(id).add(name);
+  };
+  for (const e of events || []) {
+    add(e?.source);
+    add(e?.target);
+  }
+  for (const s of ab?.samples || []) add(s);
+  return {
+    ids: [...names.keys()].sort((a, b) => a.localeCompare(b)),
+    rowOf,
+    names: (id) => [...(names.get(id) || [id])],
+  };
+}
+
+/** The curation a row of the samples TSV and report shows (`curation`:
+    the effective one) for a sample written under several `names`: a
+    Suppress wins, as the curated table drops the column whichever name
+    says so; then a verdict, the curator's before the rule's; then
+    whatever entry there is. The notes of every name are kept. */
+export function samplesReportCuration(curation, names) {
+  const entries = names.map((n) => curation?.[n]).filter(Boolean);
+  if (entries.length <= 1) return entries[0] || {};
+  const set = (v) => v != null && v !== "" && v !== "pending";
+  const pick =
+    entries.find((c) => c.action === "suppress") ||
+    entries.find((c) => set(c.verdict) && !c.verdictAuto) ||
+    entries.find((c) => set(c.verdict)) ||
+    entries[0];
+  const notes = [...new Set(entries.map((c) => c.notes).filter(Boolean))].join("\n\n");
+  return notes ? { ...pick, notes } : pick;
+}
+
 /** The values buildEffectiveSampleCuration gives a sample no event
     targets: Not contaminated, and the Keep that goes with it. */
 const DEFAULT_VALUE = { verdict: "correct", action: "keep" };
