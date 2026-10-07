@@ -1153,9 +1153,9 @@ export function parsePlateMap(text) {
   rows.forEach((r, i) => {
     const id = r[cols.sample];
     if (!id) return;
-    const byWell = cols.well && (String(r[cols.well] ?? "").trim() !== "" || !cols.row);
-    const cells = byWell ? [r[cols.well]] : [r[cols.row], r[cols.col]];
-    const w = byWell ? parseWell(cells[0]) : parseRowCol(cells[0], cells[1]);
+    const useWell = cols.well && (String(r[cols.well] ?? "").trim() !== "" || !cols.row);
+    const cells = useWell ? [r[cols.well]] : [r[cols.row], r[cols.col]];
+    const w = useWell ? parseWell(cells[0]) : parseRowCol(cells[0], cells[1]);
     if (!w) {
       if (cells.some((c) => String(c ?? "").trim() !== "")) {
         unreadable.push({ i, cell: cells.map((c) => String(c ?? "").trim()).join(" / ") });
@@ -1220,11 +1220,12 @@ export function parsePlateMap(text) {
     const n = shared.length;
     const ids = shared[0];
     const p = bySample[ids[0]];
-    const named = ids.slice(0, 3).map((id) => `"${id}"`).join(", ") + (ids.length > 3 ? ", …" : "");
+    const named =
+      ids.slice(0, 3).map((id) => `"${clip(id, 40)}"`).join(", ") + (ids.length > 3 ? ", …" : "");
     // About the file, so it stays true once the Plate tab edits the map.
     warnings.push(
       `The file places more than one sample in ${n > 1 ? `${n} wells (first: ` : "one well ("}` +
-        `${wellLabel(p.row, p.col)} on plate ${p.plate}: ${named}). A well holds one sample: ` +
+        `${wellLabel(p.row, p.col)} on plate ${clip(p.plate, 40)}: ${named}). A well holds one sample: ` +
         "check the well and plate columns.",
     );
   }
