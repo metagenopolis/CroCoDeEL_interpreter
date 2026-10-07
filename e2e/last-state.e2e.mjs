@@ -8,6 +8,10 @@
        then this tab saves (or reloads right after a change): this tab
        stops saving and says so, and the next boot brings that save in,
        instead of losing it without a word;
+     - an event targets "s2", the abundance table names it "S2": the
+       Samples tab has one row for it, the table's, with the event's
+       curation, as the samples TSV and the curated table have; its
+       decisions and its drill-ins reach the event's spelling;
 
    The stored state is read from IndexedDB, as the app reads it
    (src/persistence.js).
@@ -24,6 +28,7 @@ import {
   newPage,
   loadDemo,
   openTab,
+  tsvInput,
   check,
   finish,
 } from "./harness.mjs";
@@ -122,6 +127,36 @@ async function earlierTabSaves(page) {
   for (const e of main.rawEvents) if (e.id === 8 || e.id === 9) e.verdict = "true_positive";
   await writeRecords(page, { main });
   return r;
+}
+
+/** Upload `text` through the i-th file card (0 events, 1 abundance). */
+async function upload(page, i, name, text) {
+  await tsvInput(page, i).setInputFiles({
+    name,
+    mimeType: "text/tab-separated-values",
+    buffer: Buffer.from(text),
+  });
+  await page.waitForTimeout(1500);
+}
+
+/** The counters of the tab on screen, by label. */
+function stats(page) {
+  return page.evaluate(() => {
+    const out = {};
+    for (const v of document.querySelectorAll("div.mt-1.tabular")) {
+      const label = v.previousElementSibling?.textContent?.trim();
+      if (label) out[label] = Number(v.textContent.trim());
+    }
+    return out;
+  });
+}
+
+/** The "N of M samples" of the Export tab's curated abundance card. */
+async function curatedCard(page) {
+  await openTab(page, "Export");
+  const text = await page.locator("body").innerText();
+  const m = text.match(/Curated abundance table — (\d+) of (\d+) samples/);
+  return m ? `${m[1]} of ${m[2]}` : null;
 }
 
 /** The text of the notice banner ("" when there is none). */
@@ -256,6 +291,92 @@ try {
       `8: ${after.curation.verdicts["8"]}, 9: ${after.curation.verdicts["9"]}, main kept: ${!!after.main}`,
     );
   });
+
+  /* An event targets "s2", the abundance table names it "S2". The Samples
+     tab listed both: "s2" with its event and its automatic Suppress, and
+     "S2" with no event, no verdict and no action, while the curated table
+     dropped S2 and the samples TSV had one S2 row. */
+  await scenario(
+    "LS a target written in another case, on the Samples tab",
+    async (page) => {
+      await upload(
+        page,
+        0,
+        "contamination_events.tsv",
+        [
+          "source\ttarget\trate\tprobability\tcontamination_specific_species",
+          "S1\ts2\t0.25\t0.97\tsp_A,sp_B",
+          "S3\tS4\t0.1\t0.8\tsp_C",
+        ].join("\n"),
+      );
+      await upload(
+        page,
+        1,
+        "species_abundance.tsv",
+        [
+          "OTU_ID\tS1\tS2\tS3\tS4\tS5\tS6\tS7\tS8",
+          "sp_A\t5\t1\t0\t3\t9\t3\t0\t1",
+          "sp_B\t6\t1\t6\t9\t0\t5\t4\t4",
+          "sp_C\t1\t2\t3\t4\t5\t6\t7\t8",
+        ].join("\n"),
+      );
+      await mark(page, 0, "true positive");
+      await saved(page);
+      await openTab(page, "Samples");
+      const row = page.locator("#samplerow-S2");
+      check(
+        (await page.locator("#samplerow-s2").count()) === 0 && (await row.count()) === 1,
+        "LS the Samples tab has one row for S2, the table's",
+        `rows s2: ${await page.locator("#samplerow-s2").count()}, S2: ${await row.count()}`,
+      );
+      const s = await stats(page);
+      check(
+        s.Samples === 8 && s.Contaminated === 1 && s["To suppress"] === 1,
+        "LS it counts the table's 8 samples, S2 contaminated and to suppress",
+        JSON.stringify(s),
+      );
+      const verdictTitle = await row.locator('button[data-verdict-chip="contaminated"]').getAttribute("title").catch(() => null);
+      const suppress = row.locator('button[aria-label="Suppress S2"]');
+      const suppressTitle = (await suppress.count()) ? await suppress.getAttribute("title") : null;
+      check(
+        /^Contaminated, automatic/.test(verdictTitle || "") && /^Suppress \(automatic/.test(suppressTitle || ""),
+        "LS S2's row shows the event's automatic Contaminated and Suppress",
+        `${verdictTitle} | ${suppressTitle}`,
+      );
+      // A decision on that row reaches the curation the event's spelling
+      // holds, where the rule writes: the Suppress it replaces.
+      const keep = row.locator('button[aria-label="Keep S2"]');
+      if (await keep.count()) {
+        await keep.click();
+        await saved(page);
+      }
+      const sc = (await storedRecords(page)).curation?.sampleCuration || {};
+      check(
+        sc.s2?.action === "keep" && !sc.s2.actionAuto && !("S2" in sc),
+        "LS Keep on that row is the event's sample's own Keep, stored once",
+        JSON.stringify({ s2: sc.s2, S2: sc.S2 }),
+      );
+      const after = await stats(page);
+      check(
+        after["To suppress"] === 0 && after["To keep"] === 1 && (await curatedCard(page)) === "8 of 8",
+        "LS S2 is kept: the counters and the curated table agree",
+        `${JSON.stringify(after)}, curated ${await curatedCard(page)}`,
+      );
+      // Its drill-in finds the event, which names it "s2".
+      await openTab(page, "Samples");
+      const drill = page.locator('#samplerow-S2 button[title="Open the events where S2 is the target in the Events table"]');
+      if (await drill.count()) {
+        await drill.click();
+        await page.waitForTimeout(900);
+      }
+      check(
+        (await page.locator('tr[data-event-row="0"]').count()) === 1 && (await page.locator('tr[data-event-row="1"]').count()) === 0,
+        "LS its Events drill-in lists the event that targets s2, and only it",
+        `event rows: ${await page.locator("tr[data-event-row]").count()}`,
+      );
+    },
+    { demo: false },
+  );
 
   /* What this version wrote after the earlier tab's save stays this
      version's when that save came before it: superseded, as before. */

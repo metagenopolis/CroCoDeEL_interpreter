@@ -42,6 +42,7 @@ import {
   neverTargetedSamples,
   buildEffectiveSampleCuration,
   sampleActionCounts,
+  sampleCurationKeys,
 } from "./curation.js";
 // The text of the exported files (src/exports.js).
 import {
@@ -10025,6 +10026,19 @@ const SampleIdCell = ({ row, notesOpen, onToggleNotes }) => (
         style={SAMPLE_CELL_NAME_STYLE}
       />
     )}
+    {/* The events file's other spellings of this table sample. */}
+    {row.names?.length > 1 && (
+      <span
+        className="block text-[10px]"
+        style={{ color: "var(--ink-muted)", overflowWrap: "anywhere" }}
+        title={`The events file writes this sample ${row.names
+          .slice(1)
+          .map((n) => `"${n}"`)
+          .join(", ")}: it is the abundance table's ${row.id} (the names differ only in case or spaces), as in the curated abundance table and the samples TSV.`}
+      >
+        also {row.names.slice(1).map((n) => `“${n}”`).join(", ")}
+      </span>
+    )}
     <button
       type="button"
       onClick={onToggleNotes}
@@ -11420,6 +11434,16 @@ const SamplesTab = ({
   // are computed from the filtered set so they match what the user
   // sees in the other tabs.
   const eventsForSamples = filteredEvents || events;
+  // One row per sample, as in the samples TSV and report: a name the
+  // abundance table holds under another spelling (case, spaces:
+  // resolveSample, the matching the curated export makes) is that table
+  // sample's row, under the table's spelling, with the events and the
+  // curation of all its names (samplesReportIndex, src/exports.js). The
+  // events file's "s2" and the table's "S2" were two rows: "s2" with its
+  // event and its automatic Suppress, "S2" with no event, no verdict and
+  // no action, while the curated table dropped S2. The names come from
+  // the full events list: a filter must not split a sample in two.
+  const sampleIndex = useMemo(() => samplesReportIndex(events, ab), [events, ab]);
   // Species richness per sample: number of species observed (relative
   // abundance > 0) in the abundance table. null when no abundance is
   // loaded; samples absent from the table get null too (handled below).
@@ -11441,18 +11465,20 @@ const SamplesTab = ({
   // full O(events × samples) rebuild — the cheap row merge below picks
   // up the new verdict / action / notes in O(samples) instead.
   const sampleAggregates = useMemo(() => {
+    const { rowOf } = sampleIndex;
     const ids = new Set();
     for (const e of eventsForSamples) {
-      if (e.source) ids.add(e.source);
-      if (e.target) ids.add(e.target);
+      if (e.source) ids.add(rowOf(e.source));
+      if (e.target) ids.add(rowOf(e.target));
     }
     if (ab?.samples) for (const s of ab.samples) ids.add(s);
     const eventsBySample = new Map();
     for (const id of ids) eventsBySample.set(id, []);
     for (const e of eventsForSamples) {
-      if (e.source) eventsBySample.get(e.source)?.push(e);
-      if (e.target && e.target !== e.source)
-        eventsBySample.get(e.target)?.push(e);
+      const source = e.source ? rowOf(e.source) : null;
+      const target = e.target ? rowOf(e.target) : null;
+      if (source) eventsBySample.get(source)?.push(e);
+      if (target && target !== source) eventsBySample.get(target)?.push(e);
     }
     return Array.from(ids).map((id) => {
       const touching = eventsBySample.get(id) || [];
@@ -11472,11 +11498,11 @@ const SamplesTab = ({
         else bucket.pending++;
       };
       for (const e of touching) {
-        if (e.source === id) {
+        if (e.source && rowOf(e.source) === id) {
           asSource++;
           bumpEval(evalCountsAsSource, e);
         }
-        if (e.target === id) {
+        if (e.target && rowOf(e.target) === id) {
           asTarget++;
           bumpEval(evalCountsAsTarget, e);
           if (typeof e.rate === "number") {
@@ -11529,16 +11555,20 @@ const SamplesTab = ({
         richness: richnessBySample?.[id] ?? null,
       };
     });
-  }, [eventsForSamples, ab, metadata, plateMap, richnessBySample]);
+  }, [eventsForSamples, sampleIndex, ab, metadata, plateMap, richnessBySample]);
   // Cheap row-by-row merge of the curation layer onto the precomputed
   // aggregates. Re-runs on every sampleCuration write but is O(samples)
   // not O(events × samples).
   const sampleRows = useMemo(
     () =>
       sampleAggregates.map((agg) => {
-        const cur = sampleCuration?.[agg.id] || {};
+        // The curation of all the sample's names (samplesReportCuration:
+        // a Suppress wins, then a verdict, the curator's first).
+        const names = sampleIndex.names(agg.id);
+        const cur = samplesReportCuration(sampleCuration, names);
         return {
           ...agg,
+          names,
           verdict: cur.verdict || "pending",
           action: cur.action || null,
           // Set by the event-driven rule rather than by the curator.
@@ -11550,7 +11580,31 @@ const SamplesTab = ({
           notes: cur.notes || "",
         };
       }),
-    [sampleAggregates, sampleCuration, neverTargeted],
+    [sampleAggregates, sampleIndex, sampleCuration, neverTargeted],
+  );
+  // A decision on a row is written to the names where the sample's
+  // curation lives (sampleCurationKeys, src/curation.js): the event's
+  // "s2" — where the rule wrote its Suppress — for the table's "S2".
+  const setRowVerdict = React.useCallback(
+    (id, verdict) => {
+      for (const key of sampleCurationKeys(sampleIndex.names(id), sampleCuration, events))
+        setSampleVerdict(key, verdict);
+    },
+    [sampleIndex, sampleCuration, events, setSampleVerdict],
+  );
+  const setRowAction = React.useCallback(
+    (id, action) => {
+      for (const key of sampleCurationKeys(sampleIndex.names(id), sampleCuration, events))
+        setSampleAction(key, action);
+    },
+    [sampleIndex, sampleCuration, events, setSampleAction],
+  );
+  const setRowNote = React.useCallback(
+    (id, notes) => {
+      for (const key of sampleCurationKeys(sampleIndex.names(id), sampleCuration, events))
+        setSampleNote(key, notes);
+    },
+    [sampleIndex, sampleCuration, events, setSampleNote],
   );
 
   const subjectFiltered = useMemo(() => {
@@ -11706,7 +11760,7 @@ const SamplesTab = ({
       // default Keep of a never-targeted sample is not a decision.
       ...sampleActionCounts(
         sampleCuration,
-        sampleRows.map((r) => r.id),
+        sampleRows.flatMap((r) => r.names),
         tableSample,
       ),
     };
@@ -11964,7 +12018,9 @@ const SamplesTab = ({
     }
     if (appliedHighlightRef.current === highlightSampleId) return;
     appliedHighlightRef.current = highlightSampleId;
-    const i = displaySorted.findIndex((r) => r.id === highlightSampleId);
+    // A drill-in from another tab may name the sample as the events do.
+    const rowId = sampleIndex.rowOf(highlightSampleId);
+    const i = displaySorted.findIndex((r) => r.id === rowId);
     if (i >= 0) focusByIndex(i);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightSampleId, displaySorted]);
@@ -11995,13 +12051,13 @@ const SamplesTab = ({
           break;
         case "k":
           if (focusedId) {
-            setSampleAction(focusedId, "keep");
+            setRowAction(focusedId, "keep");
             e.preventDefault();
           }
           break;
         case "s":
           if (focusedId) {
-            setSampleAction(focusedId, "suppress");
+            setRowAction(focusedId, "suppress");
             e.preventDefault();
           }
           break;
@@ -12382,13 +12438,13 @@ const SamplesTab = ({
                         {col.id === "verdict" && (
                           <SampleVerdictCell
                             row={r}
-                            setSampleVerdict={setSampleVerdict}
+                            setSampleVerdict={setRowVerdict}
                           />
                         )}
                         {col.id === "action" && (
                           <SampleActionCell
                             row={r}
-                            setSampleAction={setSampleAction}
+                            setSampleAction={setRowAction}
                           />
                         )}
                       </td>
@@ -12406,7 +12462,7 @@ const SamplesTab = ({
                       >
                         <textarea
                           value={r.notes}
-                          onChange={(e) => setSampleNote(r.id, e.target.value)}
+                          onChange={(e) => setRowNote(r.id, e.target.value)}
                           placeholder={`Notes for ${r.id} (control? low biomass? plate context?)`}
                           rows={2}
                           className="w-full px-2 py-1 text-[12px] rounded-sm outline-none"
@@ -12456,8 +12512,8 @@ const SamplesTab = ({
           onClose={() => setBulkOpen(false)}
           onApply={(ids, verdict, action) => {
             for (const id of ids) {
-              if (verdict) setSampleVerdict(id, verdict);
-              if (action !== undefined) setSampleAction(id, action);
+              if (verdict) setRowVerdict(id, verdict);
+              if (action !== undefined) setRowAction(id, action);
             }
           }}
         />
@@ -21493,7 +21549,14 @@ const HelpTab = ({ onStartTour }) => {
               <p>
                 Per-sample cockpit. The table lists every sample
                 (touched by an event or present in the abundance
-                table) with: sample id (+ optional sample_name), a
+                table), once: a sample the events file writes in
+                another case or with other spaces than the abundance
+                table is the table's sample, with the events and the
+                curation of both names, as in the curated table and
+                the samples TSV (its row says how the events file
+                writes it, and a decision made on it shows on those
+                events too). Each row has: sample id (+ optional
+                sample_name), a
                 Context cell with all metadata pills (subj / tp / grp
                 / biome / control / low biomass / low seq depth /
                 plate position; pills are clickable — subj / tp / grp
@@ -26018,19 +26081,23 @@ const defaultFilter = () => ({
     // would silently hide everything.
     const minIntro = ab ? filter.minIntroduced || 0 : 0;
     // Sample-list scope (set by Network drill-in actions). Build a Set
-    // upfront for O(1) per-event lookup.
+    // upfront for O(1) per-event lookup. A sample of the scope is matched
+    // under any spelling the abundance table resolves to it (tableSample:
+    // case, spaces), as the Samples tab shows it: its row for the table's
+    // "S2" drills into the events that name it "s2".
+    const scopeKey = (id) => (tableSample && tableSample(id)) || id;
     const scopeSet =
       Array.isArray(filter.scopeSamples) && filter.scopeSamples.length > 0
-        ? new Set(filter.scopeSamples)
+        ? new Set(filter.scopeSamples.map(scopeKey))
         : null;
     const scopeSide = filter.scopeSide || "either";
     let res = events.filter((e) => {
       if (scopeSet) {
         if (scopeSide === "source") {
-          if (!scopeSet.has(e.source)) return false;
+          if (!scopeSet.has(scopeKey(e.source))) return false;
         } else if (scopeSide === "target") {
-          if (!scopeSet.has(e.target)) return false;
-        } else if (!scopeSet.has(e.source) && !scopeSet.has(e.target)) {
+          if (!scopeSet.has(scopeKey(e.target))) return false;
+        } else if (!scopeSet.has(scopeKey(e.source)) && !scopeSet.has(scopeKey(e.target))) {
           return false;
         }
       }
@@ -26137,7 +26204,7 @@ const defaultFilter = () => ({
       return sort.dir === "asc" ? av - bv : bv - av;
     });
     return res;
-  }, [events, filter, sort, metadata, plateMap, ab, effectiveSampleCuration]);
+  }, [events, filter, sort, metadata, plateMap, ab, tableSample, effectiveSampleCuration]);
 
   const counts = useMemo(() => {
     const c = {
