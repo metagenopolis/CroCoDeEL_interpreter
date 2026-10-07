@@ -20205,11 +20205,12 @@ const HelpTab = ({ onStartTour }) => {
             }}
           >
             <p className="mb-2" style={{ color: "var(--ink)", fontWeight: 600 }}>
-              All files are TSV (tab-separated). Column names are matched
-              case-insensitively and many aliases are accepted — see each
-              file's section below for details. In the metadata and the
-              plate map a header must match a name exactly, ignoring case,
-              spaces, underscores, hyphens and dots.
+              All files are TSV (tab-separated); a comma- or
+              semicolon-separated file is refused, saying so. Column names
+              are matched case-insensitively and many aliases are accepted
+              — see each file's section below for details. In the metadata
+              and the plate map a header must match a name exactly,
+              ignoring case, spaces, underscores, hyphens and dots.
             </p>
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
               Numbers use a dot as decimal separator (

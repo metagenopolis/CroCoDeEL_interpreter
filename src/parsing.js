@@ -160,6 +160,20 @@ function headerHint(header) {
   );
 }
 
+/** The error for a file that is not tab-separated — a CSV, whose whole
+    header line reads as one cell holding commas or semicolons — or null.
+    Without it each parser fails on whatever it looks for first, quoting
+    the whole header as a column name and a whole row as a value. */
+function notTabSeparated(header) {
+  if (header.length !== 1) return null;
+  const sep = /,/.test(header[0]) ? "commas" : /;/.test(header[0]) ? "semicolons" : null;
+  if (!sep) return null;
+  return (
+    `The file is not tab-separated: its header line is a single column holding ${sep} ` +
+    `("${clip(header[0], 50)}"). Save it as tab-separated values (TSV) and load it again.`
+  );
+}
+
 /* ---------- numeric cells ----------
    parseFloat reads the longest numeric PREFIX of a cell, so a table saved
    by a French-locale spreadsheet loaded without a word: "7,41E-01" read as
@@ -242,7 +256,7 @@ function findDuplicates(names) {
     three. `what` is singular, `where` ends the clause. */
 function describeDuplicates(dups, what, where) {
   const n = dups.length;
-  const shown = dups.slice(0, 3).map((d) => `"${d}"`).join(", ");
+  const shown = dups.slice(0, 3).map((d) => `"${clip(d, 40)}"`).join(", ");
   const more = n > 3 ? ` and ${n - 3} more` : "";
   return `${n} ${what}${n > 1 ? "s appear" : " appears"} ${where} (${shown}${more})`;
 }
@@ -348,6 +362,8 @@ function normalizeEvent(raw, cols, idx, rate, score) {
 export function parseEvents(text) {
   const { header, rows, headerComments, lineNumbers } = parseTSV(text);
   if (rows.length === 0) throw new Error("Empty file or no rows");
+  const csv = notTabSeparated(header);
+  if (csv) throw new Error(csv);
   const cols = {
     source: pickCol(header, EVENT_COLS.source),
     target: pickCol(header, EVENT_COLS.target),
@@ -454,7 +470,7 @@ export function parseEvents(text) {
     const { i, cell } = badVerdicts[0];
     warnings.push(
       `${n} row${n > 1 ? "s have" : " has"} an unrecognised verdict and ${n > 1 ? "were" : "was"} ` +
-        `read as pending (first on line ${lineNumbers[i]}: "${cell}").`,
+        `read as pending (first on line ${lineNumbers[i]}: "${clip(cell)}").`,
     );
   }
   if (badActions.length > 0) {
@@ -462,7 +478,7 @@ export function parseEvents(text) {
     const { i, cell } = badActions[0];
     warnings.push(
       `${n} row${n > 1 ? "s have" : " has"} an unrecognised action, ignored: expected keep or ` +
-        `suppress (first on line ${lineNumbers[i]}: "${cell}").`,
+        `suppress (first on line ${lineNumbers[i]}: "${clip(cell)}").`,
     );
   }
   if (invalid.length > 0) {
@@ -470,7 +486,7 @@ export function parseEvents(text) {
     const cell = String(rows[i][key]).trim();
     const more = invalid.length - 1;
     throw new Error(
-      `Row ${i + 1} (line ${lineNumbers[i]}), column "${key}": "${cell}" is not a number` +
+      `Row ${i + 1} (line ${lineNumbers[i]}), column "${clip(key, 40)}": "${clip(cell)}" is not a number` +
         (looksLikeDecimalComma(cell)
           ? " — looks like a decimal comma — re-export the file with '.' as decimal separator"
           : "") +
@@ -487,7 +503,8 @@ export function parseEvents(text) {
     const { i, value } = list[0];
     warnings.push(
       `${list.length} event${list.length > 1 ? "s have" : " has"} a ${what} outside ${range}` +
-        ` — first on line ${lineNumbers[i]} (${rows[i][cols.source]} → ${rows[i][cols.target]}): ${value}.`,
+        ` — first on line ${lineNumbers[i]} (${clip(rows[i][cols.source], 40)} → ` +
+        `${clip(rows[i][cols.target], 40)}): ${value}.`,
     );
   };
   rangeWarning(rateOutOfRange, "rate", "(0, 1]");
@@ -538,7 +555,11 @@ export function parseEvents(text) {
     Cells read as 0 (empty, NA, not a number, negative) come back as 0. */
 export function parseAbundance(text) {
   const { header, rows } = parseTSV(text);
-  if (header.length < 2) return null;
+  if (header.length < 2) {
+    const csv = notTabSeparated(header);
+    if (csv) throw new Error(csv);
+    return null;
+  }
   const speciesCol = header[0];
   const samples = header.slice(1);
 
@@ -671,7 +692,7 @@ export function parseAbundance(text) {
       `${emptySamples} of ${samples.length} sample columns sum to 0 and were left empty.`,
     );
   }
-  const where = (f) => `"${String(f.cell).trim()}" for ${f.sp} in ${f.s}`;
+  const where = (f) => `"${clip(String(f.cell).trim())}" for ${clip(f.sp, 40)} in ${clip(f.s, 40)}`;
   if (nonNumericCells > 0) {
     const n = nonNumericCells;
     let comma = "";
@@ -681,7 +702,7 @@ export function parseAbundance(text) {
           ? n > 1 ? "they look" : "it looks"
           : `${commaCells.toLocaleString()} of them ${commaCells > 1 ? "look" : "looks"}`;
       comma =
-        ` — ${who} like a decimal comma (e.g. "${String(firstComma).trim()}"):` +
+        ` — ${who} like a decimal comma (e.g. "${clip(String(firstComma).trim())}"):` +
         ` re-export the table with '.' as decimal separator`;
     }
     warnings.push(
@@ -845,7 +866,9 @@ function metadataResult(cols, bySample, warnings) {
 export function parseMetadata(text) {
   const { header, rows } = parseTSV(text);
   if (header.length < 2) {
-    throw new Error("At least 2 columns required (sample_id and subject_id)");
+    throw new Error(
+      notTabSeparated(header) || "At least 2 columns required (sample_id and subject_id)",
+    );
   }
   // The resolved mapping (field → header, or null) is returned as `cols`
   // and shown on the upload card, so a curator can see which column was
@@ -1093,6 +1116,8 @@ export function wellLabel(row, col) {
 
 export function parsePlateMap(text) {
   const { header, rows, lineNumbers } = parseTSV(text);
+  const csv = notTabSeparated(header);
+  if (csv) throw new Error(csv);
   // Returned as `cols`, like the metadata's, for the upload card.
   const cols = {
     sample: pickColExact(header, PLATE_COLS.sample),

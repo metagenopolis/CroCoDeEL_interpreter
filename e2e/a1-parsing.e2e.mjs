@@ -19,7 +19,8 @@
        and on a reload from IndexedDB;
      - the plate card keeps its column mapping and warnings through a
        Plate tab edit and a page reload;
-     - a hand-edited session whose card warnings are not a list loads.
+     - a hand-edited session whose card warnings are not a list loads;
+     - a comma-separated events file is refused with a short message.
 
    Usage:  node e2e/a1-parsing.e2e.mjs          (starts a preview server)
            BASE_URL=http://host/path/ node e2e/a1-parsing.e2e.mjs */
@@ -486,6 +487,25 @@ try {
       .catch(() => "");
     check(text.includes("Columns: sample_id · subject_id"), "the metadata card still shows its mapping");
     check(errors.length === 0, "no JS error on the odd warnings", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* -- 10. a comma-separated events file: refused, saying why, briefly */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    const csv = demo("contamination_events.tsv")
+      .split("\n")
+      .filter((l) => l && !l.startsWith("#"))
+      .map((l) => l.split("\t").map((c) => (c.includes(",") ? `"${c}"` : c)).join(","))
+      .join("\n");
+    await upload(page, 0, "contamination_events.csv", csv);
+    const alert = (await page.locator('[role="alert"]').allInnerTexts()).join(" ");
+    check(
+      alert.includes("The file is not tab-separated") && alert.length < 400,
+      "a comma-separated events file is refused with a short message naming the separator",
+      `${alert.length} characters: ${alert.slice(0, 160)}`,
+    );
+    check(errors.length === 0, "no JS error on the CSV", errors[0] || "");
     await ctx.close();
   }
 } finally {
