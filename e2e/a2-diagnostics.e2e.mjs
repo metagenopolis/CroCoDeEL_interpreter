@@ -12,9 +12,12 @@
      4. a target written in another case than the table's column ("tgt"
         for "TGT") gets its introduced % in the exported events TSV;
      5. a run whose header declares `filtering_ab_thr_factor: 20.0` shows
-        the low-abundance filter and its toggle, the diagnostics follow
-        the filter, switching it off changes them, and the choice survives
-        a reload; a run with "None" shows no toggle;
+        the low-abundance filter and its toggle; every diagnostic consumer
+        (Guided validation, gallery, bulk dialog, HTML report, cascades)
+        follows the filter and switching it off changes them, while the
+        abundance download and the session keep the table as loaded; the
+        choice survives a reload and a session file; a run with "None"
+        shows no toggle;
      6. the bulk dialog's "Biological similarity" pass / fail picks select
         the events Guided validation ticks / crosses: high ρ between
         unrelated samples passes, high ρ within a subject or a group fails;
@@ -149,6 +152,50 @@ async function bulkPick(page, label, pick) {
 async function closeBulk(page) {
   await page.getByRole("button", { name: /^Cancel$/ }).first().click();
   await page.waitForTimeout(300);
+}
+
+/* --------------------------------------------------- download helpers */
+/** Click `button` and return the file it downloads, { name, text }, or
+    null if nothing downloads. */
+async function downloadVia(page, button) {
+  const [file] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+    button.click(),
+  ]);
+  return file ? { name: file.suggestedFilename(), text: readFileSync(await file.path(), "utf8") } : null;
+}
+
+/** The abundance table, as the files bar's Download gives it back. */
+async function downloadAbundance(page) {
+  const buttons = page.locator('button[title="Download this file"]');
+  for (let i = 0; i < (await buttons.count()); i++) {
+    const file = await downloadVia(page, buttons.nth(i));
+    if (file?.name === "species_abundance.tsv") return file.text;
+  }
+  return null;
+}
+
+/** "Download session": the parsed JSON, or its text with { raw: true }. */
+async function downloadSession(page, { raw = false } = {}) {
+  const file = await downloadVia(page, page.getByRole("button", { name: /Download session/ }).first());
+  if (!file) return null;
+  return raw ? file.text : JSON.parse(file.text);
+}
+
+/** A cell of a TSV text, as a number (NaN if absent). */
+function tsvCell(text, species, sample) {
+  const rows = (text || "").split("\n").map((l) => l.split("\t"));
+  const col = rows[0].indexOf(sample);
+  return Number(rows.find((r) => r[0] === species)?.[col]);
+}
+
+/** Points drawn by the Scatter tab's gallery thumbnails (MiniScatter:
+    grey, or red for on-line points when they are coloured). */
+async function galleryPoints(page) {
+  await openTab(page, "Scatter");
+  return page.evaluate(
+    () => document.querySelectorAll('svg circle[fill="#7d8b91"], svg circle[fill="#ed6e6c"]').length,
+  );
 }
 
 await startServer();
@@ -308,10 +355,17 @@ try {
      The run header declares --filter-low-ab 20. CroCoDeEL zeroed, in each
      sample, every abundance ≤ 20 × the sample's smallest one before
      fitting: in TGT that removes the lower half of the contamination
-     line, so 10 of the 20 introduced species remain on it. The
-     interpreter used to fit all 20. */
+     line (sp_10..sp_19), so 10 of the 20 introduced species remain on
+     it, and 5 of the pair's 30 points are gone. The interpreter used to
+     fit all 20.
+
+     Every diagnostic consumer must follow the filter — Guided validation,
+     the gallery, the bulk dialog's criteria, the HTML report — and no
+     data consumer may: the abundance download, the session file and the
+     auto-save keep the table as loaded. */
   {
     const { ctx, page, errors } = await newPage(browser);
+    const LINE = /(Only )?\d+ species on line/i;
     await loadFiles(
       page,
       tsvFile("contamination_events.tsv", [
@@ -334,19 +388,35 @@ try {
 
     await openTab(page, "Validate");
     text = await page.locator("body").innerText();
-    check(/Only 10 species on line/i.test(text), "the diagnostics use the filtered table (10 species on the line)", (text.match(/(Only )?\d+ species on line/i) || ["none"])[0]);
+    check(/Only 10 species on line/i.test(text), "the diagnostics use the filtered table (10 species on the line)", (text.match(LINE) || ["none"])[0]);
     check(/After CroCoDeEL's low-abundance filter \(20×\)/i.test(text), "Guided validation says the filter is applied");
 
+    let points = await galleryPoints(page);
+    check(points === 25, "the gallery plots the filtered pair (25 points)", `${points} points`);
+    await openBulk(page);
+    let pass = await bulkPick(page, "n on line", "pass");
+    let fail = await bulkPick(page, "n on line", "fail");
+    check(pass === 0 && fail === 1, "the bulk dialog's criteria use the filtered table (n on line fails)", `pass ${pass}, fail ${fail}`);
+    await closeBulk(page);
+
     await openTab(page, "Export");
-    const [report] = await Promise.all([
-      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
-      page.getByRole("button", { name: /Download events HTML/i }).first().click(),
-    ]);
-    const html = report ? readFileSync(await report.path(), "utf8") : "";
+    const report = await downloadVia(page, page.getByRole("button", { name: /Download events HTML/i }).first());
+    const html = report?.text || "";
     check(
       /Low-abundance filter<\/div><div class="v">20× — applied to the diagnostics/.test(html) &&
         /Only 10 species on line/.test(html),
       "the HTML report states the filter and uses it",
+    );
+
+    // sp_19 is one of the TGT values the filter zeroes: data consumers
+    // must still hold it.
+    const abundance = await downloadAbundance(page);
+    check(tsvCell(abundance, "sp_19", "TGT") > 0, "the abundance download is the table as loaded", `sp_19 / TGT = ${tsvCell(abundance, "sp_19", "TGT")}`);
+    let session = await downloadSession(page);
+    check(
+      session?.abundance?.matrix?.sp_19?.TGT > 0 && session?.ui_state?.filter?.lowAbFilter === true,
+      "the session file holds the table as loaded, and the filter on",
+      `sp_19 / TGT = ${session?.abundance?.matrix?.sp_19?.TGT}, lowAbFilter = ${session?.ui_state?.filter?.lowAbFilter}`,
     );
 
     await openTab(page, "Overview");
@@ -358,12 +428,22 @@ try {
     check(/Low-abundance filter 20×\s*— not applied/i.test(text), "switching it off is shown");
     await openTab(page, "Validate");
     text = await page.locator("body").innerText();
-    check(/\b20 species on line/i.test(text) && !/Only 10 species on line/i.test(text), "switching it off changes the diagnostics (20 species on the line)", (text.match(/(Only )?\d+ species on line/i) || ["none"])[0]);
+    check(/\b20 species on line/i.test(text) && !/Only 10 species on line/i.test(text), "switching it off changes the diagnostics (20 species on the line)", (text.match(LINE) || ["none"])[0]);
     check(
       /Low-abundance filter \(20×\) switched off — diagnostics on the table as loaded, unlike the run/.test(text) &&
         !/After CroCoDeEL's low-abundance filter/.test(text),
       "Guided validation says the filter is switched off",
     );
+    points = await galleryPoints(page);
+    check(points === 30, "…and the gallery plots the table as loaded (30 points)", `${points} points`);
+    await openBulk(page);
+    pass = await bulkPick(page, "n on line", "pass");
+    fail = await bulkPick(page, "n on line", "fail");
+    check(pass === 1 && fail === 0, "…and so do the bulk dialog's criteria (n on line passes)", `pass ${pass}, fail ${fail}`);
+    await closeBulk(page);
+    const sessionText = await downloadSession(page, { raw: true });
+    session = sessionText ? JSON.parse(sessionText) : null;
+    check(session?.ui_state?.filter?.lowAbFilter === false, "the session file records the filter off");
 
     // Saved with the session: the auto-save is debounced by a second.
     await page.waitForTimeout(2500);
@@ -374,7 +454,63 @@ try {
       (await toggle.count()) === 1 && !(await toggle.isChecked()),
       "the choice survives a reload",
     );
+    await openTab(page, "Validate");
+    text = await page.locator("body").innerText();
+    check(/\b20 species on line/i.test(text), "the reloaded table is the one as loaded (20 species on the line)", (text.match(LINE) || ["none"])[0]);
     check(errors.length === 0, "no JS error around the low-abundance filter", errors[0] || "");
+    await ctx.close();
+
+    // The session file, imported in a fresh browser, restores it too.
+    const fresh = await newPage(browser);
+    if (sessionText) {
+      await fresh.page
+        .locator('input[accept=".json,application/json"]')
+        .setInputFiles({ name: "crocodeel_curation_session.json", mimeType: "application/json", buffer: Buffer.from(sessionText) });
+      await fresh.page.waitForTimeout(2500);
+    }
+    await openTab(fresh.page, "Overview");
+    const freshToggle = fresh.page.getByRole("checkbox", { name: /low-abundance filter to the diagnostics/i });
+    check(
+      (await freshToggle.count()) === 1 && !(await freshToggle.isChecked()),
+      "an imported session file keeps the filter off",
+    );
+    await openTab(fresh.page, "Validate");
+    text = await fresh.page.locator("body").innerText();
+    check(/\b20 species on line/i.test(text), "…and its diagnostics (20 species on the line)", (text.match(LINE) || ["none"])[0]);
+    check(fresh.errors.length === 0, "no JS error importing the session", fresh.errors[0] || "");
+    await fresh.ctx.close();
+  }
+
+  /* --------------------------- 5c. cascades follow the filter too
+     The cascade of scenario 2, with the run's 20× filter: B holds C's
+     markers at 1e-4 × C, its lowest values, so the filter zeroes four of
+     the six and only two points stay above A → B's line — too few for a
+     cascade (more than three are needed). Unfiltered, all six are
+     there and C → A explains them. */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    const markers = Array.from({ length: 6 }, (_, i) => `m_${i}`).join(",");
+    const shared = Array.from({ length: 20 }, (_, i) => `s_${i}`).join(",");
+    await loadFiles(
+      page,
+      tsvFile("contamination_events.tsv", [
+        "# crocodeel version: 1.2.1 | species_ab_table: species_abundance.tsv | filtering_ab_thr_factor: 20.0 | probability_cutoff: 0.5 | rate_cutoff: 0.0",
+        "source\ttarget\trate\tprobability\tcontamination_specific_species",
+        `C\tA\t0.2\t0.9\t${markers}`,
+        `A\tB\t0.05\t0.8\t${shared}`,
+      ]),
+      tsvFile("species_abundance.tsv", cascadeLines()),
+    );
+    await openTab(page, "Overview");
+    let text = await page.locator("body").innerText();
+    // The Overview shows the stat only when there is a cascade.
+    check(!/Cascades detected/i.test(text), "with the filter, the cascade is not detected", (text.match(/Cascades detected\s*\d+/i) || ["no cascade"])[0]);
+    const toggle = page.getByRole("checkbox", { name: /low-abundance filter to the diagnostics/i });
+    if (await toggle.count()) await toggle.uncheck();
+    await page.waitForTimeout(600);
+    text = await page.locator("body").innerText();
+    check(/Cascades detected\s*1\b/i.test(text), "without it, the cascade is detected", (text.match(/Cascades detected\s*\d+/i) || ["none"])[0]);
+    check(errors.length === 0, "no JS error on the filtered cascade", errors[0] || "");
     await ctx.close();
   }
 
