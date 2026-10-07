@@ -7,7 +7,10 @@
      - B3.3  a cascade is found when the events file spells the shared
              sample differently from the abundance table;
      - B3.4  a biom-style table, whose header line starts with "#", is
-             refused with the line to fix, and loads once it is fixed.
+             refused with the line to fix, and loads once it is fixed;
+     - B3.5  the Pending chip of a sample no event targets does not send
+             the curator to its events, and the Help does not count the
+             plate among the plate map's required columns.
 
    Usage:  npm run build && node e2e/b3-ui-leftovers.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -55,6 +58,14 @@ async function openEvent(page, id) {
   await openTab(page, "Events");
   await page.locator(`tr[data-event-row="${id}"]`).click();
   await page.waitForTimeout(1000);
+}
+
+/** The Samples-tab row of sample `id`. */
+function sampleRow(page, id) {
+  return page
+    .locator("tr")
+    .filter({ has: page.locator('button[aria-label="Set verdict to Pending"]') })
+    .filter({ has: page.getByText(id, { exact: true }) });
 }
 
 await startServer();
@@ -187,6 +198,58 @@ try {
     const pills = await page.getByText(/^cascade$/).count();
     check(pills === 1, "B3.3 the gallery marks A → B as a cascade", `${pills} cascade pill(s)`);
   });
+
+  /* B3.5 — 63D250 is a source only: its Not contaminated is the default
+     for a sample no event targets, and its Pending chip has no events to
+     send the curator to. 63D9, made Contaminated by a TP, still has. The
+     Help no longer counts the plate among the required columns. */
+  await scenario(
+    "B3.5 texts",
+    async (page) => {
+      await openTab(page, "Samples");
+      const pendingTitle = (id) =>
+        sampleRow(page, id)
+          .locator('button[aria-label="Set verdict to Pending"]')
+          .getAttribute("title");
+      let t = await pendingTitle("63D250");
+      check(
+        t ===
+          "Pending changes nothing here: 63D250's verdict is automatic (Not contaminated: no event targets it). Pick a verdict to set your own",
+        "B3.5 a never-targeted sample's Pending chip does not send the curator to its events",
+        t,
+      );
+      await openEvent(page, 0); // 63D250 → 63D9
+      await page.keyboard.press("t");
+      await page.waitForTimeout(600);
+      await openTab(page, "Samples");
+      t = await pendingTitle("63D9");
+      check(
+        /^Pending changes nothing here: 63D9's verdict is automatic \(Contaminated: an event that targets it is TP\)\. Evaluate its events to change it, or pick a verdict to set your own$/.test(
+          t,
+        ),
+        "B3.5 a targeted sample's automatic verdict still points to its events",
+        t,
+      );
+
+      await openTab(page, "Help");
+      const help = await page.locator("#h-plate").innerText();
+      check(
+        help.includes("Two columns are mandatory: sample id and well coordinate") &&
+          help.includes("A plate name column is optional: without it every sample is placed on one plate, P1.") &&
+          !/Three columns/.test(help),
+        "B3.5 the Help says the plate column is optional",
+        help.split("\n").find((l) => /columns/i.test(l)) || "",
+      );
+      const plateRow = page.locator("#h-plate tr").filter({ has: page.locator("code", { hasText: /^plate$/ }) });
+      const tags = await plateRow.locator("td").first().innerText();
+      check(
+        !/mandatory/.test(tags) && /recognized/.test(tags),
+        "B3.5 the Help's plate row is tagged recognized, not mandatory",
+        tags.replace(/\s+/g, " "),
+      );
+    },
+    { demo: true },
+  );
 
   /* B3.4 — the demo table written as `biom convert --to-tsv` writes it:
      refused with the line to fix, then loaded once the "#" is removed. */

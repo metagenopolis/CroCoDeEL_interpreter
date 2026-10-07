@@ -3813,15 +3813,16 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
           <div style={{ fontWeight: 700, marginBottom: 4 }}>
             Sample-to-well placement (TSV)
           </div>
-          Three columns:{" "}
+          Columns{" "}
           <code style={{ fontFamily: "ui-monospace, monospace" }}>
             sample_id
           </code>
           ,{" "}
-          <code style={{ fontFamily: "ui-monospace, monospace" }}>plate</code>
-          ,{" "}
-          <code style={{ fontFamily: "ui-monospace, monospace" }}>well</code>
-          . Wells use letter-then-number coordinates (A01–H12 for 96-well,
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>well</code>{" "}
+          and, optionally,{" "}
+          <code style={{ fontFamily: "ui-monospace, monospace" }}>plate</code>{" "}
+          (without it every sample is on one plate, P1). Wells use
+          letter-then-number coordinates (A01–H12 for 96-well,
           A01–P24 for 384-well), or come as two columns,{" "}
           <code style={{ fontFamily: "ui-monospace, monospace" }}>row</code>{" "}
           (A–P or 1–16) and{" "}
@@ -10008,7 +10009,13 @@ function sampleVerdictChip(sampleId, entry, chip, { neverTargeted = false } = {}
         ? `Remove your verdict on ${sampleId}: no event targets it, so it goes back to the default Not contaminated`
         : `Remove your verdict on ${sampleId}: its verdict then follows the events that target it (automatic)`;
     else if (!state.active)
-      title = `Pending changes nothing here: ${sampleId}'s verdict is automatic (${SAMPLE_VERDICT_TONE[entry.verdict]?.label || entry.verdict}: ${autoVerdictReason(entry.verdict, neverTargeted)}). Evaluate its events to change it, or pick a verdict to set your own`;
+      // A sample no event targets has no events to evaluate: its verdict
+      // is the default, and only a verdict of the curator's replaces it.
+      title = `Pending changes nothing here: ${sampleId}'s verdict is automatic (${SAMPLE_VERDICT_TONE[entry.verdict]?.label || entry.verdict}: ${autoVerdictReason(entry.verdict, neverTargeted)}). ${
+        neverTargeted
+          ? "Pick a verdict to set your own"
+          : "Evaluate its events to change it, or pick a verdict to set your own"
+      }`;
     else
       title = `No verdict on ${sampleId}: none of the events that target it is evaluated yet`;
   } else if (state.auto) {
@@ -20446,8 +20453,10 @@ const HelpTab = ({ onStartTour }) => {
           title="plate_map.tsv"
         >
           <p>
-            Three columns: sample id, plate name, well coordinate — or,
-            instead of the well, its row and column in two columns. Headers
+            Two columns are mandatory: sample id and well coordinate — or,
+            instead of the well, its row and column in two columns. A plate
+            name column is optional: without it every sample is placed on
+            one plate, P1. Headers
             are matched like the metadata's: exactly, ignoring case, spaces,
             underscores, hyphens and dots. A sample placed on more than one
             row keeps its first well; the plate map card names the repeated
@@ -21065,7 +21074,9 @@ const HelpTab = ({ onStartTour }) => {
             <em>Keep</em>. <em>Pending</em> changes nothing on an
             automatic verdict, since the events still call for it (its
             tooltip says why): evaluate the events instead, or pick a
-            verdict of your own.
+            verdict of your own. On a sample no event targets, the
+            default Not contaminated has no events behind it: only a
+            verdict of your own replaces it.
           </p>
           <p style={{ marginTop: 6 }}>
             <strong>Sessions saved by an earlier version</strong> are

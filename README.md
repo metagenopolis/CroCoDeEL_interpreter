@@ -19,7 +19,7 @@ All files are TSV. Column names are matched against several aliases (case-insens
 - `contamination_events.tsv` &mdash; **required.** CroCoDeEL output: `source`, `target`, `rate`, `probability`, `contamination_specific_species`. Header lines starting with `#` are parsed as run metadata. The curated events TSV of the Export tab loads here too: its `verdict` and `notes` columns are restored, its `action` column is read but not applied. The samples' verdicts and keep / suppress actions are not restored, so review the Samples tab before exporting the curated abundance table.
 - `species_abundance.tsv` &mdash; **required for the scatterplots and diagnostic checks.** Wide format: first column = species id, remaining columns = sample ids.
 - `metadata.tsv` &mdash; *optional.* Unlocks the same-individual criterion and sample-context filters. Recognised fields include `sample_id`, `sample_name`, `subject_id`, `timepoint`, `biome`, `low_biomass`, `low_sequencing_depth`, `group_id`. A header must match a recognised name or alias exactly, ignoring case, spaces, `_`, `-` and `.` (`Subject ID` is `subject_id`; `age_group` is not `group_id`), and the metadata card shows which header was read for each field. Extra columns surface as generic pills.
-- `plate_map.tsv` &mdash; *optional.* Unlocks the Plate tab and adjacency filters. Columns: `sample_id`, `plate`, `well` (alphanumeric or `row` + `column`), matched like the metadata headers.
+- `plate_map.tsv` &mdash; *optional.* Unlocks the Plate tab and adjacency filters. Columns: `sample_id`, `well` (alphanumeric or `row` + `column`) and, optionally, `plate` (without it every sample is on one plate, `P1`), matched like the metadata headers.
 
 ## Getting started
 
