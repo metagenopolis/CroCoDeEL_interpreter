@@ -1167,8 +1167,9 @@ const Scatterplot = ({
         <AlertCircle className="w-5 h-5" />
         <div style={{ fontSize: 13, fontWeight: 600 }}>{scatter.error}</div>
         <div style={{ fontSize: 11, color: "#8a2422", opacity: 0.8, maxWidth: 380 }}>
-          Check that sample IDs in contamination_events.tsv exactly match the
-          column names in species_abundance.tsv (case-sensitive).
+          Check that the sample IDs in contamination_events.tsv match the
+          column names in species_abundance.tsv. Letter case and spaces
+          around an ID are ignored; any other difference is not.
         </div>
       </div>
     );
@@ -17199,6 +17200,17 @@ const ValidateTab = ({
                 const naValue = scatter?.error
                   ? "not evaluable — sample missing from the abundance table"
                   : "abundance table required";
+                // With the table loaded and both samples in it, a value can
+                // still be missing: R² and the spread need two species on
+                // the line, ρ three species in the pair, the points above
+                // the line a line to measure from (a rate above 0). These
+                // cards read "abundance table required", as if the table
+                // were not loaded; they now say what is missing.
+                const pairOk = !!scatter && !scatter.error;
+                const lineNaValue =
+                  pairOk && diag && diag.n < 2
+                    ? `${diag.n === 1 ? "Only 1 species" : "No species"} on the line — at least 2 needed`
+                    : naValue;
                 return (
               <div className="mt-4">
                 <Criterion
@@ -17209,7 +17221,7 @@ const ValidateTab = ({
                   value={
                     diag?.r2 != null
                       ? `R² = ${diag.r2.toFixed(3)}`
-                      : naValue
+                      : lineNaValue
                   }
                   summary={summaryFor("r2")}
                 />
@@ -17231,7 +17243,7 @@ const ValidateTab = ({
                   value={
                     diag?.decadeRange != null
                       ? `${diag.decadeRange.toFixed(1)} decades`
-                      : naValue
+                      : lineNaValue
                   }
                   summary={summaryFor("decade")}
                 />
@@ -17327,7 +17339,9 @@ const ValidateTab = ({
                           : sel?.cascade
                             ? `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)} — cascade explains)`
                             : `${above.count} above the line — ${above.farAbove} of them ≥ 0.5 decade (max ${above.maxDist.toFixed(1)})`
-                      : naValue
+                      : pairOk && scatter.logC == null
+                        ? "No contamination line — the event's rate is 0"
+                        : naValue
                   }
                   summary={summaryFor("above")}
                 />
@@ -17337,7 +17351,14 @@ const ValidateTab = ({
                   wiki="Joint check between the Spearman rank correlation of the source / target profiles (ρ) and metadata-driven relatedness. ρ alone is ambiguous — high ρ can mean either same-subject biological persistence (FP) or very strong contamination (TP). Cross-referencing with the metadata resolves the ambiguity:  ρ < 0.7 always passes (profiles distinct);  ρ ≥ 0.7 with samples from different subjects that share no group passes too (consistent with strong contamination);  ρ ≥ 0.7 with samples from the same subject (or related group) fails (biological persistence, likely FP). With no metadata loaded, a high ρ alone is shown as inconclusive."
                   pass={passFor("biosim")}
                   value={(() => {
-                    if (diag?.spearman == null) return naValue;
+                    if (diag?.spearman == null) {
+                      // ρ is computed over the species present in either
+                      // sample (every point of the scatter).
+                      const n = scatter?.points?.length ?? 0;
+                      return pairOk
+                        ? `${n === 1 ? "Only 1 species" : n === 0 ? "No species" : `Only ${n} species`} in source and target — ρ needs at least 3`
+                        : naValue;
+                    }
                     const rhoText = `ρ = ${diag.spearman.toFixed(2)}`;
                     const high = diag.spearman >= 0.7;
                     const isRelated =
@@ -21131,6 +21152,12 @@ const HelpTab = ({ onStartTour }) => {
             scored at all. It is shown as <em>not evaluable</em>, in the
             panel as in the HTML report: neither a pass nor a fail, and
             the bulk dialog's pass / fail filters match it with neither.
+            A pair that is in the table can still leave a criterion
+            uncomputed: the line's shape (01) and spread (03) need at
+            least two species on the line, ρ (06) three species in
+            source and target, the points above the line (05) a rate
+            above 0. Its card then says which is missing, and it counts
+            neither way.
           </p>
           <p style={{ marginTop: 6 }}>
             <strong>Low-abundance filter.</strong> A CroCoDeEL run made
