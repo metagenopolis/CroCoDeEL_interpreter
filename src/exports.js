@@ -128,8 +128,10 @@ export function eventsToTSV(rawEvents, runMetadata) {
     the curation:
 
       introduced_pct  the share of the target's species that the event
-                      lists as introduced (empty when the target is not
-                      in the abundance table);
+                      lists as introduced, in percent (61.54, not 0.6154:
+                      the unit of every other export and of the screen),
+                      empty when the target is not in the abundance
+                      table;
       verdict         the event's evaluation: true_positive,
                       false_positive, uncertain or pending;
       action          the target sample's keep / suppress (from
@@ -147,7 +149,7 @@ export function curatedEventsToTSV(events, { runMetadata, study, sampleCuration 
   for (const e of events || []) {
     const cells = [
       ...crocodeelCells(e),
-      e.introducedPct == null ? "" : (e.introducedPct / 100).toFixed(4),
+      Number.isFinite(e.introducedPct) ? e.introducedPct.toFixed(2) : "",
       e.verdict || "pending",
       // The action belongs to the target sample; the event row repeats it
       // so a tool reading this file alone can filter on it.

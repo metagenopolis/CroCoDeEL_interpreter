@@ -7,6 +7,9 @@
              (read_tsv) gets every event back, and so does the events card,
              with the verdicts and the notes; the events card's own
              Download stays CroCoDeEL's file;
+     - B2.2  the introduced share of each event and target is the same
+             percentage in the events TSV, the samples TSV, the GraphML
+             and the CSV pair;
      - B2.6  a hand-edited session whose metadata entry keeps a string as
              its row: the metadata card does not list its characters as
              columns, the Validate panel shows no "0: a" pill, and the
@@ -53,6 +56,31 @@ async function downloadVia(page, button) {
 async function exportFile(page, name) {
   await openTab(page, "Export");
   return downloadVia(page, page.getByRole("button", { name }).first());
+}
+
+/** Click `button` and collect the `n` files it downloads (the graph's
+    CSV pair comes as two downloads), { name: text }. */
+async function downloadsVia(page, button, n) {
+  const files = {};
+  const seen = new Promise((resolve) => {
+    page.on("download", async (d) => {
+      files[d.suggestedFilename()] = readFileSync(await d.path(), "utf8");
+      if (Object.keys(files).length === n) resolve();
+    });
+  });
+  await button.click();
+  await Promise.race([seen, page.waitForTimeout(30000)]);
+  return files;
+}
+
+/** A TSV / CSV text as objects keyed by header, "#" lines skipped. */
+function table(text, sep = "\t") {
+  const lines = (text || "").split("\n").filter((l) => l && !l.startsWith("#"));
+  const header = (lines[0] || "").split(sep);
+  return lines.slice(1).map((l) => {
+    const cells = l.split(sep);
+    return Object.fromEntries(header.map((h, j) => [h, cells[j]]));
+  });
 }
 
 /** Upload `text` through the i-th upload card (0 events, 1 abundance,
@@ -276,6 +304,50 @@ try {
         sameAsDemo(ownRead.events),
       "B2.1 the events card's Download is CroCoDeEL's five columns, every event as read",
       JSON.stringify(ownLines.slice(0, 3)).slice(0, 300),
+    );
+  });
+
+  /* ---------------- B2.2 one unit for the introduced share
+     The events TSV wrote 0.6154 where the samples TSV, the GraphML and
+     the CSV pair write 61.54. */
+  await scenario("B2.2", async (page) => {
+    const events = table((await exportFile(page, /Download events TSV/i))?.text);
+    const samples = table((await exportFile(page, /Download samples TSV/i))?.text);
+    const graphml = (await exportFile(page, /Download GraphML/i))?.text || "";
+    const csv = await downloadsVia(page, page.getByRole("button", { name: /node \+ edge CSV pair/i }), 2);
+    const edges = table(csv["contamination_graph_edges.csv"], ",");
+    const nodes = table(csv["contamination_graph_nodes.csv"], ",");
+    const pair = (r) => `${r.source}→${r.target}`;
+    const edgeOf = new Map(edges.map((r) => [pair(r), r]));
+    const close = (a, b) => Math.abs(Number(a) - Number(b)) < 0.005;
+    const known = events.filter((r) => r.introduced_pct !== "");
+    check(
+      known.length === events.length && known.some((r) => Number(r.introduced_pct) > 1),
+      "B2.2 the events TSV writes the introduced share as a percentage",
+      known.slice(0, 3).map((r) => r.introduced_pct).join(", "),
+    );
+    check(
+      edges.length === events.length &&
+        known.every((r) => close(r.introduced_pct, edgeOf.get(pair(r))?.introduced_pct)),
+      "B2.2 each event's introduced_pct is the edge's introduced_pct of the CSV pair",
+    );
+    const graphmlValues = [...graphml.matchAll(/<data key="e(\d+)">([^<]*)<\/data>/g)];
+    const keyId = graphml.match(/<key id="(e\d+)" for="edge" attr.name="introduced_pct"/)?.[1];
+    const inGraphml = graphmlValues.filter((m) => `e${m[1]}` === keyId).map((m) => Number(m[2]));
+    check(
+      inGraphml.length === events.length &&
+        known.every((r) => inGraphml.some((v) => close(v, r.introduced_pct))),
+      "B2.2 and the GraphML's",
+    );
+    const nodeOf = new Map(nodes.map((r) => [r.id, r]));
+    const targets = new Set(known.map((r) => r.target));
+    const maxOf = (t) => Math.max(...known.filter((r) => r.target === t).map((r) => Number(r.introduced_pct)));
+    check(
+      [...targets].every((t) => {
+        const row = samples.find((r) => r.sample_id === t);
+        return close(row?.max_target_introduced_pct, maxOf(t)) && close(nodeOf.get(t)?.max_introduced_pct, maxOf(t));
+      }),
+      "B2.2 each target's max_target_introduced_pct (samples TSV) and max_introduced_pct (graph) is its events' highest",
     );
   });
 

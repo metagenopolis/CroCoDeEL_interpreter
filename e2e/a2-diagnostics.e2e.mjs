@@ -382,9 +382,10 @@ try {
         .filter((l) => l && !l.startsWith("#"))
         .map((l) => l.split("\t"));
       const col = rows[0].indexOf("introduced_pct");
-      // TGT holds sp_0..sp_19 plus five natives: 20 / 25 species.
+      // TGT holds sp_0..sp_19 plus five natives: 20 / 25 species, in
+      // percent like every other export.
       check(
-        col >= 0 && rows[1]?.[col] === "0.8000",
+        col >= 0 && rows[1]?.[col] === "80.00",
         "the target's introduced_pct is filled (20 of 25 species)",
         `introduced_pct=${JSON.stringify(rows[1]?.[col])}`,
       );

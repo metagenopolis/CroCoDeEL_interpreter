@@ -27,6 +27,8 @@ The **Export** tab writes files meant to load, unchanged, in the next tool:
 
 - `contamination_events_curated.tsv` &mdash; CroCoDeEL's own five columns first, under its names and with its number formatting, below the run's `#` parameter line and a `# study:` line, so CroCoDeEL reads the file back (e.g. to plot the curated events with `plot_conta`); then `introduced_pct`, `verdict`, `action` (the target sample's keep / suppress) and `notes`. It reloads here with its evaluations and notes.
 
+Units are the same in every export: rates are fractions, as in CroCoDeEL's files; the introduced share (`introduced_pct`, `max_target_introduced_pct`, the graph's `max_introduced_pct`) is a percentage of the target's species.
+
 ## Getting started
 
 ```bash

@@ -472,7 +472,10 @@ export function buildContaminationGraph(events, opts = {}) {
         uncertain_as_target: a.uncertain,
         pending_as_target: a.pending,
         max_incoming_rate: a.maxIncomingRate ?? 0,
-        max_introduced_pct: a.maxIntroducedPct ?? 0,
+        // A percentage, like the edges' introduced_pct; -1 when unknown (no
+        // event targets the sample, or it is not in the abundance table),
+        // where 0 read as "no species introduced".
+        max_introduced_pct: a.maxIntroducedPct ?? -1,
         species_richness: richness ?? -1,
         in_abundance_table: !!abKey,
       };
@@ -20920,6 +20923,19 @@ const HelpTab = ({ onStartTour }) => {
                   browser's print dialog to save as PDF.
                 </li>
               </ul>
+              <p style={{ marginTop: 6 }}>
+                <strong>Units.</strong> Rates are fractions (0.704), as
+                in CroCoDeEL's files. The introduced share is a
+                percentage of the target's species (61.54 for 8 of 13),
+                the same in every export:{" "}
+                <code>introduced_pct</code> in the events TSV and the
+                graph files, <code>max_target_introduced_pct</code> in
+                the samples TSV, <code>max_introduced_pct</code> on the
+                graph's nodes, "introduced %" in the HTML reports. When
+                it is unknown — the target is not in the abundance
+                table, or no event targets the sample — the TSVs leave
+                it empty and the graph files write −1.
+              </p>
               <p style={{ marginTop: 6 }}>
                 For a full reproducibility-grade backup of the entire
                 session (events + every loaded file + UI state), use{" "}
