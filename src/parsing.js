@@ -76,11 +76,19 @@ export function tsvCell(v) {
                       (an implicit index): `implicitIndex` is then true
                       and `header` starts with "", the species column.
                       When that cell is an empty one at the end of the
-                      row instead, under no header cell in any row (each
-                      line ends with a tab), pandas still reads it so and
-                      shifts every sample name one column: the table is
-                      read as its header says, and `shiftedByPandas` is
-                      true for the parser to say so. */
+                      row instead, and no row holds a value past the
+                      header's last name, the row ends with a tab. If
+                      the header line ends with a name, or with a tab
+                      but its first cell names the species column
+                      (namesSpeciesColumn: "species", "id_msp", empty),
+                      the rows end with a tab the header does not have:
+                      pandas still reads an implicit index and shifts
+                      every sample name one column, so the table is read
+                      as its header says, and `shiftedByPandas` is true
+                      for the parser to say so. Otherwise the header
+                      line ends with a tab too and starts with a sample:
+                      R's layout with a tab at the end of every line,
+                      which pandas reads right, and so does this. */
 export function parseTSV(text, options = {}) {
   const { inlineComments = false, indexCol = false } = options;
   const allLines = text.replace(/\r/g, "").split("\n");
@@ -153,12 +161,22 @@ export function parseTSV(text, options = {}) {
   // pandas' implicit index (see `indexCol` above).
   let implicitIndex = false;
   let shiftedByPandas = false;
-  if (indexCol && data.length > 0 && data[0].length === headerCells.length + 1) {
-    if (isBlankCell(data[0][headerCells.length]) && width <= headerCells.length) {
-      shiftedByPandas = true;
-    } else {
-      implicitIndex = true;
-    }
+  const h = headerCells.length;
+  if (indexCol && data.length > 0 && data[0].length === h + 1) {
+    // A header line ending with a tab used to count as a shift too: R's
+    // write.table output with a tab added to every line (a spreadsheet's
+    // empty last column) was read with its species column taken from the
+    // first sample and every sample holding the values of the one before
+    // it, with a warning that CroCoDeEL, which reads it right, did that.
+    // The header's cells up to its last name: a value past them (`width`)
+    // has a name only if the header has no cell above the species.
+    const named = withoutTrailingBlanks(headerCells).length;
+    const rowsOnlyTab =
+      isBlankCell(data[0][h]) &&
+      width <= named &&
+      (named === h || namesSpeciesColumn(headerCells[0], { commentLines }));
+    if (rowsOnlyTab) shiftedByPandas = true;
+    else implicitIndex = true;
   }
   const offset = implicitIndex ? 1 : 0;
   const header = implicitIndex ? ["", ...headerCells] : [...headerCells];

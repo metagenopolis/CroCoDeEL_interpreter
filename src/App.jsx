@@ -20928,11 +20928,15 @@ const HelpTab = ({ onStartTour }) => {
             writes no cell above the row names — names samples only: the
             first cell of each row is then its species, as CroCoDeEL
             (pandas) reads it, the card says so and the downloads keep that
-            layout. Rows that end with one tab more than the header (an
+            layout. Rows that end with one tab more than the header line (an
             empty cell under no header) are read as the header says, with a
             warning: CroCoDeEL reads such a table as one without a species
             cell and names every sample one column off, so run it again on
-            the table without those tabs. The parser normalizes each sample
+            the table without those tabs. A tab at the end of every line,
+            the header's included, under a header that starts with a sample
+            (R's layout saved from a spreadsheet with an empty last column)
+            shifts nothing: CroCoDeEL reads it right, and so does the
+            interpreter. The parser normalizes each sample
             column to relative abundances summing to 1 for the plots and the
             checks, and keeps each column's total: the card's Download and the curated
             abundance export write the file's own values back (counts stay
