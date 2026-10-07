@@ -65,6 +65,8 @@ import {
   hasInputValues,
   curationOrigin,
   reportFilterSummary,
+  sampleFlagCells,
+  rateCell,
 } from "./exports.js";
 import {
   restoreFilter,
@@ -27027,7 +27029,6 @@ const defaultFilter = () => ({
       const rowChar = String.fromCharCode(65 + placement.row);
       return `${rowChar}${String(placement.col + 1).padStart(2, "0")}`;
     };
-    const boolCell = (v) => (v == null ? "" : v ? "true" : "false");
     const num = (v, digits) =>
       v == null || !Number.isFinite(v) ? "" : v.toFixed(digits);
 
@@ -27046,9 +27047,8 @@ const defaultFilter = () => ({
             flags.timepoint || "",
             flags.groupId || "",
             flags.biome || "",
-            boolCell(flags.isControl),
-            boolCell(flags.isLowBiomass),
-            boolCell(flags.isLowSequencingDepth),
+            // Empty when the metadata does not say (sampleFlagCells).
+            ...sampleFlagCells(lookupBySample(metadata?.bySample, id), metadata),
             placement?.plate || "",
             well(placement),
             a.asSource || 0,
@@ -27057,7 +27057,7 @@ const defaultFilter = () => ({
             a.fpAsTarget || 0,
             a.uncAsTarget || 0,
             a.pendingAsTarget || 0,
-            num(a.maxTargetRate, 6),
+            rateCell(a.maxTargetRate),
             num(a.maxTargetIntroducedPct, 2),
             c.verdict || "",
             curationOrigin(c, "verdict", a.asTarget > 0),

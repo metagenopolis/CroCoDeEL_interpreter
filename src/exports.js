@@ -548,6 +548,31 @@ export function reportFilterSummary(filter) {
 
 /* ---------- samples ---------- */
 
+/** The samples TSV's is_control, is_low_biomass and is_low_sequencing_depth
+    cells of one sample: "true", "false", or empty when the metadata does
+    not say — no metadata, no row for the sample, no column for the flag,
+    or a cell left empty (a control is read from the biome cell). They
+    used to read "false" in all of these cases, a negative nobody gave:
+    with no metadata loaded, every sample of the TSV was "not a control,
+    not low biomass". `entry` is the sample's metadata entry
+    (parseMetadata), `metadata` the whole metadata (its column flags). */
+export function sampleFlagCells(entry, metadata) {
+  if (!entry || typeof entry !== "object") return ["", "", ""];
+  const flag = (v) => (v === true ? "true" : v === false ? "false" : "");
+  const biome = !!(metadata?.hasBiomeCol || metadata?.cols?.biome) && !!entry.biome;
+  return [
+    entry.isControl === true ? "true" : biome ? "false" : "",
+    flag(entry.lowBiomassExplicit),
+    flag(entry.lowSequencingDepthExplicit),
+  ];
+}
+
+/** The samples TSV's max_target_rate cell: the rate in CroCoDeEL's own
+    notation, every digit kept, as the events TSV writes it (pythonFloat).
+    toFixed(6) wrote a rate below 5e-7 as 0.000000 and cut the others to
+    six decimals. Empty when the sample is no event's target. */
+export const rateCell = (x) => (x == null ? "" : numberCell(x));
+
 /** The values buildEffectiveSampleCuration gives a sample no event
     targets: Not contaminated, and the Keep that goes with it. */
 const DEFAULT_VALUE = { verdict: "correct", action: "keep" };
