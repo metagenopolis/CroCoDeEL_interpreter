@@ -358,6 +358,14 @@ try {
     );
     if (text) {
       await upload(page, 0, "contamination_events_curated.tsv", text);
+      // The session holds curation: replacing its events asks first.
+      // "Start fresh" keeps nothing of it, so what comes back is the
+      // file's.
+      await page
+        .getByRole("dialog", { name: "Replace the events file?" })
+        .getByRole("button", { name: "Start fresh" })
+        .click();
+      await page.waitForTimeout(500);
       const s = await overviewStats(page);
       check(s.tp === 3 && s.fp === 2, "reloading the curated TSV restores the verdicts", `TP ${s.tp}, FP ${s.fp}`);
       // Export again: every verdict and every note comes back as written.

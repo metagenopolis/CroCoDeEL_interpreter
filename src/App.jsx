@@ -57,6 +57,7 @@ import {
 import { restoreFilter, restoreSort } from "./persistence.js";
 import { idbBackend, indexedDBSupported, readStoredSession } from "./storage.js";
 import { createAutosave } from "./autosave.js";
+import { curationSummary, replaceEvents, replaceReportLines } from "./carryOver.js";
 import {
   FolderOpen,
   AlertCircle,
@@ -3552,26 +3553,32 @@ const UploadCard = ({
   confirmDialog,
   emptyAction,
   details,
+  clearConfirm,
 }) => {
   const [drag, setDrag] = useState(false);
   const loaded = !!filename;
 
+  // `clearConfirm` ({ title, body, confirmLabel }) replaces the default
+  // question when clearing loses more than the file (the events card:
+  // the curation done on them).
   const handleClear = () => {
     if (!onClear) return;
+    const title = clearConfirm?.title || `Remove the loaded ${label}?`;
     // Prefer the React-controlled modal when the parent provides one
     // (consistent UX across the app). Fall back to a plain native confirm
     // if not provided, so the component still works in isolation.
     if (confirmDialog) {
       confirmDialog({
         kind: "confirm",
-        title: `Remove the loaded ${label}?`,
+        title,
         body:
+          clearConfirm?.body ||
           "This only clears it from this browser session — your original file on disk is untouched.",
-        confirmLabel: "Remove",
+        confirmLabel: clearConfirm?.confirmLabel || "Remove",
         destructive: true,
         onConfirm: onClear,
       });
-    } else if (window.confirm(`Remove the loaded ${label}?`)) {
+    } else if (window.confirm(clearConfirm?.body ? `${title}\n\n${clearConfirm.body}` : title)) {
       onClear();
     }
   };
@@ -3649,7 +3656,13 @@ const UploadCard = ({
         type="file"
         accept=".tsv,.txt,.csv,.tab"
         className="hidden"
-        onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          // Reset, so that picking the same file again — after cancelling
+          // its replacement, say — fires again.
+          e.target.value = "";
+          if (file) onFile(file);
+        }}
       />
       <div className="flex flex-col items-stretch gap-1.5 shrink-0">
         <button
@@ -20168,7 +20181,7 @@ const HelpTab = ({ onStartTour }) => {
                 name="action"
                 recognized
                 type="keep / suppress"
-                desc="The target sample's action in the curated events TSV. Read, but not applied to the samples automatically: sample actions are set on the Samples tab."
+                desc="The target sample's action in the curated events TSV. Restored on the target when all its rows give the same keep / suppress: as your own value where it differs from the automatic one (a Keep on a contaminated sample, a Suppress on one that is not)."
               />
             </tbody>
           </table>
@@ -20178,10 +20191,31 @@ const HelpTab = ({ onStartTour }) => {
             longer header: an{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}>extraction_batch</code>{" "}
             column is not an action. Reloading the curated events TSV
-            restores the event evaluations and notes only: the samples'
-            verdicts and keep / suppress actions are not restored, so
-            review the Samples tab before exporting the curated abundance
-            table.
+            restores the event evaluations, their notes and the targets'
+            keep / suppress actions, so an export reloaded into an empty
+            session gives back the same counts and the same curated
+            abundance table. What the file does not hold — sample verdicts
+            and sample notes set by hand, the action of a sample no event
+            targets — only the session JSON (Download session) keeps.
+          </p>
+          <p>
+            <strong style={{ color: "var(--ink)" }}>Replacing the events
+            file.</strong>{" "}
+            Loading another events file — with the card's Replace button, by
+            dropping it on the card, or from the in-browser CroCoDeEL run —
+            into a session that holds curation asks first.{" "}
+            <em>Carry over</em> (the default) keeps the evaluation and notes
+            of every event whose source and target are in the new file
+            (repeated pairs are matched in file order), and the sample
+            verdicts, actions and notes you set for the samples still
+            present (in the new events or the abundance table); the
+            automatic sample values are then recomputed from the new events.{" "}
+            <em>Start fresh</em> drops all of it; <em>Cancel</em> keeps the
+            session as it is. When the new file has its own evaluations,
+            notes or actions (a curated events TSV), they win over yours; an
+            empty cell never erases one. A banner then says what was kept,
+            restored, added and dropped. Clearing the events file asks too,
+            and says the curation goes with it.
           </p>
         </HelpSection>
 
@@ -21860,7 +21894,8 @@ const HelpTab = ({ onStartTour }) => {
             Use the <em>Clear session</em> button in the files bar to wipe
             everything immediately. You can also remove just one file with
             the <em>Clear</em> button on its file card: the other files stay
-            loaded, and saved.
+            loaded, and saved. Removing the events file also removes the
+            curation done on them — the card asks first, and says so.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Private / incognito
@@ -23338,8 +23373,10 @@ const StorageBanner = ({ status, onDownload }) => {
   );
 };
 
-/** Dismissable banner telling what a load did to the session: that a
-    restored session came back without its abundance table. */
+/** Dismissable banner telling what a load did to the session: what
+    loading another events file did to the curation (src/carryOver.js,
+    replaceReportLines), or that a restored session came back without its
+    abundance table. */
 const NoticeBanner = ({ title, lines, onDismiss }) => (
   <div className="max-w-7xl mx-auto px-6 pb-4">
     <div
@@ -23954,6 +23991,13 @@ function AppMain({ initial, storage }) {
   React.useLayoutEffect(() => {
     rawEventsRef.current = rawEvents;
   }, [rawEvents]);
+  // Same for the sample curation, read when another events file replaces
+  // the current one (the confirmation runs after the render that opened
+  // it).
+  const sampleCurationRef = useRef(sampleCuration);
+  React.useLayoutEffect(() => {
+    sampleCurationRef.current = sampleCuration;
+  }, [sampleCuration]);
   const [runMetadata, setRunMetadata] = useState(initial?.runMetadata || null);
   // What the events parser reported about the loaded file (rates or
   // probabilities out of range, rows skipped, unrecognised verdicts or
@@ -23995,6 +24039,13 @@ function AppMain({ initial, storage }) {
   const sampleActionTotals = useMemo(
     () => sampleActionCounts(effectiveSampleCuration, undefined, tableSample),
     [effectiveSampleCuration, tableSample],
+  );
+  // What the curator has done that is not in any input file — evaluated
+  // or annotated events, sample decisions set by hand — for the
+  // confirmations that would lose it (src/carryOver.js).
+  const curationTotals = useMemo(
+    () => curationSummary(rawEvents, sampleCuration),
+    [rawEvents, sampleCuration],
   );
   // Tab can be deep-linked via the URL fragment: `#learn`, `#help`,
   // `#scatter`, etc. all land the curator on the matching tab. Lets
@@ -24409,8 +24460,9 @@ const defaultFilter = () => ({
     abFailed: false,
     error: null,
   }));
-  // Dismissable notice over the tabs (NoticeBanner): a session restored
-  // without its abundance table (the table's last save had failed).
+  // Dismissable notice over the tabs (NoticeBanner): what loading another
+  // events file did to the curation, or a session restored without its
+  // abundance table (the table's last save had failed).
   const [notice, setNotice] = useState(() =>
     initial?.abLost && !initial?.ab
       ? {
@@ -25596,6 +25648,97 @@ const defaultFilter = () => ({
   };
 
   /* ---- file loaders ---- */
+
+  /** What the session's curation amounts to, for the confirmations that
+      would lose it: "5 evaluations, 2 notes and 3 sample decisions". */
+  const curationPhrase = (summary) => {
+    const parts = [];
+    const n = (count, one) => `${count} ${one}${count === 1 ? "" : "s"}`;
+    if (summary.evaluations) parts.push(n(summary.evaluations, "evaluation"));
+    if (summary.notes) parts.push(n(summary.notes, "note"));
+    if (summary.sampleEntries) parts.push(n(summary.sampleEntries, "sample decision"));
+    return parts.length > 1
+      ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`
+      : parts[0] || "";
+  };
+
+  /* Another events file replacing the current one — the card's Replace
+     (or a file dropped on it), the run page's "Use these events +
+     abundance in this session". This used to wipe every evaluation, note
+     and sample decision without a word, and the autosave then stored the
+     loss. Now, when the session holds curation, the curator chooses:
+     carry it over to the new file (the default), start fresh, or cancel;
+     replaceEvents (src/carryOver.js) builds the new session — the file's
+     own curation columns included — and a banner says what happened. */
+  const applyNewEvents = (parsed, { carryOver, title, onApplied }) => {
+    const hadEvents = rawEventsRef.current.length > 0;
+    const next = replaceEvents({
+      oldEvents: rawEventsRef.current,
+      oldSampleCuration: sampleCurationRef.current,
+      newEvents: parsed.events,
+      sampleIds: ab?.samples,
+      carryOver,
+      fileHasCuration: !!parsed.curation,
+    });
+    // Seen by any handler that runs before the next commit (commitEvents
+    // does the same).
+    rawEventsRef.current = next.events;
+    setRawEvents(next.events);
+    setSampleCuration(next.sampleCuration);
+    setEventsWarnings(Array.isArray(parsed.warnings) ? parsed.warnings : []);
+    // Reset the filter so any scope / sliders / sample-verdict
+    // selection from a previous study don't silently hide every
+    // event in the new file.
+    setFilter(withRunCutoffs(defaultFilter(), parsed.runMetadata));
+    setRunMetadata(parsed.runMetadata);
+    // The ids are the new file's: the old selection would point at
+    // another event.
+    setSelId(null);
+    // Default the study label (the events filename, without extension,
+    // for a file) so the curator gets some context immediately. They can
+    // rename it inline from the upload bar.
+    if (!analysisTitle && title) setAnalysisTitle(title);
+    const lines = replaceReportLines(next.report);
+    setNotice(
+      lines.length > 0
+        ? { title: hadEvents ? "Events file replaced." : "Events file loaded.", lines }
+        : null,
+    );
+    setErr(null);
+    setTab("overview");
+    onApplied?.();
+  };
+  const requestNewEvents = (parsed, { title, onApplied, aboveOverlays } = {}) => {
+    const summary = curationSummary(rawEventsRef.current, sampleCurationRef.current);
+    if (!summary.any) {
+      applyNewEvents(parsed, { carryOver: false, title, onApplied });
+      return;
+    }
+    const fileHasCuration = !!parsed.curation;
+    setBulkConfirm({
+      kind: "confirm",
+      title: "Replace the events file?",
+      body:
+        `Your session holds ${curationPhrase(summary)} on the current events.\n\n` +
+        "Carry over (recommended): each event of the new file with the same source and target as one of yours keeps its evaluation and notes, and the sample verdicts, actions and notes you set stay for the samples still present. " +
+        (fileHasCuration
+          ? "The new file has its own evaluations: where it gives one, the file's value is used."
+          : "Events that are not in the new file are dropped.") +
+        "\n\nStart fresh: all of it is dropped" +
+        (fileHasCuration
+          ? " and only the file's own evaluations, notes and actions are used."
+          : " and every event starts pending.") +
+        "\n\nCancel keeps your session as it is.",
+      confirmLabel: "Carry over",
+      onConfirm: () => applyNewEvents(parsed, { carryOver: true, title, onApplied }),
+      altLabel: "Start fresh",
+      altDestructive: true,
+      onAlt: () => applyNewEvents(parsed, { carryOver: false, title, onApplied }),
+      // The run page covers the app: the question must sit above it.
+      zIndex: aboveOverlays ? 8500 : undefined,
+    });
+  };
+
   const loadEvents = async (file) => {
     const sizeStr = formatBytes(file?.size || 0);
     try {
@@ -25614,23 +25757,8 @@ const defaultFilter = () => ({
       setLoading({ label: `Parsing ${file.name}…`, sub: sizeStr, progress: null });
       await yieldToBrowser();
       const parsed = parseEvents(text);
-      setRawEvents(parsed.events);
-      setSampleCuration({});
-      setEventsWarnings(parsed.warnings || []);
-      // Reset the filter so any scope / sliders / sample-verdict
-      // selection from a previous study don't silently hide every
-      // event in the new file.
-      setFilter(withRunCutoffs(defaultFilter(), parsed.runMetadata));
-      setRunMetadata(parsed.runMetadata);
-      // Default the study label to the events filename (without
-      // extension) so the curator gets some context immediately.
-      // They can rename it inline from the upload bar.
-      if (!analysisTitle) {
-        const base = (file?.name || "").replace(/\.tsv$|\.txt$|\.csv$/i, "");
-        setAnalysisTitle(base || "Untitled study");
-      }
-      setErr(null);
-      setTab("overview");
+      const base = (file?.name || "").replace(/\.tsv$|\.txt$|\.csv$/i, "");
+      requestNewEvents(parsed, { title: base || "Untitled study" });
     } catch (e) {
       setErr(`Events file: ${e.message}`);
     } finally {
@@ -25703,9 +25831,13 @@ const defaultFilter = () => ({
       const parsedAb = parseAbundance(abText);
       if (!parsedAb) throw new Error("Could not parse demo abundance table");
       const parsedEvents = parseEvents(evText);
-      setRawEvents(parsedEvents.events);
-      setSampleCuration({});
+      // Another study: nothing of the current session is carried over
+      // (src/carryOver.js reads the file's own curation columns, if any).
+      const fresh = replaceEvents({ newEvents: parsedEvents.events, carryOver: false });
+      setRawEvents(fresh.events);
+      setSampleCuration(fresh.sampleCuration);
       setEventsWarnings(parsedEvents.warnings || []);
+      setNotice(null);
       // Reset the filter so any scope / sliders / sample-verdict
       // selection from a previous study don't silently hide every
       // event of the demo, seeded with the run header's own cutoffs.
@@ -25788,10 +25920,14 @@ const defaultFilter = () => ({
         if (!parsedAb) throw new Error("Could not parse abundance table");
         const parsedEvents = parseEvents(evText);
 
-        // Reset session state to avoid mixing files from different datasets
-        setRawEvents(parsedEvents.events);
-        setSampleCuration({});
+        // Reset session state to avoid mixing files from different
+        // datasets: nothing of the current session is carried over
+        // (src/carryOver.js reads the file's own curation columns, if any).
+        const fresh = replaceEvents({ newEvents: parsedEvents.events, carryOver: false });
+        setRawEvents(fresh.events);
+        setSampleCuration(fresh.sampleCuration);
         setEventsWarnings(parsedEvents.warnings || []);
+        setNotice(null);
         // Reset the filter so any scope / sliders / sample-verdict
         // selection from the previous study don't silently hide every
         // event of the new one (a stale scopeSamples list is the most
@@ -25846,11 +25982,16 @@ const defaultFilter = () => ({
       await performLoad();
       return;
     }
+    // Say plainly what would be lost: the curation is not in any file.
+    const summary = curationTotals;
     setBulkConfirm({
       kind: "confirm",
       title: `Replace your session with "${dataset.short_title || dataset.title}"?`,
       body:
-        "Loading this dataset will replace your currently-loaded events, abundance, metadata, plate map and evaluations.\n\n" +
+        "Loading this dataset will replace your currently-loaded events, abundance, metadata and plate map" +
+        (summary.any
+          ? `, and your curation will be lost: ${curationPhrase(summary)}. Download the session first (Download session, on the files bar) to keep it.\n\n`
+          : ".\n\n") +
         "The original files on disk are not affected — you can re-open them after exploring this dataset.",
       confirmLabel: "Replace and load",
       destructive: true,
@@ -25884,6 +26025,7 @@ const defaultFilter = () => ({
         setRawEvents([]);
         setSampleCuration({});
         setEventsWarnings([]);
+        setNotice(null);
         setRunMetadata(null);
         setAb(null);
         setMetadata(null);
@@ -26495,6 +26637,7 @@ const defaultFilter = () => ({
     setRawEvents(restoredEvents);
     setSampleCuration(migratedFromEvents.sampleCuration);
     setEventsWarnings([]);
+    setNotice(null);
     setRunMetadata(json.run_metadata || null);
     setMetadata(remapMetadata(json.metadata) || null);
     setPlateMap(json.plate_map || null);
@@ -27829,7 +27972,7 @@ const defaultFilter = () => ({
                         kind: "confirm",
                         title: "Clear the entire session?",
                         body:
-                          "This removes the loaded events, abundance, metadata and plate map, plus all your evaluations and notes.\n\n" +
+                          "This removes the loaded events, abundance, metadata and plate map, plus all your evaluations, notes and sample decisions.\n\n" +
                           "The original files on disk are not affected.",
                         confirmLabel: "Clear session",
                         destructive: true,
@@ -27837,6 +27980,7 @@ const defaultFilter = () => ({
                           setRawEvents([]);
                           setSampleCuration({});
                           setEventsWarnings([]);
+                          setNotice(null);
                           setRunMetadata(null);
                           setAb(null);
                           setMetadata(null);
@@ -27947,8 +28091,23 @@ const defaultFilter = () => ({
                       setRawEvents([]);
                       setSampleCuration({});
                       setEventsWarnings([]);
+                      setNotice(null);
                       setRunMetadata(null);
                       setSelId(null);
+                    }
+                  : undefined
+              }
+              // The curation lives on these events: say plainly that
+              // removing them loses it. The other files stay loaded — and
+              // saved.
+              clearConfirm={
+                curationTotals.any
+                  ? {
+                      title: "Remove the events file and your curation?",
+                      body:
+                        `Your curation of these events will be lost: ${curationPhrase(curationTotals)}. Download the session first (Download session, on the files bar) to keep it.\n\n` +
+                        "The abundance table, metadata and plate map stay loaded. Your original file on disk is untouched.",
+                      confirmLabel: "Remove and lose the curation",
                     }
                   : undefined
               }
@@ -28469,11 +28628,14 @@ const defaultFilter = () => ({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            zIndex: 1000,
+            // A question asked from the run page sits above it.
+            zIndex: bulkConfirm.zIndex || 1000,
             padding: 20,
           }}
         >
           <div
+            role="dialog"
+            aria-label={bulkConfirm.title}
             onClick={(e) => e.stopPropagation()}
             style={{
               background: "var(--bg-card)",
@@ -28530,11 +28692,39 @@ const defaultFilter = () => ({
               >
                 {bulkConfirm.kind === "confirm" ? "Cancel" : "Close"}
               </button>
+              {/* An optional second choice (altLabel / onAlt): replacing
+                  the events file offers "Start fresh" next to "Carry
+                  over". */}
+              {bulkConfirm.kind === "confirm" && bulkConfirm.altLabel && (
+                <button
+                  onClick={() => {
+                    const run = bulkConfirm.onAlt;
+                    setBulkConfirm(null);
+                    run?.();
+                  }}
+                  style={{
+                    padding: "8px 16px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    background: "var(--bg-card)",
+                    color: bulkConfirm.altDestructive ? "#c0392b" : "#275662",
+                    border: `1px solid ${bulkConfirm.altDestructive ? "#ed6e6c" : "#275662"}`,
+                    borderRadius: 3,
+                    cursor: "pointer",
+                    fontFamily: '"Raleway", sans-serif',
+                  }}
+                >
+                  {bulkConfirm.altLabel}
+                </button>
+              )}
               {bulkConfirm.kind === "confirm" && (
                 <button
                   onClick={() => {
-                    bulkConfirm.onConfirm?.();
+                    // Closed first: the action may open the next dialog
+                    // (an imported session's migration notice).
+                    const run = bulkConfirm.onConfirm;
                     setBulkConfirm(null);
+                    run?.();
                   }}
                   style={{
                     padding: "8px 16px",
@@ -29009,18 +29199,16 @@ const defaultFilter = () => ({
           ab={ab}
           onClose={() => setRunCrocodeelOpen(false)}
           onLoadAbundance={loadAbundance}
-          onAdoptEvents={(parsed) => {
-            setRawEvents(parsed.events);
-            setSampleCuration({});
-            setEventsWarnings(parsed.warnings || []);
-            setFilter(withRunCutoffs(defaultFilter(), parsed.runMetadata));
-            setRunMetadata(parsed.runMetadata);
-            if (!analysisTitle) {
-              setAnalysisTitle("CroCoDeEL run (in-browser)");
-            }
-            setRunCrocodeelOpen(false);
-            setTab("overview");
-          }}
+          onAdoptEvents={(parsed) =>
+            // Like any other events file: asked first when the session
+            // holds curation (the question sits above this page, which
+            // stays open with its results if the curator cancels).
+            requestNewEvents(parsed, {
+              title: "CroCoDeEL run (in-browser)",
+              aboveOverlays: true,
+              onApplied: () => setRunCrocodeelOpen(false),
+            })
+          }
         />
       )}
       {/* Floating "Back to {previous tab}" chip — appears whenever the

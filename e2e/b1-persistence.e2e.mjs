@@ -1,6 +1,13 @@
 /* Browser checks for the session's persistence: what the browser keeps of
    the curation, and what replacing or importing files does to it.
 
+     - replacing the events file asks first when the session holds
+       curation: carry it over (matched by source and target), start
+       fresh, or cancel — and a banner says what happened; clearing the
+       events file asks too and says the curation goes with it;
+     - the curated events TSV of the Export tab, reloaded into a fresh
+       session, gives back the same evaluations, notes, sample actions,
+       Overview counts and curated-abundance card;
      - the parsers' warnings (events, metadata, plate map) are in the
        data-warnings banner and survive a reload;
      - a tab switch writes the small UI record only, an evaluation the
@@ -103,9 +110,23 @@ async function download(page, button) {
   return file ? readFileSync(await file.path(), "utf8") : null;
 }
 
+/** The curated events TSV of the Export tab. */
+async function exportEventsTSV(page) {
+  await openTab(page, "Export");
+  return download(page, page.getByRole("button", { name: /Download events TSV/i }).first());
+}
+
 /** The session JSON of the files bar. */
 async function exportSession(page) {
   return download(page, page.getByRole("button", { name: /^Download session$/ }).first());
+}
+
+/** The "N of M samples" of the Export tab's curated abundance card. */
+async function curatedCard(page) {
+  await openTab(page, "Export");
+  const text = await page.locator("body").innerText();
+  const m = text.match(/Curated abundance table — (\d+) of (\d+) samples/);
+  return m ? `${m[1]} of ${m[2]}` : null;
 }
 
 /** The confirmation dialog titled `title`. */
@@ -120,11 +141,42 @@ function card(page, label) {
     .last();
 }
 
+/** The Samples-tab row of a sample. */
+function sampleRow(page, id) {
+  return page
+    .locator("tr")
+    .filter({ has: page.locator('button[aria-label="Set verdict to Pending"]') })
+    .filter({ has: page.getByText(id, { exact: true }) });
+}
+
+/** A Suppress set by hand on a sample that is not Contaminated: the
+    action chips only show next to a Contaminated verdict or an action, so
+    the curator makes it Contaminated, makes the Suppress their own, and
+    hands the verdict back to the rule. */
+async function suppressByHand(page, id) {
+  await openTab(page, "Samples");
+  const row = sampleRow(page, id);
+  await row.locator('button[aria-label="Set verdict to Contaminated"]').click();
+  await page.waitForTimeout(200);
+  await row.locator(`button[aria-label="Suppress ${id}"]`).click();
+  await page.waitForTimeout(200);
+  await row.locator('button[aria-label="Set verdict to Pending"]').click();
+  await page.waitForTimeout(200);
+}
+
 /** Mark the i-th event of the Events table. */
 async function mark(page, title, i) {
   await openTab(page, "Events");
   await page.locator(`button[title="mark as ${title}"]`).nth(i).click();
   await page.waitForTimeout(250);
+}
+
+/** The verdict, note and target action of every event, by pair. */
+function curationByPair(session) {
+  const sc = session.sampleCuration;
+  return session.rawEvents
+    .map((e) => `${e.source}→${e.target} ${e.verdict} [${e.notes}] ${sc[e.target]?.action || "-"}`)
+    .sort();
 }
 
 /** The banner text of the data warnings. */
@@ -182,14 +234,188 @@ async function scenario(name, run, { demo: withDemo = true, expectedErrors = nul
 
 try {
   /* B1.1 Replacing the events file: cancel, carry over, start fresh. */
+  await scenario("B1.1 replace", async (page) => {
+    await mark(page, "true positive", 0);
+    await mark(page, "true positive", 1);
+    await openTab(page, "Validate");
+    await page.locator('textarea[placeholder^="Notes: related samples"]').fill("carried note");
+    await page.waitForTimeout(500);
+    // Two sample decisions set by hand: a Keep on a source no event
+    // targets, a Suppress on a target.
+    await openTab(page, "Samples");
+    await sampleRow(page, "63D250").locator('button[aria-label="Keep 63D250"]').click();
+    await suppressByHand(page, "58D47");
+    await saved(page);
+    const before = await storedSession(page);
+    const stats = await overviewStats(page);
+    const curated = curationByPair(before);
 
+    await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+    const ask = dialog(page, "Replace the events file?");
+    const askText = (await ask.count()) ? await ask.innerText() : "";
+    check(
+      /Your session holds 2 evaluations, 1 note and 2 sample decisions/.test(askText),
+      "B1.1 replacing the events file asks first, naming the curation it holds",
+      askText.slice(0, 160),
+    );
+    check(
+      (await ask.getByRole("button", { name: "Carry over" }).count()) === 1 &&
+        (await ask.getByRole("button", { name: "Start fresh" }).count()) === 1 &&
+        (await ask.getByRole("button", { name: "Cancel" }).count()) === 1,
+      "B1.1 …offering Carry over, Start fresh and Cancel",
+    );
+    await ask.getByRole("button", { name: "Cancel" }).click();
+    await saved(page);
+    check(
+      JSON.stringify(await overviewStats(page)) === JSON.stringify(stats) &&
+        JSON.stringify(curationByPair(await storedSession(page))) === JSON.stringify(curated),
+      "B1.1 Cancel leaves the session as it was",
+    );
 
-  /* B1.5 Clearing the events file. */
+    // The same file again (choosing it again fires again), carried over.
+    await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+    await dialog(page, "Replace the events file?").getByRole("button", { name: "Carry over" }).click();
+    await saved(page);
+    const notice = await page.locator("[data-notice]").innerText().catch(() => "");
+    check(
+      /Events file replaced/.test(notice) &&
+        /24 events in the new file: 24 matched an event of your session/.test(notice) &&
+        /Kept from your session: 2 evaluations, 1 note, 2 sample decisions/.test(notice),
+      "B1.1 Carry over keeps the evaluations, the note and the sample decisions, and the banner says so",
+      notice.replace(/\s+/g, " ").slice(0, 300),
+    );
+    check(
+      JSON.stringify(curationByPair(await storedSession(page))) === JSON.stringify(curated) &&
+        JSON.stringify(await overviewStats(page)) === JSON.stringify(stats),
+      "B1.1 …every evaluation, note and sample action is where it was, and the Overview counts too",
+    );
+    const sc = (await storedSession(page)).sampleCuration;
+    check(
+      sc["63D250"]?.action === "keep" && !sc["63D250"].actionAuto && sc["58D47"]?.action === "suppress" && !sc["58D47"].actionAuto,
+      "B1.1 …the sample decisions set by hand stay the curator's own",
+      JSON.stringify([sc["63D250"], sc["58D47"]]),
+    );
+    await page.locator("[data-notice] button[aria-label=Dismiss]").click();
+    check((await page.locator("[data-notice]").count()) === 0, "B1.1 the banner can be dismissed");
+
+    // A file without one of the evaluated events, with a new one.
+    const tp = (await storedSession(page)).rawEvents.filter((e) => e.verdict === "true_positive");
+    const lines = demo("contamination_events.tsv").split("\n");
+    const edited = [
+      ...lines.filter((l) => !l.startsWith(`${tp[0].source}\t${tp[0].target}\t`)),
+      "40D89\t40M\t0.05\t0.9\t",
+    ].join("\n");
+    await upload(page, 0, "contamination_events.tsv", edited);
+    await dialog(page, "Replace the events file?").getByRole("button", { name: "Carry over" }).click();
+    await saved(page);
+    const notice2 = await page.locator("[data-notice]").innerText().catch(() => "");
+    check(
+      /24 events in the new file: 23 matched an event of your session \(same source and target\), 1 new one/.test(notice2) &&
+        /1 event of your session is not in the new file: the evaluations and notes of 1 of them were dropped/.test(notice2),
+      "B1.1 the banner names the new event and the dropped one",
+      notice2.replace(/\s+/g, " ").slice(0, 300),
+    );
+    check((await overviewStats(page)).tp === 1, "B1.1 …and only the dropped event's TP is gone");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    check((await overviewStats(page)).tp === 1, "B1.1 the carried-over session survives a reload");
+
+    // Start fresh.
+    await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+    await dialog(page, "Replace the events file?").getByRole("button", { name: "Start fresh" }).click();
+    await saved(page);
+    const fresh = await overviewStats(page);
+    const notice3 = await page.locator("[data-notice]").innerText().catch(() => "");
+    check(
+      fresh.tp === 0 && fresh.keep === 0 && fresh.suppress === 0 &&
+        /Started fresh: your previous curation \(1 evaluation, (1 note, )?2 sample decisions\) was dropped/.test(notice3),
+      "B1.1 Start fresh drops the curation, and says what was dropped",
+      `${JSON.stringify(fresh)} ${notice3.replace(/\s+/g, " ").slice(0, 200)}`,
+    );
+  });
+
+  /* B1.1(c) The curated events TSV, reloaded into a fresh session. */
+  await scenario("B1.1 export round trip", async (page, ctx) => {
+    await mark(page, "true positive", 0);
+    await mark(page, "true positive", 1);
+    await mark(page, "true positive", 2);
+    await mark(page, "false positive", 3);
+    await mark(page, "false positive", 4);
+    await mark(page, "uncertain", 5);
+    await openTab(page, "Validate");
+    await page.locator('textarea[placeholder^="Notes: related samples"]').fill("kept as typed");
+    await page.waitForTimeout(500);
+    await saved(page);
+    let s = await storedSession(page);
+    const tpTargets = new Set(s.rawEvents.filter((e) => e.verdict === "true_positive").map((e) => e.target));
+    const fpTarget = s.rawEvents.find((e) => e.verdict === "false_positive" && !tpTargets.has(e.target))?.target;
+    const keptTarget = [...tpTargets][0];
+    await openTab(page, "Samples");
+    // A contaminated target kept by hand, a clean one suppressed by hand.
+    await sampleRow(page, keptTarget).locator(`button[aria-label="Keep ${keptTarget}"]`).click();
+    await suppressByHand(page, fpTarget);
+    await saved(page);
+    s = await storedSession(page);
+    const stats = await overviewStats(page);
+    const cardA = await curatedCard(page);
+    const tsv = await exportEventsTSV(page);
+    check(
+      !!tsv && stats.tp === 3 && stats.keep === 1 && stats.suppress >= 2,
+      "B1.1 export: a curated session with a Keep and a Suppress set by hand",
+      `${JSON.stringify(stats)} ${keptTarget} ${fpTarget}`,
+    );
+
+    // A fresh session (another browser profile) with the same files.
+    const fresh = await ctx.browser().newContext({ viewport: { width: 1500, height: 1000 } });
+    const p2 = await fresh.newPage();
+    const errors2 = trackErrors(p2);
+    await p2.addInitScript(() => localStorage.setItem("crocodeel-tutorial-seen", "1"));
+    await p2.goto(BASE, { waitUntil: "networkidle" });
+    await loadDemo(p2);
+    await upload(p2, 0, "contamination_events_curated.tsv", tsv || "");
+    check((await dialog(p2, "Replace the events file?").count()) === 0, "B1.1 export: a session without curation is replaced without a question");
+    await saved(p2);
+    const notice = await p2.locator("[data-notice]").innerText().catch(() => "");
+    check(
+      /Restored from the file: 6 evaluations, 1 note, 2 sample actions/.test(notice) &&
+        /only the session JSON \(Download session\) keeps them/.test(notice),
+      "B1.1 export: the banner says what was restored and what the events TSV does not hold",
+      notice.replace(/\s+/g, " ").slice(0, 300),
+    );
+    const s2 = await storedSession(p2);
+    check(
+      JSON.stringify(curationByPair(s2)) === JSON.stringify(curationByPair(s)),
+      "B1.1 export: the same evaluations, notes and sample actions, event by event",
+      curationByPair(s2).find((l, i) => l !== curationByPair(s)[i]) || "",
+    );
+    const stats2 = await overviewStats(p2);
+    check(JSON.stringify(stats2) === JSON.stringify(stats), "B1.1 export: the same Overview counts", `${JSON.stringify(stats2)} vs ${JSON.stringify(stats)}`);
+    const cardB = await curatedCard(p2);
+    check(!!cardA && cardB === cardA, "B1.1 export: the same curated-abundance card", `${cardB} vs ${cardA}`);
+    const tsv2 = await exportEventsTSV(p2);
+    const rows = (t) => (t || "").split("\n").filter((l) => l && !l.startsWith("#")).sort().join("\n");
+    check(rows(tsv2) === rows(tsv), "B1.1 export: exporting again gives the same file");
+    check(errors2.length === 0, "B1.1 export: no JS error in the fresh session", errors2[0] || "");
+    await fresh.close();
+  });
+
+  /* B1.1(e) + B1.5 Clearing the events file. */
   await scenario("B1.5 clear events", async (page) => {
     const events = card(page, "contamination_events.tsv");
+    // Without curation: the plain question.
+    await events.getByRole("button", { name: /^Clear$/ }).click();
+    check((await dialog(page, "Remove the loaded contamination_events.tsv?").count()) === 1, "B1.1(e) without curation, Clear asks the usual question");
+    await page.getByRole("button", { name: /^Cancel$/ }).click();
     await mark(page, "true positive", 0);
     await events.getByRole("button", { name: /^Clear$/ }).click();
-    await dialog(page, "Remove the loaded contamination_events.tsv?").getByRole("button", { name: "Remove" }).click();
+    const ask = dialog(page, "Remove the events file and your curation?");
+    const text = (await ask.count()) ? await ask.innerText() : "";
+    check(
+      /Your curation of these events will be lost: 1 evaluation/.test(text) && /abundance table, metadata and plate map stay loaded/.test(text),
+      "B1.1(e) with curation, Clear says plainly that the curation will be lost",
+      text.replace(/\s+/g, " ").slice(0, 200),
+    );
+    await ask.getByRole("button", { name: "Remove and lose the curation" }).click();
     await saved(page);
     await page.reload({ waitUntil: "networkidle" });
     await page.waitForTimeout(1500);
