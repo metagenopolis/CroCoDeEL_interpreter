@@ -302,6 +302,38 @@ try {
     );
   });
 
+  /* F.1 — the events TSV's column is "verdict": the Export card and the
+     guided tour told to filter on an "evaluation" column. */
+  await scenario("F.1 verdict column", async (page) => {
+    await openTab(page, "Help");
+    await page.getByRole("button", { name: /Restart guided tour/ }).first().click();
+    await page.waitForTimeout(1500);
+    const panel = page.locator("aside", { hasText: "Guided tour" });
+    let step = "";
+    for (let i = 0; i < 40 && !/^Export your curated report/.test(step); i++) {
+      await panel.getByRole("button", { name: /^Next/ }).click();
+      await page.waitForTimeout(700);
+      step = (await panel.innerText())
+        .replace(/\s+/g, " ")
+        .replace(/^.*?(Export your curated report)/, "$1");
+    }
+    check(
+      /Export your curated report/.test(step) && /then introduced_pct, verdict, action, notes/.test(step) &&
+        /on the verdict \/ action columns/.test(step) && !/evaluation \/ action/.test(step),
+      "F.1 guided tour: the events TSV's columns are introduced_pct, verdict, action, notes",
+      step.slice(0, 200),
+    );
+    await page.getByRole("button", { name: "Skip tour" }).click();
+    await openTab(page, "Export");
+    const card = (await page.locator("body").innerText()).replace(/\s+/g, " ");
+    const desc = card.match(/Events TSV — \d+ events? (.*?)Download events TSV/)?.[1] || "";
+    check(
+      /on the verdict \/ action columns/.test(desc) && !/evaluation \/ action/.test(desc),
+      "F.1 Export card: filter on the verdict / action columns",
+      desc.slice(0, 200),
+    );
+  });
+
   /* F.2 — the Reset question counts what the other questions that would
      lose the curation count: one TP read "1 event evaluation and 0
      notes, plus 1 sample-level verdict / action" (the target's automatic
@@ -756,37 +788,6 @@ try {
     );
   });
 
-  /* F.1 — the events TSV's column is "verdict": the Export card and the
-     guided tour told to filter on an "evaluation" column. */
-  await scenario("F.1 verdict column", async (page) => {
-    await openTab(page, "Help");
-    await page.getByRole("button", { name: /Restart guided tour/ }).first().click();
-    await page.waitForTimeout(1500);
-    const panel = page.locator("aside", { hasText: "Guided tour" });
-    let step = "";
-    for (let i = 0; i < 40 && !/^Export your curated report/.test(step); i++) {
-      await panel.getByRole("button", { name: /^Next/ }).click();
-      await page.waitForTimeout(700);
-      step = (await panel.innerText())
-        .replace(/\s+/g, " ")
-        .replace(/^.*?(Export your curated report)/, "$1");
-    }
-    check(
-      /Export your curated report/.test(step) && /then introduced_pct, verdict, action, notes/.test(step) &&
-        /on the verdict \/ action columns/.test(step) && !/evaluation \/ action/.test(step),
-      "F.1 guided tour: the events TSV's columns are introduced_pct, verdict, action, notes",
-      step.slice(0, 200),
-    );
-    await page.getByRole("button", { name: "Skip tour" }).click();
-    await openTab(page, "Export");
-    const card = (await page.locator("body").innerText()).replace(/\s+/g, " ");
-    const desc = card.match(/Events TSV — \d+ events? (.*?)Download events TSV/)?.[1] || "";
-    check(
-      /on the verdict \/ action columns/.test(desc) && !/evaluation \/ action/.test(desc),
-      "F.1 Export card: filter on the verdict / action columns",
-      desc.slice(0, 200),
-    );
-  });
 } finally {
   await browser.close();
   stopServer();
