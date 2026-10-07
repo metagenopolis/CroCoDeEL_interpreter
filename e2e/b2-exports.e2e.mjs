@@ -18,7 +18,8 @@
              samples of that very table (also after the curation
              changes); the abundance card's Download gives the input back
              as it was; a session saved before the column sums were kept
-             exports fractions, and the card says so;
+             exports fractions, and both the Export card and the abundance
+             card say so;
      - B2.4  the samples TSV writes every sample's verdict and action as
              the views show them, each with its origin (manual, automatic,
              default) — the Suppress paired with a Contaminated set by
@@ -527,7 +528,7 @@ try {
     const input = demoCounts();
     await upload(page, 1, "species_abundance.tsv", input);
     await suppressSamples(page, 2);
-    const card = await curatedCard(page);
+    const exportCard = await curatedCard(page);
     const pair = await curatedDownload(page);
     const file = pair.table == null ? null : { text: pair.table };
     const rows = (file?.text || "").split("\n").map((l) => l.split("\t"));
@@ -535,9 +536,9 @@ try {
     const header = rows[0] || [];
     const dropped = inRows[0].slice(1).filter((c) => !header.includes(c));
     check(
-      header[0] === "id_mgs" && dropped.length === 2 && card.total - card.kept === 2,
+      header[0] === "id_mgs" && dropped.length === 2 && exportCard.total - exportCard.kept === 2,
       "B2.3 the curated table keeps the input's first header, without the 2 suppressed columns the card counts",
-      `${header[0]}; without ${dropped.join(", ")}; card ${card.kept} of ${card.total}`,
+      `${header[0]}; without ${dropped.join(", ")}; card ${exportCard.kept} of ${exportCard.total}`,
     );
     check(
       !(file?.text || "").split("\n").some((l) => l.startsWith("#")),
@@ -562,14 +563,14 @@ try {
     check(
       empty > 0 &&
         rows.length === expected.length &&
-        card.text.includes(
+        exportCard.text.includes(
           `Drop species observed only in the suppressed samples (${inRows.length - expected.length})`,
         ),
       "B2.3 the species rows at zero in the whole input stay; the card counts only those the suppression empties",
       `${empty} empty input rows kept; ${inRows.length - expected.length} dropped`,
     );
     check(
-      /holds the input file's own\s+values/.test(card.text) && !/Written as relative abundances/.test(card.text),
+      /holds the input file's own\s+values/.test(exportCard.text) && !/Written as relative abundances/.test(exportCard.text),
       "B2.3 the card says the values are the input's own",
     );
     // The same click wrote the provenance, of that very table.
@@ -582,13 +583,18 @@ try {
       "B2.3 the same click writes the provenance file, which names the suppressed samples and the values",
       plines.slice(0, 3).join(" / ") || "no provenance file",
     );
-    // The abundance card's own Download: the input as it was.
+    // The abundance card's own Download: the input as it was, and no
+    // notice about relative abundances on the card.
     await openTab(page, "Overview");
     const own = await downloadVia(page, page.locator('button[title="Download this file"]').nth(1));
     check(
       own?.name === "species_abundance.tsv" && own.text === input,
       "B2.3 the abundance card's Download gives the uploaded count table back as it was",
       (own?.text || "").split("\n")[1]?.slice(0, 60) || "",
+    );
+    check(
+      !/relative abundances/.test(await card(page, "species_abundance.tsv").innerText()),
+      "B2.3 and that card has no relative-abundance notice",
     );
   });
 
@@ -633,18 +639,31 @@ try {
   await scenario("B2.3 earlier session", async (page) => {
     const { samples, species, matrix, logRange } = parseAbundance(demo("species_abundance.tsv"));
     await importSession(page, sessionJSON({ abundance: { samples, species, matrix, logRange } }));
-    const card = await curatedCard(page);
+    const exportCard = await curatedCard(page);
     check(
-      /Written as relative abundances/.test(card.text),
+      /Written as relative abundances/.test(exportCard.text),
       "B2.3 the card says an earlier session's table is written as relative abundances",
     );
     const pair = await curatedDownload(page);
-    const rows = (pair.table || "").split("\n").map((l) => l.split("\t"));
-    const sums = rows[0].slice(1).map((_, j) => rows.slice(1).reduce((t, r) => t + Number(r[j + 1]), 0));
+    const fractions = (text) => {
+      const rows = (text || "").split("\n").map((l) => l.split("\t"));
+      const sums = rows[0].slice(1).map((_, j) => rows.slice(1).reduce((t, r) => t + Number(r[j + 1]), 0));
+      return {
+        ok: rows[0][0] === "species" && sums.length > 0 && sums.every((t) => Math.abs(t - 1) < 1e-9 || t === 0),
+        detail: `${rows[0][0]}; ${sums.slice(0, 3).map((t) => t.toFixed(12)).join(", ")}`,
+      };
+    };
+    const curated = fractions(pair.table);
+    check(curated.ok, "B2.3 and writes fractions summing to 1 under a species header", curated.detail);
+    // The abundance card's own Download does the same: its card says so.
+    await openTab(page, "Overview");
+    const abCard = await card(page, "species_abundance.tsv").innerText();
+    const own = await downloadVia(page, card(page, "species_abundance.tsv").locator('button[title="Download this file"]'));
+    const ownFractions = fractions(own?.text);
     check(
-      rows[0][0] === "species" && sums.every((t) => Math.abs(t - 1) < 1e-9 || t === 0),
-      "B2.3 and writes fractions summing to 1 under a species header",
-      `${rows[0][0]}; ${sums.slice(0, 3).map((t) => t.toFixed(12)).join(", ")}`,
+      /Its Download writes relative abundances/.test(abCard) && own?.name === "species_abundance.tsv" && ownFractions.ok,
+      "B2.3 the abundance card says its Download writes relative abundances, which it does",
+      `${abCard.replace(/\s+/g, " ").slice(0, 160)}; ${ownFractions.detail}`,
     );
   }, { demo: false });
 

@@ -20886,13 +20886,13 @@ const HelpTab = ({ onStartTour }) => {
                   sometimes in fewer digits, or — when the number next to
                   it makes the same relative abundance — as that one: a
                   relative difference of about 2e-16, which can change its
-                  last one or two digits. A session saved by an
-                  earlier version lacks the input's column totals: its
-                  table is written as relative abundances under a{" "}
-                  <code>species</code> header, and the card says so —
+                  last one or two digits. The abundance card's Download
+                  writes the whole table the same way. A session saved by
+                  an earlier version lacks the input's column totals: both
+                  files are then written as relative abundances under a{" "}
+                  <code>species</code> header, and both cards say so —
                   load the abundance table again to export its own
-                  values. The abundance card's Download writes the whole
-                  table the same way.
+                  values.
                 </li>
                 <li>
                   <strong>Contamination graph</strong> — the directed
@@ -28085,6 +28085,16 @@ const defaultFilter = () => ({
                   ? () =>
                       downloadText(abundanceToTSV(ab), "species_abundance.tsv")
                   : undefined
+              }
+              // A session saved before the parser kept the column totals
+              // has only the fractions: the Download writes those, which
+              // the card must say, as the Export tab's card does.
+              details={
+                ab && !hasInputValues(ab)
+                  ? uploadCardDetails(null, [
+                      'Its Download writes relative abundances under a "species" header: this session was saved before the interface kept the table\'s column totals. Load species_abundance.tsv again to download its own values.',
+                    ])
+                  : null
               }
               onClear={ab ? () => setAb(null) : undefined}
               confirmDialog={setBulkConfirm}
