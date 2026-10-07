@@ -5,9 +5,9 @@
        the column is left out, and the warning about the columns that sum
        to 0 no longer counts it;
      - a tab still running the previous version saves after the update,
-       then this tab saves (or reloads right after a change): this tab
-       stops saving and says so, and the next boot brings that save in,
-       instead of losing it without a word;
+       then this tab saves (or reloads right after a change, or had found
+       nothing stored): this tab stops saving and says so, and the next
+       boot brings that save in, instead of losing it without a word;
      - an event targets "s2", the abundance table names it "S2": the
        Samples tab has one row for it, the table's, with the event's
        curation, as the samples TSV and the curated table have; its
@@ -395,6 +395,56 @@ try {
       `event 10: ${after.curation.verdicts["10"]}`,
     );
   });
+
+  /* Nothing was stored when this tab opened; a tab of the previous
+     version loads files and saves, then this one loads the demo. Its
+     first save, which writes every record, deleted that session. */
+  await scenario(
+    "LS earlier-version tab saves into an empty store, then this tab saves",
+    async (page) => {
+      const ev = (id, source, target) => ({
+        id,
+        source,
+        target,
+        rate: 0.1,
+        score: 0.9,
+        introduced: ["sp_a"],
+        verdict: "true_positive",
+        notes: "",
+      });
+      await writeRecords(page, {
+        main: {
+          version: 1,
+          savedAt: new Date().toISOString(),
+          rawEvents: [ev(0, "A1", "B1"), ev(1, "A2", "B2")],
+          sampleCuration: {},
+          runMetadata: null,
+          metadata: null,
+          plateMap: null,
+          analysisTitle: "",
+          tab: "overview",
+          selId: null,
+        },
+      });
+      await loadDemo(page);
+      await saved(page);
+      const r = await storedRecords(page);
+      check(
+        (await banner(page, "conflict").count()) === 1 && !r.curation && !!r.main,
+        "LS this tab's first save finds that session, writes nothing over it, and says so",
+        `curation stored: ${!!r.curation}, main kept: ${!!r.main}`,
+      );
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(2500);
+      const after = await storedRecords(page);
+      check(
+        after.events?.events?.length === 2 && Object.keys(after.curation?.verdicts || {}).length === 2 && !after.main,
+        "LS after a reload, that session is the one stored",
+        `${after.events?.events?.length} events, ${Object.keys(after.curation?.verdicts || {}).length} evaluated`,
+      );
+    },
+    { demo: false },
+  );
 } finally {
   await browser.close();
   stopServer();

@@ -340,7 +340,8 @@ function repairLostTable(db, rev, token) {
     inRecords, upgrade } — `session` null when nothing is stored, `rev`
     the revision the next write must find, `abToken` the token of the
     stored abundance table, `savedAt` the time its curation record holds
-    (null: none; the autosave's last save of a page going away keeps it,
+    — the time of this read when it holds none — which the autosave
+    checks the earlier version's saves against (writeSession,
     writeSessionNow). A session of an earlier layout is migrated first,
     brought up to date on the way (upgradedSession): `upgrade` ({ notes,
     changes, olderTabSavedAt }) says, to the tab that wrote it, what the
@@ -363,6 +364,7 @@ function repairLostTable(db, rev, token) {
     app then runs in memory). */
 export async function readStoredSession() {
   const db = await openDB();
+  const readAt = new Date().toISOString();
   let records = await readRecords(db);
   let upgrade = null;
   if (!records.curation) {
@@ -379,7 +381,7 @@ export async function readStoredSession() {
     }
     if (!session) {
       mirrorRev(0, true);
-      return { session: null, rev: 0, abToken: null, savedAt: null, inRecords: true, upgrade: null };
+      return { session: null, rev: 0, abToken: null, savedAt: readAt, inRecords: true, upgrade: null };
     }
     // Up to date before it is written, so that every tab reads it so.
     const up = upgradedOrAsIs(session);
@@ -394,7 +396,7 @@ export async function readStoredSession() {
       // (and drops the earlier layout's copies: writeSession).
       console.warn("[crocodeel] session migration failed:", e?.message);
       mirrorRev(0, true);
-      return { session, rev: 0, abToken: null, savedAt: null, inRecords: false, upgrade: null };
+      return { session, rev: 0, abToken: null, savedAt: readAt, inRecords: false, upgrade: null };
     }
     records = await readRecords(db);
   } else if (newerLegacyMain(records[LEGACY_MAIN_KEY], records.curation)) {
@@ -453,8 +455,10 @@ export async function readStoredSession() {
     conflict as well: this tab has not seen it. Written anyway, this
     tab's newer curation record made the next boot take that save for
     one it had superseded, and the earlier tab's work was lost without
-    a word. */
-export function writeSession(writes, expectedRev) {
+    a word. Before any curation record is stored, `checkedAt` (the time
+    this tab read the store: readStoredSession's savedAt) stands for
+    its time: a "main" record saved since is not one this tab read. */
+export function writeSession(writes, expectedRev, checkedAt = null) {
   return withDB((db) => {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
@@ -466,7 +470,8 @@ export function writeSession(writes, expectedRev) {
     // Requests complete in order: the curation has been read by now.
     main.onsuccess = () => {
       const stored = get.result?.rev ?? 0;
-      if (stored !== expectedRev || newerLegacyMain(main.result, get.result)) {
+      const seen = get.result ?? (checkedAt ? { savedAt: checkedAt } : null);
+      if (stored !== expectedRev || newerLegacyMain(main.result, seen)) {
         conflict = stored;
         return;
       }

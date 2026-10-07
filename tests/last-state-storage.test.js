@@ -136,6 +136,40 @@ describe("writeSession, after a save of the previous version", () => {
   });
 });
 
+describe("a tab that found nothing stored, and a save of the previous version", () => {
+  const earlierSession = (savedAt) => ({
+    version: 1,
+    savedAt,
+    rawEvents: session({ 2: "true_positive" }).rawEvents,
+    sampleCuration: {},
+    analysisTitle: "",
+  });
+
+  it("stops at its first save when that save came after its read", async () => {
+    const boot = await readStoredSession();
+    expect(boot.session).toBeNull();
+    expect(typeof boot.savedAt).toBe("string");
+    // A tab of the previous version loads files, then this one does.
+    fake.data.set("main", earlierSession(new Date(Date.parse(boot.savedAt) + 1000).toISOString()));
+    const res = await writeSession(sessionWrites(session({ 0: "uncertain" }), ALL_DIRTY, null), 0, boot.savedAt);
+    expect(res).toEqual({ status: "conflict", rev: 0 });
+    expect(fake.data.has("main")).toBe(true);
+    expect(fake.data.has(RECORD_KEYS.curation)).toBe(false);
+    // The next boot opens that session.
+    const next = await readStoredSession();
+    expect(next.session.rawEvents.map((e) => e.verdict)).toEqual(["pending", "pending", "true_positive"]);
+  });
+
+  it("writes over one it read (a migration that failed), as before", async () => {
+    const readAt = new Date().toISOString();
+    fake.data.set("main", earlierSession(new Date(Date.parse(readAt) - 1000).toISOString()));
+    const res = await writeSession(sessionWrites(session({ 0: "uncertain" }), ALL_DIRTY, null), 0, readAt);
+    expect(res.status).toBe("ok");
+    expect(fake.data.has("main")).toBe(false);
+    expect(fake.data.get(RECORD_KEYS.curation).verdicts).toEqual({ 0: "uncertain" });
+  });
+});
+
 describe("the last save of a page going away, after a save of the previous version", () => {
   it("writes the time it is given, and the next boot brings that save in", async () => {
     const { first, main } = await storedThenEarlierTabSaves();

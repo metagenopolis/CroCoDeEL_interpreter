@@ -87,7 +87,7 @@ const pick = (s, fields) => Object.fromEntries(fields.map((f) => [f, s?.[f]]));
                     (null when nothing is stored)
       rev, abToken  the stored revision and abundance-table token
       checkedAt     the time the stored curation record holds, as read on
-                    boot (null: none)
+                    boot (the time of that read when none is stored)
       available     false: no storage — nothing is ever written
       onStatus      called with every new status
 
@@ -115,7 +115,9 @@ export function createAutosave({
   let token = abToken;
   // The time of the last write that read the stored session — the boot's
   // read, then every checked write — as its curation record holds it:
-  // the last save of a page going away writes it again (flushOnPageHide).
+  // a checked write compares a save of the earlier version with it while
+  // no curation record is stored, and the last save of a page going away
+  // writes it again (flushOnPageHide).
   let checkedAt = bootCheckedAt;
   let timer = null;
   let inFlight = null;
@@ -224,7 +226,7 @@ export function createAutosave({
   async function write({ s, d, session, nextToken, retryTable }) {
     let abFailed = status.abFailed;
     if (session) {
-      const res = await backend.writeSession(sessionWrites(s, d, nextToken), confirmedRev);
+      const res = await backend.writeSession(sessionWrites(s, d, nextToken), confirmedRev, checkedAt);
       if (res.status === "conflict") {
         conflict();
         return;
@@ -278,6 +280,7 @@ export function createAutosave({
           const again = await backend.writeSession(
             sessionWrites(s, { curation: true }, token),
             confirmedRev,
+            checkedAt,
           );
           if (again.status === "conflict") {
             conflict();

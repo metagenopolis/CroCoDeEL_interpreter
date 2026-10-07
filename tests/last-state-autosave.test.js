@@ -19,11 +19,14 @@ import { RECORD_KEYS, newerLegacyMain } from "../src/persistence.js";
 function memoryStore(clock) {
   const records = {};
   const nows = [];
+  const checks = [];
   const backend = {
     writer: "this-tab",
-    async writeSession({ puts, dels }, expectedRev) {
+    async writeSession({ puts, dels }, expectedRev, checkedAt) {
+      checks.push(checkedAt);
       const stored = records[RECORD_KEYS.curation];
-      if ((stored?.rev ?? 0) !== expectedRev || newerLegacyMain(records.main, stored)) {
+      const seen = stored ?? (checkedAt ? { savedAt: checkedAt } : null);
+      if ((stored?.rev ?? 0) !== expectedRev || newerLegacyMain(records.main, seen)) {
         return { status: "conflict", rev: stored?.rev ?? 0 };
       }
       const rev = expectedRev + 1;
@@ -49,7 +52,7 @@ function memoryStore(clock) {
     async deleteAb() {},
     async writeUi() {},
   };
-  return { records, nows, backend };
+  return { records, nows, checks, backend };
 }
 
 const event = (id, verdict = "pending") => ({
@@ -106,6 +109,27 @@ function tab(store, initial) {
   });
   return { saver, statuses };
 }
+
+describe("a checked write, after a save of the earlier version", () => {
+  it("gets the time of the boot's read, which stands for the curation record's while none is stored", async () => {
+    const store = memoryStore(clock);
+    const readAt = clock();
+    const statuses = [];
+    const saver = createAutosave({
+      backend: store.backend,
+      initialState: null,
+      checkedAt: readAt,
+      onStatus: (st) => statuses.push(st.state),
+    });
+    // The earlier version's tab loads files after this tab's boot.
+    store.records.main = { savedAt: clock(), rawEvents: [event(0, "true_positive")] };
+    saver.update(session(["uncertain", "pending"]));
+    await vi.advanceTimersByTimeAsync(SAVE_DELAY_MS + 10);
+    expect(store.checks).toEqual([readAt]);
+    expect(statuses.at(-1)).toBe("conflict");
+    expect(store.records[RECORD_KEYS.curation]).toBeUndefined();
+  });
+});
 
 describe("the last save of a page going away, after a save of the earlier version", () => {
   it("writes the time of the boot's read when nothing was written since", () => {

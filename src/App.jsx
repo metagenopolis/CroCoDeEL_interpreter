@@ -25822,8 +25822,9 @@ const defaultFilter = () => ({
       initialState: storage?.stored || null,
       rev: storage?.rev ?? 0,
       abToken: storage?.abToken ?? null,
-      // The time the stored curation record holds: the last save of a
-      // page going away writes it again (src/autosave.js).
+      // The time the stored curation record holds (that of the boot's
+      // read when none is stored), which a save of a tab of the earlier
+      // version is compared with (src/autosave.js).
       checkedAt: storage?.savedAt ?? null,
       available: storage?.available !== false,
       onStatus: setSaveStatus,
