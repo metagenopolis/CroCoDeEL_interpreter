@@ -213,11 +213,13 @@ function namesSpeciesColumn(cell, tsv) {
   if (t === "") return true;
   const commented = (cells) => cells[0].replace(/^#\s*/, "").trim().toLowerCase();
   if (tsv.commentLines.some(({ cells }) => commented(cells) === t)) return true;
+  // Words split on what is not a letter and inside camel case
+  // ("FeatureID"); no lookbehind, which Safari reads only from 16.4.
   return (
     !/\d/.test(t) &&
     cell
-      .trim()
-      .split(/[^A-Za-z]+|(?<=[a-z])(?=[A-Z])/)
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .split(/[^A-Za-z]+/)
       .some((w) => SPECIES_TITLE_WORDS.has(w.toLowerCase()))
   );
 }
