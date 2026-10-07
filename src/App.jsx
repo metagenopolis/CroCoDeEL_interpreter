@@ -2669,26 +2669,20 @@ const NetworkGraph = ({
   // target, or both.
   const [nodePopover, setNodePopover] = useState(null); // { id, x, y } | null
   const [popVerdict, setPopVerdict] = useState("true_positive");
-  const [popAction, setPopAction] = useState("suppress");
+  // The target sample's verdict and action default to Automatic (null),
+  // whatever the evaluation: the sample then follows the rule applied
+  // when clicking each event (src/curation.js) — after a TP, Contaminated
+  // + Suppress, both automatic, so rejecting the events later takes them
+  // back. A value picked here is written as the curator's own. Choosing
+  // another evaluation brings both back to Automatic.
+  const [popAction, setPopAction] = useState(null);
   const [popTargetVerdict, setPopTargetVerdict] = useState(null);
   const [popSkipDecided, setPopSkipDecided] = useState(true);
-  // Reset action / target-verdict defaults whenever the event
-  // evaluation changes — TP defaults the target sample's verdict to
-  // contaminated and the action to suppress; FP defaults the target
-  // verdict to correct (with no action). Other evaluations leave
-  // both alone.
-  useEffect(() => {
-    if (popVerdict === "true_positive") {
-      setPopAction("suppress");
-      setPopTargetVerdict("contaminated");
-    } else if (popVerdict === "false_positive") {
-      setPopAction(null);
-      setPopTargetVerdict("correct");
-    } else {
-      setPopAction(null);
-      setPopTargetVerdict(null);
-    }
-  }, [popVerdict]);
+  const choosePopVerdict = (v) => {
+    setPopVerdict(v);
+    setPopAction(null);
+    setPopTargetVerdict(null);
+  };
   // Close the popover on Escape and on outside click.
   useEffect(() => {
     if (!nodePopover) return undefined;
@@ -3820,7 +3814,7 @@ const NetworkGraph = ({
           onScopeToSamples={onScopeToSamples}
           sampleCuration={sampleCuration}
           verdict={popVerdict}
-          setVerdict={setPopVerdict}
+          setVerdict={choosePopVerdict}
           action={popAction}
           setAction={setPopAction}
           targetVerdict={popTargetVerdict}
@@ -3840,11 +3834,13 @@ const NetworkGraph = ({
             // Event evaluation goes to the matched events; verdict
             // and action go to the clicked sample (always the target
             // of the matched events here). The action row is only
-            // offered for a Contaminated target, so only then does its
-            // choice apply. "Automatic" (null / undefined) leaves the
-            // sample to the event-driven rule.
+            // offered while the target can end up Contaminated, so only
+            // then does its choice apply. "Automatic" (null / undefined)
+            // leaves the sample to the event-driven rule.
             const targetAction =
-              popTargetVerdict === "contaminated" && popAction
+              actionEnabled &&
+              offersTargetAction(popTargetVerdict) &&
+              popAction
                 ? popAction
                 : undefined;
             if (ids.length > 0 && onApplyToEventIds) {
@@ -3871,6 +3867,13 @@ const NetworkGraph = ({
     </div>
   );
 };
+
+/** Whether a form that evaluates events (Network node popover, Explore
+    new pairs) offers — and applies — an action for their target: while
+    the target verdict picked can leave it Contaminated, i.e. Automatic
+    or Contaminated. A hidden action is never written. */
+const offersTargetAction = (targetVerdict) =>
+  targetVerdict == null || targetVerdict === "contaminated";
 
 /** Floating popover anchored at a clicked Network node. Lets the
     curator bulk-apply a verdict (and optional action) to every event
@@ -4076,8 +4079,10 @@ const NodeBulkPopover = ({
         <code style={{ fontFamily: "ui-monospace, monospace" }}>
           {sampleId}
         </code>{" "}
-        is the target (the contaminations flowing into it). Verdict and
-        action are recorded on the sample itself.
+        is the target (the contaminations flowing into it). With{" "}
+        <em>Automatic</em>, the sample's verdict and action follow those
+        events as when clicking each one; pick a value to set it as your
+        own decision.
       </div>
 
       <label
@@ -4191,7 +4196,7 @@ const NodeBulkPopover = ({
         })}
       </div>
 
-      {targetVerdict === "contaminated" && (
+      {actionEnabled && offersTargetAction(targetVerdict) && (
         <>
           <div
             className="text-[10px] uppercase tracking-[0.1em] mb-1"
@@ -8792,25 +8797,20 @@ const ExplorePairs = ({
   const setNotes = setField("notes");
   const [feedback, setFeedback] = useState(null);
 
-  // Sync the sample-level pickers to the event verdict — TP → suppress
-  // + contaminated, FP → no action + correct, Uncertain → no action +
-  // uncertain. These are smart defaults; the curator can still override
-  // either picker after picking the event verdict.
-  useEffect(() => {
-    if (verdict === "true_positive") {
-      setAction("suppress");
-      setTargetVerdict("contaminated");
-    } else if (verdict === "false_positive") {
-      setAction(null);
-      setTargetVerdict("correct");
-    } else {
-      setAction(null);
-      setTargetVerdict("uncertain");
-    }
-    // setAction / setTargetVerdict are recreated each render but write
-    // to the parent state, so we intentionally exclude them from deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [verdict]);
+  // The target sample's verdict and action default to Automatic (null):
+  // the new event is one more piece of evidence on its target, which
+  // then follows the same rule as after a click on any event
+  // (src/curation.js) — a TP makes it Contaminated + Suppress, both
+  // automatic, so rejecting the event later takes them back. A value
+  // picked below is written as the curator's own. Choosing another
+  // evaluation brings both back to Automatic.
+  const chooseVerdict = (v) =>
+    setFormState((prev) => ({
+      ...prev,
+      verdict: v,
+      targetVerdict: null,
+      action: null,
+    }));
 
   const rate = Math.pow(10, rateLog);
 
@@ -8922,7 +8922,8 @@ const ExplorePairs = ({
       verdict,
       targetVerdict,
       notes,
-      action,
+      // Only while its row is shown.
+      action: actionEnabled && offersTargetAction(targetVerdict) ? action : null,
     });
     const verdictLabel =
       verdict === "true_positive"
@@ -8941,7 +8942,8 @@ const ExplorePairs = ({
     setRateLog(-2);
     setProbability(0.9);
     setVerdict("true_positive");
-    setTargetVerdict("contaminated");
+    setTargetVerdict(null);
+    setAction(null);
     setNotes("Manually added by user");
   };
 
@@ -9119,7 +9121,7 @@ const ExplorePairs = ({
               return (
                 <button
                   key={v.id}
-                  onClick={() => setVerdict(v.id)}
+                  onClick={() => chooseVerdict(v.id)}
                   className="px-3 py-1.5 text-[11px] rounded-sm flex items-center gap-1.5"
                   style={{
                     background: active ? v.color : "var(--bg-card)",
@@ -9139,9 +9141,9 @@ const ExplorePairs = ({
         </div>
 
         {/* Verdict on target sample — sample-level layer that
-            cohabits with the event evaluation above. Defaults are
-            wired to the event verdict (TP → contaminated, FP →
-            correct, Uncertain → uncertain) but can be overridden. */}
+            cohabits with the event evaluation above. Automatic by
+            default: the target follows its events, as after a click on
+            any event; another value is written as the curator's own. */}
         <div className="mb-3">
           <label
             className="text-[10px] tracking-[0.1em] uppercase block mb-2"
@@ -9154,13 +9156,13 @@ const ExplorePairs = ({
             Verdict on target sample
           </label>
           <div className="flex gap-2 flex-wrap">
-            {SAMPLE_VERDICT_OPTIONS.map((v) => {
+            {[{ id: null, label: "automatic" }, ...SAMPLE_VERDICT_OPTIONS].map((v) => {
               const tone = SAMPLE_VERDICT_TONE[v.id] || {};
-              const accent = tone.bg || "var(--border-strong)";
-              const active = targetVerdict === v.id;
+              const accent = tone.bg || "#275662";
+              const active = (targetVerdict ?? null) === v.id;
               return (
                 <button
-                  key={v.id}
+                  key={v.id || "auto"}
                   type="button"
                   onClick={() => setTargetVerdict(v.id)}
                   className="px-3 py-1.5 text-[11px] rounded-sm flex items-center gap-1.5"
@@ -9173,7 +9175,13 @@ const ExplorePairs = ({
                     textTransform: "capitalize",
                     cursor: "pointer",
                   }}
-                  title={`Tag the target sample (${tgt || "—"}) as ${v.label}`}
+                  title={
+                    v.id == null
+                      ? `As after a click on any event: the target sample (${tgt || "—"}) follows every event that targets it (a verdict you set by hand is kept)`
+                      : v.id === "pending"
+                        ? `Remove the verdict you set by hand on the target sample (${tgt || "—"}): it then follows its events`
+                        : `Tag the target sample (${tgt || "—"}) as ${v.label}, as your own decision`
+                  }
                 >
                   {active && <CheckCircle2 className="w-3 h-3" />}
                   {v.label}
@@ -9183,9 +9191,9 @@ const ExplorePairs = ({
           </div>
         </div>
 
-        {/* Action on target sample — only when the curator has tagged
-            the target as Contaminated. */}
-        {targetVerdict === "contaminated" && (
+        {/* Action on target sample — offered while the target can end
+            up Contaminated: Automatic, or Contaminated picked by hand. */}
+        {actionEnabled && offersTargetAction(targetVerdict) && (
             <div className="mb-3">
               <label
                 className="text-[10px] tracking-[0.1em] uppercase block mb-2"
@@ -9199,6 +9207,13 @@ const ExplorePairs = ({
               </label>
               <div className="flex gap-2 flex-wrap">
                 {[
+                  {
+                    id: null,
+                    Icon: null,
+                    label: "Automatic",
+                    color: "#275662",
+                    title: "Suppress while the target is Contaminated, unless you set an action by hand.",
+                  },
                   {
                     id: "keep",
                     Icon: Save,
@@ -9214,11 +9229,11 @@ const ExplorePairs = ({
                     title: "Drop this contaminated sample from downstream analyses.",
                   },
                 ].map((opt) => {
-                  const active = action === opt.id;
+                  const active = (action ?? null) === opt.id;
                   const Icon = opt.Icon;
                   return (
                     <button
-                      key={opt.id}
+                      key={opt.id || "auto"}
                       type="button"
                       onClick={() => setAction(opt.id)}
                       title={opt.title}
@@ -9232,7 +9247,7 @@ const ExplorePairs = ({
                         cursor: "pointer",
                       }}
                     >
-                      <Icon className="w-3 h-3" />
+                      {Icon && <Icon className="w-3 h-3" />}
                       {opt.label}
                     </button>
                   );
@@ -21561,13 +21576,16 @@ const HelpTab = ({ onStartTour }) => {
           </h4>
           <p>
             Whenever an event's evaluation changes — a click, a keyboard
-            shortcut, a gallery card, the Bulk-apply dialog (target
-            verdict <em>Automatic</em>), the two presets, the Network
-            node popover — the target sample's <em>automatic</em>{" "}
-            verdict is recomputed from <strong>every</strong> event that
-            targets it, so the result never depends on the order of the
-            clicks. A verdict you set by hand is never changed. Rules, in
-            order of precedence:
+            shortcut, a gallery card, the two presets, a reset, the
+            Bulk-apply dialog, the Network node popover or a pair added
+            from <em>Explore new pairs</em> (the last three with the
+            target verdict and action on <em>Automatic</em>, their
+            default) — the target sample's <em>automatic</em> verdict is
+            recomputed from <strong>every</strong> event that targets it,
+            so the result never depends on the order of the clicks. A
+            verdict you set by hand is never changed; a value picked
+            explicitly in those three forms is written as yours. Rules,
+            in order of precedence:
           </p>
           <ul className="list-disc pl-5 space-y-1.5 mt-2">
             <li>
@@ -24704,8 +24722,9 @@ function AppMain({ initial }) {
     rateLog: -2,
     probability: 0.9,
     verdict: "true_positive",
-    targetVerdict: "contaminated",
-    action: "suppress",
+    // Automatic: the target follows the new event like any other.
+    targetVerdict: null,
+    action: null,
     notes: "Manually added by user",
   };
   const [explorePairsForm, setExplorePairsForm] = useState(
@@ -25857,6 +25876,15 @@ const defaultFilter = () => ({
   const addManualEvent = (data) => {
     // The new event is one more piece of evidence on its target: the
     // target's automatic verdict / action follow it, like after a click.
+    // A verdict / action picked in the form (null: Automatic) is the
+    // curator's own, written by the same update.
+    const targetVerdict = SAMPLE_VERDICT_IDS.includes(data.targetVerdict)
+      ? data.targetVerdict
+      : null;
+    const targetAction =
+      actionEnabled && (data.action === "keep" || data.action === "suppress")
+        ? data.action
+        : undefined;
     commitEvents(
       (list) => {
         const nextManualNum = list.filter((e) =>
@@ -25875,29 +25903,13 @@ const defaultFilter = () => ({
         return [...list, newEvent];
       },
       (sc, nextEvents) =>
-        data.target ? syncSampleCuration(sc, nextEvents, [data.target]) : sc,
+        data.target
+          ? applyTargetSideEffects(sc, nextEvents, [data.target], {
+              targetVerdict,
+              targetAction,
+            })
+          : sc,
     );
-    // Action lives on the target sample now — apply it after the event
-    // is staged so the next render reflects both pieces consistently.
-    if (
-      actionEnabled &&
-      data.target &&
-      (data.action === "keep" || data.action === "suppress")
-    ) {
-      setSampleAction(data.target, data.action);
-    }
-    // Target-sample verdict (contaminated / correct / uncertain) — also
-    // applied so a manual TP immediately tags the target as contaminated
-    // in the Samples cockpit, matching what the inline event-table
-    // pickers do for auto-flagged events.
-    if (
-      data.target &&
-      data.targetVerdict &&
-      data.targetVerdict !== "pending" &&
-      SAMPLE_VERDICT_IDS.includes(data.targetVerdict)
-    ) {
-      setSampleVerdict(data.target, data.targetVerdict);
-    }
   };
 
   /** Bulk-classify all same-subject events as false positives, with an

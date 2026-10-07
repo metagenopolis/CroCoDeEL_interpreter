@@ -543,11 +543,16 @@ try {
     );
   });
   /* A3.3 The Network node popover writes the sample verdict / action
-     with the events, on confirmation: cancelling leaves the sample as it
-     was. */
+     the curator picks with the events, on confirmation: cancelling
+     leaves the sample as it was. */
   await scenario("A3.3", async (page) => {
+    const pickContaminatedSuppress = async (pop) => {
+      await pop.getByRole("button", { name: /^Contaminated$/ }).click();
+      await pop.getByRole("button", { name: /^Suppress$/ }).click();
+    };
     let pop = await openNodePopover(page, "NC3");
-    await pop.getByRole("button", { name: /^Apply$/ }).click(); // TP defaults
+    await pickContaminatedSuppress(pop); // TP, NC3 Contaminated + Suppress by hand
+    await pop.getByRole("button", { name: /^Apply$/ }).click();
     await page.getByRole("button", { name: /^Apply to \d+$/ }).waitFor({ timeout: 10000 });
     await page.getByRole("button", { name: /^Cancel$/ }).last().click();
     let sc = await storedCuration(page);
@@ -558,6 +563,7 @@ try {
       `NC3=${show(sc.NC3)} tp=${s.tp} suppress=${s.suppress}`,
     );
     pop = await openNodePopover(page, "NC3");
+    await pickContaminatedSuppress(pop);
     await pop.getByRole("button", { name: /^Apply$/ }).click();
     await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
     await page.waitForTimeout(600);
@@ -573,15 +579,84 @@ try {
       `NC3=${show(sc.NC3)} tp=${s.tp}`,
     );
   });
+  /* The Network popover and the Explore-new-pairs form follow the rule
+     by default (target verdict and action Automatic): what they set can
+     be taken back by later evaluations, exactly as after clicks. They
+     used to pre-select Contaminated + Suppress (Not contaminated for an
+     FP) and write them by hand — symptom (c) again, through the
+     Network. */
+  await scenario("Network and Explore defaults", async (page) => {
+    let pop = await openNodePopover(page, "NC3");
+    await pop.getByRole("button", { name: /^Apply$/ }).click(); // TP, defaults
+    await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(600);
+    let sc = await storedCuration(page);
+    check(isAutoContaminated(sc.NC3), "Network → NC3 → Apply (defaults) makes NC3 Contaminated + Suppress, automatic", show(sc.NC3));
+    await openTab(page, "Events");
+    for (const src of NC3_SOURCES) await clickEvent(page, src, "NC3", "fp");
+    sc = await storedCuration(page);
+    let s = await overviewStats(page);
+    check(
+      sc.NC3?.verdict === "correct" && sc.NC3.verdictAuto === true && sc.NC3.action == null && s.suppress === 0,
+      "…and FP on its three events by click makes it Not contaminated, nothing to suppress",
+      `${show(sc.NC3)} suppress=${s.suppress}`,
+    );
+    pop = await openNodePopover(page, "63D9");
+    await pop.getByRole("button", { name: /^FP$/ }).click();
+    await pop.getByRole("button", { name: /^Apply$/ }).click();
+    await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(600);
+    sc = await storedCuration(page);
+    check(
+      sc["63D9"]?.verdict === "correct" && sc["63D9"].verdictAuto === true,
+      "Network → 63D9 → FP (defaults) makes 63D9 Not contaminated, automatic",
+      show(sc["63D9"]),
+    );
+    await openTab(page, "Events");
+    await clickEvent(page, "60D38", "63D9", "tp");
+    sc = await storedCuration(page);
+    check(isAutoContaminated(sc["63D9"]), "…so a later TP click makes it Contaminated + Suppress", show(sc["63D9"]));
+
+    await openTab(page, "Scatter");
+    await page.getByRole("button", { name: /^Explore new pairs$/ }).first().click();
+    await page.waitForTimeout(800);
+    const pick = async (placeholder, id) => {
+      const input = page.locator(`input[placeholder="${placeholder}"]`);
+      await input.click();
+      await input.fill(id);
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(500);
+    };
+    await pick("Type to search… e.g. ERS848718", "63D250");
+    await pick("Pick from neighbors / same subject / others…", "40D89");
+    await page.getByRole("button", { name: /Save as new contamination event/ }).click(); // TP, defaults
+    await page.waitForTimeout(600);
+    sc = await storedCuration(page);
+    check(isAutoContaminated(sc["40D89"]), "Explore new pairs 63D250 → 40D89 (TP, defaults) makes 40D89 Contaminated + Suppress, automatic", show(sc["40D89"]));
+    await openTab(page, "Events");
+    await page.locator('tr[data-event-row="manual-1"] button[title="mark as false positive"]').click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    s = await overviewStats(page);
+    check(
+      sc["40D89"]?.verdict === "correct" && sc["40D89"].action == null && s.suppress === 1,
+      "…and FP on that event takes the Suppress back (63D9 is the one left)",
+      `${show(sc["40D89"])} suppress=${s.suppress}`,
+    );
+  });
+
   /* A3.4 A Suppress set by hand that survives "Not contaminated" stays
      visible in the Samples tab (flagged), and can be cleared. */
   await scenario("A3.4", async (page) => {
     let pop = await openNodePopover(page, "63D9");
-    await pop.getByRole("button", { name: /^Apply$/ }).click(); // TP + Contaminated + Suppress
+    await pop.getByRole("button", { name: /^Contaminated$/ }).click(); // TP + Contaminated + Suppress by hand
+    await pop.getByRole("button", { name: /^Suppress$/ }).click();
+    await pop.getByRole("button", { name: /^Apply$/ }).click();
     await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
     await page.waitForTimeout(500);
     pop = await openNodePopover(page, "63D9");
-    await pop.getByRole("button", { name: /^FP$/ }).click(); // Not contaminated, action untouched
+    await pop.getByRole("button", { name: /^FP$/ }).click();
+    await pop.getByRole("button", { name: /^Not contaminated$/ }).click(); // by hand; the action is not offered
     await pop.locator("label").filter({ hasText: /previous evaluations/i }).locator("input").uncheck();
     await pop.getByRole("button", { name: /^Apply$/ }).click();
     await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
