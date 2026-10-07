@@ -934,49 +934,61 @@ try {
      first save must write every record — writing only the curation used
      to leave the events, the metadata and the plate map in "main", which
      no later boot read again. */
-  await scenario("B1.3a migration that fails", async (page) => {
-    await curateSome(page);
-    await saved(page);
-    const stats = await overviewStats(page);
-    await toLegacyLayout(page);
-    await page.addInitScript(() => {
-      const put = IDBObjectStore.prototype.put;
-      IDBObjectStore.prototype.put = function (value, key) {
-        const req = put.call(this, value, key);
-        if (key === "curation" && !sessionStorage.getItem("migration-aborted")) {
-          sessionStorage.setItem("migration-aborted", "1");
-          const tx = this.transaction;
-          req.addEventListener("success", () => {
-            try {
-              tx.abort();
-            } catch {
-              // already finished
-            }
-          });
-        }
-        return req;
-      };
+  for (const [label, local] of [
+    ['the "main" record', null],
+    ["the localStorage keys", "lz"],
+  ]) {
+    await scenario(`B1.3a migration from ${label} that fails`, async (page) => {
+      await curateSome(page);
+      await saved(page);
+      const stats = await overviewStats(page);
+      await toLegacyLayout(page, local);
+      await page.addInitScript(() => {
+        const put = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (value, key) {
+          const req = put.call(this, value, key);
+          if (key === "curation" && !sessionStorage.getItem("migration-aborted")) {
+            sessionStorage.setItem("migration-aborted", "1");
+            const tx = this.transaction;
+            req.addEventListener("success", () => {
+              try {
+                tx.abort();
+              } catch {
+                // already finished
+              }
+            });
+          }
+          return req;
+        };
+      });
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      await page.waitForTimeout(1500);
+      const read = await overviewStats(page);
+      check(JSON.stringify(read) === JSON.stringify(stats), `B1.3a failed migration from ${label}: the session is read as it was stored`, JSON.stringify(read));
+      await mark(page, "true positive", 5);
+      await saved(page);
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(1500);
+      const ev = await card(page, "contamination_events.tsv").innerText();
+      const md = await card(page, "metadata.tsv").innerText();
+      const pm = await card(page, "plate_map.tsv").innerText();
+      check(
+        /24 events loaded/.test(ev) && /samples annotated/.test(md) && /wells/.test(pm),
+        `B1.3a failed migration from ${label}: after a change and a reload, the events, the metadata and the plate map are still there`,
+        [ev, md, pm].map((t) => t.split("\n").find((l) => l.startsWith("✓")) || "-").join(" | "),
+      );
+      const after = await overviewStats(page);
+      check(
+        after.tp === stats.tp + 1 && after.fp === stats.fp,
+        `B1.3a failed migration from ${label}: …with every evaluation, the one made since included`,
+        JSON.stringify(after),
+      );
+      const left = await page.evaluate(() =>
+        ["crocodeel-interpreter-v1", "crocodeel-interpreter-v1-ab"].filter((k) => localStorage.getItem(k) != null),
+      );
+      check(!(await storedRecords(page)).main && left.length === 0, `B1.3a failed migration from ${label}: …and the earlier copy is gone`, left.join(", "));
     });
-    await page.goto(BASE, { waitUntil: "networkidle" });
-    await page.waitForTimeout(1500);
-    const read = await overviewStats(page);
-    check(JSON.stringify(read) === JSON.stringify(stats), "B1.3a failed migration: the session is read from the earlier layout", JSON.stringify(read));
-    await mark(page, "true positive", 5);
-    await saved(page);
-    await page.reload({ waitUntil: "networkidle" });
-    await page.waitForTimeout(1500);
-    const ev = await card(page, "contamination_events.tsv").innerText();
-    const md = await card(page, "metadata.tsv").innerText();
-    const pm = await card(page, "plate_map.tsv").innerText();
-    check(
-      /24 events loaded/.test(ev) && /samples annotated/.test(md) && /wells/.test(pm),
-      "B1.3a failed migration: after a change and a reload, the events, the metadata and the plate map are still there",
-      [ev, md, pm].map((t) => t.split("\n").find((l) => l.startsWith("✓")) || "-").join(" | "),
-    );
-    const after = await overviewStats(page);
-    check(after.tp === stats.tp + 1 && after.fp === stats.fp, "B1.3a failed migration: …with every evaluation, the one made since included", JSON.stringify(after));
-    check(!(await storedRecords(page)).main, 'B1.3a failed migration: …and "main" is gone');
-  });
+  }
 
   /* B1.3b Two pages of one browser. */
   await scenario("B1.3b two tabs", async (page, ctx) => {
