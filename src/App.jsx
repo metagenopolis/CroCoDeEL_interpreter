@@ -18650,9 +18650,14 @@ const ValidateTab = ({
                     {SAMPLE_VERDICT_OPTIONS.map((v) => {
                       const tone = SAMPLE_VERDICT_TONE[v.id] || {};
                       const accent = tone.bg || "var(--border-strong)";
-                      const active =
-                        (sampleCuration?.[sel.target]?.verdict || "pending") ===
-                        v.id;
+                      // Same chips as in the other views: an automatic
+                      // verdict is lighter, dashed and tagged auto.
+                      const chip = sampleVerdictChip(
+                        sel.target,
+                        sampleCuration?.[sel.target],
+                        v.id,
+                      );
+                      const active = chip.active;
                       return (
                         <button
                           key={v.id}
@@ -18661,13 +18666,23 @@ const ValidateTab = ({
                             setSampleVerdict &&
                             setSampleVerdict(sel.target, v.id)
                           }
-                          title={`Tag the target sample (${sel.target}) as ${tone.label}`}
+                          data-verdict-chip={v.id}
+                          title={
+                            chip.title ||
+                            `Tag the target sample (${sel.target}) as ${tone.label}`
+                          }
                           className="px-3 py-1 text-[11px] rounded-sm flex items-center gap-1.5"
                           style={{
-                            background: active ? accent : "var(--bg-card)",
+                            background: active
+                              ? chip.auto
+                                ? `${accent}b3`
+                                : accent
+                              : "var(--bg-card)",
                             color: active ? "#fff" : "var(--ink)",
                             border: active
-                              ? "1px solid transparent"
+                              ? chip.auto
+                                ? `1px dashed ${accent}`
+                                : "1px solid transparent"
                               : "1px solid var(--border-strong)",
                             fontWeight: 700,
                             fontFamily: '"Raleway", sans-serif',
@@ -18676,12 +18691,19 @@ const ValidateTab = ({
                           }}
                         >
                           {tone.label || v.label}
+                          {chip.auto ? " · auto" : ""}
                         </button>
                       );
                     })}
                   </div>
                 </div>
-                {sampleCuration?.[sel.target]?.verdict === "contaminated" && (
+                {/* Offered once the target is Contaminated, and shown
+                    whenever an action is set: a Suppress on a target
+                    that is not Contaminated still drops it from the
+                    curated table (flagged). Same chips as elsewhere
+                    (sampleActionChip). */}
+                {(sampleCuration?.[sel.target]?.verdict === "contaminated" ||
+                  sampleCuration?.[sel.target]?.action) && (
                   <div>
                     <div
                       className="text-[10px] tracking-[0.15em] uppercase mb-2"
@@ -18706,23 +18728,32 @@ const ValidateTab = ({
                           hint: "Drop this contaminated sample from downstream analyses. Keyboard shortcut: S.",
                         },
                       ].map((opt) => {
-                        const active =
-                          sampleCuration?.[sel.target]?.action === opt.id;
+                        const chip = sampleActionChip(
+                          sel.target,
+                          sampleCuration[sel.target],
+                          opt.id,
+                        );
+                        const active = chip.active;
                         const Icon = opt.Icon;
                         return (
                           <button
                             key={opt.id}
                             type="button"
-                            onClick={() => setAction(sel.id, opt.id)}
-                            title={opt.hint}
+                            onClick={() => setAction(sel.id, chip.next)}
+                            title={active ? chip.title : opt.hint}
+                            aria-label={chip.ariaLabel}
                             className="px-3 py-1 text-[11px] rounded-sm flex items-center gap-1.5"
                             style={{
                               background: active
-                                ? opt.color
+                                ? chip.auto
+                                  ? `${opt.color}b3`
+                                  : opt.color
                                 : "var(--bg-card)",
                               color: active ? "#fff" : "var(--ink)",
                               border: active
-                                ? "1px solid transparent"
+                                ? chip.auto
+                                  ? `1px dashed ${opt.color}`
+                                  : "1px solid transparent"
                                 : "1px solid var(--border-strong)",
                               fontWeight: 700,
                               fontFamily: '"Raleway", sans-serif',
@@ -18731,9 +18762,14 @@ const ValidateTab = ({
                           >
                             <Icon className="w-3.5 h-3.5" />
                             {opt.label}
+                            {chip.auto ? " · auto" : ""}
                           </button>
                         );
                       })}
+                      {sampleCuration[sel.target].action === "suppress" &&
+                        sampleCuration[sel.target].verdict !== "contaminated" && (
+                          <SuppressedNotContaminatedFlag />
+                        )}
                     </div>
                   </div>
                 )}
@@ -21440,8 +21476,12 @@ const HelpTab = ({ onStartTour }) => {
                 layer that cohabits with the event evaluation; defaults
                 follow the event verdict but the curator can override),
                 and <strong>Action on target sample</strong>{" "}
-                (Keep / Suppress). Each picker writes directly to its
-                target.
+                (Keep / Suppress — offered once the target is
+                Contaminated, and shown whenever an action is set: a
+                Suppress on a target that is not Contaminated carries a
+                warning sign). Each picker writes directly to its
+                target; automatic values are tagged <em>auto</em>, as
+                on the Samples tab.
               </p>
               <p style={{ marginTop: 6 }}>
                 The event queue in the sidebar is sortable by{" "}
@@ -21708,8 +21748,8 @@ const HelpTab = ({ onStartTour }) => {
             or <strong>pending</strong>. Answers <em>"is this sample
             as a whole compromised?"</em> Edited from the Samples tab,
             from the Scatterplot card popover (<em>Verdict on
-            target</em>), the Events-table target-verdict column or
-            from the Network node popover.
+            target</em>), the Events-table target-verdict column, Guided
+            validation or the Network node popover.
           </p>
           <h4
             className="mt-3 text-[14px]"
@@ -21769,14 +21809,15 @@ const HelpTab = ({ onStartTour }) => {
           <p style={{ marginTop: 6 }}>
             Automatic values are drawn lighter, with a dashed rim, and
             tagged <em>auto</em> (Samples tab, Events table, scatter card
-            popover). Clicking a sample-level verdict or action makes it
-            yours; choosing <em>Pending</em> on a verdict you set, or
-            clearing your action, hands the sample back to the automatic
-            rule. On a Contaminated sample that means Suppress again: to
-            keep it in the curated table, pick <em>Keep</em>.{" "}
-            <em>Pending</em> changes nothing on an automatic verdict, since
-            the events still call for it (its tooltip says why): evaluate
-            the events instead, or pick a verdict of your own.
+            popover, Guided validation). Clicking a sample-level verdict
+            or action makes it yours; choosing <em>Pending</em> on a
+            verdict you set, or clearing your action, hands the sample
+            back to the automatic rule. On a Contaminated sample that
+            means Suppress again: to keep it in the curated table, pick{" "}
+            <em>Keep</em>. <em>Pending</em> changes nothing on an
+            automatic verdict, since the events still call for it (its
+            tooltip says why): evaluate the events instead, or pick a
+            verdict of your own.
           </p>
           <p style={{ marginTop: 6 }}>
             <strong>Sessions saved by an earlier version</strong> are

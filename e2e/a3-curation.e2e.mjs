@@ -1020,6 +1020,67 @@ try {
     check(isAutoContaminated(sc.NC3), "…and it does not change NC3", show(sc.NC3));
   });
 
+  /* Guided validation shows the target's verdict and action with the
+     same chips. Its "Action on target sample" only appeared on a
+     Contaminated target, so the A3.4 state — 63D9 Not contaminated with
+     a Suppress set by hand, dropped from the curated table — showed no
+     action there, and its automatic values looked set by hand. */
+  await scenario("A3.4 Guided validation", async (page) => {
+    const vchip = (id) => page.locator(`button[data-verdict-chip="${id}"]`);
+    const dashed = async (chip) =>
+      (await chip.count()) === 1 &&
+      (await chip.evaluate((b) => getComputedStyle(b).borderStyle)) === "dashed";
+    await openTab(page, "Events");
+    await clickEvent(page, "63D250", "63D9", "tp");
+    const row = page.locator('tr[data-event-row="0"]'); // 63D250 → 63D9
+    await row.locator('button[aria-label="Suppress 63D9"]').click(); // automatic → the curator's own
+    await row.locator('button[data-verdict-chip="correct"]').click(); // Not contaminated, by hand
+    await page.waitForTimeout(300);
+    let sc = await storedCuration(page);
+    check(
+      show(sc["63D9"]) === show({ verdict: "correct", action: "suppress" }),
+      "Guided validation: 63D9 is Not contaminated with a Suppress set by hand",
+      show(sc["63D9"]),
+    );
+    await row.locator("td").nth(2).click(); // open the event in Guided validation
+    await page.getByText(/^Verdict on target sample$/).waitFor({ timeout: 20000 });
+    const clear = page.locator('button[aria-label="Clear suppress on 63D9"]');
+    const flag = page.locator('[aria-label="Suppressed but not marked Contaminated"]');
+    check(
+      (await page.getByText(/^Action on target sample$/).count()) === 1 &&
+        (await clear.count()) === 1 &&
+        (await flag.count()) === 1,
+      "Guided validation: 63D9's Suppress is shown, flagged, although it is not Contaminated",
+    );
+    await clear.click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(
+      show(sc["63D9"]) === show({ verdict: "correct" }) &&
+        (await flag.count()) === 0 &&
+        (await page.getByText(/^Action on target sample$/).count()) === 0,
+      "Guided validation: clearing it there removes the Suppress, the flag and the (no longer offered) action",
+      show(sc["63D9"]),
+    );
+    // Pending on the curator's verdict: back to the automatic Contaminated + Suppress.
+    const t = (await vchip("pending").getAttribute("title")) || "";
+    check(/Remove your verdict/.test(t), "Guided validation: Pending offers to remove the curator's verdict", t);
+    await vchip("pending").click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(isAutoContaminated(sc["63D9"]), "…and hands 63D9 back to the rule", show(sc["63D9"]));
+    const suppress = page.locator('button[aria-label="Suppress 63D9"]');
+    check(
+      (await dashed(vchip("contaminated"))) &&
+        /auto/i.test(await vchip("contaminated").innerText()) &&
+        (await dashed(suppress)) &&
+        /auto/i.test(await suppress.innerText()),
+      "Guided validation: the automatic Contaminated and Suppress are drawn dashed and tagged auto",
+    );
+    const p = (await vchip("pending").getAttribute("title")) || "";
+    check(/changes nothing/.test(p), "Guided validation: Pending says it changes nothing on the automatic verdict", p);
+  });
+
   /* A3.7 A legacy session (actions stored on the events) whose events
      disagree about one target migrates to Suppress, as the legacy app
      read it. */
