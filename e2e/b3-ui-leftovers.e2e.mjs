@@ -3,11 +3,17 @@
      - B3.1  with 150-character sample ids, no tab scrolls sideways at
              1500 px: ids are cut with an ellipsis, the whole id in their
              tooltip, and the Guided validation header keeps it selectable;
-             short ids are still shown whole;
+             a long source leaves its target a few characters. Ids that fit
+             are shown whole: the demo's (a pair's target right after its
+             arrow, also at 1024 px), the pairs of the bundled PRJEB6337
+             study, the sources of the Meteor benchmark's pairs, which share
+             a long prefix (the Validate header wraps them), and ids beside a
+             long sample name, which gives way first;
      - B3.2  the criterion cards say why a value is missing when the table
              is loaded (too few species on the line or in the pair, no
-             rate), and the scatter's error box describes the sample-name
-             matching that is actually done (case and blanks ignored);
+             rate), and the scatter's error box describes
+             the sample-name matching that is actually done (case and
+             blanks ignored);
      - B3.3  a cascade is found when the events file spells the shared
              sample differently from the abundance table;
      - B3.4  a biom-style table, whose header line starts with "#", is
@@ -75,9 +81,11 @@ function sampleRow(page, id) {
 }
 
 /* ---- 150-character sample ids ----
-   The demo files with every sample renamed "<id>_LongSample…" up to 150
-   characters, with nothing to break a line on — what a LIMS export gives. */
-const FILL = "LongSampleIdentifierFromALimsExport";
+   The demo files with every sample renamed "<id>_LIMS_EXPORT_…" up to 150
+   characters, with nothing to break a line on — what a LIMS export gives.
+   Capitals and digits, the widest characters: lower case let the scatter's
+   axis titles fit by chance. */
+const FILL = "LIMS_EXPORT_PROJECT_CROCODEEL_METAGENOMICS_COHORT_2024_BATCH_07_";
 const longId = (id) => {
   let t = `${id}_`;
   while (t.length < 150) t += FILL;
@@ -114,6 +122,86 @@ const pageOverflow = (page) =>
     };
   });
 
+/** Load a dataset bundled in the Datasets tab (its card's short title). */
+async function loadDataset(page, title) {
+  await openTab(page, "Datasets");
+  await page.getByText(title, { exact: true }).first().waitFor({ timeout: 30000 });
+  await page.evaluate((title) => {
+    const el = [...document.querySelectorAll("div")].find(
+      (e) => e.children.length === 0 && e.textContent.trim() === title,
+    );
+    let card = el;
+    while (card && !card.querySelector("button")) card = card.parentElement;
+    [...card.querySelectorAll("button")].find((b) => /Load this dataset/.test(b.textContent)).click();
+  }, title);
+  await page.waitForFunction(
+    () => !document.querySelector('[role="status"]') && /Validated \(TP\)/i.test(document.body.innerText),
+    null,
+    { timeout: 180000 },
+  );
+  await page.waitForTimeout(1500);
+}
+
+/** The "source → target" pairs inside `scope` (SamplePair, and the event
+    queue's lighter line), the first `limit` of them: its source cut or
+    not, how far its target starts after the source, how much of the
+    target shows, and the text shown (the characters inside the boxes that
+    clip them, an ellipsis where they stop). */
+const pairs = (page, scope = "body", limit = Infinity) =>
+  page.evaluate(({ scope, limit }) => {
+    const clipRight = (node) => {
+      let r = Infinity;
+      for (let p = node.parentElement; p; p = p.parentElement) {
+        if (getComputedStyle(p).overflowX !== "visible") r = Math.min(r, p.getBoundingClientRect().right);
+      }
+      return r;
+    };
+    const shown = (el) => {
+      let out = "";
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const right = clipRight(n);
+        for (let i = 0; i < n.length; i++) {
+          range.setStart(n, i);
+          range.setEnd(n, i + 1);
+          if (range.getBoundingClientRect().right <= right + 0.5) out += n.data[i];
+          else {
+            out += "…";
+            break;
+          }
+        }
+      }
+      return out.replace(/\u00a0/g, " ").replace(/\s+/g, " ").replace(/…+/g, "…").trim();
+    };
+    return [...document.querySelector(scope).querySelectorAll("[data-pair-source]")].slice(0, limit).map((src) => {
+      const line = src.parentElement;
+      const box = line.getBoundingClientRect();
+      const s = src.getBoundingClientRect();
+      // The target: its own span, or the text after the source.
+      const tgt = line.querySelector("[data-pair-target]");
+      let t;
+      if (tgt) t = tgt.getBoundingClientRect();
+      else {
+        const range = document.createRange();
+        const text = src.nextSibling;
+        const at = text.data.indexOf("→") + 2;
+        range.setStart(text, at);
+        range.setEnd(text, text.length);
+        t = range.getBoundingClientRect();
+      }
+      return {
+        sourceCut: src.scrollWidth > src.clientWidth + 1,
+        sourceEllipsis: getComputedStyle(src).textOverflow === "ellipsis",
+        gap: Math.round(t.left - s.right),
+        targetShown: Math.round(Math.min(t.right, box.right) - t.left),
+        targetWhole: t.right <= box.right + 0.5,
+        text: shown(line),
+        title: line.closest("[title]")?.getAttribute("title") ?? "",
+      };
+    });
+  }, { scope, limit });
+
 /** Cut, ellipsis and tooltip of the text element `locator`. */
 const cutState = (locator) =>
   locator.evaluate((el) => ({
@@ -129,9 +217,9 @@ const browser = await launchBrowser();
 /* One fresh page per scenario. A scenario that throws is reported as a
    failed check and the others still run. */
 const ONLY = process.env.E2E_ONLY ? new RegExp(process.env.E2E_ONLY) : null;
-async function scenario(name, run, { demo: withDemo = false } = {}) {
+async function scenario(name, run, { demo: withDemo = false, viewport } = {}) {
   if (ONLY && !ONLY.test(name)) return;
-  const { ctx, page, errors } = await newPage(browser);
+  const { ctx, page, errors } = await newPage(browser, viewport ? { viewport } : {});
   try {
     if (withDemo) await loadDemo(page);
     await run(page);
@@ -215,14 +303,12 @@ try {
 
     await openTab(page, "Scatter");
     await noScroll("Scatter gallery");
-    const caption = page.locator('[data-event-card="0"] span.grid').first();
-    const capText = await caption.locator("span.truncate").allTextContents();
-    const capTitle = await caption.evaluate((el) => el.closest("[title]")?.getAttribute("title") ?? "");
+    const [cap] = await pairs(page, '[data-event-card="0"]');
     check(
-      capText.length === 2 && capText[0] === src0 && capText[1] === tgt0 &&
-        capTitle.includes(src0) && capTitle.includes(tgt0),
-      "B3.1 gallery card: both ids shown, each cut on its own, the pair in the tooltip",
-      `${capText.length} ids; tooltip ${capTitle.length} chars`,
+      cap && cap.sourceCut && cap.sourceEllipsis && cap.targetShown >= 15 &&
+        cap.title.includes(src0) && cap.title.includes(tgt0),
+      "B3.1 gallery card: the long source is cut so the target shows, the pair in the tooltip",
+      JSON.stringify(cap && { text: cap.text, targetShown: cap.targetShown, title: cap.title.length }),
     );
     await page.getByRole("button", { name: /Explore new pairs/ }).click();
     await page.waitForTimeout(600);
@@ -248,18 +334,13 @@ try {
       "B3.1 Validate header: both ids cut, each whole in its tooltip",
       JSON.stringify(hd.map((c) => [c.cut, c.ellipsis, c.title?.slice(0, 12)])),
     );
-    const queue = await page.locator("aside button div.truncate").evaluateAll((els) =>
-      els.map((el) => ({
-        text: el.textContent,
-        fits: el.scrollWidth <= el.clientWidth + 1,
-        title: el.getAttribute("title") || "",
-      })),
-    );
+    const queue = await pairs(page, "aside");
     const firstQueued = queue.find((q) => q.title === `${src0} → ${tgt0}`);
     check(
-      queue.length === 24 && queue.every((q) => q.fits && /^\S+… → \S+…$/.test(q.text)) &&
-        firstQueued?.text.startsWith("63D250_Long") && firstQueued.text.includes("→ 63D9_Long"),
-      "B3.1 Validate queue: each row shows both ids, each cut, the pair whole in its tooltip",
+      queue.length === 24 &&
+        queue.every((q) => q.sourceCut && q.sourceEllipsis && q.targetShown >= 15 && /^\S+… → \S+…$/.test(q.text)) &&
+        firstQueued?.text.startsWith("63D250_LIMS") && firstQueued.text.includes("→ 63"),
+      "B3.1 Validate queue: each row cuts the long source so the target shows, the pair whole in its tooltip",
       `${queue.length} rows; "${firstQueued?.text}"`,
     );
     const selected = await header.nth(0).evaluate((el) => {
@@ -301,7 +382,7 @@ try {
     await noScroll("Network");
     const labels = await page.evaluate(() =>
       [...document.querySelectorAll("svg g > text")]
-        .filter((t) => /LongSample/.test(t.textContent))
+        .filter((t) => /_LIMS_EXPORT/.test(t.textContent))
         .map((t) => ({ text: t.textContent, title: t.parentNode.querySelector(":scope > title")?.textContent || "" })),
     );
     check(
@@ -352,7 +433,7 @@ try {
     await upload(page, 1, "species_abundance.tsv", tsv(rows));
     await openEvent(page, 1);
     const over = await pageOverflow(page);
-    const up = page.locator("button.underline", { hasText: "C_LongSample" });
+    const up = page.locator("button.underline", { hasText: "C_LIMS_EXPORT" });
     const st = (await up.count()) === 1 ? await cutState(up) : null;
     check(
       over.page <= 0 && over.column <= 0 && st && st.cut && st.ellipsis && st.title === C,
@@ -361,7 +442,11 @@ try {
     );
   });
 
-  /* B3.1 — ids that fit are shown whole: the demo's are never cut. */
+  /* B3.1 — ids that fit are shown whole, next to their arrow: the demo's
+     are never cut. The first version laid a pair out on a grid whose
+     arrow column took the line's free space: the target sat at the far
+     end of the Validate header (775 px after the source), of the
+     Overview rows and of the bulk preview cards. */
   await scenario(
     "B3.1 short ids stay whole",
     async (page) => {
@@ -372,15 +457,29 @@ try {
         els.filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent),
       );
       check(n >= 48 && cut.length === 0, "B3.1 Events table: no demo id is cut", `${n} ids, cut: ${cut.join(", ")}`);
+      const besideArrow = (list, max) =>
+        list.length > 0 && list.every((p) => !p.sourceCut && p.targetWhole && p.gap > 0 && p.gap <= max);
+      const describe = (list) =>
+        `${list.length} pairs, gaps ${[...new Set(list.map((p) => p.gap))].join("/")} px, ` +
+        `${list.filter((p) => p.sourceCut || !p.targetWhole).length} cut`;
+      await openTab(page, "Overview");
+      let list = await pairs(page);
+      check(besideArrow(list, 30), "B3.1 Overview top lists: each target right after its arrow, nothing cut", describe(list));
+      await openTab(page, "Scatter");
+      list = await pairs(page);
+      check(besideArrow(list, 30), "B3.1 gallery: each target right after its arrow, nothing cut", describe(list));
       await openTab(page, "Validate");
       const hd = await page.locator("h2 [data-sample-id]").evaluateAll((els) =>
-        els.map((el) => ({ text: el.textContent, cut: el.scrollWidth > el.clientWidth + 1 })),
+        els.map((el) => ({ text: el.textContent, cut: el.scrollWidth > el.clientWidth + 1, box: el.getBoundingClientRect().toJSON() })),
       );
+      const gap = hd.length === 2 ? Math.round(hd[1].box.left - hd[0].box.right) : null;
       check(
-        hd.length === 2 && hd.every((h) => !h.cut),
-        "B3.1 Validate header: the demo pair is shown whole",
-        JSON.stringify(hd),
+        hd.length === 2 && hd.every((h) => !h.cut) && Math.abs(hd[0].box.top - hd[1].box.top) < 2 && gap > 0 && gap <= 60,
+        "B3.1 Validate header: the demo pair is shown whole, the target right after the arrow",
+        JSON.stringify({ ids: hd.map((h) => [h.text, h.cut]), gap }),
       );
+      list = await pairs(page, "aside");
+      check(besideArrow(list, 30), "B3.1 Validate queue: each pair whole, the target right after the arrow", describe(list));
       const axis = await page.evaluate(() =>
         [...document.querySelectorAll("svg text")].some((t) =>
           /^(Target|Source) .*…/.test(
@@ -389,8 +488,159 @@ try {
         ),
       );
       check(!axis, "B3.1 Validate scatter: the demo's axis titles are not cut");
+      await page.getByRole("button", { name: /Bulk apply evaluation/i }).first().click();
+      await page.waitForTimeout(800);
+      await page.getByRole("button", { name: /Preview as scatter plots/i }).first().click();
+      await page.waitForTimeout(1500);
+      list = await pairs(page);
+      check(besideArrow(list, 30), "B3.1 bulk preview: each target right after its arrow, nothing cut", describe(list));
     },
     { demo: true },
+  );
+
+  /* B3.1 — a pair that fits its line is shown whole. The first version cut
+     the event queue's pairs to 30 characters whatever the column's width:
+     on the bundled PRJEB6337 study it cut 83 of the 197 rows, such as
+     "ERS475320_ERS475321 → ERS475349", which fit. */
+  await scenario("B3.1 pairs that fit stay whole (PRJEB6337)", async (page) => {
+    await loadDataset(page, "PRJEB6337");
+    await openTab(page, "Validate");
+    const queue = await pairs(page, "aside");
+    const row = (pair) => queue.find((q) => q.title === pair);
+    const fit = ["ERS475320_ERS475321 → ERS475349", "ERS475316 → ERS475339_ERS475340", "ERS475339_ERS475340 → ERS475341"];
+    check(
+      queue.length === 197 && fit.every((p) => row(p) && row(p).text === p),
+      "B3.1 Validate queue: pairs that fit are shown whole",
+      fit.map((p) => row(p)?.text || `(no row ${p})`).join(" | "),
+    );
+    const whole = queue.filter((q) => q.text === q.title).length;
+    check(
+      whole >= 170 && queue.every((q) => q.targetShown > 0),
+      "B3.1 Validate queue: most of the study's pairs whole, every row shows its target",
+      `${whole} of ${queue.length} whole`,
+    );
+  });
+
+  /* B3.1 — ids sharing a long prefix, as the benchmark datasets name their
+     samples ("conta_target_case_010_0.5_1"): the source is kept whole
+     where it leaves the target a few characters, as one line of text
+     always did. The first version cut both ids to equal shares, and every
+     queue row, gallery card and Overview row read the same
+     ("conta_target… → conta_target_…"). The Validate header wraps the pair
+     rather than cut it. */
+  await scenario("B3.1 ids sharing a long prefix (Meteor benchmark)", async (page) => {
+    await loadDataset(page, "PRJNA763023+PRJDB4176 — Meteor");
+    const distinct = (list) => new Set(list.map((p) => p.text)).size;
+    await openTab(page, "Overview");
+    // A 41-character source ("…_case_010_0.5_10_before_conta") leaves its
+    // target no room on these rows: it is cut past its case and rate, where
+    // the one line of text used to hide the whole target.
+    let list = await pairs(page);
+    const cutSources = list.filter((p) => p.sourceCut);
+    check(
+      list.length === 30 && list.every((p) => p.targetShown > 0) && cutSources.length <= 10 &&
+        cutSources.every((p) => p.text.indexOf("…") >= 30) && distinct(list) >= 15,
+      "B3.1 Overview top lists: sources whole where they leave room, every target shown, the rows told apart",
+      `${list.length} rows, ${cutSources.length} sources cut ("${cutSources[0]?.text}"), ${distinct(list)} distinct; "${list[0]?.text}"`,
+    );
+    await openTab(page, "Scatter");
+    list = await pairs(page, "body", 12);
+    check(
+      list.length === 12 && list.every((p) => !p.sourceCut && p.targetShown > 0) && distinct(list) >= 3,
+      "B3.1 gallery: every caption's source whole, its target shown",
+      `${list.filter((p) => p.sourceCut).length} sources cut, ${distinct(list)} distinct; "${list[0]?.text}"`,
+    );
+    await openTab(page, "Validate");
+    const hd = await page.locator("h2 [data-sample-id]").evaluateAll((els) =>
+      els.map((el) => ({ text: el.textContent, cut: el.scrollWidth > el.clientWidth + 1, top: el.getBoundingClientRect().top })),
+    );
+    check(
+      hd.length === 2 && hd.every((h) => !h.cut) && hd[1].top > hd[0].top,
+      "B3.1 Validate header: the pair wraps onto two lines, both ids whole",
+      JSON.stringify(hd.map((h) => [h.text, h.cut, Math.round(h.top)])),
+    );
+    // The first rows: their 27-character sources fit with a few characters
+    // of the target, as before.
+    const queue = await pairs(page, "aside", 30);
+    check(
+      queue.length === 30 && queue.every((q) => q.targetShown > 0) &&
+        queue.filter((q) => !q.sourceCut).length >= 20 && distinct(queue) >= 5,
+      "B3.1 Validate queue: sources whole where they leave the target room, every target shown",
+      `${queue.filter((q) => !q.sourceCut).length} of 30 sources whole, ${distinct(queue)} distinct; "${queue[0]?.text}"`,
+    );
+  });
+
+  /* B3.1 — a sample's name gives way before its id. With a 60-character
+     sample_name, the first version cut the demo's 6-character ids in the
+     Validate header ("63D…"), the sample context and the node popover:
+     id and name shrank together. */
+  await scenario("B3.1 sample names give way to ids", async (page) => {
+    const md = demo("metadata.tsv").split("\n");
+    const named = [
+      `${md[0]}\tsample_name`,
+      ...md.slice(1).filter(Boolean).map((line) => {
+        const id = line.split("\t")[0];
+        return `${line}\tSubject ${id} - stool - extraction batch 7 - plate 3 - replicate 1`;
+      }),
+    ].join("\n");
+    await upload(page, 0, "contamination_events.tsv", demo("contamination_events.tsv"));
+    await upload(page, 1, "species_abundance.tsv", demo("species_abundance.tsv"));
+    await upload(page, 2, "metadata.tsv", named);
+    await openTab(page, "Validate");
+    const ids = await page.locator("h2 [data-sample-id]").evaluateAll((els) =>
+      els.map((el) => ({ text: el.textContent, cut: el.scrollWidth > el.clientWidth + 1 })),
+    );
+    const names = await page.locator("h2 span[title^='Subject']").count();
+    check(
+      ids.length === 2 && ids.every((i) => !i.cut) && names === 2,
+      "B3.1 Validate header: the ids whole beside their names",
+      JSON.stringify(ids),
+    );
+    await page.getByText(/plate position & sample context/i).first().click();
+    await page.waitForTimeout(500);
+    const context = await page.evaluate(() =>
+      [...document.querySelectorAll("span.grid > span.truncate")]
+        .filter((el) => /^\d+[DM]\d*$/.test(el.textContent))
+        .map((el) => ({ text: el.textContent, cut: el.scrollWidth > el.clientWidth + 1 })),
+    );
+    check(
+      context.length >= 2 && context.every((c) => !c.cut),
+      "B3.1 sample context: the ids whole beside their names",
+      JSON.stringify(context),
+    );
+    await openTab(page, "Network");
+    await page.locator("svg g circle").first().click();
+    await page.waitForTimeout(500);
+    const popoverId = await page.evaluate(() => {
+      const label = [...document.querySelectorAll("div")].find((d) => d.textContent === "Apply to events targeting");
+      const id = label?.nextElementSibling?.querySelector("span.truncate");
+      return id ? { text: id.textContent, cut: id.scrollWidth > id.clientWidth + 1 } : null;
+    });
+    check(
+      popoverId && !popoverId.cut,
+      "B3.1 Network node popover: the id whole beside its name",
+      JSON.stringify(popoverId),
+    );
+  });
+
+  /* B3.1 — below 1500 px a table that does not fit scrolls, as it always
+     did, rather than cut short ids: the first version cut 27 of the
+     demo's 6-character ids by 2 px at 1024 px. */
+  await scenario(
+    "B3.1 short ids at a narrow window",
+    async (page) => {
+      for (const tab of ["Samples", "Events"]) {
+        await openTab(page, tab);
+        const cut = await page.locator("td span.truncate").evaluateAll((els) =>
+          els
+            .filter((el) => /^(\d+[DM]\d*|NC\d+)$/.test(el.textContent))
+            .filter((el) => el.scrollWidth > el.clientWidth + 1)
+            .map((el) => el.textContent),
+        );
+        check(cut.length === 0, `B3.1 ${tab} at 1024 px: no demo id is cut`, cut.slice(0, 5).join(", "));
+      }
+    },
+    { demo: true, viewport: { width: 1024, height: 900 } },
   );
 
   /* B3.2 — S1 → S2 has one species on its line and two in the pair: no R²,

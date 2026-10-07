@@ -718,45 +718,147 @@ export function plateDistance(plateMap, source, target) {
    tooltip. The page still holds the whole id: selecting it (double- or
    triple-click) and copying gives all of it. */
 
+/** Ids up to this many characters are never cut (SampleId): the demo's
+    and every bundled study's fit, and at a narrow window a table that
+    cannot fit anyway scrolls rather than cuts them. */
+const SHORT_ID_CHARS = 12;
+
 /** One sample id, cut to the width it is given. The one-track grid around
     it is what lets a table column or a flex row narrow it: an auto-layout
     table never makes a column narrower than the min-content width of its
-    cells, which for one line of text is the whole text. In a
-    minmax(0, 1fr) track the id adds nothing to the min-content width and
-    its full width to the max-content one, so a short id is shown whole
-    and a long one is cut only as far as the row has to. */
-const SampleId = ({ id, title, className = "", style }) => (
-  <span className="grid" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
+    cells, which for one line of text is the whole text. A long id's
+    track, minmax(12ch, 1fr), adds 12 characters to the min-content width
+    and its full width to the max-content one, so it is cut only as far
+    as the row has to, never below 12 characters. A short id's track
+    starts at its own width (max-content): it is never cut — narrowed to
+    the minimum, the first version cut the demo's 6-character ids by 2 px
+    at a 1024 px window, where the Samples table scrolls anyway.
+    `className` and `style` go on the grid, so its `ch` is the id's. */
+const SampleId = ({ id, title, className = "", style }) => {
+  const text = String(id ?? "");
+  return (
     <span
-      className={`truncate ${className}`}
-      style={style}
-      title={title === undefined ? String(id ?? "") : title || undefined}
+      className={`grid ${className}`}
+      style={{
+        gridTemplateColumns:
+          text.length <= SHORT_ID_CHARS
+            ? "minmax(max-content, 1fr)"
+            : `minmax(${SHORT_ID_CHARS}ch, 1fr)`,
+        ...style,
+      }}
     >
+      <span className="truncate" title={title === undefined ? text : title || undefined}>
+        {id}
+      </span>
+    </span>
+  );
+};
+
+/** A sample id and, after it, its metadata name in brackets, on one line:
+    the id keeps its width (minmax(0, max-content)) and the name takes what
+    is left (minmax(0, 1fr)), so the name is cut first and the id only once
+    the name has no room left. In a flex row they used to shrink together,
+    in proportion to their widths: a 6-character id before a 60-character
+    name showed "63D…". Each has its tooltip; `idProps` go on the id's
+    span. */
+const SampleIdName = ({
+  id,
+  name,
+  className = "",
+  style,
+  idStyle,
+  idProps,
+  nameClassName = "",
+  nameStyle,
+}) => (
+  <span
+    className={`grid items-baseline ${className}`}
+    style={{
+      gridTemplateColumns: name ? "minmax(0, max-content) minmax(0, 1fr)" : "minmax(0, max-content)",
+      columnGap: "0.4em",
+      ...style,
+    }}
+  >
+    <span className="truncate" style={idStyle} title={String(id ?? "")} {...idProps}>
       {id}
     </span>
+    {name && (
+      <span className={`truncate ${nameClassName}`} style={nameStyle} title={name}>
+        ({name})
+      </span>
+    )}
   </span>
 );
 
-/** Grid columns of a "source → target" line: each id takes at most its
-    own width, and the width the line lacks is taken from both in turn
-    (the grid's free space grows the two tracks equally), so a short id
-    stays whole next to a long one, which takes the rest. */
-const SAMPLE_PAIR_COLUMNS = "minmax(0, max-content) auto minmax(0, max-content)";
+/** The room a SamplePair keeps for its target when the source is too long
+    to leave it more: all of a short target (" → 63D9"), and the arrow and
+    two or three characters of a longer one, which is cut anyway — the
+    source keeps the rest, as much as the one line of text used to give
+    it. */
+function pairTargetMin(target) {
+  return String(target ?? "").length <= 6 ? "5.5em" : "3.5em";
+}
 
-/** "source → target" on one line, both ids cut as needed; the tooltip
-    (`title`, null for none) is the whole pair. The spaces around a text
-    arrow do not show (the grid lays it out alone) but keep the pair's
-    text "source → target" for a copy or a screen reader. */
-const SamplePair = ({ source, target, arrow = "→", title, className = "", style }) => (
-  <span
-    className={`grid items-center ${className}`}
-    style={{ gridTemplateColumns: SAMPLE_PAIR_COLUMNS, columnGap: "0.3em", ...style }}
-    title={title === undefined ? `${source} → ${target}` : title || undefined}
-  >
-    <span className="truncate">{source}</span>
-    {typeof arrow === "string" ? <span>{` ${arrow} `}</span> : arrow}
-    <span className="truncate">{target}</span>
-  </span>
+/** "source → target" on one line. When the pair does not fit, it is cut
+    at the end, in the target, as one line of text always was, but the
+    target keeps at least pairTargetMin: past that, the source is cut on
+    its own, so a long source no longer hides the target behind its
+    ellipsis. The tooltip (`title`, null for none) is the whole pair;
+    `arrow` is a text or an inline element.
+
+    The reserve is the target's min-width and the source's cap is
+    calc(100% - reserve), not a share of the line: in a box as wide as its
+    content (a gallery card's caption) the line is then always wide enough
+    for the source, which a percentage share would cut.
+
+    The first version cut both ids to equal shares (two minmax(0,
+    max-content) grid tracks): ids sharing a long prefix — the benchmark
+    datasets' "conta_target_case_010_0.5_1" and its target — then read the
+    same on every gallery card and Overview row, where the source used to
+    be whole; and its 'auto' arrow track took the line's free space,
+    pushing a short target to the far end of the line. */
+const SamplePair = ({ source, target, arrow = "→", title, className = "", style }) => {
+  const reserve = pairTargetMin(target);
+  return (
+    <span
+      className={`flex items-baseline min-w-0 ${className}`}
+      style={style}
+      title={title === undefined ? `${source} → ${target}` : title || undefined}
+    >
+      <span
+        className="truncate"
+        style={{ flex: "none", maxWidth: `calc(100% - ${reserve})` }}
+        data-pair-source=""
+      >
+        {source}
+      </span>
+      <span className="truncate" style={{ flex: "0 1 auto", minWidth: reserve }}>
+        {typeof arrow === "string" ? `\u00a0${arrow} ` : arrow}
+        <span data-pair-target="">{target}</span>
+      </span>
+    </span>
+  );
+};
+
+/** SamplePair for a line as wide as its column whatever its text (the
+    event queue's rows): the same cut with two boxes less per row. The
+    source is an inline block capped at calc(100% - reserve) and the line's
+    own ellipsis cuts the target — a percentage cap needs a line whose
+    width does not come from its text. The queue renders every event
+    (16,555 on the Meteor benchmark), where SamplePair's flex row took
+    ~200 ms more to render when Guided validation opens. */
+const SamplePairLine = ({ source, target, className = "", style }) => (
+  <div className={`truncate ${className}`} style={style} title={`${source} → ${target}`}>
+    <span
+      className={`inline-block truncate align-bottom ${
+        pairTargetMin(target) === "5.5em" ? "max-w-[calc(100%-5.5em)]" : "max-w-[calc(100%-3.5em)]"
+      }`}
+      data-pair-source=""
+    >
+      {source}
+    </span>
+    {` → ${target}`}
+  </div>
 );
 
 /** A sample id inside running text: cut at the width of the line. */
@@ -3041,17 +3143,13 @@ const NodeBulkPopover = ({
             style={{ color: "var(--ink)", fontWeight: 700 }}
             title={name ? `${sampleId} (${name})` : sampleId}
           >
-            <span className="flex items-baseline min-w-0 max-w-full">
-              <span className="truncate">{sampleId}</span>
-              {name && (
-                <span
-                  className="ml-1.5 text-[12px] truncate"
-                  style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                >
-                  ({name})
-                </span>
-              )}
-            </span>
+            <SampleIdName
+              id={sampleId}
+              name={name}
+              className="min-w-0 max-w-full"
+              nameClassName="text-[12px]"
+              nameStyle={{ color: "var(--ink-muted)", fontWeight: 500 }}
+            />
             {onScopeToSamples && (
               <span
                 className="flex items-center gap-1"
@@ -3953,24 +4051,6 @@ const PlateUploadCard = ({ plateMap, setPlateMap, setErr, confirmDialog }) => {
 };
 
 /* ---------- event queue sidebar ---------- */
-
-/** "source → target" as one text in which each id is cut (clipId) to share
-    `max` characters, a short id staying whole next to a long one — what
-    SamplePair does with three boxes. The event queue lists every event (all
-    16,555 of the Meteor benchmark), and those boxes made Guided validation
-    open ~400 ms and answer each verdict click ~100 ms slower there; one
-    text per row keeps it as it was. `max` fits the 260 px queue column at
-    12 px; the row's ellipsis stays as a fallback. */
-function clipPair(source, target, max) {
-  const s = String(source ?? "");
-  const t = String(target ?? "");
-  const room = max - 3; // " → "
-  if (s.length + t.length <= room) return `${s} → ${t}`;
-  const half = Math.floor(room / 2);
-  const sMax = t.length <= half ? room - t.length : Math.min(s.length, half);
-  return `${clipId(s, sMax)} → ${clipId(t, room - Math.min(s.length, sMax))}`;
-}
-
 const EventQueue = ({ events, currentId, onSelect, compact }) => {
   // Keep the active row in view as the user steps through events with the
   // ↑/↓/←/→ shortcuts. `block: "nearest"` means we only scroll when the
@@ -4022,7 +4102,11 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
             key={e.id}
             ref={active ? activeRef : null}
             onClick={() => onSelect(e.id)}
-            className="w-full text-left px-3 py-2 text-[12px] flex items-start gap-2"
+            // The queue lists every event (16,555 on the Meteor
+            // benchmark): a row out of view skips layout and paint until
+            // it scrolls in, sized meanwhile as a row is (55 px). Opening
+            // Guided validation there went from ~1.7 s to ~0.9 s.
+            className="w-full text-left px-3 py-2 text-[12px] flex items-start gap-2 [content-visibility:auto] [contain-intrinsic-size:auto_55px]"
             style={{
               borderBottom: "1px solid var(--border-soft)",
               background: active ? "#275662" : "var(--bg-card)",
@@ -4038,13 +4122,14 @@ const EventQueue = ({ events, currentId, onSelect, compact }) => {
               />
             )}
             <div className="flex-1 min-w-0">
-              <div
-                className="truncate"
-                style={{ fontWeight: 600 }}
-                title={`${e.source} → ${e.target}`}
-              >
-                {clipPair(e.source, e.target, e.cascade ? 22 : 30)}
-              </div>
+              {/* One run of text, cut where the row ends, as it always
+                  was: an id is cut only when the pair does not fit, and a
+                  long source leaves the target a few characters
+                  (SamplePairLine). The first version cut both ids to a fixed
+                  30-character budget, which cut pairs that fit (PRJEB6337's
+                  "ERS475320_ERS475321 → ERS475349") and reduced the
+                  benchmark datasets' rows to one text. */}
+              <SamplePairLine source={e.source} target={e.target} style={{ fontWeight: 600 }} />
               <div
                 className="flex mt-0.5 tabular gap-2"
                 style={{
@@ -4756,7 +4841,7 @@ const TopList = ({ title, items, onOpen, fmt }) => (
           <SamplePair
             source={e.source}
             target={e.target}
-            arrow={<ArrowRight className="w-3 h-3 mx-0.5" style={{ color: "#00a3a6" }} />}
+            arrow={<ArrowRight className="inline w-3 h-3 mx-1.5" style={{ color: "#00a3a6" }} />}
             className="text-[13px] flex-1 min-w-0"
             style={{ color: "var(--ink)", fontWeight: 600 }}
           />
@@ -16917,36 +17002,34 @@ const ValidateTab = ({
         <SectionTitle
           eyebrow={`Event ${idx + 1} of ${events.length}`}
           title={
-            // The pair is this page's subject: two long ids share the
-            // line, each cut only as far as it has to be, with the whole
-            // id in its tooltip and in the page (a double-click selects
-            // all of it, and a copy copies all of it).
-            <span
-              className="grid items-baseline"
-              style={{ gridTemplateColumns: SAMPLE_PAIR_COLUMNS, columnGap: "0.3em" }}
-            >
-              {[sel.source, sel.target].map((id, i) => {
-                const name = sampleName(metadata, id);
-                return (
-                  <React.Fragment key={i}>
-                    {i === 1 && <span>{" → "}</span>}
-                    <span className="flex items-baseline min-w-0">
-                      <span className="truncate" title={id} data-sample-id={id}>
-                        {id}
-                      </span>
-                      {name && (
-                        <span
-                          className="text-[18px] ml-2 truncate"
-                          style={{ color: "var(--ink-muted)", fontWeight: 500 }}
-                          title={name}
-                        >
-                          ({name})
-                        </span>
-                      )}
+            // The pair is this page's subject. When it does not fit on
+            // one line the target goes to the next, as the heading's text
+            // always wrapped there, and an id is cut only when it alone is
+            // wider than the line — the first version kept the pair on one
+            // line and cut the benchmark datasets' ids that used to wrap
+            // whole. Each id keeps its width before its name (SampleIdName),
+            // has its whole self in its tooltip, and stays whole in the
+            // page: a double-click selects all of it, a copy copies it.
+            <span className="flex flex-wrap items-baseline" style={{ columnGap: "0.3em" }}>
+              {[sel.source, sel.target].map((id, i) => (
+                <span key={i} className="flex items-baseline min-w-0 max-w-full">
+                  <SampleIdName
+                    id={id}
+                    name={sampleName(metadata, id)}
+                    className="min-w-0"
+                    idProps={{ "data-sample-id": id }}
+                    nameClassName="text-[18px]"
+                    nameStyle={{ color: "var(--ink-muted)", fontWeight: 500 }}
+                  />
+                  {i === 0 && (
+                    // The spaces do not show (they start and end their
+                    // box) but keep the heading's text "source → target".
+                    <span className="shrink-0" style={{ marginLeft: "0.3em" }}>
+                      {" → "}
                     </span>
-                  </React.Fragment>
-                );
-              })}
+                  )}
+                </span>
+              ))}
             </span>
           }
         />
@@ -17694,27 +17777,21 @@ const ValidateTab = ({
                               >
                                 source
                               </span>
-                              <SampleId
+                              <SampleIdName
                                 id={sel.source}
-                                style={{
+                                name={sampleName(metadata, sel.source)}
+                                className="min-w-0"
+                                idStyle={{
                                   color: "var(--ink)",
                                   fontWeight: 600,
                                   fontFamily: '"Raleway", sans-serif',
                                 }}
+                                nameStyle={{
+                                  color: "var(--ink-muted)",
+                                  fontSize: 11,
+                                  fontFamily: '"Raleway", sans-serif',
+                                }}
                               />
-                              {sampleName(metadata, sel.source) && (
-                                <span
-                                  className="truncate"
-                                  style={{
-                                    color: "var(--ink-muted)",
-                                    fontSize: 11,
-                                    fontFamily: '"Raleway", sans-serif',
-                                  }}
-                                  title={sampleName(metadata, sel.source)}
-                                >
-                                  ({sampleName(metadata, sel.source)})
-                                </span>
-                              )}
                             </div>
                             <SampleFlags flags={flagSample(sel.source, metadata)} />
                           </div>
@@ -17730,27 +17807,21 @@ const ValidateTab = ({
                               >
                                 target
                               </span>
-                              <SampleId
+                              <SampleIdName
                                 id={sel.target}
-                                style={{
+                                name={sampleName(metadata, sel.target)}
+                                className="min-w-0"
+                                idStyle={{
                                   color: "var(--ink)",
                                   fontWeight: 600,
                                   fontFamily: '"Raleway", sans-serif',
                                 }}
+                                nameStyle={{
+                                  color: "var(--ink-muted)",
+                                  fontSize: 11,
+                                  fontFamily: '"Raleway", sans-serif',
+                                }}
                               />
-                              {sampleName(metadata, sel.target) && (
-                                <span
-                                  className="truncate"
-                                  style={{
-                                    color: "var(--ink-muted)",
-                                    fontSize: 11,
-                                    fontFamily: '"Raleway", sans-serif',
-                                  }}
-                                  title={sampleName(metadata, sel.target)}
-                                >
-                                  ({sampleName(metadata, sel.target)})
-                                </span>
-                              )}
                             </div>
                             <SampleFlags flags={flagSample(sel.target, metadata)} />
                           </div>
@@ -20247,11 +20318,14 @@ const HelpTab = ({ onStartTour }) => {
               (N its column, counted from 0), as CroCoDeEL names it.
             </p>
             <p className="mb-2" style={{ color: "var(--ink-muted)" }}>
-              Sample ids are shown as the abundance table writes them. An
-              id too long for its place — a 150-character LIMS id, say —
-              is cut with an ellipsis: hover it to read it whole. The
-              Guided validation header holds the whole pair, so selecting
-              an id there copies all of it.
+              Sample ids are shown as your files write them. An id too
+              long for its place — a 150-character LIMS id, say — is cut
+              with an ellipsis: hover it to read it whole. On a{" "}
+              <em>source → target</em> line, the source keeps its width as
+              long as the target keeps a few characters; a sample's name is
+              cut before its id. The Guided validation header puts the
+              target on a second line rather than cut it, and selecting an
+              id there copies all of it.
             </p>
             <p style={{ color: "var(--ink-muted)" }}>
               Files are parsed entirely in your browser. Nothing is sent
