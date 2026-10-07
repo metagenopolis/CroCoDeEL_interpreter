@@ -954,7 +954,7 @@ try {
       let t = await pendingTitle("63D250");
       check(
         t ===
-          "Pending changes nothing here: 63D250's verdict is automatic (Not contaminated: no event targets it). Pick a verdict to set your own",
+          "Pending changes nothing here: 63D250's verdict is the default (Not contaminated: no event targets it). Pick a verdict to set your own",
         "B3.5 a never-targeted sample's Pending chip does not send the curator to its events",
         t,
       );
@@ -984,7 +984,7 @@ try {
       await sampleRow(page, "63D250").locator('button[aria-label="Set verdict to Pending"]').click();
       await page.waitForTimeout(500);
       const neverTargetedPending =
-        "Pending changes nothing here: 63D250's verdict is automatic (Not contaminated: no event targets it). Pick a verdict to set your own";
+        "Pending changes nothing here: 63D250's verdict is the default (Not contaminated: no event targets it). Pick a verdict to set your own";
       t = await pendingTitle("63D250");
       check(t === neverTargetedPending, "B3.5 Pending hands 63D250 back to its default", t);
       await page.waitForTimeout(1500); // the autosave

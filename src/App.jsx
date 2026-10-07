@@ -6977,11 +6977,12 @@ const EventsTable = ({
                           </button>
                         );
                       })}
-                      {sampleCuration?.[e.target]?.verdict &&
-                        sampleCuration[e.target].verdictAuto && (
-                          <SampleAutoMark title={AUTO_VERDICT_MARK_TITLE} />
-                        )}
                     </div>
+                    {/* Under the chips: no width added to the column. */}
+                    {sampleCuration?.[e.target]?.verdict &&
+                      sampleCuration[e.target].verdictAuto && (
+                        <SampleAutoMark title={AUTO_VERDICT_MARK_TITLE} />
+                      )}
                   </td>
                   {actionEnabled && (
                     <td
@@ -6996,48 +6997,50 @@ const EventsTable = ({
                         // Shown whenever an action is set: a Suppress
                         // drops the sample from the curated table even
                         // when it is not Contaminated (flagged).
-                        <div className="flex gap-0.5 justify-center items-center">
-                          {[
-                            { id: "keep", Icon: Save, color: "#e0b13a" },
-                            { id: "suppress", Icon: Trash2, color: "#ed6e6c" },
-                          ].map((opt) => {
-                            const chip = sampleActionChip(
-                              e.target,
-                              sampleCuration[e.target],
-                              opt.id,
-                            );
-                            const Icon = opt.Icon;
-                            return (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                onClick={(ev) => {
-                                  ev.stopPropagation();
-                                  if (setAction) setAction(e.id, chip.next);
-                                }}
-                                title={chip.title}
-                                aria-label={chip.ariaLabel}
-                                className="flex items-center justify-center"
-                                style={{
-                                  width: 24,
-                                  height: 24,
-                                  padding: 0,
-                                  borderRadius: 12,
-                                  ...sampleChipColors(opt.color, chip.active, chip.auto),
-                                  cursor: "pointer",
-                                }}
-                              >
-                                <Icon className="w-3.5 h-3.5" />
-                              </button>
-                            );
-                          })}
+                        <div>
+                          <div className="flex gap-0.5 justify-center items-center">
+                            {[
+                              { id: "keep", Icon: Save, color: "#e0b13a" },
+                              { id: "suppress", Icon: Trash2, color: "#ed6e6c" },
+                            ].map((opt) => {
+                              const chip = sampleActionChip(
+                                e.target,
+                                sampleCuration[e.target],
+                                opt.id,
+                              );
+                              const Icon = opt.Icon;
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    if (setAction) setAction(e.id, chip.next);
+                                  }}
+                                  title={chip.title}
+                                  aria-label={chip.ariaLabel}
+                                  className="flex items-center justify-center"
+                                  style={{
+                                    width: 24,
+                                    height: 24,
+                                    padding: 0,
+                                    borderRadius: 12,
+                                    ...sampleChipColors(opt.color, chip.active, chip.auto),
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  <Icon className="w-3.5 h-3.5" />
+                                </button>
+                              );
+                            })}
+                            {sampleCuration[e.target].action === "suppress" &&
+                              sampleCuration[e.target].verdict !== "contaminated" && (
+                                <SuppressedNotContaminatedFlag />
+                              )}
+                          </div>
                           {sampleCuration[e.target].action &&
                             sampleCuration[e.target].actionAuto && (
                               <SampleAutoMark title="Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick Keep to keep the sample in the curated table." />
-                            )}
-                          {sampleCuration[e.target].action === "suppress" &&
-                            sampleCuration[e.target].verdict !== "contaminated" && (
-                              <SuppressedNotContaminatedFlag />
                             )}
                         </div>
                       ) : (
@@ -10256,9 +10259,9 @@ const SampleEventsCell = React.memo(function SampleEventsCell({
     the textual label so the row width stays compact. An automatic
     verdict (derived from the events, or the Not contaminated default of
     a sample no event targets) is drawn lighter, with a dashed rim, and
-    marked "auto"; clicking it makes it the curator's own, Pending on the
-    curator's own verdict hands the sample back to the rule
-    (sampleVerdictChip). Memoised. */
+    marked "auto" — "default" for that default; clicking it makes it the
+    curator's own, Pending on the curator's own verdict hands the sample
+    back to the rule (sampleVerdictChip). Memoised. */
 const SAMPLE_VERDICT_ICON = {
   pending: Circle,
   contaminated: ThumbsDown,
@@ -10272,14 +10275,28 @@ const sampleChipColors = (color, active, auto) => ({
   color: active ? "#fff" : color,
   border: `1px ${active && auto ? "dashed" : "solid"} ${active ? color : "var(--border)"}`,
 });
-/** The small "auto" tag next to an automatic sample verdict / action. */
-const SampleAutoMark = ({ title }) => (
+/** The small tag under an automatic sample verdict / action: "auto" for
+    a value the rule set (`origin` "automatic"), "default" for the Not
+    contaminated + Keep of a sample no event targets (`origin` "default")
+    — the words the samples TSV and the samples HTML report use
+    (curationOrigin, src/exports.js). The Samples tab used to tag both
+    "auto" while both exports said "default".
+
+    It goes under the chips, not beside them, and its inline size is
+    contained, so it adds no width to its column: beside the chips it
+    widened the Samples tab's Verdict and Action columns from 133 / 69 to
+    165 / 109 px, enough to scroll the page at 1024 px. */
+const SampleAutoMark = ({ title, origin = "automatic" }) => (
   <span
-    data-auto-mark=""
+    data-auto-mark={origin}
     title={title}
     style={{
-      alignSelf: "center",
+      display: "block",
+      contain: "inline-size",
+      whiteSpace: "nowrap",
+      marginTop: 2,
       fontSize: 9,
+      lineHeight: "11px",
       fontWeight: 700,
       letterSpacing: "0.06em",
       textTransform: "uppercase",
@@ -10288,12 +10305,16 @@ const SampleAutoMark = ({ title }) => (
       cursor: "help",
     }}
   >
-    auto
+    {origin === "default" ? "default" : "auto"}
   </span>
 );
-/** Tooltip of the "auto" tag next to an automatic sample verdict. */
+/** Tooltip of the "auto" tag under an automatic sample verdict. */
 const AUTO_VERDICT_MARK_TITLE =
   "Automatic verdict: derived from the events that target this sample. Click a verdict to set it yourself; Pending removes a verdict you set, handing the sample back to this rule.";
+/** Tooltip of the "default" tag under the verdict of a sample no event
+    targets. */
+const DEFAULT_VERDICT_MARK_TITLE =
+  "Default verdict: no event targets this sample, so it is Not contaminated by default — not a decision. Click a verdict to set it yourself; Pending removes a verdict you set, giving the default back.";
 
 /** Why an automatic sample verdict is what it is: the rule of
     src/curation.js, in the words of the chips' tooltips. */
@@ -10327,7 +10348,7 @@ function sampleVerdictChip(sampleId, entry, chip, { neverTargeted = false } = {}
     else if (!state.active)
       // A sample no event targets has no events to evaluate: its verdict
       // is the default, and only a verdict of the curator's replaces it.
-      title = `Pending changes nothing here: ${sampleId}'s verdict is automatic (${SAMPLE_VERDICT_TONE[entry.verdict]?.label || entry.verdict}: ${autoVerdictReason(entry.verdict, neverTargeted)}). ${
+      title = `Pending changes nothing here: ${sampleId}'s verdict is ${neverTargeted ? "the default" : "automatic"} (${SAMPLE_VERDICT_TONE[entry.verdict]?.label || entry.verdict}: ${autoVerdictReason(entry.verdict, neverTargeted)}). ${
         neverTargeted
           ? "Pick a verdict to set your own"
           : "Evaluate its events to change it, or pick a verdict to set your own"
@@ -10335,51 +10356,58 @@ function sampleVerdictChip(sampleId, entry, chip, { neverTargeted = false } = {}
     else
       title = `No verdict on ${sampleId}: none of the events that target it is evaluated yet`;
   } else if (state.auto) {
-    title = `${label}, automatic: ${autoVerdictReason(chip, neverTargeted)}. Click to make it your own decision`;
+    title = `${label}, ${neverTargeted ? "by default" : "automatic"}: ${autoVerdictReason(chip, neverTargeted)}. Click to make it your own decision`;
   }
   return { ...state, title };
 }
 
 const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSampleVerdict }) {
   const entry = { verdict: row.verdict, verdictAuto: row.verdictAuto };
+  // "default" for the Not contaminated of a sample no event targets.
+  const origin = curationOrigin(entry, "verdict", !row.neverTargeted);
   return (
-  <div className="flex gap-1">
-    {[
-      { id: "pending", k: SAMPLE_VERDICT_TONE.pending },
-      { id: "contaminated", k: SAMPLE_VERDICT_TONE.contaminated },
-      { id: "correct", k: SAMPLE_VERDICT_TONE.correct },
-      { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
-    ].map((opt) => {
-      const chip = sampleVerdictChip(row.id, entry, opt.id, {
-        neverTargeted: row.neverTargeted,
-      });
-      const Icon = SAMPLE_VERDICT_ICON[opt.id];
-      return (
-        <button
-          key={opt.id}
-          type="button"
-          onClick={() => setSampleVerdict(row.id, opt.id)}
-          data-verdict-chip={opt.id}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 24,
-            height: 24,
-            padding: 0,
-            borderRadius: 12,
-            ...sampleChipColors(opt.k.bg, chip.active, chip.auto),
-            cursor: "pointer",
-          }}
-          title={chip.title || `Verdict: ${opt.k.label}`}
-          aria-label={`Set verdict to ${opt.k.label}`}
-        >
-          <Icon className="w-3.5 h-3.5" />
-        </button>
-      );
-    })}
+  <div>
+    <div className="flex gap-1">
+      {[
+        { id: "pending", k: SAMPLE_VERDICT_TONE.pending },
+        { id: "contaminated", k: SAMPLE_VERDICT_TONE.contaminated },
+        { id: "correct", k: SAMPLE_VERDICT_TONE.correct },
+        { id: "uncertain", k: SAMPLE_VERDICT_TONE.uncertain },
+      ].map((opt) => {
+        const chip = sampleVerdictChip(row.id, entry, opt.id, {
+          neverTargeted: row.neverTargeted,
+        });
+        const Icon = SAMPLE_VERDICT_ICON[opt.id];
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => setSampleVerdict(row.id, opt.id)}
+            data-verdict-chip={opt.id}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 24,
+              height: 24,
+              padding: 0,
+              borderRadius: 12,
+              ...sampleChipColors(opt.k.bg, chip.active, chip.auto),
+              cursor: "pointer",
+            }}
+            title={chip.title || `Verdict: ${opt.k.label}`}
+            aria-label={`Set verdict to ${opt.k.label}`}
+          >
+            <Icon className="w-3.5 h-3.5" />
+          </button>
+        );
+      })}
+    </div>
     {row.verdictAuto && (
-      <SampleAutoMark title="Automatic verdict: derived from the events that target this sample (Not contaminated when no event targets it). Click a verdict to set it yourself; Pending removes a verdict you set, handing the sample back to this rule." />
+      <SampleAutoMark
+        origin={origin}
+        title={origin === "default" ? DEFAULT_VERDICT_MARK_TITLE : AUTO_VERDICT_MARK_TITLE}
+      />
     )}
   </div>
   );
@@ -10409,7 +10437,7 @@ function sampleActionChip(sampleId, entry, chip, opts) {
       title:
         chip === "suppress"
           ? `Suppress (automatic, paired with Contaminated) — click to make it your own decision; pick Keep to keep ${sampleId} in the curated table`
-          : `Keep (automatic default of a sample no event targets) — click to make it your own decision`,
+          : `Keep (the default of a sample no event targets, not a decision) — click to make it your own decision`,
     };
   const ariaLabel = `Clear ${label.toLowerCase()} on ${sampleId}`;
   if (state.returnsTo === "suppress")
@@ -10474,44 +10502,57 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
     action: row.action,
     actionAuto: row.actionAuto,
   };
+  // "default" for the Keep of a sample no event targets; the Suppress
+  // that goes with a Contaminated verdict is the rule's ("auto"), on such
+  // a sample too.
+  const origin = curationOrigin(entry, "action", !row.neverTargeted);
   return (
-  <div className="flex gap-1">
-    {[
-      { id: "keep", color: "#e0b13a", Icon: Save },
-      { id: "suppress", color: "#ed6e6c", Icon: Trash2 },
-    ].map((opt) => {
-      const chip = sampleActionChip(row.id, entry, opt.id, {
-        neverTargeted: row.neverTargeted,
-      });
-      const Icon = opt.Icon;
-      return (
-        <button
-          key={opt.id}
-          type="button"
-          onClick={() => setSampleAction(row.id, chip.next)}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 24,
-            height: 24,
-            padding: 0,
-            borderRadius: 12,
-            ...sampleChipColors(opt.color, chip.active, chip.auto),
-            cursor: "pointer",
-          }}
-          title={chip.title}
-          aria-label={chip.ariaLabel}
-        >
-          <Icon className="w-3.5 h-3.5" />
-        </button>
-      );
-    })}
+  <div>
+    <div className="flex gap-1">
+      {[
+        { id: "keep", color: "#e0b13a", Icon: Save },
+        { id: "suppress", color: "#ed6e6c", Icon: Trash2 },
+      ].map((opt) => {
+        const chip = sampleActionChip(row.id, entry, opt.id, {
+          neverTargeted: row.neverTargeted,
+        });
+        const Icon = opt.Icon;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => setSampleAction(row.id, chip.next)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 24,
+              height: 24,
+              padding: 0,
+              borderRadius: 12,
+              ...sampleChipColors(opt.color, chip.active, chip.auto),
+              cursor: "pointer",
+            }}
+            title={chip.title}
+            aria-label={chip.ariaLabel}
+          >
+            <Icon className="w-3.5 h-3.5" />
+          </button>
+        );
+      })}
+      {row.action === "suppress" && row.verdict !== "contaminated" && (
+        <SuppressedNotContaminatedFlag />
+      )}
+    </div>
     {row.actionAuto && (
-      <SampleAutoMark title="Automatic action: Suppress goes with a Contaminated verdict; Keep is the default of a sample no event targets (not counted as a Keep decision). Click it to make it your own; pick the other one to change it." />
-    )}
-    {row.action === "suppress" && row.verdict !== "contaminated" && (
-      <SuppressedNotContaminatedFlag />
+      <SampleAutoMark
+        origin={origin}
+        title={
+          origin === "default"
+            ? "Default action: Keep, as for every sample no event targets — not counted as a Keep decision. Click it to make it your own; pick Suppress to drop the sample from the curated table."
+            : "Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick Keep to keep the sample in the curated table."
+        }
+      />
     )}
   </div>
   );
@@ -21227,7 +21268,11 @@ const HelpTab = ({ onStartTour }) => {
                 Contaminated still drops it from the curated abundance
                 table, so it stays in sight with a warning sign, ready
                 to be cleared. Automatic values are drawn lighter with a
-                dashed rim and tagged <em>auto</em>.
+                dashed rim and tagged under their chips:{" "}
+                <em>auto</em> for a value the rule set,{" "}
+                <em>default</em> for the Not contaminated + Keep of a
+                sample no event targets — the words of the samples TSV
+                and the samples HTML report.
               </p>
               <p style={{ marginTop: 6 }}>
                 <strong>Collapsible cells.</strong> The Context cell
@@ -21244,10 +21289,10 @@ const HelpTab = ({ onStartTour }) => {
                 Samples that are never the target of any event in the
                 full events list are <em>Not contaminated</em> +{" "}
                 <em>Keep</em> by default — by definition there is no
-                contamination call against them. Both are automatic
-                values (tagged <em>auto</em>), shown the same way in
-                every tab and report: they are not counted as Keep
-                decisions and do not block yours — mark such a sample
+                contamination call against them. Both are default
+                values, tagged <em>default</em> here as in the samples
+                TSV and the samples HTML report: they are not counted as
+                Keep decisions and do not block yours — mark such a sample
                 Contaminated and it is paired with Suppress like any
                 other. Clearing a Keep or a Suppress you set on a Not
                 contaminated one brings back the default Keep (its chip
@@ -21388,8 +21433,8 @@ const HelpTab = ({ onStartTour }) => {
                   on every row). The header is the first line, with no{" "}
                   <code>#</code> line above it, so pandas and R read the
                   file with their default options. The samples HTML
-                  report tags the same values <em>auto</em> and{" "}
-                  <em>default</em>.
+                  report and the Samples tab tag the same values{" "}
+                  <em>auto</em> and <em>default</em>.
                 </li>
                 <li>
                   <strong>Events HTML report</strong> — self-contained
@@ -21662,8 +21707,12 @@ const HelpTab = ({ onStartTour }) => {
             loaded, only its samples count (a sample it lacks cannot be
             dropped from it). The Samples tab counts its own samples,
             before its context filters. The samples HTML report prints
-            these definitions and marks each value derived from the
-            events (<em>auto</em>) or by default (<em>default</em>).
+            these definitions and, as the Samples tab does, tags{" "}
+            <em>auto</em> each value the rule set — a verdict derived
+            from the event evaluations, or the Suppress that goes with a
+            Contaminated verdict, one you set by hand included — and{" "}
+            <em>default</em> the Not contaminated + Keep of a sample no
+            event targets.
           </p>
           <p style={{ marginTop: 6 }}>
             The Bulk-apply by criteria dialog (Validate sidebar) lets
@@ -25213,7 +25262,7 @@ const defaultFilter = () => ({
       {
         title: "Samples — the per-sample cockpit",
         body:
-          "Each event has an evaluation; each sample has its own verdict (Contaminated / Not contaminated / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are Not contaminated + Keep by default (automatic, not counted as decisions).\n\n" +
+          "Each event has an evaluation; each sample has its own verdict (Contaminated / Not contaminated / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are Not contaminated + Keep by default (tagged default, not counted as decisions).\n\n" +
           "The table splits events into two side-aware columns — Events as source / Events as target — each with its own count, TP/FP/Uncertain/Pending breakdown and → Scatter / → Events / → Network drill-ins that scope the destination tab to that side. A floating \"Back to Samples\" chip on the destination tab brings you back to the same row.\n\n" +
           "Filter by metadata (autocomplete on subject / timepoint / group / biome / control / quality flags) or by \"count event source\" / \"count event target\" counters. The Bulk-apply dialog combines all those filters with per-side event-count chips and pre-conditions on the samples' current verdict / action so you can stamp a verdict / action on a precise subset.",
         action: "tabSamples",

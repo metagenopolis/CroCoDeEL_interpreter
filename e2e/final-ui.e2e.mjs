@@ -15,7 +15,9 @@
             the buttons of a tab that crashed are readable;
      - F.5  a warning quoting a long word wraps inside its banner;
      - F.6  samples named constructor, toString or __proto__ do not break
-            the Network or the Samples tab.
+            the Network or the Samples tab;
+     - F.7  the Samples tab tags a never-targeted sample's values "default",
+            as the exports do, and the tags add no width to its columns.
 
    Usage:  npm run build && node e2e/final-ui.e2e.mjs
            (or through e2e/run-all.mjs; BASE_URL skips the server,
@@ -425,6 +427,52 @@ try {
       { expectedErrors: ids.includes("__proto__") ? /attribute c[xy]: Expected length, "NaN"/ : null },
     );
   }
+
+  /* F.7 — one vocabulary for where a sample value comes from: the samples
+     TSV and the samples HTML report write "default" for the Not
+     contaminated + Keep of a sample no event targets, and the Samples tab
+     tagged it "auto" (58D13). The tags sat beside the chips and widened
+     the Verdict and Action columns from 133 / 69 to 165 / 109 px at
+     1024 px; they now sit under them. */
+  await scenario(
+    "F.7 auto and default tags",
+    async (page) => {
+      await loadDemo(page);
+      await openTab(page, "Events");
+      await page.locator('tr[data-event-row="0"] button[title="mark as true positive"]').click(); // 63D250 → 63D9
+      await page.waitForTimeout(400);
+      await openTab(page, "Samples");
+      const row = (id) =>
+        page
+          .locator("tr")
+          .filter({ has: page.locator('button[aria-label="Set verdict to Pending"]') })
+          .filter({ has: page.getByText(id, { exact: true }) });
+      const tags = (id) =>
+        row(id)
+          .locator("[data-auto-mark]")
+          .evaluateAll((els) => els.map((el) => `${el.getAttribute("data-auto-mark")}:${el.textContent}`));
+      const never = await tags("58D13");
+      const targeted = await tags("63D9");
+      check(
+        never.join(",") === "default:default,default:default" && targeted.join(",") === "automatic:auto,automatic:auto",
+        "F.7 Samples tab: a never-targeted sample's Not contaminated + Keep are tagged default, a TP target's values auto",
+        `58D13 ${never.join(",")} | 63D9 ${targeted.join(",")}`,
+      );
+      const widths = await page.evaluate(() =>
+        Object.fromEntries(
+          [...document.querySelectorAll("thead th")]
+            .filter((th) => /^(Verdict|Action)/i.test(th.textContent.trim()))
+            .map((th) => [th.textContent.trim().split(/\s/)[0].toLowerCase(), Math.round(th.getBoundingClientRect().width)]),
+        ),
+      );
+      check(
+        widths.verdict <= 140 && widths.action <= 80,
+        "F.7 the tags add no width to the Verdict and Action columns at 1024 px",
+        JSON.stringify(widths),
+      );
+    },
+    { contextOptions: { viewport: { width: 1024, height: 900 } } },
+  );
 
   /* F.1 — the events TSV's column is "verdict": the Export card and the
      guided tour told to filter on an "evaluation" column. */

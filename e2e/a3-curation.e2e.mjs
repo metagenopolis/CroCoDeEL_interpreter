@@ -1154,8 +1154,8 @@ try {
       "A3.5 the Samples tab shows never-targeted 63D250 Not contaminated / Keep",
     );
     check(
-      (await row.locator("[data-auto-mark]").count()) === 2,
-      "A3.5 …both tagged automatic",
+      (await row.locator('[data-auto-mark="default"]').count()) === 2,
+      "A3.5 …both tagged default",
     );
     let sc = await storedCuration(page);
     check(Object.keys(sc).length === 0, "A3.5 visiting Samples stores nothing", `${Object.keys(sc).length} entries`);
@@ -1190,8 +1190,8 @@ try {
       check(
         sc["63D250"] === undefined &&
           (await isFilled(chip("Keep 63D250"))) &&
-          (await row.locator("[data-auto-mark]").count()) === 2,
-        `${what}: no entry left, the default Keep active and tagged auto`,
+          (await row.locator('[data-auto-mark="default"]').count()) === 2,
+        `${what}: no entry left, the default Keep active and tagged default`,
         show(sc["63D250"]),
       );
     };
