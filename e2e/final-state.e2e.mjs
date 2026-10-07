@@ -17,6 +17,8 @@
        app;
      - two tabs restored at once on a session of the previous version
        both save: it is brought up to date once, when it is migrated;
+     - what a tab still running the previous version saves after the
+       migration is brought in at the next boot, and said;
 
    The stored state is read from IndexedDB, as the app reads it
    (src/persistence.js).
@@ -543,6 +545,57 @@ try {
       after.curation?.rev === 2 && Object.values(after.curation.verdicts).includes("false_positive"),
       "FS and the second tab saves its evaluation",
       `rev ${after.curation?.rev}`,
+    );
+  });
+
+  /* A tab still running the previous version saves after the migration. */
+  await scenario("FS earlier-version tab saves after the migration", async (page) => {
+    await openTab(page, "Events");
+    await page.locator('button[title="mark as true positive"]').first().click();
+    await saved(page);
+    await page.goto(`${BASE}favicon.svg`);
+    const r = await storedRecords(page);
+    const cur = r.curation;
+    // That tab's "main" record: the session as it holds it, with two more
+    // evaluations, saved after the current records.
+    const oldTab = (savedAt, verdict) => ({
+      version: 1,
+      savedAt,
+      rawEvents: r.events.events.map((e) => ({
+        ...e,
+        verdict: e.id === 8 || e.id === 9 ? verdict : cur.verdicts[String(e.id)] || "pending",
+        notes: cur.notes[String(e.id)] || "",
+      })),
+      sampleCuration: cur.sampleCuration,
+      runMetadata: r.events.runMetadata,
+      metadata: r.metadata || null,
+      plateMap: r.plate || null,
+      analysisTitle: cur.analysisTitle,
+      tab: "table",
+      selId: null,
+      filter: r.ui?.filter,
+      sort: r.ui?.sort,
+    });
+    await writeRecords(page, { main: oldTab(new Date(Date.now() + 1000).toISOString(), "true_positive") });
+    await page.goto(BASE, { waitUntil: "networkidle" });
+    await page.waitForTimeout(2500);
+    const after = await storedRecords(page);
+    check(
+      after.curation.verdicts["8"] === "true_positive" && after.curation.verdicts["9"] === "true_positive" && !after.main,
+      "FS the earlier-version tab's save is brought in, its record dropped",
+      `8: ${after.curation.verdicts["8"]}, 9: ${after.curation.verdicts["9"]}, main ${!!after.main}, rev ${cur.rev} -> ${after.curation.rev}`,
+    );
+    check(/earlier version of this interface saved the session/.test(await noticeText(page)), "FS and the notice says so", (await noticeText(page)).slice(0, 160));
+    // A save of that tab older than this version's last one: superseded.
+    await page.goto(`${BASE}favicon.svg`);
+    await writeRecords(page, { main: oldTab("2020-01-01T00:00:00.000Z", "false_positive") });
+    await page.goto(BASE, { waitUntil: "networkidle" });
+    await page.waitForTimeout(2500);
+    const last = await storedRecords(page);
+    check(
+      last.curation.verdicts["8"] === "true_positive" && last.curation.rev === after.curation.rev,
+      "FS an older save of that tab does not replace this version's",
+      `8: ${last.curation.verdicts["8"]}`,
     );
   });
 } finally {

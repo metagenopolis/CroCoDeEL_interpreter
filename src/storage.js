@@ -28,6 +28,7 @@ import {
   abundanceRecord,
   checkStoredSession,
   forgetLostTable,
+  newerLegacyMain,
   sessionFromLegacyMain,
   sessionFromRecords,
   sessionWrites,
@@ -47,6 +48,8 @@ const LEGACY_COMPRESSED_PREFIX = "lz:";
 /** This page's name in the curation record and in the notices it sends
     the other tabs. */
 export const WRITER_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
 /** True when the current browser exposes IndexedDB. Without it the app
     runs in memory, and says the session is not saved. */
@@ -280,6 +283,34 @@ function migrateSession(db, session, table) {
   });
 }
 
+/** Write the session of a "main" record that a tab of an earlier version
+    saved after the migration (persistence.js' newerLegacyMain) over the
+    current records, with the next revision, in one transaction that
+    reads both again: nothing is written when another tab has written the
+    session or that record since (false comes back). "main" is deleted
+    in the same transaction (sessionWrites deletes it with the events
+    record). The curation record names the stored table (`abToken`);
+    `table` is written when the readers repaired it. */
+function remigrateSession(db, session, { rev, savedAt, abToken, table }) {
+  const tx = db.transaction(STORE, "readwrite");
+  const store = tx.objectStore(STORE);
+  let done = false;
+  const cur = store.get(RECORD_KEYS.curation);
+  const main = store.get(LEGACY_MAIN_KEY);
+  // Requests complete in order: the curation has been read by now.
+  main.onsuccess = () => {
+    if ((cur.result?.rev ?? 0) !== rev || main.result?.savedAt !== savedAt) return;
+    putAll(store, sessionWrites(session, { ...ALL_DIRTY, ab: false }, abToken), rev + 1);
+    store.put({ ...uiRecord(session), savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
+    if (table) store.put(abundanceRecord(table, abToken), RECORD_KEYS.ab);
+    done = true;
+  };
+  return settled(tx).then(() => {
+    if (done) mirrorRev(rev + 1);
+    return done;
+  });
+}
+
 /** Stop naming a lost abundance table (persistence.js' forgetLostTable),
     in one transaction that reads the records again. Resolves true when
     it did. */
@@ -304,9 +335,13 @@ function repairLostTable(db, rev, token) {
     upgrade } — `session` null when nothing is stored, `rev` the revision
     the next write must find, `abToken` the token of the stored abundance
     table. A session of an earlier layout is migrated first, brought up
-    to date on the way (upgradedSession): `upgrade` ({ notes, changes })
-    says, to the tab that wrote it, what the readers repaired and what
-    the curation's update changed (null: this tab migrated nothing).
+    to date on the way (upgradedSession): `upgrade` ({ notes, changes,
+    olderTabSavedAt }) says, to the tab that wrote it, what the readers
+    repaired and what the curation's update changed (null: this tab
+    migrated nothing). A "main" record that a tab of the earlier version
+    wrote after the migration (newerLegacyMain) is migrated the same way,
+    over the current records: `olderTabSavedAt` is then the time of that
+    tab's last save.
     `inRecords` is
     false when that migration failed (a full quota aborts it): the
     session is then read from the earlier layout as it is, and the
@@ -355,6 +390,27 @@ export async function readStoredSession() {
       return { session, rev: 0, abToken: null, inRecords: false, upgrade: null };
     }
     records = await readRecords(db);
+  } else if (newerLegacyMain(records[LEGACY_MAIN_KEY], records.curation)) {
+    // A tab still running the earlier version saved after the migration:
+    // what it saved is the last save of the session. Ignored, it was lost
+    // without a word at the next reload.
+    const main = records[LEGACY_MAIN_KEY];
+    const stored = sessionFromLegacyMain(main, records.ab);
+    const up = upgradedSession(stored);
+    try {
+      const done = await remigrateSession(db, up.session, {
+        rev: records.curation.rev ?? 0,
+        savedAt: main.savedAt,
+        abToken: isObj(records.ab) ? records.ab.storageToken ?? null : null,
+        table: up.session.ab !== stored.ab ? up.session.ab : null,
+      });
+      if (done) {
+        upgrade = { notes: up.notes, changes: up.changes, olderTabSavedAt: main.savedAt };
+        records = await readRecords(db);
+      }
+    } catch (e) {
+      console.warn("[crocodeel] could not bring in the earlier version's save:", e?.message);
+    }
   }
   const session = sessionFromRecords(records);
   const rev = records.curation?.rev ?? 0;

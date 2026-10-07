@@ -25135,8 +25135,9 @@ const defaultFilter = () => ({
   // Dismissable notice over the tabs (NoticeBanner): what loading another
   // events file did to the curation, or a session restored without its
   // abundance table (the table's last save had failed).
-  // What reopening the stored session found: its table lost, or parts
-  // the readers of src/persistence.js repaired (checkStoredSession).
+  // What reopening the stored session found: its table lost, parts the
+  // readers of src/persistence.js repaired (checkStoredSession), the
+  // save of a tab of the earlier version brought in (readStoredSession).
   const [notice, setNotice] = useState(() => {
     const lost =
       initial?.abLost && !initial?.ab
@@ -25145,7 +25146,7 @@ const defaultFilter = () => ({
     const repaired = Array.isArray(initial?.storageNotes) ? initial.storageNotes : [];
     if (repaired.length > 0) {
       return {
-        title: "This browser's copy of the session was repaired when it was opened.",
+        title: "The session saved in this browser was updated when it was opened.",
         lines: lost ? [...repaired, `The abundance table was not restored. ${lost}`] : repaired,
       };
     }
@@ -32041,6 +32042,14 @@ export default function App() {
           ? { ...read, metadata: remapMetadata(read.metadata) }
           : read;
         const notes = [...(upgrade?.notes || []), ...checked.notes];
+        if (upgrade?.olderTabSavedAt) {
+          const when = new Date(upgrade.olderTabSavedAt);
+          notes.unshift(
+            `A tab still running the earlier version of this interface saved the session after it was upgraded here${
+              Number.isNaN(when.getTime()) ? "" : ` (${when.toLocaleString()})`
+            }: that save is the session now. Close the tabs that still show the earlier version, or reload them: what they save is only brought in when another tab opens.`,
+          );
+        }
         if (initial && (notes.length > 0 || upgrade?.changes)) {
           initial = {
             ...initial,

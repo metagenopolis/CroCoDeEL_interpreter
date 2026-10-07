@@ -352,6 +352,25 @@ export function sessionFromLegacyMain(main, ab) {
   };
 }
 
+/** True when a "main" record found next to the current records was
+    written after them. Once a tab of this version has migrated the
+    session, a tab still running the earlier version (open since before
+    the upgrade) keeps saving in "main", which nothing read any more: its
+    work was lost without a word. Such a record is newer than the
+    curation record, which every write of this version stamps; one that
+    is older was superseded, as two tabs of either version have always
+    superseded each other's saves: the last one wins. */
+export function newerLegacyMain(main, curation) {
+  return (
+    isObj(main) &&
+    Array.isArray(main.rawEvents) &&
+    main.rawEvents.length > 0 &&
+    typeof main.savedAt === "string" &&
+    isObj(curation) &&
+    !(typeof curation.savedAt === "string" && curation.savedAt >= main.savedAt)
+  );
+}
+
 /* ----------------------------------------------------------- UI state */
 
 /** The values the filter bar offers (VERDICT_OPTIONS,

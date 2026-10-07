@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sessionFromLegacyMain, upgradedSession } from "../src/persistence.js";
+import { newerLegacyMain, sessionFromLegacyMain, upgradedSession } from "../src/persistence.js";
 import { migrateSampleCuration, SAMPLE_CURATION_VERSION } from "../src/curation.js";
 
 /* A session the previous version stored ("main" record, no sample
@@ -67,5 +67,29 @@ describe("upgradedSession — a session of the previous version, up to date befo
   it("keeps the rest of the session as it was", () => {
     expect([session.analysisTitle, session.tab, session.selId]).toEqual(["Plate 3", "samples", 0]);
     expect(session.rawEvents.map((e) => e.verdict)).toEqual(["true_positive", "false_positive"]);
+  });
+});
+
+/* A tab still running the previous version (open since before the
+   upgrade) keeps saving in its "main" record after a tab of this version
+   migrated the session; that record was never read again, and the old
+   tab's work was lost at the next reload, without a word. */
+describe("newerLegacyMain — a save of the earlier version after the migration", () => {
+  const curation = { rev: 3, savedAt: "2026-10-07T10:05:00.000Z" };
+  const main = (savedAt, events = [{ id: 0, source: "A", target: "B" }]) => ({ savedAt, rawEvents: events });
+
+  it("is brought in when it was written after the current records", () => {
+    expect(newerLegacyMain(main("2026-10-07T10:06:00.000Z"), curation)).toBe(true);
+    // A curation record written without a time (never by this version).
+    expect(newerLegacyMain(main("2026-10-07T10:06:00.000Z"), { rev: 1 })).toBe(true);
+  });
+
+  it("is superseded when this version saved since, and ignored when it holds nothing", () => {
+    expect(newerLegacyMain(main("2026-10-07T10:04:00.000Z"), curation)).toBe(false);
+    expect(newerLegacyMain(main("2026-10-07T10:05:00.000Z"), curation)).toBe(false);
+    expect(newerLegacyMain(main("2026-10-07T10:06:00.000Z", []), curation)).toBe(false);
+    expect(newerLegacyMain({ rawEvents: [{ id: 0 }] }, curation)).toBe(false);
+    expect(newerLegacyMain(null, curation)).toBe(false);
+    expect(newerLegacyMain(main("2026-10-07T10:06:00.000Z"), null)).toBe(false);
   });
 });
