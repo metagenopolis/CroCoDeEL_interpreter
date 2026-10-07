@@ -207,6 +207,25 @@ export function withManualAction(curation, sampleId, action, events) {
   );
 }
 
+/** Where a decision made on one sample written under several `names` —
+    the abundance table's spelling first, then the events file's (case,
+    spaces: samplesReportIndex, src/exports.js) — is written: every name
+    an event targets, where the rule writes its automatic values, and
+    every name that holds a value of the curator's (a verdict or an
+    action set by hand, notes); the first name when none does. Such a
+    sample shows the curation of all its names (samplesReportCuration: a
+    Suppress wins, as in the curated table), so a decision written to one
+    name only could stay hidden behind another's. `curation` is the
+    effective one. */
+export function sampleCurationKeys(names, curation, events) {
+  const byTarget = evaluationsByTarget(events);
+  const keys = names.filter((n) => {
+    const c = curation?.[n];
+    return byTarget.has(n) || hasManualVerdict(c) || hasManualAction(c) || !!c?.notes;
+  });
+  return keys.length > 0 ? keys : names.slice(0, 1);
+}
+
 /** The action a sample gets when the curator set none, from its
     effective verdict: Suppress goes with Contaminated (syncSampleEntry);
     a sample no event targets (`neverTargeted`) is kept by default while

@@ -18,7 +18,10 @@
        session channel — this tab stops saving and reports a conflict: it
        must not overwrite the newer session with its own older copy. The
        UI record is not checked (last writer wins), but a tab in conflict
-       writes nothing at all;
+       writes nothing at all. The last save, which cannot see a save of a
+       tab still running the earlier version either, writes the time of
+       this tab's last checked write in the curation record, not its own:
+       the next boot then finds that save newer, and brings it in;
      - a failed write (full quota, storage gone) is reported and retried
        on the next change, at most every RETRY_AFTER_FAILURE_MS: the
        session stays "not saved" until a write succeeds. The abundance
@@ -83,6 +86,8 @@ const pick = (s, fields) => Object.fromEntries(fields.map((f) => [f, s?.[f]]));
       initialState  the state the stored records hold, as read on boot
                     (null when nothing is stored)
       rev, abToken  the stored revision and abundance-table token
+      checkedAt     the time the stored curation record holds, as read on
+                    boot (the time of that read when none is stored)
       available     false: no storage — nothing is ever written
       onStatus      called with every new status
 
@@ -92,6 +97,7 @@ export function createAutosave({
   initialState,
   rev = 0,
   abToken = null,
+  checkedAt: bootCheckedAt = null,
   available = true,
   onStatus = () => {},
   delay = SAVE_DELAY_MS,
@@ -107,6 +113,12 @@ export function createAutosave({
     : null;
   let confirmedRev = rev;
   let token = abToken;
+  // The time of the last write that read the stored session — the boot's
+  // read, then every checked write — as its curation record holds it:
+  // a checked write compares a save of the earlier version with it while
+  // no curation record is stored, and the last save of a page going away
+  // writes it again (flushOnPageHide).
+  let checkedAt = bootCheckedAt;
   let timer = null;
   let inFlight = null;
   let again = false;
@@ -214,12 +226,13 @@ export function createAutosave({
   async function write({ s, d, session, nextToken, retryTable }) {
     let abFailed = status.abFailed;
     if (session) {
-      const res = await backend.writeSession(sessionWrites(s, d, nextToken), confirmedRev);
+      const res = await backend.writeSession(sessionWrites(s, d, nextToken), confirmedRev, checkedAt);
       if (res.status === "conflict") {
         conflict();
         return;
       }
       confirmedRev = res.rev;
+      if (res.savedAt) checkedAt = res.savedAt;
       token = nextToken;
       announce(res.rev);
       let table = d.ab ? s.ab : saved?.ab;
@@ -267,12 +280,14 @@ export function createAutosave({
           const again = await backend.writeSession(
             sessionWrites(s, { curation: true }, token),
             confirmedRev,
+            checkedAt,
           );
           if (again.status === "conflict") {
             conflict();
             return;
           }
           confirmedRev = again.rev;
+          if (again.savedAt) checkedAt = again.savedAt;
           announce(again.rev);
           saved = { ...saved, ...pick(s, SESSION_FIELDS) };
         }
@@ -341,7 +356,11 @@ export function createAutosave({
         no session channel, or before its notice arrived — nothing is
         written, as the check would have decided. Counted as written, so
         a page restored from the back-forward cache goes on from the
-        revision it wrote. */
+        revision it wrote. A save of a tab still running the earlier
+        version cannot be seen this way: the curation record gets the
+        time of this tab's last checked write (`checkedAt`), so that such
+        a save, made since, stays the newer one and the next boot brings
+        it in. */
     flushOnPageHide() {
       if (stopped) return;
       clearTimeout(timer);
@@ -361,6 +380,7 @@ export function createAutosave({
         rev: nextRev,
         ab: session && d.ab && s.ab ? abundanceRecord(s.ab, nextToken) : null,
         ui: d.ui ? uiRecord(s) : null,
+        savedAt: checkedAt,
       });
       if (!issued) return;
       if (session) {

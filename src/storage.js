@@ -11,9 +11,10 @@
    readwrite transaction that first reads the stored revision: if it is
    not the one this page last read or wrote, another tab has changed the
    session since, and nothing is written — the caller stops saving and
-   says so. The abundance table is written afterwards, on its own (a full
-   quota on the largest record must not cost the curation), and the UI
-   state on its own too, unchecked.
+   says so. So it is when a tab still running the earlier version has
+   saved its "main" record since. The abundance table is written
+   afterwards, on its own (a full quota on the largest record must not
+   cost the curation), and the UI state on its own too, unchecked.
 
    A failed write rejects. A write the browser refuses at commit — a full
    quota — aborts the transaction WITHOUT any error event: the previous
@@ -168,17 +169,17 @@ function readRecords(db) {
 }
 
 /** The curation record as written: with the revision, this page's id and
-    the time. */
-const stamped = (record, rev) => ({
+    the time — by default, now (see writeSessionNow). */
+const stamped = (record, rev, savedAt = new Date().toISOString()) => ({
   ...record,
   rev,
   writer: WRITER_ID,
-  savedAt: new Date().toISOString(),
+  savedAt,
 });
 
-function putAll(store, { puts, dels }, rev) {
+function putAll(store, { puts, dels }, rev, savedAt) {
   for (const [key, value] of puts) {
-    store.put(key === RECORD_KEYS.curation ? stamped(value, rev) : value, key);
+    store.put(key === RECORD_KEYS.curation ? stamped(value, rev, savedAt) : value, key);
   }
   for (const key of dels) store.delete(key);
 }
@@ -335,17 +336,20 @@ function repairLostTable(db, rev, token) {
   return settled(tx).then(() => repaired);
 }
 
-/** The stored session, read on boot: { session, rev, abToken, inRecords,
-    upgrade } — `session` null when nothing is stored, `rev` the revision
-    the next write must find, `abToken` the token of the stored abundance
-    table. A session of an earlier layout is migrated first, brought up
-    to date on the way (upgradedSession): `upgrade` ({ notes, changes,
-    olderTabSavedAt }) says, to the tab that wrote it, what the readers
-    repaired and what the curation's update changed (null: this tab
-    migrated nothing). A "main" record that a tab of the earlier version
-    wrote after the migration (newerLegacyMain) is migrated the same way,
-    over the current records: `olderTabSavedAt` is then the time of that
-    tab's last save.
+/** The stored session, read on boot: { session, rev, abToken, savedAt,
+    inRecords, upgrade } — `session` null when nothing is stored, `rev`
+    the revision the next write must find, `abToken` the token of the
+    stored abundance table, `savedAt` the time its curation record holds
+    — the time of this read when it holds none — which the autosave
+    checks the earlier version's saves against (writeSession,
+    writeSessionNow). A session of an earlier layout is migrated first,
+    brought up to date on the way (upgradedSession): `upgrade` ({ notes,
+    changes, olderTabSavedAt }) says, to the tab that wrote it, what the
+    readers repaired and what the curation's update changed (null: this
+    tab migrated nothing). A "main" record that a tab of the earlier
+    version wrote after the migration (newerLegacyMain) is migrated the
+    same way, over the current records: `olderTabSavedAt` is then the
+    time of that tab's last save.
     `inRecords` is
     false when that migration failed (a full quota aborts it): the
     session is then read from the earlier layout as it is, and the
@@ -360,6 +364,7 @@ function repairLostTable(db, rev, token) {
     app then runs in memory). */
 export async function readStoredSession() {
   const db = await openDB();
+  const readAt = new Date().toISOString();
   let records = await readRecords(db);
   let upgrade = null;
   if (!records.curation) {
@@ -376,7 +381,7 @@ export async function readStoredSession() {
     }
     if (!session) {
       mirrorRev(0, true);
-      return { session: null, rev: 0, abToken: null, inRecords: true, upgrade: null };
+      return { session: null, rev: 0, abToken: null, savedAt: readAt, inRecords: true, upgrade: null };
     }
     // Up to date before it is written, so that every tab reads it so.
     const up = upgradedOrAsIs(session);
@@ -391,7 +396,7 @@ export async function readStoredSession() {
       // (and drops the earlier layout's copies: writeSession).
       console.warn("[crocodeel] session migration failed:", e?.message);
       mirrorRev(0, true);
-      return { session, rev: 0, abToken: null, inRecords: false, upgrade: null };
+      return { session, rev: 0, abToken: null, savedAt: readAt, inRecords: false, upgrade: null };
     }
     records = await readRecords(db);
   } else if (newerLegacyMain(records[LEGACY_MAIN_KEY], records.curation)) {
@@ -429,37 +434,55 @@ export async function readStoredSession() {
   }
   // Known from now on (a deleted localStorage loses the mirror).
   mirrorRev(rev);
-  return { session, rev, abToken, inRecords: true, upgrade };
+  const savedAt = typeof records.curation?.savedAt === "string" ? records.curation.savedAt : null;
+  return { session, rev, abToken, savedAt, inRecords: true, upgrade };
 }
 
 /** Write the session records (persistence.js' sessionWrites) in one
     transaction, if the stored revision is still `expectedRev`: resolves
-    { status: "ok", rev } with the new revision, or
-    { status: "conflict", rev } with the stored one — another tab wrote
-    since, and nothing was written. Rejects when the write fails. A write
-    of the events record also drops what is left of the earlier layouts
-    — "main" in the same transaction, the localStorage keys once it has
-    committed — which only a failed migration leaves behind. */
-export function writeSession(writes, expectedRev) {
+    { status: "ok", rev, savedAt } with the new revision and the time
+    the curation record now holds, or { status: "conflict", rev } with
+    the stored one — another tab wrote since, and nothing was written.
+    Rejects when the write fails. A write of the events record also
+    drops what is left of the earlier layouts — "main" in the same
+    transaction, the localStorage keys once it has committed — which
+    only a failed migration leaves behind.
+
+    A tab still running the earlier version writes no revision: it
+    saves its "main" record, which the next boot brings in when it is
+    newer than the curation record (persistence.js' newerLegacyMain).
+    The same transaction reads that record too, and such a save is a
+    conflict as well: this tab has not seen it. Written anyway, this
+    tab's newer curation record made the next boot take that save for
+    one it had superseded, and the earlier tab's work was lost without
+    a word. Before any curation record is stored, `checkedAt` (the time
+    this tab read the store: readStoredSession's savedAt) stands for
+    its time: a "main" record saved since is not one this tab read. */
+export function writeSession(writes, expectedRev, checkedAt = null) {
   return withDB((db) => {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
     const rev = expectedRev + 1;
     let conflict = null;
+    let savedAt = null;
     const get = store.get(RECORD_KEYS.curation);
-    get.onsuccess = () => {
+    const main = store.get(LEGACY_MAIN_KEY);
+    // Requests complete in order: the curation has been read by now.
+    main.onsuccess = () => {
       const stored = get.result?.rev ?? 0;
-      if (stored !== expectedRev) {
+      const seen = get.result ?? (checkedAt ? { savedAt: checkedAt } : null);
+      if (stored !== expectedRev || newerLegacyMain(main.result, seen)) {
         conflict = stored;
         return;
       }
-      putAll(store, writes, rev);
+      savedAt = new Date().toISOString();
+      putAll(store, writes, rev, savedAt);
     };
     return settled(tx).then(() => {
       if (conflict !== null) return { status: "conflict", rev: conflict };
       mirrorRev(rev);
       if (writes.dels.includes(LEGACY_MAIN_KEY)) removeLegacyKeys();
-      return { status: "ok", rev };
+      return { status: "ok", rev, savedAt };
     });
   });
 }
@@ -469,13 +492,19 @@ export function writeSession(writes, expectedRev) {
     good (pagehide), whose callbacks may never run: a revision check
     would need one. The caller checks the mirrored revision first
     (peekRev); the revision written is the next one, mirrored at once.
-    Returns false when the database is not open. */
-export function writeSessionNow({ writes, rev, ab, ui }) {
+    Returns false when the database is not open.
+
+    The curation record keeps `savedAt`, the time of this tab's last
+    write that read the stored session (writeSession, or the boot's
+    read): a save of a tab still running the earlier version that this
+    write cannot see stays newer than it, and the next boot brings it
+    in. Stamped with the time of this write, it hid such a save. */
+export function writeSessionNow({ writes, rev, ab, ui, savedAt }) {
   if (!dbHandle) return false;
   try {
     const tx = dbHandle.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
-    if (writes) putAll(store, writes, rev);
+    if (writes) putAll(store, writes, rev, savedAt ?? undefined);
     if (ab) store.put(ab, RECORD_KEYS.ab);
     if (ui) store.put({ ...ui, savedAt: new Date().toISOString() }, RECORD_KEYS.ui);
     if (typeof tx.commit === "function") tx.commit();
