@@ -13,6 +13,9 @@
      - a plate map given as row + column loads (it used to be refused);
      - the curated events TSV of the Export tab reloads with its verdicts;
      - the metadata download reloads to the same relatedness;
+     - metadata kept by a session of an earlier version (substring
+       mapping) is read again with the current rules, on session import
+       and on a reload from IndexedDB;
      - the plate card keeps its column mapping and warnings through a
        Plate tab edit and a page reload;
      - a hand-edited session whose card warnings are not a list loads.
@@ -133,6 +136,43 @@ const sameSubjectEvents = demoEvents.filter(
 const sameBandOtherSubject = demoEvents.filter(
   ([s, t]) => subjectOf[s] && subjectOf[t] && subjectOf[s] !== subjectOf[t] && bandOf[s] && bandOf[s] === bandOf[t],
 ).length;
+
+/** AGED_METADATA as an earlier version stored it in a session: its
+    substring pass read age_group as the group_id ("group"). */
+function legacyAgedMetadata() {
+  const md = parseMetadata(AGED_METADATA);
+  const bySample = {};
+  for (const [id, m] of Object.entries(md.bySample)) {
+    bySample[id] = { ...m, groupId: m.extra.age_group };
+  }
+  const { warnings: _none, ...rest } = md;
+  return { ...rest, cols: { ...md.cols, groupId: "age_group" }, bySample, hasGroupIdCol: true };
+}
+
+/** Put `metadata` into the session IndexedDB holds, as an earlier version
+    would have saved it. */
+async function storeMetadata(page, metadata) {
+  await page.evaluate(async (md) => {
+    const db = await new Promise((resolve, reject) => {
+      const req = indexedDB.open("crocodeel-interpreter", 1);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const main = await new Promise((resolve, reject) => {
+      const req = db.transaction("kv", "readonly").objectStore("kv").get("main");
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    main.metadata = md;
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("kv", "readwrite");
+      tx.objectStore("kv").put(main, "main");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  }, metadata);
+}
 
 await startServer();
 const browser = await launchBrowser();
@@ -303,7 +343,53 @@ try {
     await ctx.close();
   }
 
-  /* -- 7. the plate card through a Plate tab edit and a page reload */
+  /* -- 7. metadata of an earlier version's session is read again */
+  {
+    const { ctx, page, errors } = await newPage(browser);
+    await importSession(page, sessionJSON({ metadata: legacyAgedMetadata() }));
+    const text = await cardText(page, "metadata.tsv");
+    check(
+      text.includes("Columns: sample_id · subject_id ← patient · timepoint ← visit · biome · other: age_group") &&
+        text.includes("group_id is no longer read from age_group"),
+      "an imported session's metadata is read with the current rules, and the card says what changed",
+      text.replace(/\s+/g, " ").slice(0, 300),
+    );
+    const pills = await relatednessPills(page);
+    check(
+      pills.sameGroup === 0 && pills.related === sameSubjectEvents,
+      "the age bands of an imported session no longer make two subjects 'same group'",
+      `same group ${pills.sameGroup} (the stored mapping made ${sameBandOtherSubject}), related ${pills.related}`,
+    );
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+      card(page, "metadata.tsv").locator('button[title="Download this file"]').click(),
+    ]);
+    const header = download ? readFileSync(await download.path(), "utf8").split("\n")[0] : null;
+    check(
+      header === "sample_id\tsubject_id\ttimepoint\tbiome\tage_group",
+      "its download keeps age_group under its own name, not as group_id",
+      JSON.stringify(header),
+    );
+
+    // The same stored metadata, restored from IndexedDB by a page reload.
+    await page.waitForTimeout(2500); // let the auto-save settle first
+    await storeMetadata(page, legacyAgedMetadata());
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(3000);
+    const restored = await relatednessPills(page);
+    const restoredCard = await cardText(page, "metadata.tsv");
+    check(
+      restored.sameGroup === 0 &&
+        restored.related === sameSubjectEvents &&
+        restoredCard.includes("group_id is no longer read from age_group"),
+      "metadata restored from IndexedDB is read again too",
+      `same group ${restored.sameGroup}, related ${restored.related}`,
+    );
+    check(errors.length === 0, "no JS error across the earlier-version session", errors[0] || "");
+    await ctx.close();
+  }
+
+  /* -- 8. the plate card through a Plate tab edit and a page reload */
   {
     const { ctx, page, errors } = await newPage(browser);
     await loadDemo(page);
@@ -345,7 +431,7 @@ try {
     await ctx.close();
   }
 
-  /* -- 8. a hand-edited session whose card warnings are not a list */
+  /* -- 9. a hand-edited session whose card warnings are not a list */
   {
     const { ctx, page, errors } = await newPage(browser);
     const metadata = { ...parseMetadata(demo("metadata.tsv")), warnings: "2 sample ids appear twice" };
