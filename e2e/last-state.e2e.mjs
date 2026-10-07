@@ -4,6 +4,10 @@
        a sample column with an empty name (trailing tabs on its header):
        the column is left out, and the warning about the columns that sum
        to 0 no longer counts it;
+     - a tab still running the previous version saves after the update,
+       then this tab saves (or reloads right after a change): this tab
+       stops saving and says so, and the next boot brings that save in,
+       instead of losing it without a word;
 
    The stored state is read from IndexedDB, as the app reads it
    (src/persistence.js).
@@ -19,6 +23,7 @@ import {
   launchBrowser,
   newPage,
   loadDemo,
+  openTab,
   check,
   finish,
 } from "./harness.mjs";
@@ -100,6 +105,25 @@ function previousMain(r, savedAt = new Date().toISOString()) {
   };
 }
 
+/** Evaluate an event in the Events table. */
+async function mark(page, id, kind) {
+  await openTab(page, "Events");
+  await page.locator(`tr[data-event-row="${id}"] button[title="mark as ${kind}"]`).click();
+}
+
+const banner = (page, state) => page.locator(`[data-save-banner="${state}"]`);
+
+/** Write, as a tab still running the previous version does, its "main"
+    record over the current records: the session the records hold with
+    events 8 and 9 marked true positive, saved now. */
+async function earlierTabSaves(page) {
+  const r = await storedRecords(page);
+  const main = previousMain(r);
+  for (const e of main.rawEvents) if (e.id === 8 || e.id === 9) e.verdict = "true_positive";
+  await writeRecords(page, { main });
+  return r;
+}
+
 /** The text of the notice banner ("" when there is none). */
 async function noticeText(page) {
   const n = page.locator("[data-notice]");
@@ -171,6 +195,83 @@ try {
       after.ab?.samples?.length === 91 && !(after.ab.warnings || []).some((w) => /sum to 0/.test(w)),
       "LS the stored table has the 91 samples, without that warning",
       `${after.ab?.samples?.length} samples, ${JSON.stringify(after.ab?.warnings)}`,
+    );
+  });
+
+  /* A tab still running the previous version (open since before the
+     update) saves after this tab migrated the session, then this tab
+     saves. The earlier tab's save used to be lost without a word: this
+     tab's save was newer, so the next boot took that record for one it
+     had superseded. */
+  await scenario("LS earlier-version tab saves, then this tab saves", async (page) => {
+    await mark(page, 1, "true positive");
+    await saved(page);
+    const before = await earlierTabSaves(page);
+    await mark(page, 10, "false positive");
+    await saved(page);
+    const r = await storedRecords(page);
+    check(
+      (await banner(page, "conflict").count()) === 1,
+      "LS this tab's next save finds the earlier version's save, and says the session was changed in another tab",
+    );
+    check(
+      r.curation.rev === before.curation.rev && r.curation.verdicts["10"] === undefined && !!r.main,
+      "LS …and writes nothing over it",
+      `rev ${before.curation.rev} -> ${r.curation.rev}, event 10: ${r.curation.verdicts["10"]}, main kept: ${!!r.main}`,
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(2500);
+    check(
+      /earlier version of this interface saved the session/.test(await noticeText(page)),
+      "LS after a reload, the notice says the earlier version's save is the session",
+      (await noticeText(page)).slice(0, 160),
+    );
+    const after = await storedRecords(page);
+    check(
+      after.curation.verdicts["8"] === "true_positive" && after.curation.verdicts["9"] === "true_positive" && !after.main,
+      "LS …and its evaluations are there, its record dropped",
+      `8: ${after.curation.verdicts["8"]}, 9: ${after.curation.verdicts["9"]}, main kept: ${!!after.main}`,
+    );
+  });
+
+  /* The same, when this tab's change is saved as the page goes away (a
+     reload right after it): that last save cannot check anything, and
+     must not hide the earlier version's save either. */
+  await scenario("LS earlier-version tab saves, then this tab reloads right after a change", async (page) => {
+    await mark(page, 1, "true positive");
+    await saved(page);
+    await earlierTabSaves(page);
+    await mark(page, 10, "false positive");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(2500);
+    check(
+      /earlier version of this interface saved the session/.test(await noticeText(page)),
+      "LS the notice says the earlier version's save is the session",
+      (await noticeText(page)).slice(0, 160),
+    );
+    const after = await storedRecords(page);
+    check(
+      after.curation.verdicts["8"] === "true_positive" && after.curation.verdicts["9"] === "true_positive" && !after.main,
+      "LS …and its evaluations are there, its record dropped",
+      `8: ${after.curation.verdicts["8"]}, 9: ${after.curation.verdicts["9"]}, main kept: ${!!after.main}`,
+    );
+  });
+
+  /* What this version wrote after the earlier tab's save stays this
+     version's when that save came before it: superseded, as before. */
+  await scenario("LS earlier-version save older than this tab's", async (page) => {
+    await saved(page);
+    const r = await storedRecords(page);
+    const main = previousMain(r, "2020-01-01T00:00:00.000Z");
+    for (const e of main.rawEvents) if (e.id === 8) e.verdict = "false_positive";
+    await writeRecords(page, { main });
+    await mark(page, 10, "false positive");
+    await saved(page);
+    const after = await storedRecords(page);
+    check(
+      (await banner(page, "conflict").count()) === 0 && after.curation.verdicts["10"] === "false_positive",
+      "LS a save of the earlier version older than this tab's last one does not stop this tab",
+      `event 10: ${after.curation.verdicts["10"]}`,
     );
   });
 } finally {

@@ -22724,6 +22724,12 @@ const HelpTab = ({ onStartTour }) => {
             <em>"This session was changed in another tab — reload to see
             the latest version"</em>. What you change in it from then on
             stays in that tab: download its session first if you need it.
+            A tab still showing an earlier version of the interface (open
+            since before an update) takes no part in this check: what it
+            saves after the update becomes the session (the next reload of
+            any tab brings it in, and says so), and a tab of this version
+            that saves after it stops saving, as above. Close or reload such
+            tabs.
           </p>
           <p>
             <strong style={{ color: "var(--ink)" }}>Storage limits.</strong>{" "}
@@ -25753,6 +25759,9 @@ const defaultFilter = () => ({
       initialState: storage?.stored || null,
       rev: storage?.rev ?? 0,
       abToken: storage?.abToken ?? null,
+      // The time the stored curation record holds: the last save of a
+      // page going away writes it again (src/autosave.js).
+      checkedAt: storage?.savedAt ?? null,
       available: storage?.available !== false,
       onStatus: setSaveStatus,
     });
@@ -32335,7 +32344,7 @@ export default function App() {
     }
     let cancelled = false;
     readStoredSession()
-      .then(({ session, rev, abToken, inRecords, upgrade }) => {
+      .then(({ session, rev, abToken, savedAt, inRecords, upgrade }) => {
         // The stored session is read by the readers of the session
         // import (checkStoredSession, src/persistence.js): what an
         // earlier version or a damaged profile left in it is repaired,
@@ -32368,7 +32377,7 @@ export default function App() {
           notes.unshift(
             `A tab still running the earlier version of this interface saved the session after it was upgraded here${
               Number.isNaN(when.getTime()) ? "" : ` (${when.toLocaleString()})`
-            }: that save is the session now. Close the tabs that still show the earlier version, or reload them: what they save is only brought in when another tab opens.`,
+            }: that save is the session now. Close the tabs that still show the earlier version, or reload them: what they save is only brought in when another tab opens, and a tab of this version that saves after them stops saving.`,
           );
         }
         if (initial && (notes.length > 0 || upgrade?.changes)) {
@@ -32386,6 +32395,7 @@ export default function App() {
               available: true,
               rev,
               abToken,
+              savedAt,
               stored: inRecords === false ? null : session,
             },
           });
