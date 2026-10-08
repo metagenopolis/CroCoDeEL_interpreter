@@ -123,8 +123,8 @@ describe("sessionFromPayload — a session JSON round trip (B1.7)", () => {
 
 /* The session JSON is read by the previous version too (a colleague, an
    older deployment), and this version reads the previous one's: the
-   fields keep their names and shapes, the only addition
-   (events_warnings) is optional both ways. */
+   fields keep their names and shapes, the only additions
+   (events_warnings, curation_rules) are optional both ways. */
 describe("the session JSON stays readable both ways", () => {
   // exportJSON at commit 23cc74a, the version before the stored records.
   const PREVIOUS_KEYS = [
@@ -136,7 +136,9 @@ describe("the session JSON stays readable both ways", () => {
   it("a file this version writes has what the previous version's importer reads", () => {
     const s = session();
     const json = exported(s);
-    expect(Object.keys(json).sort()).toEqual([...PREVIOUS_KEYS, "events_warnings"].sort());
+    expect(Object.keys(json).sort()).toEqual(
+      [...PREVIOUS_KEYS, "events_warnings", "curation_rules"].sort(),
+    );
     expect(json.schema_version).toBe(2);
     expect(Object.keys(json.ui_state).sort()).toEqual(["filter", "sel_id", "sort", "tab"]);
     // The previous importer applied ui_state.filter as it was: it needs q.

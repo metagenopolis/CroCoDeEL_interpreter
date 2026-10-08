@@ -72,6 +72,7 @@ const SESSION_FIELDS = [
   "plateMap",
   "sampleCuration",
   "sampleCurationVersion",
+  "curationRules",
   "analysisTitle",
 ];
 const UI_FIELDS = ["tab", "selId", "filter", "sort"];
