@@ -793,7 +793,7 @@ try {
     delete json.curation_rules;
     await importSession(page, json);
     check(same(await shownRules(page), ALL_ON), "the imported session has every rule on");
-    await clickEvent(page, "63D250", "63D9", "tp");
+    // `choice` answers the question; null: none is expected.
     const replace = async (choice) => {
       await tsvInput(page, 0).setInputFiles({
         name: "contamination_events.tsv",
@@ -802,9 +802,22 @@ try {
       });
       await page.waitForTimeout(1500);
       const ask = page.getByRole("dialog", { name: "Replace the events file?" });
+      if (choice === null) {
+        check((await ask.count()) === 0, "a session without curation is not asked before another events file");
+        return;
+      }
       await ask.getByRole("button", { name: choice, exact: true }).click();
       await page.waitForTimeout(1000);
     };
+    // Nothing curated yet: no question, so nothing was started fresh —
+    // the session goes on with its own rules. It used to take the last
+    // choice made in Configuration, without a word.
+    await replace(null);
+    check(
+      same(await shownRules(page), ALL_ON),
+      "given another events file without a question, the session keeps its own rules",
+    );
+    await clickEvent(page, "63D250", "63D9", "tp");
     await replace("Carry over");
     let sc = await storedCuration(page);
     check(

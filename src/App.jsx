@@ -22265,8 +22265,10 @@ const HelpTab = ({ onStartTour }) => {
             (nothing stored yet, Clear session, the demo or a bundled
             dataset, another events file started fresh) starts with your
             last choice; a session imported, reopened or carried over to
-            another events file keeps its own rules, and one saved
-            before the switches existed has them all on.
+            another events file keeps its own rules — as does one given
+            another events file while it holds no curation, which asks
+            nothing — and one saved before the switches existed has them
+            all on.
           </p>
           <p style={{ marginTop: 6 }}>
             <strong>Sessions saved by an earlier version</strong> are
@@ -25347,7 +25349,9 @@ function writePref(key, value) {
    demo or a bundled dataset, another events file started fresh — starts
    with the last choice made in Configuration, kept here (every rule on
    until one is switched). Carrying the curation over to another events
-   file or importing a session keeps that session's own rules. */
+   file, giving another events file to a session without curation (no
+   question, nothing started fresh) or importing a session keeps that
+   session's own rules. */
 const CURATION_RULES_PREF = "crocodeel-curation-rules";
 function readCurationRulesPref() {
   try {
@@ -27376,11 +27380,13 @@ const defaultFilter = () => ({
      carry it over to the new file (the default), start fresh, or cancel;
      replaceEvents (src/carryOver.js) builds the new session — the file's
      own curation columns included — and a banner says what happened. */
-  const applyNewEvents = (parsed, { carryOver, title, onApplied }) => {
+  const applyNewEvents = (parsed, { carryOver, keepRules = carryOver, title, onApplied }) => {
     const hadEvents = rawEventsRef.current.length > 0;
     // Carried over, the session keeps its automatic rules; started fresh,
     // it is a new session, with the last choice made in Configuration.
-    const rules = carryOver ? curationRulesRef.current : readCurationRulesPref();
+    // `keepRules`: the session goes on with its own (a session without
+    // curation, which is not asked to start fresh).
+    const rules = keepRules ? curationRulesRef.current : readCurationRulesPref();
     const next = replaceEvents({
       oldEvents: rawEventsRef.current,
       oldSampleCuration: sampleCurationRef.current,
@@ -27444,7 +27450,11 @@ const defaultFilter = () => ({
   const requestNewEvents = (parsed, { title, onApplied, aboveOverlays } = {}) => {
     const summary = curationSummary(rawEventsRef.current, sampleCurationRef.current);
     if (!summary.any) {
-      applyNewEvents(parsed, { carryOver: false, title, onApplied });
+      // Nothing to carry over or to drop, so no question: the session goes
+      // on with its own automatic rules — those of a session imported with
+      // rules of its own, too. Only Start fresh, chosen, starts a new
+      // session with the last choice made in Configuration.
+      applyNewEvents(parsed, { carryOver: false, keepRules: true, title, onApplied });
       return;
     }
     const fileHasCuration = !!parsed.curation;
