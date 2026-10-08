@@ -21636,9 +21636,10 @@ const HelpTab = ({ onStartTour }) => {
                 form mirrors the same three layers (event evaluation +
                 Verdict on target sample + Action on target sample,
                 both on <em>Automatic</em> by default: the target then
-                follows its events, as after a click) and adds the
-                event on save, with any target value you picked as your
-                own.
+                follows its events, as after a click — <em>(no
+                change)</em> while that rule is switched off in
+                Configuration) and adds the event on save, with any
+                target value you picked as your own.
               </p>
             </div>
             <div>
@@ -21689,12 +21690,13 @@ const HelpTab = ({ onStartTour }) => {
                 exposes: an event Evaluation picker, a Verdict on
                 target sample picker, an Action on target sample
                 picker (both <em>Automatic</em> by default, as when
-                clicking each event), and three
+                clicking each event; <em>(no change)</em> while that
+                rule is switched off in Configuration), and three
                 drill-ins → Scatter / → Events / → Samples that scope
                 to that sample and switch tabs. A sample no event targets
                 (a source only) has nothing to apply: its verdict is the
                 default Not contaminated unless you set one in the
-                Samples tab.
+                Samples tab (or none, with that default switched off).
               </p>
             </div>
             <div>
@@ -21751,7 +21753,8 @@ const HelpTab = ({ onStartTour }) => {
                 <strong>Verdict on target sample</strong> (Pending /
                 Contaminated / Not contaminated / Uncertain — a sample-level
                 layer that cohabits with the event evaluation; defaults
-                follow the event verdict but the curator can override),
+                follow the event verdict — unless that rule is switched
+                off in Configuration — but the curator can override),
                 and <strong>Action on target sample</strong>{" "}
                 (Keep / Suppress — offered once the target is
                 Contaminated, and shown whenever an action is set: a
@@ -21822,7 +21825,9 @@ const HelpTab = ({ onStartTour }) => {
                 <em>auto</em> for a value the rule set,{" "}
                 <em>default</em> for the Not contaminated + Keep of a
                 sample no event targets — the words of the samples TSV
-                and the samples HTML report.
+                and the samples HTML report. A rule switched off in
+                Configuration sets no value, so it tags none (see{" "}
+                <em>Event vs sample curation</em>).
               </p>
               <p style={{ marginTop: 6 }}>
                 <strong>Collapsible cells.</strong> The Context cell
@@ -21846,7 +21851,9 @@ const HelpTab = ({ onStartTour }) => {
                 Contaminated and it is paired with Suppress like any
                 other. Clearing a Keep or a Suppress you set on a Not
                 contaminated one brings back the default Keep (its chip
-                says so).
+                says so). Configuration can switch this default off:
+                such a sample is then Pending with no action until you
+                decide, and stays in the curated abundance table.
               </p>
               <p style={{ marginTop: 6 }}>
                 The bar above the table is split in two: the shared
@@ -21980,7 +21987,9 @@ const HelpTab = ({ onStartTour }) => {
                   Suppress that goes with a Contaminated verdict, yours
                   included; <em>default</em> for the Not contaminated +
                   Keep of a sample no event targets; empty without a
-                  value), the notes, and the study (the session's title,
+                  value — a rule switched off in Configuration sets
+                  none, so its origin never appears), the notes, and the
+                  study (the session's title,
                   on every row). The header is the first line, with no{" "}
                   <code>#</code> line above it, so pandas and R read the
                   file with their default options. The samples HTML
@@ -22091,7 +22100,8 @@ const HelpTab = ({ onStartTour }) => {
             Curation runs on two levels — per event and per sample.
             They're connected: the per-event call provides evidence
             that the interface uses to suggest a sample-level verdict
-            (see <em>Auto-sync</em> below). The curator can override
+            (see <em>Auto-sync</em> below; each of its rules can be
+            switched off in Configuration). The curator can override
             either layer at any time and the manual decision is then
             sticky.
           </p>
@@ -22217,6 +22227,41 @@ const HelpTab = ({ onStartTour }) => {
             verdict of your own replaces it.
           </p>
           <p style={{ marginTop: 6 }}>
+            <strong>Switching the rules off.</strong> Each automatic
+            decision is a switch in Configuration (the gear icon,{" "}
+            <em>Automatic sample decisions</em>), saved with the session
+            and its session JSON: <em>Sample verdict from the event
+            evaluations</em> (the rules above), <em>Suppress paired with
+            Contaminated</em> (the action pairing) and <em>Not
+            contaminated + Keep for samples no event targets</em> (the
+            default verdict and action of such a sample). A rule
+            that is off sets nothing and clears nothing: evaluating
+            events never changes a sample verdict, Contaminated never
+            adds or removes a Suppress, and a sample no event targets is
+            Pending with no action until you decide — it stays in the
+            curated abundance table. <em>Automatic</em> then reads{" "}
+            <em>(no change)</em> in the Bulk-apply dialog, the Network
+            node popover and <em>Explore new pairs</em>, the presets
+            only mark the events, and a Pending or a cleared action of
+            yours leaves the sample with none. Switching a rule off
+            while the session holds values it set asks first, with
+            their count: <em>Keep them as my decisions</em> (the same
+            values, yours from then on, without the auto / default tag
+            — the defaults are written as Not contaminated + Keep set by
+            hand), <em>Clear them</em> (back to Pending / no action: a
+            sample whose automatic Suppress goes comes back into the
+            curated table, and clearing the automatic verdicts also
+            takes the Suppress paired with an automatic Contaminated),
+            or <em>Cancel</em>. Switching a rule on applies it to every
+            sample at once, and a notice says what it added. Values you
+            set by hand are never touched either way. A new session
+            (nothing stored yet, Clear session, the demo or a bundled
+            dataset, another events file started fresh) starts with your
+            last choice; a session imported, reopened or carried over to
+            another events file keeps its own rules, and one saved
+            before the switches existed has them all on.
+          </p>
+          <p style={{ marginTop: 6 }}>
             <strong>Sessions saved by an earlier version</strong> are
             brought up to date when they are reopened or imported: their
             automatic values are recomputed with these rules and the
@@ -22270,7 +22315,8 @@ const HelpTab = ({ onStartTour }) => {
             from the event evaluations, or the Suppress that goes with a
             Contaminated verdict, one you set by hand included — and{" "}
             <em>default</em> the Not contaminated + Keep of a sample no
-            event targets.
+            event targets; it also names the rules the session has
+            switched off, which set no value.
           </p>
           <p style={{ marginTop: 6 }}>
             The Bulk-apply by criteria dialog (Validate sidebar) lets
@@ -22784,7 +22830,9 @@ const HelpTab = ({ onStartTour }) => {
               <em>Event vs sample curation</em>, as if you had clicked
               the events one by one: it stays Contaminated while another
               event targeting it is TP. Verdicts and actions you set by
-              hand are not touched.
+              hand are not touched. With the sample verdict from the
+              events switched off in Configuration, only the events are
+              marked.
             </li>
             <li>
               <strong>
@@ -22797,7 +22845,10 @@ const HelpTab = ({ onStartTour }) => {
               NC sample <em>Contaminated</em> + <em>Suppress</em> through
               the automatic rule. Both values stay automatic: rejecting
               those events later takes them back, and a verdict or an
-              action you set on the NC by hand is never changed.
+              action you set on the NC by hand is never changed. With
+              the sample verdict from the events switched off in
+              Configuration, only the events are marked (the button
+              says so): the NC's verdict is yours to set.
             </li>
             <li>
               <strong>Reset all evaluations</strong> — wipes every
@@ -22825,15 +22876,19 @@ const HelpTab = ({ onStartTour }) => {
                   A <em>Verdict on samples targeted by the matched
                   events</em>. The default, <em>Automatic</em>, is the
                   same as clicking each event: each target follows the
-                  rule above. Any other choice is written on every target
-                  as your own decision, with a "don't overwrite" safety
-                  toggle (default ON) that protects verdicts you set by
-                  hand — automatic ones are always updated.
+                  rule above (it reads <em>(no change)</em>, and leaves
+                  the verdicts as they are, while that rule is switched
+                  off in Configuration). Any other choice is written on
+                  every target as your own decision, with a "don't
+                  overwrite" safety toggle (default ON) that protects
+                  verdicts you set by hand — automatic ones are always
+                  updated.
                 </li>
                 <li>
                   An <em>Action on samples targeted by the matched
                   events</em>, likewise <em>Automatic</em> by default
-                  (Suppress while Contaminated), with its own "don't
+                  (Suppress while Contaminated; <em>(no change)</em>
+                  while that rule is switched off), with its own "don't
                   overwrite" toggle for actions you set by hand.
                 </li>
                 <li>
@@ -22907,11 +22962,31 @@ const HelpTab = ({ onStartTour }) => {
         >
           <p>
             The gear icon in the sub-banner (top-right, just above the
-            green privacy chip) opens a Configuration dialog with two
-            settings, each persisted to localStorage so the choice
+            green privacy chip) opens the Configuration dialog. The
+            automatic sample decisions are saved with the session; the
+            other settings are persisted to localStorage so the choice
             survives session resets.
           </p>
           <ul className="list-disc pl-5 space-y-2">
+            <li>
+              <strong>Automatic sample decisions</strong> — three
+              switches, all on by default, for the values the interface
+              derives without you: <em>Sample verdict from the event
+              evaluations</em> (off: evaluating events never sets or
+              clears a sample verdict), <em>Suppress paired with
+              Contaminated</em> (off: Contaminated never adds or removes
+              a Suppress) and <em>Not contaminated + Keep for samples no
+              event targets</em> (off: such a sample is Pending with no
+              action until you set them). They show the current
+              session's state and are saved with it (its session JSON
+              included, as <code style={{ fontFamily: "ui-monospace, monospace" }}>curation_rules</code>);
+              a new session starts with your last choice. Switching one
+              off while the session holds values it set asks whether to
+              keep them as your own decisions or clear them; switching
+              one on applies it to every sample and says what it added.
+              Values you set by hand are never changed. See{" "}
+              <em>Event vs sample curation</em>.
+            </li>
             <li>
               <strong>Theme</strong> — Light, Dark, Auto (follow OS via{" "}
               <code style={{ fontFamily: "ui-monospace, monospace" }}>
@@ -23921,7 +23996,8 @@ const ExportTab = ({
               "verdict and action, each with its origin (manual; " +
               "automatic, set by the rule from the events or paired " +
               "with Contaminated; or the default Not contaminated + " +
-              "Keep of a sample no event targets), the notes and the " +
+              "Keep of a sample no event targets — only while those " +
+              "rules are on, in Configuration), the notes and the " +
               "study. No # line: pandas and R read it as it is."
             }
             action="Download samples TSV"
@@ -25897,7 +25973,7 @@ const defaultFilter = () => ({
       {
         title: "Samples — the per-sample cockpit",
         body:
-          "Each event has an evaluation; each sample has its own verdict (Contaminated / Not contaminated / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are Not contaminated + Keep by default (tagged default, not counted as decisions).\n\n" +
+          "Each event has an evaluation; each sample has its own verdict (Contaminated / Not contaminated / Uncertain / Pending) and a Keep / Suppress action. Samples that are never the target of any event are Not contaminated + Keep by default (tagged default, not counted as decisions). Configuration can switch off each automatic decision.\n\n" +
           "The table splits events into two side-aware columns — Events as source / Events as target — each with its own count, TP/FP/Uncertain/Pending breakdown and → Scatter / → Events / → Network drill-ins that scope the destination tab to that side. A floating \"Back to Samples\" chip on the destination tab brings you back to the same row.\n\n" +
           "Filter by metadata (autocomplete on subject / timepoint / group / biome / control / quality flags) or by \"count event source\" / \"count event target\" counters. The Bulk-apply dialog combines all those filters with per-side event-count chips and pre-conditions on the samples' current verdict / action so you can stamp a verdict / action on a precise subset.",
         action: "tabSamples",
