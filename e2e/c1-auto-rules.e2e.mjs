@@ -145,6 +145,13 @@ async function curatedCard(page) {
   return m ? `${m[1]} of ${m[2]}` : null;
 }
 
+/** What the Export tab's curated abundance card says the table drops. */
+async function curatedCardText(page) {
+  await openTab(page, "Export");
+  const text = await page.locator("body").innerText();
+  return text.match(/Curated abundance table — \d+ of \d+ samples\s*\n([^\n]*)/)?.[1] || "";
+}
+
 async function openConfig(page) {
   const dialog = page.getByRole("dialog", { name: "Configuration" });
   if ((await dialog.count()) === 0) {
@@ -310,6 +317,13 @@ try {
       "R1 setup: two automatic Contaminated + Suppress, 3 to suppress, 88 of 91 kept",
       `63D9=${show(before["63D9"])} suppress=${s.suppress}`,
     );
+    const allOnCard = await curatedCardText(page);
+    check(
+      /^The abundance table with the 3 samples set to Suppress removed — which includes every sample you marked Contaminated without then choosing Keep/.test(allOnCard) &&
+        !/switched off/.test(allOnCard),
+      "all on: the Export card says a Contaminated sample without Keep is dropped",
+      allOnCard,
+    );
 
     const cancelled = await switchOff(page, "verdictFromEvents", "Cancel");
     check(
@@ -464,6 +478,16 @@ try {
       marks.action.automatic === 0 && s.suppress === 1 && card === "90 of 91",
       "R2 Clear: no automatic action tagged, 1 to suppress, 90 of 91 kept",
       `${show(marks)} suppress=${s.suppress} card=${card}`,
+    );
+    // 63D9 and NC3 are Contaminated with no action, and stay in the
+    // curated table: the card must not say that Contaminated brings
+    // Suppress.
+    const cardText = await curatedCardText(page);
+    check(
+      /^The abundance table with the 1 sample set to Suppress removed\. Suppress paired with Contaminated is switched off in Configuration: a Contaminated sample you have not set to Suppress stays in this table\./.test(cardText) &&
+        !/which includes every sample you marked Contaminated/.test(cardText),
+      "R2 off: the Export card says a Contaminated sample without Suppress stays in the curated table",
+      cardText,
     );
     // With R2 off, a TP makes its target Contaminated and nothing else.
     await clickEvent(page, "58M", "58D7", "tp");
@@ -687,6 +711,15 @@ try {
         marks.verdict.automatic + marks.verdict.default + marks.action.automatic + marks.action.default === 0,
       "bulk TP sets no sample value: every event TP, nothing to suppress, no tag",
       `tp=${s.tp} suppress=${s.suppress} keep=${s.keep} ${show(marks)}`,
+    );
+    // Nothing to suppress: the curated abundance card must not advise
+    // marking a sample Contaminated to drop it.
+    const cardText = await curatedCardText(page);
+    check(
+      /^The abundance table with every sample set to Suppress removed\. Nothing is set to suppress yet, so this would export every sample — set a sample's action to Suppress from the Samples, Validate or Network tab\. Suppress paired with Contaminated is switched off in Configuration/.test(cardText) &&
+        !/defaults its action to Suppress/.test(cardText),
+      "with Suppress paired with Contaminated off, the Export card does not say Contaminated brings Suppress",
+      cardText,
     );
     // The samples report says which rules are off; the samples TSV names
     // no automatic or default origin.

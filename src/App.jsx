@@ -23864,6 +23864,10 @@ const ExportTab = ({
   onExportGraph,
   graphStats,
 }) => {
+  // Whether Contaminated brings Suppress in this session (Configuration →
+  // Automatic sample decisions): the curated abundance card says which
+  // samples that export drops.
+  const suppressPaired = ruleOn(React.useContext(CurationRulesContext), "suppressContaminated");
   // Species rows left at zero once the suppressed samples are gone can be
   // dropped or kept; both are defensible, so the curator decides.
   const [dropEmptySpecies, setDropEmptySpecies] = useState(true);
@@ -24036,15 +24040,28 @@ const ExportTab = ({
               ) : (
                 <>
                   {curatedAbundanceStats?.suppressedSamples === 0 ? (
-                    <>
-                      The abundance table with every sample set to{" "}
-                      <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
-                      removed. Nothing is set to suppress yet, so this would
-                      export every sample — mark a sample{" "}
-                      <em>Contaminated</em> from the Samples, Validate or
-                      Network tab (which defaults its action to Suppress), or
-                      set the action by hand.
-                    </>
+                    suppressPaired ? (
+                      <>
+                        The abundance table with every sample set to{" "}
+                        <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
+                        removed. Nothing is set to suppress yet, so this would
+                        export every sample — mark a sample{" "}
+                        <em>Contaminated</em> from the Samples, Validate or
+                        Network tab (which defaults its action to Suppress), or
+                        set the action by hand.
+                      </>
+                    ) : (
+                      <>
+                        The abundance table with every sample set to{" "}
+                        <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
+                        removed. Nothing is set to suppress yet, so this would
+                        export every sample — set a sample's action to{" "}
+                        <em>Suppress</em> from the Samples, Validate or Network
+                        tab. <em>Suppress paired with Contaminated</em> is
+                        switched off in Configuration: a <em>Contaminated</em>{" "}
+                        sample stays in this table until you do.
+                      </>
+                    )
                   ) : (
                     <>
                       The abundance table with the{" "}
@@ -24053,12 +24070,28 @@ const ExportTab = ({
                         {curatedAbundanceStats.suppressedSamples === 1 ? "" : "s"}
                       </strong>{" "}
                       set to <strong style={{ color: "var(--ink)" }}>Suppress</strong>{" "}
-                      removed — which includes every sample you marked{" "}
-                      <em>Contaminated</em> without then choosing <em>Keep</em>
+                      removed
+                      {suppressPaired ? (
+                        <>
+                          {" "}
+                          — which includes every sample you marked{" "}
+                          <em>Contaminated</em> without then choosing{" "}
+                          <em>Keep</em>
+                        </>
+                      ) : null}
                       {curatedAbundanceStats.droppedSpecies > 0 && dropEmptySpecies
                         ? `, and the ${curatedAbundanceStats.droppedSpecies} species observed only in those samples`
                         : ""}
                       .
+                      {suppressPaired ? null : (
+                        <>
+                          {" "}
+                          <em>Suppress paired with Contaminated</em> is
+                          switched off in Configuration: a{" "}
+                          <em>Contaminated</em> sample you have not set to
+                          Suppress stays in this table.
+                        </>
+                      )}
                     </>
                   )}{" "}
                   {curatedAbundanceStats?.inputValues ? (
