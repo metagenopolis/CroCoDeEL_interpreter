@@ -27,7 +27,8 @@
    decision, so it never erases one of the session's.
 
    Then the automatic sample values are recomputed from every event with
-   the shared rule (syncSampleCuration, src/curation.js), and the file's
+   the shared rule (syncSampleCuration, src/curation.js: the rules the
+   session has switched on — carried over, its own), and the file's
    sample verdicts and actions applied: a target whose rows all give the
    same verdict (then the same keep / suppress), different from the one
    the rule (or the curator) leaves it, gets it as the curator's own
@@ -43,6 +44,7 @@
    keeps. */
 
 import {
+  DEFAULT_CURATION_RULES,
   hasManualAction,
   hasManualVerdict,
   isSet,
@@ -105,6 +107,12 @@ function manualPart(entry) {
                                      every cell of them is empty
       fileColumns                    which ones (parseEvents'
                                      `curationColumns`; null: none)
+      rules                          the automatic rules of the session
+                                     the new events go into (src/
+                                     curation.js; all on by default):
+                                     carried over, the session's own;
+                                     started fresh, those of a new
+                                     session
 
     Returns { events, sampleCuration, report }. `events` are the new
     file's, in its order and with its ids, `fileAction`,
@@ -125,6 +133,7 @@ export function replaceEvents({
   carryOver,
   fileHasCuration = false,
   fileColumns = null,
+  rules = DEFAULT_CURATION_RULES,
 }) {
   const report = {
     carryOver: !!carryOver,
@@ -252,8 +261,9 @@ export function replaceEvents({
     }
   }
 
-  // Every automatic value from the events, with the shared rule.
-  sampleCuration = syncSampleCuration(sampleCuration, events);
+  // Every automatic value from the events, with the shared rule (those
+  // of its rules the session has on).
+  sampleCuration = syncSampleCuration(sampleCuration, events, undefined, rules);
 
   // The file's values of a target sample: one per target, when all its
   // rows agree ("": none given; null: the rows disagree).
@@ -277,7 +287,7 @@ export function replaceEvents({
     const current = sampleCuration[target];
     if ((current?.verdict || null) === verdict) continue;
     if (hasManualVerdict(current)) report.replacedSampleVerdicts++;
-    sampleCuration = withManualVerdict(sampleCuration, target, verdict, events);
+    sampleCuration = withManualVerdict(sampleCuration, target, verdict, events, rules);
     report.fileSampleVerdicts++;
   }
   // Then its actions.
@@ -293,7 +303,7 @@ export function replaceEvents({
     const current = sampleCuration[target];
     if ((current?.action || null) === action) continue;
     if (hasManualAction(current)) report.replacedActions++;
-    sampleCuration = withManualAction(sampleCuration, target, action, events);
+    sampleCuration = withManualAction(sampleCuration, target, action, events, rules);
     report.fileActions++;
   }
   if (report.fileActions > 0 || report.conflictingActions > 0) report.fileHasCuration = true;
