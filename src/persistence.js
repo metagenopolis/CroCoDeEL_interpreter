@@ -1155,8 +1155,11 @@ function readRunMetadata(rm, p) {
 /** The automatic rules of a session (src/curation.js): true or false for
     each rule. A session without them — every session saved before they
     could be switched off — has every rule on. A rule given as anything
-    but true or false is an error, and is on. The object itself when it
-    is read as it is (normalizeCurationRules). */
+    but true or false is an error, and is on. So is a key that names no
+    rule, and it is left out: a misspelt rule ("verdict_from_events":
+    false) used to import silently with every rule on. The object itself
+    when it is read as it is (normalizeCurationRules); otherwise exactly
+    the three rules. */
 function readCurationRules(rules, p) {
   if (rules == null) return DEFAULT_CURATION_RULES;
   if (!isObj(rules)) {
@@ -1167,6 +1170,13 @@ function readCurationRules(rules, p) {
     if (rules[r] != null && typeof rules[r] !== "boolean") {
       p.errors.push(`curation_rules: "${r}" is neither true nor false.`);
     }
+  }
+  for (const key of Object.keys(rules)) {
+    if (CURATION_RULES.includes(key)) continue;
+    p.errors.push(
+      `curation_rules: "${key.slice(0, 40)}" is not an automatic rule ` +
+        `(they are ${CURATION_RULES.join(", ")}).`,
+    );
   }
   return normalizeCurationRules(rules);
 }

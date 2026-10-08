@@ -170,6 +170,40 @@ describe("the session JSON", () => {
     expect(r.errors.join(" ")).toMatch(/"curation_rules" must give each automatic rule/);
   });
 
+  it("refuses a key that names no rule, saying which: a misspelt rule is not read as on", () => {
+    // In the spelling of the rest of the file: it used to import with
+    // every rule on, without a word.
+    const json = JSON.parse(JSON.stringify(sessionToJSON(session())));
+    json.curation_rules = { verdict_from_events: false, suppress_contaminated: false };
+    let r = read(json);
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(" ")).toMatch(
+      /curation_rules: "verdict_from_events" is not an automatic rule \(they are verdictFromEvents, suppressContaminated, neverTargetedDefault\)/,
+    );
+    expect(r.errors.join(" ")).toMatch(/"suppress_contaminated" is not an automatic rule/);
+    // An extra key next to the three rules: it used to be kept, saved and
+    // exported again.
+    json.curation_rules = { ...ALL_OFF, extra: 1 };
+    r = read(json);
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(" ")).toMatch(/curation_rules: "extra" is not an automatic rule/);
+  });
+
+  it("reads back exactly the three rules", () => {
+    const json = JSON.parse(JSON.stringify(sessionToJSON(session({ curationRules: { ...R1_OFF, extra: 1 } }))));
+    expect(json.curation_rules).toEqual(R1_OFF);
+    const r = read(json);
+    expect(r.ok).toBe(true);
+    expect(Object.keys(r.session.curationRules).sort()).toEqual(Object.keys(R1_OFF).sort());
+  });
+
+  it("drops a key that names no rule from a stored session, and says so", () => {
+    const back = sessionFromRecords(stored(session({ curationRules: R1_OFF })));
+    const checked = checkStoredSession({ ...back, curationRules: { ...R1_OFF, extra: 1 } });
+    expect(checked.session.curationRules).toEqual(R1_OFF);
+    expect(checked.notes.join(" ")).toMatch(/curation_rules: "extra" is not an automatic rule/);
+  });
+
   it("keeps a verdict a hand-edited file flags automatic for a rule that is off, as the curator's", () => {
     const json = JSON.parse(JSON.stringify(sessionToJSON(session({ curationRules: R1_OFF }))));
     json.sample_curation = { D: { verdict: "uncertain", verdictAuto: true } };

@@ -74,13 +74,21 @@ export const DEFAULT_CURATION_RULES = Object.freeze({
 export const ruleOn = (rules, rule) => rules?.[rule] !== false;
 
 /** The rules as a session keeps them: true / false for each of
-    CURATION_RULES, a rule `raw` does not set (or sets to anything but
-    false) on — a session saved before the switches has every rule on.
-    `raw` itself when it already holds a true / false for each rule, so a
-    session read back keeps the very object it was saved with. */
+    CURATION_RULES and nothing else, a rule `raw` does not set (or sets to
+    anything but false) on — a session saved before the switches has every
+    rule on. `raw` itself when it already holds exactly that, so a session
+    read back keeps the very object it was saved with; a key that names no
+    rule is left out (a misspelt rule used to stay in the session, saved
+    and exported again). */
 export function normalizeCurationRules(raw) {
   const obj = raw !== null && typeof raw === "object" && !Array.isArray(raw);
-  if (obj && CURATION_RULES.every((r) => typeof raw[r] === "boolean")) return raw;
+  if (
+    obj &&
+    CURATION_RULES.every((r) => typeof raw[r] === "boolean") &&
+    Object.keys(raw).length === CURATION_RULES.length
+  ) {
+    return raw;
+  }
   const out = {};
   for (const r of CURATION_RULES) out[r] = !(obj && raw[r] === false);
   return CURATION_RULES.every((r) => out[r]) ? DEFAULT_CURATION_RULES : out;

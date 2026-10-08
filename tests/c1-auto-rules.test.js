@@ -87,6 +87,16 @@ describe("the rules setting", () => {
     );
   });
 
+  it("leaves out a key that names no rule: the session keeps the three rules and nothing else", () => {
+    // It used to keep the object as it was: the extra key stayed in the
+    // session, its stored record and its next session JSON.
+    const raw = { verdictFromEvents: false, suppressContaminated: false, neverTargetedDefault: false, extra: 1 };
+    const rules = normalizeCurationRules(raw);
+    expect(rules).not.toBe(raw);
+    expect(rules).toEqual({ verdictFromEvents: false, suppressContaminated: false, neverTargetedDefault: false });
+    expect(normalizeCurationRules({ ...DEFAULT_CURATION_RULES, note: "x" })).toBe(DEFAULT_CURATION_RULES);
+  });
+
   it("counts a rule the object does not name as on", () => {
     expect(ruleOn(undefined, "verdictFromEvents")).toBe(true);
     expect(ruleOn({}, "suppressContaminated")).toBe(true);
