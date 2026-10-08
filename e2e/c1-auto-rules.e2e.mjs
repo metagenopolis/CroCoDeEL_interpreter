@@ -932,8 +932,17 @@ try {
       .getByRole("dialog", { name: /^Replace your session with "PRJEB83730"\?$/ })
       .getByRole("button", { name: "Replace and load" })
       .click();
-    await page.getByText(/metaquantibiote/).first().waitFor({ timeout: 60000 });
-    await page.waitForTimeout(1500);
+    // Loaded once the loading overlay is gone and the Overview (where the
+    // load ends) shows; the Datasets tab names the study too, so its
+    // title proves nothing.
+    await page.waitForFunction(
+      () =>
+        !document.querySelector('[role="status"][aria-label]') &&
+        /Validated \(TP\)/i.test(document.body.innerText),
+      null,
+      { timeout: 120000 },
+    );
+    await page.waitForTimeout(1000);
     check(
       same(await shownRules(page), { ...ALL_ON, verdictFromEvents: false }),
       "a bundled dataset starts with the last choice made in Configuration",
