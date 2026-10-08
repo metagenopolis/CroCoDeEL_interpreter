@@ -7078,7 +7078,14 @@ const EventsTable = ({
                     className="px-3 py-2.5"
                     style={{ borderLeft: "1px solid var(--border)" }}
                   >
-                    <div className="flex gap-0.5 items-center">
+                    <div
+                      className="flex gap-0.5 items-center"
+                      style={
+                        sampleCuration?.[e.target]?.verdict && sampleCuration[e.target].verdictAuto
+                          ? { paddingBottom: MARK_ROOM }
+                          : undefined
+                      }
+                    >
                       {[
                         {
                           id: "pending",
@@ -7108,8 +7115,15 @@ const EventsTable = ({
                         );
                         const Icon = opt.Icon;
                         return (
-                          <button
+                          <MarkedChip
                             key={opt.id}
+                            mark={
+                              chip.active && chip.auto ? (
+                                <SampleAutoMark title={AUTO_VERDICT_MARK_TITLE} />
+                              ) : null
+                            }
+                          >
+                          <button
                             type="button"
                             onClick={(ev) => {
                               ev.stopPropagation();
@@ -7133,14 +7147,10 @@ const EventsTable = ({
                           >
                             <Icon className="w-3.5 h-3.5" />
                           </button>
+                          </MarkedChip>
                         );
                       })}
                     </div>
-                    {/* Under the chips: no width added to the column. */}
-                    {sampleCuration?.[e.target]?.verdict &&
-                      sampleCuration[e.target].verdictAuto && (
-                        <SampleAutoMark title={AUTO_VERDICT_MARK_TITLE} />
-                      )}
                   </td>
                   {actionEnabled && (
                     <td
@@ -7156,7 +7166,14 @@ const EventsTable = ({
                         // drops the sample from the curated table even
                         // when it is not Contaminated (flagged).
                         <div>
-                          <div className="flex gap-0.5 justify-center items-center">
+                          <div
+                            className="flex gap-0.5 justify-center items-center"
+                            style={
+                              sampleCuration[e.target].action && sampleCuration[e.target].actionAuto
+                                ? { paddingBottom: MARK_ROOM }
+                                : undefined
+                            }
+                          >
                             {[
                               { id: "keep", Icon: Save, color: "#e0b13a" },
                               { id: "suppress", Icon: Trash2, color: "#ed6e6c" },
@@ -7168,8 +7185,15 @@ const EventsTable = ({
                               );
                               const Icon = opt.Icon;
                               return (
-                                <button
+                                <MarkedChip
                                   key={opt.id}
+                                  mark={
+                                    chip.active && chip.auto ? (
+                                      <SampleAutoMark title="Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick Keep to keep the sample in the curated table." />
+                                    ) : null
+                                  }
+                                >
+                                <button
                                   type="button"
                                   onClick={(ev) => {
                                     ev.stopPropagation();
@@ -7189,6 +7213,7 @@ const EventsTable = ({
                                 >
                                   <Icon className="w-3.5 h-3.5" />
                                 </button>
+                                </MarkedChip>
                               );
                             })}
                             {sampleCuration[e.target].action === "suppress" &&
@@ -7196,10 +7221,6 @@ const EventsTable = ({
                                 <SuppressedNotContaminatedFlag />
                               )}
                           </div>
-                          {sampleCuration[e.target].action &&
-                            sampleCuration[e.target].actionAuto && (
-                              <SampleAutoMark title="Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick Keep to keep the sample in the curated table." />
-                            )}
                         </div>
                       ) : (
                         <span
@@ -7836,6 +7857,7 @@ const GalleryCard = React.memo(function GalleryCard({
                         data-verdict-chip={opt.id}
                         style={{
                           display: "inline-flex",
+                          whiteSpace: "nowrap",
                           alignItems: "center",
                           gap: 5,
                           height: 22,
@@ -7887,7 +7909,7 @@ const GalleryCard = React.memo(function GalleryCard({
                 >
                   Action on target
                 </div>
-                <div className="flex gap-1 items-center">
+                <div className="flex flex-wrap gap-1 items-center">
                   {[
                     { id: "keep", Icon: Save, color: "#e0b13a", label: "Keep" },
                     { id: "suppress", Icon: Trash2, color: "#ed6e6c", label: "Suppress" },
@@ -7912,6 +7934,7 @@ const GalleryCard = React.memo(function GalleryCard({
                         }}
                         style={{
                           display: "inline-flex",
+                          whiteSpace: "nowrap",
                           alignItems: "center",
                           gap: 4,
                           height: 22,
@@ -10451,17 +10474,22 @@ const sampleChipColors = (color, active, auto) => ({
     (curationOrigin, src/exports.js). The Samples tab used to tag both
     "auto" while both exports said "default".
 
-    It goes under the chips, not beside them, and its inline size is
-    contained, so it adds no width to its column: beside the chips it
-    widened the Samples tab's Verdict and Action columns from 133 / 69 to
-    165 / 109 px, enough to scroll the page at 1024 px. */
+    It sits right under the chip it qualifies — the active one, inside a
+    MarkedChip — centred on it and out of the flow, so it adds no width to
+    its column: beside the chips it widened the Samples tab's Verdict and
+    Action columns from 133 / 69 to 165 / 109 px, enough to scroll the page
+    at 1024 px. The chip row keeps MARK_ROOM free below for it. Under the
+    whole row, left-aligned, it read as belonging to the first chip
+    (Pending, Keep) whichever chip was active. */
 const SampleAutoMark = ({ title, origin = "automatic" }) => (
   <span
     data-auto-mark={origin}
     title={title}
     style={{
-      display: "block",
-      contain: "inline-size",
+      position: "absolute",
+      top: "100%",
+      left: "50%",
+      transform: "translateX(-50%)",
       whiteSpace: "nowrap",
       marginTop: 2,
       fontSize: 9,
@@ -10477,6 +10505,17 @@ const SampleAutoMark = ({ title, origin = "automatic" }) => (
     {origin === "default" ? "default" : "auto"}
   </span>
 );
+/** A sample chip with, when `mark` is given, its SampleAutoMark centred
+    under it. */
+const MarkedChip = ({ mark, children }) => (
+  <span style={{ position: "relative", display: "inline-flex" }}>
+    {children}
+    {mark}
+  </span>
+);
+/** Room kept under a row of chips whose active chip carries a tag: the
+    tag's 2 px gap and its 11 px line. */
+const MARK_ROOM = 13;
 /** Tooltip of the "auto" tag under an automatic sample verdict. */
 const AUTO_VERDICT_MARK_TITLE =
   "Automatic verdict: derived from the events that target this sample. Click a verdict to set it yourself; Pending removes a verdict you set, handing the sample back to this rule.";
@@ -10536,7 +10575,7 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
   const origin = curationOrigin(entry, "verdict", !row.neverTargeted);
   return (
   <div>
-    <div className="flex gap-1">
+    <div className="flex gap-1" style={row.verdictAuto ? { paddingBottom: MARK_ROOM } : undefined}>
       {[
         { id: "pending", k: SAMPLE_VERDICT_TONE.pending },
         { id: "contaminated", k: SAMPLE_VERDICT_TONE.contaminated },
@@ -10548,8 +10587,18 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
         });
         const Icon = SAMPLE_VERDICT_ICON[opt.id];
         return (
-          <button
+          <MarkedChip
             key={opt.id}
+            mark={
+              row.verdictAuto && chip.active && chip.auto ? (
+                <SampleAutoMark
+                  origin={origin}
+                  title={origin === "default" ? DEFAULT_VERDICT_MARK_TITLE : AUTO_VERDICT_MARK_TITLE}
+                />
+              ) : null
+            }
+          >
+          <button
             type="button"
             onClick={() => setSampleVerdict(row.id, opt.id)}
             data-verdict-chip={opt.id}
@@ -10569,15 +10618,10 @@ const SampleVerdictCell = React.memo(function SampleVerdictCell({ row, setSample
           >
             <Icon className="w-3.5 h-3.5" />
           </button>
+          </MarkedChip>
         );
       })}
     </div>
-    {row.verdictAuto && (
-      <SampleAutoMark
-        origin={origin}
-        title={origin === "default" ? DEFAULT_VERDICT_MARK_TITLE : AUTO_VERDICT_MARK_TITLE}
-      />
-    )}
   </div>
   );
 });
@@ -10677,7 +10721,7 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
   const origin = curationOrigin(entry, "action", !row.neverTargeted);
   return (
   <div>
-    <div className="flex gap-1">
+    <div className="flex gap-1" style={row.actionAuto ? { paddingBottom: MARK_ROOM } : undefined}>
       {[
         { id: "keep", color: "#e0b13a", Icon: Save },
         { id: "suppress", color: "#ed6e6c", Icon: Trash2 },
@@ -10687,8 +10731,22 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
         });
         const Icon = opt.Icon;
         return (
-          <button
+          <MarkedChip
             key={opt.id}
+            mark={
+              row.actionAuto && chip.active && chip.auto ? (
+                <SampleAutoMark
+                  origin={origin}
+                  title={
+                    origin === "default"
+                      ? "Default action: Keep, as for every sample no event targets — not counted as a Keep decision. Click it to make it your own; pick Suppress to drop the sample from the curated table."
+                      : "Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick Keep to keep the sample in the curated table."
+                  }
+                />
+              ) : null
+            }
+          >
+          <button
             type="button"
             onClick={() => setSampleAction(row.id, chip.next)}
             style={{
@@ -10707,22 +10765,13 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
           >
             <Icon className="w-3.5 h-3.5" />
           </button>
+          </MarkedChip>
         );
       })}
       {row.action === "suppress" && row.verdict !== "contaminated" && (
         <SuppressedNotContaminatedFlag />
       )}
     </div>
-    {row.actionAuto && (
-      <SampleAutoMark
-        origin={origin}
-        title={
-          origin === "default"
-            ? "Default action: Keep, as for every sample no event targets — not counted as a Keep decision. Click it to make it your own; pick Suppress to drop the sample from the curated table."
-            : "Automatic action: Suppress goes with a Contaminated verdict. Click it to make it your own; pick Keep to keep the sample in the curated table."
-        }
-      />
-    )}
   </div>
   );
 });
@@ -18418,7 +18467,7 @@ const ValidateTab = ({
                             chip.title ||
                             `Tag the target sample (${sel.target}) as ${tone.label}`
                           }
-                          className="px-3 py-1 text-[11px] rounded-sm flex items-center gap-1.5"
+                          className="px-3 py-1 text-[11px] rounded-sm flex items-center gap-1.5 whitespace-nowrap"
                           style={{
                             background: active
                               ? chip.auto
@@ -18489,7 +18538,7 @@ const ValidateTab = ({
                             onClick={() => setAction(sel.id, chip.next)}
                             title={active ? chip.title : opt.hint}
                             aria-label={chip.ariaLabel}
-                            className="px-3 py-1 text-[11px] rounded-sm flex items-center gap-1.5"
+                            className="px-3 py-1 text-[11px] rounded-sm flex items-center gap-1.5 whitespace-nowrap"
                             style={{
                               background: active
                                 ? chip.auto
