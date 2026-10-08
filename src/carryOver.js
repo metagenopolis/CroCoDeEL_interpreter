@@ -38,8 +38,9 @@
    abundance table — under the automatic rules it was exported with. The
    file does not hold them: an empty cell is a value the rules left
    empty, and a session with another choice in Configuration derives
-   other values there — a target left with no action while Suppress
-   paired with Contaminated was off comes back suppressed when it is on.
+   other values there — a Contaminated target left with no action while
+   Suppress paired with Contaminated was off comes back suppressed when
+   it is on.
    Without the targets' verdicts — the file of an earlier version — a
    target the curator had kept although a true positive targets it (a
    verdict set against its events, a cleared Suppress) comes back

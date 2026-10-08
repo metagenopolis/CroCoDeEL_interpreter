@@ -21132,9 +21132,9 @@ const HelpTab = ({ onStartTour }) => {
             decisions (Configuration) as the one that wrote the file. The
             file does not hold them: an empty cell is a value they left
             empty, which a session with another choice fills in — a
-            target with no action, written while <em>Suppress paired with
-            Contaminated</em> was off, comes back suppressed while it is
-            on (the banner names those targets). A curated file of
+            Contaminated target with no action, written while <em>Suppress
+            paired with Contaminated</em> was off, comes back suppressed
+            while it is on (the banner names those targets). A curated file of
             an earlier version holds no target verdicts: a target with a
             true-positive event and no action in it comes back suppressed,
             and the banner names those targets. What the file does not
