@@ -18,8 +18,9 @@ import {
   migrateSampleCuration,
   SAMPLE_CURATION_VERSION,
 } from "../src/curation.js";
-import { replaceEvents } from "../src/carryOver.js";
-import { curationOrigin } from "../src/exports.js";
+import { replaceEvents, replaceReportLines } from "../src/carryOver.js";
+import { curationOrigin, curatedEventsToTSV } from "../src/exports.js";
+import { parseEvents } from "../src/parsing.js";
 
 /* The three automatic rules of src/curation.js as switches: each rule
    function takes the session's rules and applies only those that are on.
@@ -343,6 +344,93 @@ describe("carry-over (replaceEvents) under the session's rules", () => {
   it("all on, is unchanged", () => {
     const out = replaceEvents({ newEvents: next, carryOver: false });
     expect(out.sampleCuration.T1).toMatchObject({ verdict: "contaminated", verdictAuto: true });
+  });
+});
+
+describe("the carry-over banner under the session's rules", () => {
+  // T1's two rows (a TP and an FP) give it different sample verdicts and
+  // different actions.
+  const conflicting = events.map((e) =>
+    e.target !== "T1"
+      ? { ...e }
+      : e.verdict === TP
+        ? { ...e, fileSampleVerdict: "contaminated", fileAction: "suppress" }
+        : { ...e, fileSampleVerdict: "correct", fileAction: "keep" },
+  );
+  const linesUnder = (rules) => {
+    const out = replaceEvents({
+      newEvents: conflicting,
+      carryOver: false,
+      fileHasCuration: true,
+      fileColumns: { action: true, sampleVerdict: true },
+      rules,
+    });
+    return { out, text: replaceReportLines(out.report).join(" ") };
+  };
+
+  it("all on, leaves a target whose rows disagree to the automatic rule", () => {
+    const { out, text } = linesUnder(DEFAULT_CURATION_RULES);
+    expect(out.sampleCuration.T1).toMatchObject({ verdict: "contaminated", action: "suppress" });
+    expect(text).toMatch(/1 target whose rows give different sample verdicts was left to the automatic rule\./);
+    expect(text).toMatch(/1 target whose rows give different actions was left to the automatic rule\./);
+  });
+
+  it("with R1 off, says no rule gives such a target a verdict", () => {
+    // It said "left to the automatic rule", which was off: T1 has none.
+    const { out, text } = linesUnder(R1_OFF);
+    expect(out.sampleCuration.T1).toBeUndefined();
+    expect(text).not.toMatch(/sample verdicts was left to the automatic rule/);
+    expect(text).toMatch(
+      /1 target whose rows give different sample verdicts took none of them, and no rule sets one: the sample verdict from the events is switched off in Configuration/,
+    );
+  });
+
+  it("with R2 off, says no rule gives such a target an action", () => {
+    const { out, text } = linesUnder(R2_OFF);
+    expect(out.sampleCuration.T1).toEqual({ verdict: "contaminated", verdictAuto: true });
+    expect(text).not.toMatch(/actions was left to the automatic rule/);
+    expect(text).toMatch(
+      /1 target whose rows give different actions took none of them, and no rule sets one: Suppress paired with Contaminated is switched off in Configuration/,
+    );
+    // The verdict rule is on: that line is unchanged.
+    expect(text).toMatch(/sample verdicts was left to the automatic rule/);
+  });
+
+  it("explains an empty action written while Suppress paired with Contaminated was off", () => {
+    // A session with R2 off: T1 automatic Contaminated, no action. Its
+    // curated events TSV gives T1 no action; reloaded into a new session
+    // with every rule on, T1 is suppressed, and the banner used to blame
+    // "a file written by an earlier version".
+    const run = parseEvents(
+      [
+        "source\ttarget\trate\tprobability\tcontamination_specific_species",
+        "S1\tT1\t0.1\t0.9\tsp_a",
+        "S2\tT2\t0.2\t0.9\tsp_a",
+      ].join("\n"),
+    );
+    const evs = run.events.map((e) => ({ ...e, verdict: e.target === "T1" ? TP : FP }));
+    const sc = syncSampleCuration({}, evs, undefined, R2_OFF);
+    expect(sc.T1).toEqual({ verdict: "contaminated", verdictAuto: true });
+    const parsed = parseEvents(curatedEventsToTSV(evs, { sampleCuration: sc }));
+    const reload = (rules) =>
+      replaceEvents({
+        newEvents: parsed.events,
+        carryOver: false,
+        fileHasCuration: !!parsed.curation,
+        fileColumns: parsed.curationColumns,
+        rules,
+      });
+    const allOn = reload(DEFAULT_CURATION_RULES);
+    expect(allOn.report.suppressedWithoutAction).toEqual(["T1"]);
+    const text = replaceReportLines(allOn.report).join(" ");
+    expect(text).toMatch(/Now to suppress, although the file gives no action for it \(1\): T1 — it is Contaminated/);
+    expect(text).toMatch(
+      /A file exported while that rule, or the sample verdict from the events, was switched off in Configuration leaves such an action empty/,
+    );
+    // Under the rules it was written with, it comes back as it was.
+    const same = reload(R2_OFF);
+    expect(same.report.suppressedWithoutAction).toEqual([]);
+    expect(same.sampleCuration.T1).toEqual({ verdict: "contaminated", verdictAuto: true });
   });
 });
 

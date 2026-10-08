@@ -21127,13 +21127,20 @@ const HelpTab = ({ onStartTour }) => {
             by hand and the targets' verdicts and keep / suppress actions,
             so an export reloaded into an empty session gives back the same
             counts and the same curated abundance table, unless a sample no
-            event targets has a verdict or an action of its own. A curated file of
+            event targets has a verdict or an action of its own — and as
+            long as the session applies the same automatic sample
+            decisions (Configuration) as the one that wrote the file. The
+            file does not hold them: an empty cell is a value they left
+            empty, which a session with another choice fills in — a
+            target with no action, written while <em>Suppress paired with
+            Contaminated</em> was off, comes back suppressed while it is
+            on (the banner names those targets). A curated file of
             an earlier version holds no target verdicts: a target with a
             true-positive event and no action in it comes back suppressed,
             and the banner names those targets. What the file does not
             hold — the notes of the samples, the verdict and the action of
-            a sample no event targets — only the session JSON (Download
-            session) keeps. Its{" "}
+            a sample no event targets, the automatic rules — only the
+            session JSON (Download session) keeps. Its{" "}
             <code style={{ fontFamily: "ui-monospace, monospace" }}># study: …</code>{" "}
             line names the study when the session has none yet; it is not a
             run parameter. An events file without CroCoDeEL's run header,
