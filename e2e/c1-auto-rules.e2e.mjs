@@ -14,8 +14,10 @@
    every sample and a notice says what it added. With every rule off, no
    path that evaluates events sets an automatic sample value. The rules
    are saved with the session: a reload, a session JSON round trip, a
-   file without them (all on), a new session (the last choice made in
-   Configuration), and a second tab, which must not switch them back.
+   file without them (all on), another events file (carried over: the
+   session's own; started fresh: the last choice made in Configuration),
+   a new session (the same last choice), and a second tab, which must
+   not switch them back.
 
    The sample state is read back from the session the app autosaves to
    IndexedDB (src/persistence.js), automatic flags included.
@@ -35,6 +37,7 @@ import {
   loadDemo,
   openTab,
   overviewStats,
+  tsvInput,
   check,
   finish,
 } from "./harness.mjs";
@@ -674,6 +677,50 @@ try {
       rows.length > 90 && rows.slice(1).every((r) => r[vo] === "" && r[ao] === ""),
       "the samples TSV has no automatic or default origin",
     );
+  });
+
+  /* Another events file: carried over, the session keeps its own rules;
+     started fresh, it is a new session, with the last choice made in
+     Configuration. */
+  await scenario("another events file", async (page) => {
+    // The last choice made in Configuration: R1 off (nothing to clear).
+    await switchOff(page, "verdictFromEvents", "Clear them");
+    await closeConfig(page);
+    // A session with every rule on (a file without curation_rules), then
+    // some curation, so that replacing its events asks first.
+    const json = JSON.parse(
+      await download(page, page.getByRole("button", { name: /^Download session$/ }).first()),
+    );
+    delete json.curation_rules;
+    await importSession(page, json);
+    check(same(await shownRules(page), ALL_ON), "the imported session has every rule on");
+    await clickEvent(page, "63D250", "63D9", "tp");
+    const replace = async (choice) => {
+      await tsvInput(page, 0).setInputFiles({
+        name: "contamination_events.tsv",
+        mimeType: "text/tab-separated-values",
+        buffer: readFileSync("public/demo/contamination_events.tsv"),
+      });
+      await page.waitForTimeout(1500);
+      const ask = page.getByRole("dialog", { name: "Replace the events file?" });
+      await ask.getByRole("button", { name: choice, exact: true }).click();
+      await page.waitForTimeout(1000);
+    };
+    await replace("Carry over");
+    let sc = await storedCuration(page);
+    check(
+      same(await shownRules(page), ALL_ON) && same(sc["63D9"], AUTO_C_S),
+      "carried over to another events file, the session keeps its own rules",
+      show(sc["63D9"]),
+    );
+    await replace("Start fresh");
+    check(
+      same(await shownRules(page), { ...ALL_ON, verdictFromEvents: false }),
+      "started fresh, it is a new session with the last choice made in Configuration",
+    );
+    await clickEvent(page, "63D250", "63D9", "tp");
+    sc = await storedCuration(page);
+    check(sc["63D9"] === undefined, "…under which a TP sets no sample verdict", show(sc["63D9"]));
   });
 
   /* ---------------------------------------------------------- persistence */
