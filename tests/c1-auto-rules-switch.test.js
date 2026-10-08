@@ -214,6 +214,24 @@ describe("R3 — Not contaminated + Keep for a sample no event targets", () => {
     });
   });
 
+  it("counts a sample the events and the abundance table spell differently once", () => {
+    // The events file writes "s3" (a source no event targets), the
+    // abundance table "S3": one sample, one row of the Samples tab, whose
+    // Keep the Overview counts once. The question counted it twice.
+    const evs = [{ id: 0, source: "s3", target: "T", verdict: "pending" }];
+    const table = ["S3", "T"];
+    const tableSample = (id) => table.find((s) => s.toLowerCase() === id.toLowerCase()) ?? null;
+    const nt = neverTargetedSamples(evs, table, tableSample);
+    expect(nt).toEqual(["S3", "s3"]);
+    expect(ruleValues(rule, {}, nt, tableSample)).toMatchObject({ samples: ["S3"], correct: 1, keep: 1 });
+    // Kept as the curator's own, it is one Keep decision.
+    const kept = keepRuleValues(rule, {}, nt);
+    const eff = buildEffectiveSampleCuration(kept, nt, after);
+    expect(sampleActionCounts(eff, undefined, tableSample)).toEqual({ keep: 1, suppress: 0 });
+    // A name the table does not hold is a sample of its own.
+    expect(ruleValues(rule, {}, ["S3", "x9"], tableSample)).toMatchObject({ samples: ["S3", "x9"], keep: 2 });
+  });
+
   it("off → clear: nothing stored changes; the defaults are gone from what every view shows", () => {
     expect(clearRuleValues(rule, stored, after)).toBe(stored);
     const eff = buildEffectiveSampleCuration(stored, never, after);

@@ -566,6 +566,33 @@ try {
     check(s.keep === NEVER_TARGETED, "R3 on after Keep: nothing duplicated", `keep=${s.keep}`);
   });
 
+  /* A sample the events file and the abundance table spell differently
+     (the events' 69M, a source no event targets; the table's 69m) is one
+     sample: one row of the Samples tab, one Keep in the Overview. The
+     question that switches the default off counted it twice. */
+  await scenario("R3 counts a sample once, whatever its spelling", async (page) => {
+    const ab = readFileSync("public/demo/species_abundance.tsv", "utf8").split("\n");
+    ab[0] = ab[0]
+      .split("\t")
+      .map((s) => (s === "69M" ? "69m" : s))
+      .join("\t");
+    await tsvInput(page, 1).setInputFiles({
+      name: "species_abundance.tsv",
+      mimeType: "text/tab-separated-values",
+      buffer: Buffer.from(ab.join("\n")),
+    });
+    await page.waitForTimeout(2000);
+    const text = await switchOff(page, "neverTargetedDefault", "Keep them as my decisions");
+    check(
+      new RegExp(`^.*${NEVER_TARGETED} samples no event targets show a default value, not a decision \\(${NEVER_TARGETED} Not contaminated, ${NEVER_TARGETED} Keep\\)`).test(text || ""),
+      "R3 off asks with the count of the samples, 69M / 69m once",
+      text,
+    );
+    await closeConfig(page);
+    const s = await overviewStats(page);
+    check(s.keep === NEVER_TARGETED, "R3 Keep: as many Keep decisions as the question said", `keep=${s.keep}`);
+  });
+
   /* ------------------------------------------------------- every rule off */
   await scenario("all rules off", async (page) => {
     // Nothing evaluated yet: R1 and R2 have no value, so no question.

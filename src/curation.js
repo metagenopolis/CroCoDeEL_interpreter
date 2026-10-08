@@ -578,16 +578,33 @@ export function buildEffectiveSampleCuration(
                             contaminated, `keep` the default Keep.
 
     `curation` is the stored one (the defaults are derived here, as
-    buildEffectiveSampleCuration derives them). Returns { samples,
-    contaminated, correct, uncertain, suppress, keep }, `samples` sorted. */
-export function ruleValues(rule, curation, neverTargeted) {
+    buildEffectiveSampleCuration derives them). `tableSample` (when an
+    abundance table is loaded: a name → its column in the table, or null —
+    resolveSample, as neverTargetedSamples takes it) makes the names of one
+    table sample one sample: `neverTargeted` holds the events file's
+    spelling of a sample next to the table's ("s3" and "S3"), each with
+    the default, and the question counted the sample twice while the
+    Samples tab shows it once and the Overview counts its Keep once.
+    Returns { samples, contaminated, correct, uncertain, suppress, keep },
+    `samples` sorted (for neverTargetedDefault, under the table's
+    spelling). */
+export function ruleValues(rule, curation, neverTargeted, tableSample = null) {
   const base = curation || {};
   const out = { samples: [], contaminated: 0, correct: 0, uncertain: 0, suppress: 0, keep: 0 };
   if (rule === "neverTargetedDefault") {
+    const bySample = new Map(); // sample → { verdict, action }: its defaults
     for (const id of neverTargeted || []) {
       const defaults = neverTargetedDefaults(base[id]);
       if (!defaults.verdict && !defaults.action) continue;
-      out.samples.push(id);
+      const key = (tableSample && tableSample(id)) || id;
+      const seen = bySample.get(key);
+      bySample.set(key, {
+        verdict: defaults.verdict || !!seen?.verdict,
+        action: defaults.action || !!seen?.action,
+      });
+    }
+    for (const [key, defaults] of bySample) {
+      out.samples.push(key);
       if (defaults.verdict) out.correct++;
       if (defaults.action) out.keep++;
     }

@@ -27225,7 +27225,7 @@ const defaultFilter = () => ({
       const rules = switched();
       const next = applyRule(rule, sampleCurationRef.current, rawEventsRef.current, rules);
       commitCurationRules(rules, next);
-      const v = ruleValues(rule, next, neverTargeted);
+      const v = ruleValues(rule, next, neverTargeted, tableSample);
       const n = v.samples.length;
       let text;
       if (rule === "verdictFromEvents") {
@@ -27253,7 +27253,7 @@ const defaultFilter = () => ({
       setRulesNotice({ rule, title: `“${label}” switched on.`, text });
       return;
     }
-    const v = ruleValues(rule, sampleCurationRef.current, neverTargeted);
+    const v = ruleValues(rule, sampleCurationRef.current, neverTargeted, tableSample);
     const n = v.samples.length;
     if (n === 0) {
       commitCurationRules(switched(), sampleCurationRef.current);
