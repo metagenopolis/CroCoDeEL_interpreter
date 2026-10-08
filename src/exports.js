@@ -682,7 +682,14 @@ const DEFAULT_VALUE = { verdict: "correct", action: "keep" };
     a Contaminated set by hand is the rule's, and the curated table drops
     the sample. The samples HTML report and the Samples tab tag the same
     values "auto" and "default". The TSV used to write the three kinds
-    alike, so a never-reviewed sample read as a curated Keep. */
+    alike, so a never-reviewed sample read as a curated Keep.
+
+    The effective curation is built under the session's automatic rules
+    (src/curation.js): a rule switched off sets no value — the default is
+    not added, no verdict or Suppress is derived — and switching it off
+    cleared its values or made them the curator's. So "automatic" and
+    "default" only ever name values of rules that are on, without a rules
+    parameter here. */
 export function curationOrigin(entry, field, targeted) {
   const value = entry?.[field];
   if (value == null || value === "" || value === "pending") return "";
