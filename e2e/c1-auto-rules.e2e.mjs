@@ -11,12 +11,18 @@
    them / Keep them as my decisions / Cancel — the Samples tab, the
    Overview counts and the Export card follow the answer, and values set
    by hand are never touched; switched on again, the rule is applied to
-   every sample and a notice says what it added. With every rule off, no
-   path that evaluates events sets an automatic sample value. The rules
-   are saved with the session: a reload, a session JSON round trip, a
-   file without them (all on), another events file (carried over: the
-   session's own; started fresh: the last choice made in Configuration),
-   a new session (the same last choice), and a second tab, which must
+   every sample and a notice says what it added. A sample spelt two ways
+   counts once; one value, or one rule off, reads right in the question,
+   the notice and the samples report's legend. With every rule off, no
+   path that evaluates events sets an automatic sample value; with one
+   off, the others still apply (the presets, the Validate keys, the
+   Network popover, the bulk dialog). The Export card and the Help FAQ
+   say what the rules do. The rules are saved with the session: a
+   reload, a session JSON round trip, a file without them (all on),
+   another events file (carried over, or given to a session without
+   curation: the session's own; started fresh: the last choice made in
+   Configuration), a new session (Clear session then the demo, a
+   bundled dataset: the same last choice), and a second tab, which must
    not switch them back.
 
    The sample state is read back from the session the app autosaves to
@@ -397,7 +403,11 @@ try {
   await scenario("R1 off, Keep", async (page) => {
     await curateSome(page);
     const text = await switchOff(page, "verdictFromEvents", "Keep them as my decisions");
-    check(/^Switch off/.test(text || ""), "R1 off with values asks first");
+    check(
+      /^Switch off “Sample verdict from the event evaluations”\? 4 samples have a verdict derived from their events \(2 Contaminated, 1 Not contaminated, 1 Uncertain\)\./.test(text || ""),
+      "R1 off with values asks first, with their count",
+      text,
+    );
     await closeConfig(page);
     const sc = await storedCuration(page);
     check(
@@ -409,10 +419,11 @@ try {
     );
     const marks = await sampleMarks(page);
     const s = await overviewStats(page);
+    const card = await curatedCard(page);
     check(
-      marks.verdict.automatic === 0 && marks.action.automatic === 3 && s.suppress === 3,
-      "R1 Keep: no automatic verdict tagged, still 3 to suppress",
-      `${show(marks)} suppress=${s.suppress}`,
+      marks.verdict.automatic === 0 && marks.action.automatic === 3 && s.suppress === 3 && card === "88 of 91",
+      "R1 Keep: no automatic verdict tagged, still 3 to suppress, Export keeps 88 of 91",
+      `${show(marks)} suppress=${s.suppress} card=${card}`,
     );
     // With the verdict rule off, the curator's verdict cleared leaves the
     // sample Pending, and its chip says so.
@@ -508,17 +519,24 @@ try {
 
   await scenario("R2 off, Keep", async (page) => {
     await clickEvent(page, "63D250", "63D9", "tp");
-    await switchOff(page, "suppressContaminated", "Keep them as my decisions");
+    const text = await switchOff(page, "suppressContaminated", "Keep them as my decisions");
+    check(
+      /^Switch off “Suppress paired with Contaminated”\? 1 Contaminated sample has the automatic Suppress paired with its verdict\./.test(text || ""),
+      "R2 off with a value asks first, with its count",
+      text,
+    );
     await closeConfig(page);
     const sc = await storedCuration(page);
     const marks = await sampleMarks(page);
     const s = await overviewStats(page);
+    const card = await curatedCard(page);
     check(
       same(sc["63D9"], { verdict: "contaminated", verdictAuto: true, action: "suppress" }) &&
         marks.action.automatic === 0 &&
-        s.suppress === 1,
-      "R2 Keep: the Suppress stays, set by hand (no auto tag), still 1 to suppress",
-      `${show(sc["63D9"])} ${show(marks)} suppress=${s.suppress}`,
+        s.suppress === 1 &&
+        card === "90 of 91",
+      "R2 Keep: the Suppress stays, set by hand (no auto tag), still 1 to suppress, Export keeps 90 of 91",
+      `${show(sc["63D9"])} ${show(marks)} suppress=${s.suppress} card=${card}`,
     );
     const notice = await switchOn(page, "suppressContaminated");
     check(/nothing was suppressed/.test(notice || ""), "R2 on after Keep adds nothing", notice);
@@ -572,16 +590,26 @@ try {
   });
 
   await scenario("R3 off, Keep", async (page) => {
-    await switchOff(page, "neverTargetedDefault", "Keep them as my decisions");
+    const text = await switchOff(page, "neverTargetedDefault", "Keep them as my decisions");
+    check(
+      new RegExp(`^Switch off “Not contaminated \\+ Keep for samples no event targets”\\? ${NEVER_TARGETED} samples no event targets show a default value, not a decision \\(${NEVER_TARGETED} Not contaminated, ${NEVER_TARGETED} Keep\\)\\.`).test(text || ""),
+      "R3 off with values asks first, with their count",
+      text,
+    );
     await closeConfig(page);
     const sc = await storedCuration(page);
     const kept = Object.values(sc).filter((c) => same(c, { verdict: "correct", action: "keep" })).length;
     const marks = await sampleMarks(page);
     let s = await overviewStats(page);
+    const card = await curatedCard(page);
     check(
-      kept === NEVER_TARGETED && marks.verdict.default === 0 && s.keep === NEVER_TARGETED,
-      "R3 Keep: written as Not contaminated + Keep set by hand, counted as Keep decisions",
-      `kept=${kept} ${show(marks)} keep=${s.keep}`,
+      kept === NEVER_TARGETED &&
+        marks.verdict.default === 0 &&
+        s.keep === NEVER_TARGETED &&
+        s.suppress === 0 &&
+        card === "91 of 91",
+      "R3 Keep: written as Not contaminated + Keep set by hand, counted as Keep decisions; Export keeps 91 of 91",
+      `kept=${kept} ${show(marks)} keep=${s.keep} card=${card}`,
     );
     const notice = await switchOn(page, "neverTargetedDefault");
     check(/no default to show/.test(notice || ""), "R3 on after Keep adds nothing", notice);
@@ -775,6 +803,140 @@ try {
     check(
       rows.length > 90 && rows.slice(1).every((r) => r[vo] === "" && r[ao] === ""),
       "the samples TSV has no automatic or default origin",
+    );
+  });
+
+  /* One rule off, the others on: the paths that evaluate events apply
+     only the rules that are on. Dropping the rules from one of their
+     calls (the same-subject preset, the Validate keys, the Network
+     popover, the bulk dialog) fails here. */
+  await scenario("R1 off: the same-subject preset and the T key", async (page) => {
+    await switchOff(page, "verdictFromEvents", "Clear them"); // nothing to clear: no question
+    await closeConfig(page);
+    const bulk = await openBulkDialog(page);
+    const preset = bulk.getByRole("button", { name: /Mark all same-subject contaminations as FP/i }).first();
+    const title = (await preset.getAttribute("title")) || "";
+    check(
+      /The sample verdict from the events is switched off in Configuration: the target samples' verdicts are left to you\./.test(title),
+      "R1 off: the same-subject preset says the sample verdicts are left to the curator",
+      title,
+    );
+    await preset.click();
+    const ask = page.getByRole("dialog", { name: /same-subject events? as false positive/ });
+    const askText = (await ask.innerText()).replace(/\s+/g, " ");
+    check(
+      /Each event is marked FP\. The sample verdict from the events is switched off in Configuration: the target samples' verdicts are left to you/.test(askText),
+      "…and so does its confirmation",
+      askText,
+    );
+    await ask.getByRole("button", { name: /^Mark \d+ as FP$/ }).click();
+    await page.waitForTimeout(600);
+    // The stored curation record keeps the evaluations by event id.
+    const evaluated = (record, verdict) =>
+      Object.values(record.verdicts || {}).filter((v) => v === verdict).length;
+    let session = await storedSession(page);
+    const fp = evaluated(session, "false_positive");
+    check(
+      fp > 0 && same(session.sampleCuration, {}),
+      "R1 off: the same-subject preset marks its events FP and sets no sample verdict",
+      `fp=${fp} ${show(session.sampleCuration)}`,
+    );
+    // Guided validation's T key on the event it shows.
+    await openTab(page, "Validate");
+    await page.waitForTimeout(500);
+    await page.keyboard.press("t");
+    await page.waitForTimeout(500);
+    session = await storedSession(page);
+    const tp = evaluated(session, "true_positive");
+    check(
+      tp === 1 && same(session.sampleCuration, {}),
+      "R1 off: the T key marks the event TP and sets no sample verdict",
+      `tp=${tp} ${show(session.sampleCuration)}`,
+    );
+  });
+
+  await scenario("R2 off: the Network popover and the bulk dialog", async (page) => {
+    await switchOff(page, "suppressContaminated", "Clear them"); // nothing to clear: no question
+    await closeConfig(page);
+    const pop = await openNodePopover(page, "72D17");
+    check(
+      (await pop.getByRole("button", { name: /^Automatic$/ }).count()) === 1 &&
+        (await pop.getByRole("button", { name: "(no change)" }).count()) === 1,
+      "R2 off: the Network popover's target verdict reads Automatic, its action (no change)",
+    );
+    await pop.getByRole("button", { name: /^Apply$/ }).click(); // TP, Automatic, (no change)
+    await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(500);
+    let sc = await storedCuration(page);
+    check(
+      same(sc["72D17"], { verdict: "contaminated", verdictAuto: true }),
+      "R2 off: the popover makes 72D17 Contaminated (automatic), with no Suppress",
+      show(sc["72D17"]),
+    );
+    const bulk = await openBulkDialog(page);
+    check(
+      (await bulk.getByRole("button", { name: /^Automatic$/ }).count()) === 1 &&
+        (await bulk.getByRole("button", { name: "(no change)" }).count()) === 1,
+      "R2 off: the bulk dialog's target verdict reads Automatic, its action (no change)",
+    );
+    await bulk.getByRole("button", { name: /^True positive$/ }).first().click();
+    await bulk.getByRole("button", { name: /^Apply to \d+ events?$/ }).click();
+    const confirm = page.getByRole("dialog", { name: /^Apply "true positive"/ });
+    const confirmText = (await confirm.innerText()).replace(/\s+/g, " ");
+    check(
+      /verdict → automatic, recomputed from every event targeting it/.test(confirmText) &&
+        /action → unchanged \(Suppress paired with Contaminated is switched off in Configuration\)/.test(confirmText),
+      "R2 off: the bulk confirmation says the verdicts follow the events, the actions are unchanged",
+      confirmText,
+    );
+    await page.getByRole("button", { name: /^Apply to \d+$/ }).click();
+    await page.waitForTimeout(600);
+    sc = await storedCuration(page);
+    const s = await overviewStats(page);
+    const targets = Object.keys(sc);
+    check(
+      targets.length === 16 &&
+        targets.every((t) => same(sc[t], { verdict: "contaminated", verdictAuto: true })) &&
+        s.suppress === 0 &&
+        (await curatedCard(page)) === "91 of 91",
+      "R2 off: bulk TP makes every target Contaminated (automatic), none suppressed, Export keeps 91 of 91",
+      `${targets.length} targets, suppress=${s.suppress}`,
+    );
+  });
+
+  /* A bundled dataset is a new session: the last choice made in
+     Configuration, not the rules of the session it replaces. */
+  await scenario("a bundled dataset is a new session", async (page) => {
+    await switchOff(page, "verdictFromEvents", "Clear them"); // the last choice: R1 off
+    await closeConfig(page);
+    const json = JSON.parse(
+      await download(page, page.getByRole("button", { name: /^Download session$/ }).first()),
+    );
+    delete json.curation_rules; // a session with every rule on
+    await importSession(page, json);
+    check(same(await shownRules(page), ALL_ON), "the imported session has every rule on");
+    await openTab(page, "Datasets");
+    await page.getByText("PRJEB83730", { exact: true }).first().waitFor({ timeout: 30000 });
+    await page.evaluate(() => {
+      const el = [...document.querySelectorAll("div")].find(
+        (e) => e.children.length === 0 && e.textContent.trim() === "PRJEB83730",
+      );
+      let card = el;
+      while (card && !card.querySelector("button")) card = card.parentElement;
+      // "Replace session with this dataset" while a session is loaded.
+      [...card.querySelectorAll("button")]
+        .find((b) => /Load this dataset|Replace session with this dataset/.test(b.textContent))
+        .click();
+    });
+    await page
+      .getByRole("dialog", { name: /^Replace your session with "PRJEB83730"\?$/ })
+      .getByRole("button", { name: "Replace and load" })
+      .click();
+    await page.getByText(/metaquantibiote/).first().waitFor({ timeout: 60000 });
+    await page.waitForTimeout(1500);
+    check(
+      same(await shownRules(page), { ...ALL_ON, verdictFromEvents: false }),
+      "a bundled dataset starts with the last choice made in Configuration",
     );
   });
 
