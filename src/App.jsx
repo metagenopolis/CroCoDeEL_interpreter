@@ -27257,6 +27257,11 @@ const defaultFilter = () => ({
       ]
         .filter(Boolean)
         .join(", ");
+    // The defaults of the samples no event targets.
+    const defaultBreakdown = (v) =>
+      [v.correct && `${v.correct} Not contaminated`, v.keep && `${v.keep} Keep`]
+        .filter(Boolean)
+        .join(", ");
     // The rules once switched, from those of the moment: the question
     // below is answered after a render.
     const switched = () => ({
@@ -27276,9 +27281,11 @@ const defaultFilter = () => ({
           n === 0
             ? "No sample got an automatic verdict: no evaluated event targets a sample without a verdict of yours."
             : `${plural(n, "sample")} got an automatic verdict from ${n === 1 ? "its" : "their"} events (${verdictBreakdown(v)})` +
-              (v.suppress > 0
-                ? `; ${v.suppress} of them ${v.suppress === 1 ? "is" : "are"} Contaminated, paired with Suppress, and ${v.suppress === 1 ? "leaves" : "leave"} the curated abundance table.`
-                : ".");
+              (v.suppress === 0
+                ? "."
+                : n === 1
+                  ? "; it is paired with Suppress and leaves the curated abundance table."
+                  : `; ${v.suppress} of them ${v.suppress === 1 ? "is" : "are"} Contaminated, paired with Suppress, and ${v.suppress === 1 ? "leaves" : "leave"} the curated abundance table.`);
         text += " Verdicts you set by hand are unchanged.";
       } else if (rule === "suppressContaminated") {
         text =
@@ -27307,16 +27314,20 @@ const defaultFilter = () => ({
     if (rule === "verdictFromEvents") {
       body =
         `${plural(n, "sample")} ${n === 1 ? "has" : "have"} a verdict derived from ${n === 1 ? "its" : "their"} events (${verdictBreakdown(v)}).\n\n` +
-        "Keep them as my decisions: the verdicts stay, as yours, without the auto tag" +
-        (pairsSuppress && v.contaminated > 0
-          ? "; a Suppress paired with a Contaminated one stays automatic."
+        `Keep them as my decisions: ${n === 1 ? "the verdict stays" : "the verdicts stay"}, as yours, without the auto tag` +
+        (pairsSuppress && v.suppress > 0
+          ? n === 1
+            ? "; the Suppress paired with it stays automatic."
+            : `; the Suppress paired with ${v.suppress === 1 ? "a Contaminated one stays" : "the Contaminated ones stays"} automatic.`
           : ".") +
         `\n\nClear them: ${n === 1 ? "this sample goes" : "these samples go"} back to Pending` +
         (pairsSuppress && v.suppress > 0
           ? `, and the Suppress that went with ${
-              v.suppress === 1
-                ? "an automatic Contaminated verdict goes too: that sample comes"
-                : `the ${v.suppress} automatic Contaminated verdicts goes too: those samples come`
+              n === 1
+                ? "its automatic Contaminated verdict goes too: it comes"
+                : v.suppress === 1
+                  ? "an automatic Contaminated verdict goes too: that sample comes"
+                  : `the ${v.suppress} automatic Contaminated verdicts goes too: those samples come`
             } back into the curated abundance table.`
           : ".") +
         "\n\nCancel leaves the rule on. Verdicts you set by hand are not touched.";
@@ -27328,14 +27339,12 @@ const defaultFilter = () => ({
         "Cancel leaves the rule on. Actions you set by hand are not touched.";
     } else {
       body =
-        `${plural(n, "sample")} no event targets ${n === 1 ? "shows" : "show"} a default value, not a decision (${[
-          v.correct && `${v.correct} Not contaminated`,
-          v.keep && `${v.keep} Keep`,
-        ]
-          .filter(Boolean)
-          .join(", ")}).\n\n` +
-        `Keep them as my decisions: ${n === 1 ? "it gets" : "each gets"} that Not contaminated and Keep set by hand, without the default tag; the Keeps then count as Keep decisions.\n\n` +
-        `Clear them: ${n === 1 ? "it goes" : "they go"} back to Pending with no action, and ${n === 1 ? "stays" : "stay"} in the curated abundance table, like any sample without Suppress.\n\n` +
+        `${plural(n, "sample")} no event targets ${n === 1 ? "shows" : "show"} a default value, not a decision (${defaultBreakdown(v)}).\n\n` +
+        `Keep them as my decisions: ${v.correct + v.keep === 1 ? "that default is" : "those defaults are"} written as set by hand, without the default tag` +
+        (v.keep > 0
+          ? `; ${v.keep === 1 ? "the Keep then counts as a Keep decision" : "the Keeps then count as Keep decisions"}.`
+          : ".") +
+        `\n\nClear them: ${n === 1 ? "it goes" : "they go"} back to Pending with no action (a verdict you set stays), and ${n === 1 ? "stays" : "stay"} in the curated abundance table, like any sample without Suppress.\n\n` +
         "Cancel leaves the rule on. Values you set by hand are not touched.";
     }
     setBulkConfirm({
@@ -28208,14 +28217,19 @@ const defaultFilter = () => ({
     // What the tags mean under the session's automatic rules, and which
     // rules it has switched off: a rule that is off sets no value, so
     // neither tag can come from it.
+    const verdictsFollow = ruleOn(curationRules, "verdictFromEvents");
+    const suppressPaired = ruleOn(curationRules, "suppressContaminated");
     const autoSources = [
-      ruleOn(curationRules, "verdictFromEvents") && "a verdict derived from the event evaluations",
-      ruleOn(curationRules, "suppressContaminated") && "the Suppress that goes with a Contaminated verdict",
+      verdictsFollow && "a verdict derived from the event evaluations",
+      suppressPaired && "the Suppress that goes with a Contaminated verdict",
     ].filter(Boolean);
+    // What "auto" can mark, with its article.
+    const autoValue =
+      verdictsFollow && suppressPaired ? "a verdict or an action" : verdictsFollow ? "a verdict" : "an action";
     const defaultOn = ruleOn(curationRules, "neverTargetedDefault");
     const tagLegend = [
       autoSources.length > 0 &&
-        `<em>auto</em> marks a ${autoSources.length > 1 ? "verdict or an action" : autoSources[0].startsWith("a verdict") ? "verdict" : "action"} set by a rule — ${autoSources.join(", or ")}`,
+        `<em>auto</em> marks ${autoValue} set by a rule — ${autoSources.join(", or ")}`,
       defaultOn &&
         `<em>default</em> ${autoSources.length > 0 ? "" : "marks "}the Not contaminated + Keep of a sample no event targets`,
     ].filter(Boolean);

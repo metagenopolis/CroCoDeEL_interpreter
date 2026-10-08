@@ -617,6 +617,45 @@ try {
     check(s.keep === NEVER_TARGETED, "R3 Keep: as many Keep decisions as the question said", `keep=${s.keep}`);
   });
 
+  /* One value of a rule, and one rule off at a time: the question and the
+     notice speak of one sample, and the samples report's legend says what
+     "auto" can mark under the rules left on. */
+  await scenario("texts with one value, one rule off", async (page) => {
+    await clickEvent(page, "63D250", "63D9", "tp"); // automatic Contaminated + Suppress
+    const question = await switchOff(page, "verdictFromEvents", "Clear them");
+    check(
+      /1 sample has a verdict derived from its events \(1 Contaminated\)\. Keep them as my decisions: the verdict stays, as yours, without the auto tag; the Suppress paired with it stays automatic\. Clear them: this sample goes back to Pending, and the Suppress that went with its automatic Contaminated verdict goes too: it comes back into the curated abundance table\./.test(question || ""),
+      "R1 off with one value: the question speaks of one sample",
+      question,
+    );
+    await closeConfig(page);
+    await openTab(page, "Export");
+    const legendOf = (html) => (html || "").match(/In the table, <em>auto<\/em>.*?(?=<\/div>)/)?.[0] || (html || "").match(/Every verdict and action.*?(?=<\/div>)/)?.[0] || "";
+    let legend = legendOf(await download(page, page.getByRole("button", { name: "Download samples HTML" }).first()));
+    check(
+      legend ===
+        "In the table, <em>auto</em> marks an action set by a rule — the Suppress that goes with a Contaminated verdict — and <em>default</em> the Not contaminated + Keep of a sample no event targets; the others were set by hand. Automatic rules switched off for this session (Configuration): Sample verdict from the event evaluations.",
+      "R1 off: the samples report's legend says auto marks an action",
+      legend,
+    );
+    const notice = await switchOn(page, "verdictFromEvents");
+    check(
+      /^“Sample verdict from the event evaluations” switched on\. 1 sample got an automatic verdict from its events \(1 Contaminated\); it is paired with Suppress and leaves the curated abundance table\. Verdicts you set by hand are unchanged\./.test(notice || ""),
+      "R1 on with one value: the notice speaks of one sample",
+      notice,
+    );
+    await switchOff(page, "suppressContaminated", "Clear them");
+    await closeConfig(page);
+    await openTab(page, "Export");
+    legend = legendOf(await download(page, page.getByRole("button", { name: "Download samples HTML" }).first()));
+    check(
+      legend ===
+        "In the table, <em>auto</em> marks a verdict set by a rule — a verdict derived from the event evaluations — and <em>default</em> the Not contaminated + Keep of a sample no event targets; the others were set by hand. Automatic rules switched off for this session (Configuration): Suppress paired with Contaminated.",
+      "R2 off: the samples report's legend says auto marks a verdict",
+      legend,
+    );
+  });
+
   /* ------------------------------------------------------- every rule off */
   await scenario("all rules off", async (page) => {
     // Nothing evaluated yet: R1 and R2 have no value, so no question.
