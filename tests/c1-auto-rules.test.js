@@ -159,7 +159,18 @@ describe("R2 off: Contaminated never adds or removes a Suppress", () => {
   });
 
   it("removes no Suppress when the sample stops being Contaminated", () => {
-    // A Suppress the curator set, then a verdict that is not Contaminated.
+    // The Suppress the rule had paired with an automatic Contaminated:
+    // with R2 off, events that no longer call for Contaminated leave it
+    // where it is; all on, it goes with the verdict.
+    const entry = { verdict: "contaminated", verdictAuto: true, action: "suppress", actionAuto: true };
+    expect(syncSampleEntry(entry, "correct", R2_OFF)).toEqual({
+      verdict: "correct",
+      verdictAuto: true,
+      action: "suppress",
+      actionAuto: true,
+    });
+    expect(syncSampleEntry(entry, "correct")).toEqual({ verdict: "correct", verdictAuto: true });
+    // A Suppress the curator set stays whatever the verdict, as always.
     let sc = withManualAction({}, "T1", "suppress", events, R2_OFF);
     sc = withManualVerdict(sc, "T1", "correct", events, R2_OFF);
     expect(sc.T1).toEqual({ verdict: "correct", action: "suppress" });
@@ -235,9 +246,14 @@ describe("R3 off: a sample no event targets shows nothing by default", () => {
     expect(eff.Z).toMatchObject({ verdict: "correct", action: "keep", notes: "blank" });
   });
 
-  it("counts no Keep, and the curated table keeps such a sample", () => {
+  it("gives such a sample no action: neither Keep nor Suppress, and the curated table keeps it", () => {
     const eff = buildEffectiveSampleCuration({}, never, R3_OFF);
+    // Not even the default Keep (which no count includes): no action at all.
+    for (const id of never) expect(eff[id]?.action, id).toBeUndefined();
     expect(sampleActionCounts(eff)).toEqual({ keep: 0, suppress: 0 });
+    // A Keep the curator sets on it is a Keep decision.
+    const kept = buildEffectiveSampleCuration({ Z: { verdict: "correct", action: "keep" } }, never, R3_OFF);
+    expect(sampleActionCounts(kept)).toEqual({ keep: 1, suppress: 0 });
   });
 
   it("names no origin 'default'", () => {
