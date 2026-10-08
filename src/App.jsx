@@ -23174,7 +23174,12 @@ const HelpTab = ({ onStartTour }) => {
                 automatically, but that is only the default: you can
                 mark a sample yourself (even while its events are still
                 pending), and your call is never overridden — see the
-                "Event vs sample curation" section above.
+                "Event vs sample curation" section above. To make every
+                sample verdict yourself, switch off{" "}
+                <em>Sample verdict from the event evaluations</em> in
+                Configuration (gear icon → <em>Automatic sample
+                decisions</em>): evaluating events then never sets or
+                clears a sample verdict.
               </p>
             </div>
             <div>
@@ -23192,7 +23197,12 @@ const HelpTab = ({ onStartTour }) => {
                 sample yourself), and any verdict or action you set
                 replaces it. The "never targeted" set is computed from
                 the unfiltered events, so a transient filter cannot
-                change it.
+                change it. Configuration (gear icon → <em>Automatic sample
+                decisions</em>) can switch this default off —{" "}
+                <em>Not contaminated + Keep for samples no event
+                targets</em>: such a sample is then Pending with no
+                action until you decide, and stays in the curated
+                abundance table.
               </p>
             </div>
             <div>

@@ -850,6 +850,23 @@ try {
     );
     check(errors2.length === 0, "two tabs: no JS error in the second", errors2[0] || "");
   });
+
+  /* The FAQ answers a curator reads to stop these decisions name the
+     switches. */
+  await scenario("the Help FAQ names the switches", async (page) => {
+    await openTab(page, "Help");
+    const faq = (await page.locator("#h-faq").innerText()).replace(/\s+/g, " ");
+    check(
+      /your call is never overridden — see the "Event vs sample curation" section above\. To make every sample verdict yourself, switch off Sample verdict from the event evaluations in Configuration/.test(faq),
+      "FAQ evaluation vs verdict: the sample verdict from the events can be switched off",
+      faq.match(/A TP event makes its target Contaminated[^?]*/)?.[0] || faq.slice(0, 300),
+    );
+    check(
+      /can switch this default off — Not contaminated \+ Keep for samples no event targets: such a sample is then Pending with no action until you decide/.test(faq),
+      "FAQ never-targeted default: the default can be switched off",
+      faq.match(/A sample that is never the target[^?]*/)?.[0] || "",
+    );
+  });
 } finally {
   await browser.close();
   stopServer();
