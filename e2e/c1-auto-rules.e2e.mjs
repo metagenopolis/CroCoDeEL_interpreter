@@ -997,6 +997,60 @@ try {
     check(sc["63D9"] === undefined, "…under which a TP sets no sample verdict", show(sc["63D9"]));
   });
 
+  /* The curated events TSV does not hold the rules. Reloaded under the
+     ones it was written with, it gives back the same curated table;
+     under others, the empty action of a Contaminated target is filled in,
+     and the banner must say why — not blame an earlier version. */
+  await scenario("the events TSV, written with the Suppress pairing off", async (page, ctx) => {
+    await switchOff(page, "suppressContaminated", "Clear them"); // nothing to clear: no question
+    await closeConfig(page);
+    await clickEvent(page, "63D250", "63D9", "tp"); // automatic Contaminated, no action
+    check((await curatedCard(page)) === "91 of 91", "Suppress pairing off: 63D9, Contaminated, stays in the curated table");
+    await openTab(page, "Export");
+    const tsv = await download(page, page.getByRole("button", { name: /Download events TSV/i }).first());
+    const load = async (p, choice) => {
+      await tsvInput(p, 0).setInputFiles({
+        name: "contamination_events_curated.tsv",
+        mimeType: "text/tab-separated-values",
+        buffer: Buffer.from(tsv || ""),
+      });
+      await p.waitForTimeout(1500);
+      if (choice) {
+        await p
+          .getByRole("dialog", { name: "Replace the events file?" })
+          .getByRole("button", { name: choice, exact: true })
+          .click();
+      }
+      await p.waitForTimeout(1000);
+      return (await p.locator("[data-notice]").innerText().catch(() => "")).replace(/\s+/g, " ");
+    };
+    // Started fresh in this browser: the last choice, the pairing off.
+    let notice = await load(page, "Start fresh");
+    check(
+      (await curatedCard(page)) === "91 of 91" && !/Now to suppress/.test(notice),
+      "reloaded under the rules it was written with, the curated table is the same",
+      notice.slice(0, 300),
+    );
+    // Another browser, every rule on: 63D9 is suppressed, and the banner
+    // says it is the session's pairing, which was off when the file was
+    // written.
+    const other = await ctx.browser().newContext({ viewport: { width: 1500, height: 1000 } });
+    const p2 = await other.newPage();
+    const errors2 = trackErrors(p2);
+    await p2.addInitScript(() => localStorage.setItem("crocodeel-tutorial-seen", "1"));
+    await p2.goto(BASE, { waitUntil: "networkidle" });
+    await loadDemo(p2);
+    notice = await load(p2, null);
+    check(
+      /Now to suppress, although the file gives no action for it \(1\): 63D9 — it is Contaminated, and Suppress goes with Contaminated in this session\. A file exported while that rule, or the sample verdict from the events, was switched off in Configuration leaves such an action empty/.test(notice) &&
+        (await curatedCard(p2)) === "90 of 91",
+      "reloaded with the pairing on, 63D9 is suppressed and the banner says why",
+      notice.slice(0, 400),
+    );
+    check(errors2.length === 0, "the other browser: no JS error", errors2[0] || "");
+    await other.close();
+  });
+
   /* ---------------------------------------------------------- persistence */
   await scenario("saved with the session", async (page, ctx) => {
     await switchOff(page, "verdictFromEvents", "Clear them");
