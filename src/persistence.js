@@ -14,8 +14,10 @@
      metadata  the parsed metadata.
      plate     the parsed plate map.
      curation  the curator's work: event verdicts and notes by event id,
-               the sample curation and the model version it follows, the
-               study title. Small, rewritten on every evaluation. It also
+               the sample curation, the model version it follows and the
+               automatic rules the session has switched on or off
+               (curationRules, src/curation.js), the study title. Small,
+               rewritten on every evaluation. It also
                carries the session's revision (rev): every write of the
                records above checks and bumps it (src/storage.js), so a
                browser tab holding an older copy cannot overwrite a newer
@@ -32,8 +34,8 @@
 
    Every reader gets the same session object back:
 
-     { rawEvents, sampleCuration, sampleCurationVersion, runMetadata,
-       eventsWarnings, metadata, plateMap, ab, analysisTitle,
+     { rawEvents, sampleCuration, sampleCurationVersion, curationRules,
+       runMetadata, eventsWarnings, metadata, plateMap, ab, analysisTitle,
        tab, selId, filter, sort }
 
    The session JSON (Download / Import session) is the same session under
@@ -43,7 +45,14 @@
    the same readers at every boot (checkStoredSession): both repair what
    the earlier versions left in a session, and say so. */
 
-import { isSet, migrateSampleCuration, SAMPLE_CURATION_VERSION } from "./curation.js";
+import {
+  CURATION_RULES,
+  DEFAULT_CURATION_RULES,
+  isSet,
+  migrateSampleCuration,
+  normalizeCurationRules,
+  SAMPLE_CURATION_VERSION,
+} from "./curation.js";
 import { isReservedId, remapMetadata, splitSpeciesList } from "./parsing.js";
 
 export const LAYOUT_VERSION = 2;
@@ -180,6 +189,9 @@ export function curationRecord(s, abToken) {
     notes,
     sampleCuration: s.sampleCuration || {},
     sampleCurationVersion: s.sampleCurationVersion ?? null,
+    // In this record, so that switching a rule — a change of the curation
+    // — is checked against the other tabs like any other.
+    curationRules: normalizeCurationRules(s.curationRules),
     analysisTitle: s.analysisTitle || "",
     abToken: abToken ?? null,
   };
@@ -226,6 +238,7 @@ export function dirtyRecords(saved, s) {
     saved.rawEvents !== s.rawEvents ||
     saved.sampleCuration !== s.sampleCuration ||
     saved.sampleCurationVersion !== s.sampleCurationVersion ||
+    saved.curationRules !== s.curationRules ||
     saved.analysisTitle !== s.analysisTitle;
   const ui =
     saved.tab !== s.tab ||
@@ -291,6 +304,8 @@ export function sessionFromRecords({ events, ab, metadata, plate, curation, ui }
     rawEvents,
     sampleCuration: isObj(curation.sampleCuration) ? curation.sampleCuration : {},
     sampleCurationVersion: curation.sampleCurationVersion ?? undefined,
+    // A record written before the switches: every rule on.
+    curationRules: normalizeCurationRules(curation.curationRules),
     runMetadata: events?.runMetadata ?? null,
     eventsWarnings: Array.isArray(events?.warnings) ? events.warnings : [],
     metadata: isObj(metadata) ? metadata : null,
@@ -338,6 +353,8 @@ export function sessionFromLegacyMain(main, ab) {
     rawEvents: main.rawEvents,
     sampleCuration: isObj(main.sampleCuration) ? main.sampleCuration : {},
     sampleCurationVersion: main.sampleCurationVersion,
+    // That layout predates the switches: every rule on.
+    curationRules: DEFAULT_CURATION_RULES,
     runMetadata: main.runMetadata ?? null,
     eventsWarnings: [],
     metadata: isObj(main.metadata) ? main.metadata : null,
@@ -498,6 +515,9 @@ export function sessionToJSON(s, { events = s.rawEvents || [], counts, eventFiel
     // version tells the importer which model the map follows.
     sample_curation: sc,
     sample_curation_version: s.sampleCurationVersion ?? null,
+    // Which automatic rules derive sample values in this session
+    // (src/curation.js): a file without it has them all on.
+    curation_rules: normalizeCurationRules(s.curationRules),
     // What the events parser reported about the file, shown again with
     // the other data warnings.
     events_warnings: Array.isArray(s.eventsWarnings) ? s.eventsWarnings : [],
@@ -1132,6 +1152,35 @@ function readRunMetadata(rm, p) {
   return out;
 }
 
+/** The automatic rules of a session (src/curation.js): true or false for
+    each rule. A session without them — every session saved before they
+    could be switched off — has every rule on. A rule given as anything
+    but true or false is an error, and is on. So is a key that names no
+    rule, and it is left out: a misspelt rule ("verdict_from_events":
+    false) used to import silently with every rule on. The object itself
+    when it is read as it is (normalizeCurationRules); otherwise exactly
+    the three rules. */
+function readCurationRules(rules, p) {
+  if (rules == null) return DEFAULT_CURATION_RULES;
+  if (!isObj(rules)) {
+    p.errors.push('"curation_rules" must give each automatic rule as true or false.');
+    return DEFAULT_CURATION_RULES;
+  }
+  for (const r of CURATION_RULES) {
+    if (rules[r] != null && typeof rules[r] !== "boolean") {
+      p.errors.push(`curation_rules: "${r}" is neither true nor false.`);
+    }
+  }
+  for (const key of Object.keys(rules)) {
+    if (CURATION_RULES.includes(key)) continue;
+    p.errors.push(
+      `curation_rules: "${key.slice(0, 40)}" is not an automatic rule ` +
+        `(they are ${CURATION_RULES.join(", ")}).`,
+    );
+  }
+  return normalizeCurationRules(rules);
+}
+
 /** Every part of a session, read (see above). */
 function readParts(parts, p, { stored }) {
   const { events, renumbered } = readEvents(parts.events, p, { stored });
@@ -1140,6 +1189,7 @@ function readParts(parts, p, { stored }) {
     events,
     renumbered,
     sampleCuration: renameCuratedSamples(readSampleCuration(parts.sampleCuration, p), ab.renamed),
+    curationRules: readCurationRules(parts.curationRules, p),
     ab: ab.ab,
     metadata: readMetadata(parts.metadata, p),
     plateMap: readPlateMap(parts.plateMap, p),
@@ -1171,6 +1221,7 @@ export function checkStoredSession(s) {
     {
       events: s.rawEvents ?? [],
       sampleCuration: s.sampleCuration,
+      curationRules: s.curationRules,
       ab: s.ab,
       metadata: s.metadata,
       plateMap: s.plateMap,
@@ -1184,6 +1235,7 @@ export function checkStoredSession(s) {
     ...s,
     rawEvents: parts.events,
     sampleCuration: parts.sampleCuration,
+    curationRules: parts.curationRules,
     ab: parts.ab,
     metadata: parts.metadata,
     plateMap: parts.plateMap,
@@ -1209,7 +1261,9 @@ export function checkStoredSession(s) {
     current records: read by the readers (checkStoredSession), its
     metadata read again with the current header rules (remapMetadata),
     its sample curation brought up to date with the current model
-    (migrateSampleCuration), its events without their legacy actions.
+    (migrateSampleCuration, under the session's automatic rules: all on,
+    since those layouts predate the switches), its events without their
+    legacy actions.
     Returns { session, notes, changes }: what the readers repaired and
     what the migration changed in the curated output, for the notice of
     the tab that writes it.
@@ -1222,7 +1276,12 @@ export function checkStoredSession(s) {
 export function upgradedSession(stored) {
   const checked = checkStoredSession(stored);
   const s = checked.session;
-  const migrated = migrateSampleCuration(s.rawEvents, s.sampleCuration, s.sampleCurationVersion);
+  const migrated = migrateSampleCuration(
+    s.rawEvents,
+    s.sampleCuration,
+    s.sampleCurationVersion,
+    s.curationRules,
+  );
   return {
     session: {
       ...s,
@@ -1275,7 +1334,9 @@ function readReservedIds(json, errors) {
     Returns { ok: false, errors } (the first few problems, each naming
     where it is), or { ok: true, session, changes, repairs }: `session`
     has the shape every reader of this module uses, its sample curation
-    brought up to date with the current model (migrateSampleCuration),
+    brought up to date with the current model (migrateSampleCuration)
+    under the file's own automatic rules (`curation_rules`: every rule on
+    in a file without them),
     `changes` what that migration changed in the curated output (null:
     nothing to tell), and `repairs` what was repaired in the file (see
     above), for the notice of the import. */
@@ -1293,6 +1354,7 @@ export function sessionFromPayload(json, { defaults, tabs } = {}) {
     {
       events: "events" in json ? json.events : [],
       sampleCuration: json.sample_curation,
+      curationRules: json.curation_rules,
       ab: json.abundance,
       metadata: json.metadata,
       plateMap: json.plate_map,
@@ -1302,7 +1364,8 @@ export function sessionFromPayload(json, { defaults, tabs } = {}) {
     p,
     { stored: false },
   );
-  const { events, renumbered, sampleCuration, ab, metadata, plateMap, runMetadata } = parts;
+  const { events, renumbered, sampleCuration, curationRules, ab, metadata, plateMap, runMetadata } =
+    parts;
   const ui = json.ui_state == null ? {} : json.ui_state;
   if (!isObj(ui)) p.errors.push('"ui_state" must be an object.');
   if (p.errors.length > 0) return { ok: false, errors: listed(p.errors) };
@@ -1313,7 +1376,7 @@ export function sessionFromPayload(json, { defaults, tabs } = {}) {
     };
   }
   const version = typeof json.sample_curation_version === "number" ? json.sample_curation_version : undefined;
-  const migrated = migrateSampleCuration(events, sampleCuration, version);
+  const migrated = migrateSampleCuration(events, sampleCuration, version, curationRules);
   const rawEvents = events.map((e) => {
     if (!e.action) return e;
     const { action: _drop, ...rest } = e;
@@ -1334,6 +1397,8 @@ export function sessionFromPayload(json, { defaults, tabs } = {}) {
       // Brought up to date by the migration above.
       sampleCuration: migrated.sampleCuration,
       sampleCurationVersion: SAMPLE_CURATION_VERSION,
+      // The session's own rules: a file without them has every rule on.
+      curationRules,
       runMetadata,
       eventsWarnings: parts.eventsWarnings,
       metadata,

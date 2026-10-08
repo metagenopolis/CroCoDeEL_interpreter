@@ -27,25 +27,35 @@
    decision, so it never erases one of the session's.
 
    Then the automatic sample values are recomputed from every event with
-   the shared rule (syncSampleCuration, src/curation.js), and the file's
+   the shared rule (syncSampleCuration, src/curation.js: the rules the
+   session has switched on — carried over, its own), and the file's
    sample verdicts and actions applied: a target whose rows all give the
    same verdict (then the same keep / suppress), different from the one
    the rule (or the curator) leaves it, gets it as the curator's own
    value. An export reloaded into an empty session thus comes back as it
    was exported: evaluations, notes, the events added by hand, the
    targets' verdicts and actions, and so every count and the curated
-   abundance table. Without the targets' verdicts — the file of an
-   earlier version — a target the curator had kept although a true
-   positive targets it (a verdict set against its events, a cleared
-   Suppress) comes back suppressed: the notice names those. What the
-   events TSV does not hold — the notes of the samples, the verdict and
-   the action of a sample no event targets — only the session JSON
+   abundance table — under the automatic rules it was exported with. The
+   file does not hold them: an empty cell is a value the rules left
+   empty, and a session with another choice in Configuration derives
+   other values there — a Contaminated target left with no action while
+   Suppress paired with Contaminated was off comes back suppressed when
+   it is on.
+   Without the targets' verdicts — the file of an earlier version — a
+   target the curator had kept although a true positive targets it (a
+   verdict set against its events, a cleared Suppress) comes back
+   suppressed too: the notice names those. What the events TSV does not
+   hold — the notes of the samples, the verdict and the action of a
+   sample no event targets, the automatic rules — only the session JSON
    keeps. */
 
 import {
+  DEFAULT_CURATION_RULES,
   hasManualAction,
   hasManualVerdict,
   isSet,
+  normalizeCurationRules,
+  ruleOn,
   syncSampleCuration,
   withManualAction,
   withManualVerdict,
@@ -105,6 +115,12 @@ function manualPart(entry) {
                                      every cell of them is empty
       fileColumns                    which ones (parseEvents'
                                      `curationColumns`; null: none)
+      rules                          the automatic rules of the session
+                                     the new events go into (src/
+                                     curation.js; all on by default):
+                                     carried over, the session's own;
+                                     started fresh, those of a new
+                                     session
 
     Returns { events, sampleCuration, report }. `events` are the new
     file's, in its order and with its ids, `fileAction`,
@@ -125,6 +141,7 @@ export function replaceEvents({
   carryOver,
   fileHasCuration = false,
   fileColumns = null,
+  rules = DEFAULT_CURATION_RULES,
 }) {
   const report = {
     carryOver: !!carryOver,
@@ -156,6 +173,9 @@ export function replaceEvents({
     suppressedWithoutAction: [],
     fileHasCuration: !!fileHasCuration,
     previous: curationSummary(oldEvents, oldSampleCuration),
+    // The automatic rules the new events go into: the banner says what
+    // became of a target the file leaves to them.
+    rules: normalizeCurationRules(rules),
   };
   let manualCount = 0;
   const asManual = (e) => ({ ...e, id: `manual-${++manualCount}` });
@@ -252,8 +272,9 @@ export function replaceEvents({
     }
   }
 
-  // Every automatic value from the events, with the shared rule.
-  sampleCuration = syncSampleCuration(sampleCuration, events);
+  // Every automatic value from the events, with the shared rule (those
+  // of its rules the session has on).
+  sampleCuration = syncSampleCuration(sampleCuration, events, undefined, rules);
 
   // The file's values of a target sample: one per target, when all its
   // rows agree ("": none given; null: the rows disagree).
@@ -277,7 +298,7 @@ export function replaceEvents({
     const current = sampleCuration[target];
     if ((current?.verdict || null) === verdict) continue;
     if (hasManualVerdict(current)) report.replacedSampleVerdicts++;
-    sampleCuration = withManualVerdict(sampleCuration, target, verdict, events);
+    sampleCuration = withManualVerdict(sampleCuration, target, verdict, events, rules);
     report.fileSampleVerdicts++;
   }
   // Then its actions.
@@ -293,7 +314,7 @@ export function replaceEvents({
     const current = sampleCuration[target];
     if ((current?.action || null) === action) continue;
     if (hasManualAction(current)) report.replacedActions++;
-    sampleCuration = withManualAction(sampleCuration, target, action, events);
+    sampleCuration = withManualAction(sampleCuration, target, action, events, rules);
     report.fileActions++;
   }
   if (report.fileActions > 0 || report.conflictingActions > 0) report.fileHasCuration = true;
@@ -400,14 +421,20 @@ export function replaceReportLines(report) {
           ".",
       );
     }
-    for (const [n, what] of [
-      [r.conflictingSampleVerdicts, "sample verdicts"],
-      [r.conflictingActions, "actions"],
+    // A target whose rows disagree takes none of their values: the
+    // automatic rule decides — unless it is switched off, and then nothing
+    // does.
+    for (const [n, what, rule, ruleName] of [
+      [r.conflictingSampleVerdicts, "sample verdicts", "verdictFromEvents", "the sample verdict from the events"],
+      [r.conflictingActions, "actions", "suppressContaminated", "Suppress paired with Contaminated"],
     ]) {
       if (!(n > 0)) continue;
       lines.push(
         `${plural(n, "target")} whose rows give different ${what} ` +
-          `${n === 1 ? "was" : "were"} left to the automatic rule.`,
+          (ruleOn(r.rules, rule)
+            ? `${n === 1 ? "was" : "were"} left to the automatic rule.`
+            : `took none of them, and no rule sets one: ${ruleName} is switched off in Configuration ` +
+              `(set ${n === 1 ? "it" : "them"} in the Samples tab).`),
       );
     }
     const unkept = r.suppressedWithoutAction || [];
@@ -415,9 +442,11 @@ export function replaceReportLines(report) {
       const list = unkept.length > 12 ? `${unkept.slice(0, 12).join(", ")} … (+${unkept.length - 12})` : unkept.join(", ");
       lines.push(
         `Now to suppress, although the file gives no action for ${unkept.length === 1 ? "it" : "them"} ` +
-          `(${unkept.length}): ${list} — a true-positive event targets ${unkept.length === 1 ? "it" : "them"}. ` +
-          "A file written by an earlier version leaves the action empty where you had removed a Suppress " +
-          "or set the sample's verdict against its events: set Keep in the Samples tab to keep a sample.",
+          `(${unkept.length}): ${list} — ${unkept.length === 1 ? "it is" : "they are"} Contaminated, ` +
+          "and Suppress goes with Contaminated in this session. A file exported while that rule, or the " +
+          "sample verdict from the events, was switched off in Configuration leaves such an action empty, " +
+          "as does a file written by an earlier version where you had removed a Suppress or set the " +
+          "sample's verdict against its events: set Keep in the Samples tab to keep a sample.",
       );
     }
     if (r.notesFromFile > 0) {

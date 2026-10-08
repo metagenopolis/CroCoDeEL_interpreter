@@ -34,7 +34,65 @@
    no event targets (buildEffectiveSampleCuration), what a click on a
    sample's verdict or action chip does in every view (verdictChipState,
    actionChipState), the keep / suppress counts (sampleActionCounts) and
-   the migration of stored sessions (migrateSampleCuration). */
+   the migration of stored sessions (migrateSampleCuration).
+
+   Each of the three automatic rules is a switch (Configuration →
+   Automatic sample decisions), saved with the session:
+
+     verdictFromEvents     the verdict rule above: a sample's verdict
+                           follows the evaluations of its events;
+     suppressContaminated  the action rule above: Suppress goes with a
+                           Contaminated verdict, automatic or not;
+     neverTargetedDefault  a sample no event targets is Not contaminated
+                           + Keep by default (buildEffectiveSampleCuration).
+
+   Every function here takes the session's rules (`rules`, all on by
+   default: the model of every session saved before the switches) and
+   applies only the rules that are on. A rule that is off writes nothing
+   and clears nothing: the value it would derive is the curator's to set.
+   Switched off, a rule leaves none of its values behind — they are
+   cleared or made the curator's own (clearRuleValues, keepRuleValues);
+   switched on, it is applied to every sample again (applyRule). */
+
+/** The three rules, in the order Configuration lists them. */
+export const CURATION_RULES = Object.freeze([
+  "verdictFromEvents",
+  "suppressContaminated",
+  "neverTargetedDefault",
+]);
+
+/** Every rule on: today's model, and that of every session saved before
+    the rules could be switched off. */
+export const DEFAULT_CURATION_RULES = Object.freeze({
+  verdictFromEvents: true,
+  suppressContaminated: true,
+  neverTargetedDefault: true,
+});
+
+/** True when `rule` is on in `rules` (a rule `rules` does not name is
+    on). */
+export const ruleOn = (rules, rule) => rules?.[rule] !== false;
+
+/** The rules as a session keeps them: true / false for each of
+    CURATION_RULES and nothing else, a rule `raw` does not set (or sets to
+    anything but false) on — a session saved before the switches has every
+    rule on. `raw` itself when it already holds exactly that, so a session
+    read back keeps the very object it was saved with; a key that names no
+    rule is left out (a misspelt rule used to stay in the session, saved
+    and exported again). */
+export function normalizeCurationRules(raw) {
+  const obj = raw !== null && typeof raw === "object" && !Array.isArray(raw);
+  if (
+    obj &&
+    CURATION_RULES.every((r) => typeof raw[r] === "boolean") &&
+    Object.keys(raw).length === CURATION_RULES.length
+  ) {
+    return raw;
+  }
+  const out = {};
+  for (const r of CURATION_RULES) out[r] = !(obj && raw[r] === false);
+  return CURATION_RULES.every((r) => out[r]) ? DEFAULT_CURATION_RULES : out;
+}
 
 /** A stored verdict / action that counts as set. "pending" is how the
     pickers spell "no verdict" and is never stored on purpose, but older
@@ -114,13 +172,15 @@ function sameEntry(a, b) {
 
 /** One sample entry brought in line with the rule, given the automatic
     verdict its events call for. Manual values are kept as they are;
-    automatic ones are recomputed. Returns `entry` itself when nothing
-    changes, and null when nothing is left worth storing (no verdict, no
-    action, no notes). */
-export function syncSampleEntry(entry, autoVerdict) {
+    automatic ones are recomputed. A rule that is off in `rules` leaves
+    its field as it is: with verdictFromEvents off, the verdict (and
+    `autoVerdict` is not read); with suppressContaminated off, the
+    action. Returns `entry` itself when nothing changes, and null when
+    nothing is left worth storing (no verdict, no action, no notes). */
+export function syncSampleEntry(entry, autoVerdict, rules = DEFAULT_CURATION_RULES) {
   const cur = entry || {};
   const next = { ...cur };
-  if (!hasManualVerdict(cur)) {
+  if (ruleOn(rules, "verdictFromEvents") && !hasManualVerdict(cur)) {
     delete next.verdict;
     delete next.verdictAuto;
     if (autoVerdict) {
@@ -128,7 +188,7 @@ export function syncSampleEntry(entry, autoVerdict) {
       next.verdictAuto = true;
     }
   }
-  if (!hasManualAction(cur)) {
+  if (ruleOn(rules, "suppressContaminated") && !hasManualAction(cur)) {
     delete next.action;
     delete next.actionAuto;
     if (next.verdict === "contaminated") {
@@ -153,10 +213,14 @@ function putEntry(curation, sampleId, entry) {
 
 /** Re-apply the rule to `sampleIds` — by default to every sample that has
     an entry or that an event targets. `events` is the event list as it is
-    (or will be, once a pending update lands). Returns `curation` itself
-    when nothing changes. */
-export function syncSampleCuration(curation, events, sampleIds) {
+    (or will be, once a pending update lands). Only the rules on in
+    `rules` apply; with neither the verdict nor the action rule on,
+    nothing is derived from the events. Returns `curation` itself when
+    nothing changes. */
+export function syncSampleCuration(curation, events, sampleIds, rules = DEFAULT_CURATION_RULES) {
   const base = curation || {};
+  const verdicts = ruleOn(rules, "verdictFromEvents");
+  if (!verdicts && !ruleOn(rules, "suppressContaminated")) return base;
   const byTarget = evaluationsByTarget(events);
   const ids =
     sampleIds ?? new Set([...Object.keys(base), ...byTarget.keys()]);
@@ -164,7 +228,11 @@ export function syncSampleCuration(curation, events, sampleIds) {
   for (const id of ids) {
     if (!id) continue;
     const cur = base[id];
-    const synced = syncSampleEntry(cur, autoSampleVerdict(byTarget.get(id)));
+    const synced = syncSampleEntry(
+      cur,
+      verdicts ? autoSampleVerdict(byTarget.get(id)) : null,
+      rules,
+    );
     if (synced === (cur ?? null)) continue;
     if (!next) next = { ...base };
     if (synced) next[id] = synced;
@@ -175,8 +243,10 @@ export function syncSampleCuration(curation, events, sampleIds) {
 
 /** Record the curator's verdict for one sample, then re-apply the rule.
     null / "pending" removes the curator's verdict: the automatic one
-    (from the events) applies again. */
-export function withManualVerdict(curation, sampleId, verdict, events) {
+    (from the events) applies again — with verdictFromEvents off, the
+    sample has no verdict. A Contaminated verdict is paired with Suppress
+    while suppressContaminated is on. */
+export function withManualVerdict(curation, sampleId, verdict, events, rules = DEFAULT_CURATION_RULES) {
   const base = curation || {};
   if (!sampleId) return base;
   const entry = { ...(base[sampleId] || {}) };
@@ -186,14 +256,19 @@ export function withManualVerdict(curation, sampleId, verdict, events) {
   return putEntry(
     base,
     sampleId,
-    syncSampleEntry(entry, autoVerdictOf(events, sampleId)),
+    syncSampleEntry(
+      entry,
+      ruleOn(rules, "verdictFromEvents") ? autoVerdictOf(events, sampleId) : null,
+      rules,
+    ),
   );
 }
 
 /** Record the curator's action for one sample, then re-apply the rule.
     null removes the curator's action: a Contaminated sample then gets
-    its automatic Suppress back. */
-export function withManualAction(curation, sampleId, action, events) {
+    its automatic Suppress back — with suppressContaminated off, it has
+    no action. */
+export function withManualAction(curation, sampleId, action, events, rules = DEFAULT_CURATION_RULES) {
   const base = curation || {};
   if (!sampleId) return base;
   const entry = { ...(base[sampleId] || {}) };
@@ -203,7 +278,11 @@ export function withManualAction(curation, sampleId, action, events) {
   return putEntry(
     base,
     sampleId,
-    syncSampleEntry(entry, autoVerdictOf(events, sampleId)),
+    syncSampleEntry(
+      entry,
+      ruleOn(rules, "verdictFromEvents") ? autoVerdictOf(events, sampleId) : null,
+      rules,
+    ),
   );
 }
 
@@ -230,10 +309,14 @@ export function sampleCurationKeys(names, curation, events) {
     effective verdict: Suppress goes with Contaminated (syncSampleEntry);
     a sample no event targets (`neverTargeted`) is kept by default while
     it is Not contaminated (buildEffectiveSampleCuration); otherwise
-    none. */
-export function automaticAction(verdict, neverTargeted = false) {
-  if (verdict === "contaminated") return "suppress";
-  if (neverTargeted && verdict === "correct") return "keep";
+    none — and none where the rule is off in `rules`. */
+export function automaticAction(verdict, neverTargeted = false, rules = DEFAULT_CURATION_RULES) {
+  if (verdict === "contaminated") {
+    return ruleOn(rules, "suppressContaminated") ? "suppress" : null;
+  }
+  if (neverTargeted && verdict === "correct" && ruleOn(rules, "neverTargetedDefault")) {
+    return "keep";
+  }
   return null;
 }
 
@@ -250,14 +333,19 @@ export function automaticAction(verdict, neverTargeted = false) {
                             sample no event targets by default.
 
     `neverTargeted` says that no event targets the sample (only the
-    Samples tab lists such samples).
+    Samples tab lists such samples). `rules` are the session's: a rule
+    that is off puts nothing back.
 
     Returns { active, auto, next, returnsTo }: `next` is the action to
     write with withManualAction (null removes the curator's), and
     `returnsTo`, for a removal, the action the rule leaves in its place
     (automaticAction: "suppress", "keep" or null) — what the chip's label
     must announce, since "clear" then does not mean "no action". */
-export function actionChipState(entry, chip, { neverTargeted = false } = {}) {
+export function actionChipState(
+  entry,
+  chip,
+  { neverTargeted = false, rules = DEFAULT_CURATION_RULES } = {},
+) {
   const active = entry?.action === chip;
   const auto = active && !!entry.actionAuto;
   if (!active || auto) return { active, auto, next: chip, returnsTo: undefined };
@@ -265,7 +353,7 @@ export function actionChipState(entry, chip, { neverTargeted = false } = {}) {
     active,
     auto,
     next: null,
-    returnsTo: automaticAction(entry.verdict, neverTargeted),
+    returnsTo: automaticAction(entry.verdict, neverTargeted, rules),
   };
 }
 
@@ -279,17 +367,33 @@ export function actionChipState(entry, chip, { neverTargeted = false } = {}) {
                    applies again. An automatic verdict has nothing to
                    remove: the events still call for it, so it stays.
 
-    Returns { active, auto, next, changes }: `next` is the verdict to
-    write with withManualVerdict ("pending" removes the curator's), and
-    `changes` is false when the click leaves the sample as it is — the
-    chip must then say why instead of promising a change. */
-export function verdictChipState(entry, chip) {
+    Returns { active, auto, next, changes, returnsTo }: `next` is the
+    verdict to write with withManualVerdict ("pending" removes the
+    curator's), `changes` is false when the click leaves the sample as it
+    is — the chip must then say why instead of promising a change — and
+    `returnsTo` says what the sample's verdict is once the curator's is
+    removed, under the session's `rules`: "events" (the verdict its
+    events call for: verdictFromEvents), "default" (the Not contaminated
+    of a sample no event targets, `neverTargeted`: neverTargetedDefault)
+    or null (none: Pending). */
+export function verdictChipState(
+  entry,
+  chip,
+  { neverTargeted = false, rules = DEFAULT_CURATION_RULES } = {},
+) {
   const verdict = isSet(entry?.verdict) ? entry.verdict : "pending";
   const manual = hasManualVerdict(entry);
   const active = verdict === chip;
   const auto = active && verdict !== "pending" && !manual;
   const changes = chip === "pending" ? manual : !(active && manual);
-  return { active, auto, next: chip, changes };
+  const returnsTo = neverTargeted
+    ? ruleOn(rules, "neverTargetedDefault")
+      ? "default"
+      : null
+    : ruleOn(rules, "verdictFromEvents")
+      ? "events"
+      : null;
+  return { active, auto, next: chip, changes, returnsTo };
 }
 
 /** The sample side of a bulk evaluation: for each target of the matched
@@ -309,12 +413,21 @@ export function verdictChipState(entry, chip) {
       note            prepended to each target's notes.
 
     `events` is the event list once the bulk evaluation has landed.
+    `rules` are the session's: "automatic" leaves a target's verdict as
+    it is while verdictFromEvents is off, and its action while
+    suppressContaminated is off — the dialogs then say "(no change)".
 
     The map is copied once, on the first target that changes, the way
     syncSampleCuration does: a copy per changed target (putEntry) made a
     bulk apply quadratic in the number of targets — 150 ms for the 900
     targets of the Sylph benchmark, 3 s for 5,000 and 18 s for 10,000. */
-export function applyTargetSideEffects(curation, events, targets, opts = {}) {
+export function applyTargetSideEffects(
+  curation,
+  events,
+  targets,
+  opts = {},
+  rules = DEFAULT_CURATION_RULES,
+) {
   const base = curation || {};
   const {
     targetVerdict = null,
@@ -323,6 +436,7 @@ export function applyTargetSideEffects(curation, events, targets, opts = {}) {
     skipExistingTargetAction = false,
     note = "",
   } = opts;
+  const verdicts = ruleOn(rules, "verdictFromEvents");
   const byTarget = evaluationsByTarget(events);
   let next = null;
   for (const t of new Set(targets || [])) {
@@ -346,7 +460,11 @@ export function applyTargetSideEffects(curation, events, targets, opts = {}) {
       else delete entry.action;
     }
     if (note) entry.notes = entry.notes ? `${note}\n\n${entry.notes}` : note;
-    const synced = syncSampleEntry(entry, autoSampleVerdict(byTarget.get(t)));
+    const synced = syncSampleEntry(
+      entry,
+      verdicts ? autoSampleVerdict(byTarget.get(t)) : null,
+      rules,
+    );
     if (sameEntry(cur ?? null, synced)) continue;
     if (!next) next = { ...base };
     if (synced) next[t] = synced;
@@ -385,6 +503,16 @@ export function neverTargetedSamples(events, extraSampleIds, tableSample = null)
   return out.sort();
 }
 
+/** Which defaults a sample no event targets gets, given its stored entry:
+    { verdict } the default Not contaminated (it has no verdict), and
+    { action } the default Keep (it has no action and is Not contaminated,
+    by default or not). */
+function neverTargetedDefaults(entry) {
+  const verdict = !isSet(entry?.verdict);
+  const action = !isSet(entry?.action) && (verdict || entry.verdict === "correct");
+  return { verdict, action };
+}
+
 /** The curation every reader shows (tables, counts, colours, reports):
     the stored entries, plus the default of a sample no event targets —
     nothing calls it contaminated, so it is Not contaminated and kept.
@@ -392,24 +520,204 @@ export function neverTargetedSamples(events, extraSampleIds, tableSample = null)
     and never block one: a verdict the curator sets replaces the default
     verdict (and the default Keep only goes with Not contaminated), an
     action the curator sets replaces the default action. Nothing of this
-    is stored. */
-export function buildEffectiveSampleCuration(curation, neverTargeted) {
+    is stored. With neverTargetedDefault off in `rules`, there is no
+    default: such a sample shows what is stored, Pending and no action
+    when nothing is. */
+export function buildEffectiveSampleCuration(
+  curation,
+  neverTargeted,
+  rules = DEFAULT_CURATION_RULES,
+) {
   const base = curation || {};
+  if (!ruleOn(rules, "neverTargetedDefault")) return base;
   let out = null;
   for (const id of neverTargeted || []) {
     const cur = base[id];
-    let entry = cur || {};
-    if (!isSet(entry.verdict)) {
-      entry = { ...entry, verdict: "correct", verdictAuto: true };
+    const defaults = neverTargetedDefaults(cur);
+    if (!defaults.verdict && !defaults.action) continue;
+    const entry = { ...(cur || {}) };
+    if (defaults.verdict) {
+      entry.verdict = "correct";
+      entry.verdictAuto = true;
     }
-    if (!isSet(entry.action) && entry.verdict === "correct") {
-      entry = { ...entry, action: "keep", actionAuto: true };
+    if (defaults.action) {
+      entry.action = "keep";
+      entry.actionAuto = true;
     }
-    if (entry === cur) continue;
     if (!out) out = { ...base };
     out[id] = entry;
   }
   return out || base;
+}
+
+/* ---------- switching a rule off and on ----------
+
+   Switched off (Configuration), a rule must leave none of its values in
+   the session: they would still read "auto" or "default", still count,
+   and come back or go at the next evaluation. The curator chooses, when
+   the session holds any (ruleValues): clear them (clearRuleValues: back
+   to Pending / no action) or keep them as their own decisions
+   (keepRuleValues: the same values, set by hand). Switched on again, a
+   rule is applied to every sample (applyRule). Values the curator set
+   by hand are never touched, so off → keep → on and off → clear → on
+   neither duplicate nor lose one of them. */
+
+/** The values `rule` (one of CURATION_RULES) has set in the session, as
+    the question that switches it off counts them:
+
+      verdictFromEvents     the samples whose verdict comes from their
+                            events, by verdict (`contaminated`, `correct`,
+                            `uncertain`); `suppress` of them hold the
+                            Suppress paired with that automatic
+                            Contaminated, which clearing the verdicts takes
+                            away with them while suppressContaminated is on;
+      suppressContaminated  the samples holding the Suppress paired with
+                            Contaminated (`suppress`);
+      neverTargetedDefault  the samples no event targets (`neverTargeted`)
+                            that show a default: `correct` the default Not
+                            contaminated, `keep` the default Keep.
+
+    `curation` is the stored one (the defaults are derived here, as
+    buildEffectiveSampleCuration derives them). `tableSample` (when an
+    abundance table is loaded: a name → its column in the table, or null —
+    resolveSample, as neverTargetedSamples takes it) makes the names of one
+    table sample one sample: `neverTargeted` holds the events file's
+    spelling of a sample next to the table's ("s3" and "S3"), each with
+    the default, and the question counted the sample twice while the
+    Samples tab shows it once and the Overview counts its Keep once.
+    Returns { samples, contaminated, correct, uncertain, suppress, keep },
+    `samples` sorted (for neverTargetedDefault, under the table's
+    spelling). */
+export function ruleValues(rule, curation, neverTargeted, tableSample = null) {
+  const base = curation || {};
+  const out = { samples: [], contaminated: 0, correct: 0, uncertain: 0, suppress: 0, keep: 0 };
+  if (rule === "neverTargetedDefault") {
+    const bySample = new Map(); // sample → { verdict, action }: its defaults
+    for (const id of neverTargeted || []) {
+      const defaults = neverTargetedDefaults(base[id]);
+      if (!defaults.verdict && !defaults.action) continue;
+      const key = (tableSample && tableSample(id)) || id;
+      const seen = bySample.get(key);
+      bySample.set(key, {
+        verdict: defaults.verdict || !!seen?.verdict,
+        action: defaults.action || !!seen?.action,
+      });
+    }
+    for (const [key, defaults] of bySample) {
+      out.samples.push(key);
+      if (defaults.verdict) out.correct++;
+      if (defaults.action) out.keep++;
+    }
+  } else if (rule === "verdictFromEvents") {
+    for (const [id, c] of Object.entries(base)) {
+      if (!(isSet(c?.verdict) && c.verdictAuto)) continue;
+      out.samples.push(id);
+      if (c.verdict === "contaminated" || c.verdict === "correct" || c.verdict === "uncertain") {
+        out[c.verdict]++;
+      }
+      if (c.verdict === "contaminated" && c.action === "suppress" && c.actionAuto) out.suppress++;
+    }
+  } else if (rule === "suppressContaminated") {
+    for (const [id, c] of Object.entries(base)) {
+      if (!(isSet(c?.action) && c.actionAuto)) continue;
+      out.samples.push(id);
+      if (c.action === "suppress") out.suppress++;
+    }
+  }
+  out.samples.sort();
+  return out;
+}
+
+/** `curation` once `rule` is switched off and its values cleared: an
+    automatic verdict goes (the sample is Pending) — and with it, while
+    suppressContaminated is on in `rules`, the Suppress the rule had
+    paired with it, since the sample is no longer Contaminated; an
+    automatic Suppress goes (no action). The defaults of the samples no
+    event targets are never stored: nothing changes for them, the
+    effective curation no longer adds them. Values set by hand and notes
+    stay; an entry left with nothing is removed. `curation` itself when
+    nothing changes. */
+export function clearRuleValues(rule, curation, rules = DEFAULT_CURATION_RULES) {
+  const base = curation || {};
+  if (rule !== "verdictFromEvents" && rule !== "suppressContaminated") return base;
+  let next = null;
+  for (const [id, cur] of Object.entries(base)) {
+    const entry = { ...(cur || {}) };
+    if (rule === "verdictFromEvents") {
+      if (!cur?.verdictAuto) continue;
+      delete entry.verdict;
+      delete entry.verdictAuto;
+      if (ruleOn(rules, "suppressContaminated") && !hasManualAction(entry)) {
+        delete entry.action;
+        delete entry.actionAuto;
+      }
+    } else {
+      if (!cur?.actionAuto) continue;
+      delete entry.action;
+      delete entry.actionAuto;
+    }
+    if (!next) next = { ...base };
+    if (entry.verdict == null && entry.action == null && !entry.notes) delete next[id];
+    else next[id] = entry;
+  }
+  return next || base;
+}
+
+/** `curation` once `rule` is switched off and its values kept as the
+    curator's own decisions: the same verdicts and actions, without their
+    automatic flag (no "auto" tag; a Keep then counts as a Keep decision).
+    The defaults of the samples no event targets (`neverTargeted`), which
+    are not stored, are written: Not contaminated and / or Keep, set by
+    hand. Every other value stays as it is — with verdictFromEvents kept,
+    a Suppress paired with an automatic Contaminated stays the rule's
+    while suppressContaminated is on, now paired with a Contaminated of
+    the curator's. `curation` itself when nothing changes. */
+export function keepRuleValues(rule, curation, neverTargeted) {
+  const base = curation || {};
+  let next = null;
+  const put = (id, entry) => {
+    if (!next) next = { ...base };
+    next[id] = entry;
+  };
+  if (rule === "neverTargetedDefault") {
+    for (const id of neverTargeted || []) {
+      const cur = base[id];
+      const defaults = neverTargetedDefaults(cur);
+      if (!defaults.verdict && !defaults.action) continue;
+      const entry = { ...(cur || {}) };
+      if (defaults.verdict) {
+        entry.verdict = "correct";
+        delete entry.verdictAuto;
+      }
+      if (defaults.action) {
+        entry.action = "keep";
+        delete entry.actionAuto;
+      }
+      put(id, entry);
+    }
+    return next || base;
+  }
+  const flag =
+    rule === "verdictFromEvents" ? "verdictAuto" : rule === "suppressContaminated" ? "actionAuto" : null;
+  if (!flag) return base;
+  for (const [id, cur] of Object.entries(base)) {
+    if (!cur?.[flag]) continue;
+    const { [flag]: _auto, ...entry } = cur;
+    put(id, entry);
+  }
+  return next || base;
+}
+
+/** `curation` once `rule` is switched on again (`rules`: the session's
+    rules, that one on): the rule applied to every sample, as if each
+    event had just been evaluated — values the curator set by hand are
+    never changed. The defaults of the samples no event targets are not
+    stored: the effective curation adds them again. `curation` itself
+    when nothing changes. */
+export function applyRule(rule, curation, events, rules = DEFAULT_CURATION_RULES) {
+  const base = curation || {};
+  if (rule !== "verdictFromEvents" && rule !== "suppressContaminated") return base;
+  return syncSampleCuration(base, events, undefined, rules);
 }
 
 /** Samples to keep and to suppress, from the effective curation.
@@ -527,7 +835,12 @@ function withoutNeverTargetedStamp(entry) {
       3. the automatic values are recomputed with the current rule, so a
          session saved by an older version — whose automatic values could
          depend on the order of the clicks, or lag behind a bulk change —
-         reads like one curated today. Manual values are not touched;
+         reads like one curated today. Manual values are not touched.
+         Only the session's `rules` apply (all on: every session saved
+         before the switches); a value still flagged automatic for a rule
+         that is off — which only a hand-edited file holds, since
+         switching a rule off clears or keeps its values — is the
+         curator's (keepRuleValues);
       4. (earlier versions only) a Contaminated sample stored with no
          action — which only an explicit clear of its action could leave,
          and which the curated table kept — gets a Keep set by hand where
@@ -541,7 +854,12 @@ function withoutNeverTargetedStamp(entry) {
       nowSuppressed       samples the curated table now drops,
       noLongerSuppressed  samples it no longer drops,
       keptAsKeep          the samples of step 4. */
-export function migrateSampleCuration(rawEvents, sampleCuration, version) {
+export function migrateSampleCuration(
+  rawEvents,
+  sampleCuration,
+  version,
+  rules = DEFAULT_CURATION_RULES,
+) {
   const events = rawEvents || [];
   const original = sampleCuration || {};
   const earlierModel = !(Number(version) >= SAMPLE_CURATION_VERSION);
@@ -580,7 +898,11 @@ export function migrateSampleCuration(rawEvents, sampleCuration, version) {
       touched = true;
     }
   }
-  const synced = { ...syncSampleCuration(sc, events) };
+  let ruled = sc;
+  for (const rule of ["verdictFromEvents", "suppressContaminated"]) {
+    if (!ruleOn(rules, rule)) ruled = keepRuleValues(rule, ruled);
+  }
+  const synced = { ...syncSampleCuration(ruled, events, undefined, rules) };
   const keptAsKeep = [];
   if (earlierModel) {
     for (const id of Object.keys(before)) {

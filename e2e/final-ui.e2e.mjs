@@ -609,9 +609,87 @@ try {
         "F.7 the tags add no width to the Verdict and Action columns at 1024 px",
         JSON.stringify(widths),
       );
+      // Each tag sits centred right under the chip it qualifies — the
+      // active one. Under the whole chip row, left-aligned, it read as
+      // belonging to the first chip (Pending, Keep): a TP target's "auto"
+      // sat under Pending and under Keep while Contaminated and Suppress
+      // were the automatic values.
+      const geometry = (scope) =>
+        scope.evaluate((root) =>
+          [...root.querySelectorAll("[data-auto-mark]")].map((m) => {
+            const chip = m.parentElement.firstElementChild;
+            const c = chip.getBoundingClientRect();
+            const r = m.getBoundingClientRect();
+            return {
+              chip: (chip.getAttribute("aria-label") || chip.getAttribute("title") || "").slice(0, 40),
+              active: /dashed/.test(getComputedStyle(chip).borderTopStyle),
+              dx: Math.abs((r.left + r.right) / 2 - (c.left + c.right) / 2),
+              under: r.top >= c.bottom - 0.5,
+            };
+          }),
+        );
+      const placed = [...(await geometry(row("63D9"))), ...(await geometry(row("58D13")))];
+      check(
+        placed.length === 4 && placed.every((g) => g.active && g.dx <= 1 && g.under),
+        "F.7 Samples tab: each tag is centred under the automatic chip it qualifies",
+        JSON.stringify(placed),
+      );
+      await openTab(page, "Events");
+      const eventRow = await geometry(page.locator('tr[data-event-row="0"]'));
+      check(
+        eventRow.length === 2 && eventRow.every((g) => g.active && g.dx <= 1 && g.under),
+        "F.7 Events table: the target's auto tags sit under Contaminated and Suppress",
+        JSON.stringify(eventRow),
+      );
     },
     { contextOptions: { viewport: { width: 1024, height: 900 } } },
   );
+
+  /* F.7 — the labelled pills of a gallery card's popover and of Guided
+     validation ("Suppress · auto") stay on one line: in the popover, too
+     narrow for Keep and "Suppress · auto" side by side, the label broke
+     inside its pill. */
+  await scenario("F.7 labelled pills on one line", async (page) => {
+    await loadDemo(page);
+    await openTab(page, "Scatter");
+    const card = page.locator("[data-event-card]").first();
+    await card.waitFor({ timeout: 20000 });
+    await card.locator('button[title="mark as true positive"]').click();
+    await page.waitForTimeout(700);
+    const lines = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll("button")]
+          .filter((b) => /· auto/i.test(b.textContent || ""))
+          .map((b) => {
+            const tops = new Set();
+            for (const n of b.childNodes) {
+              if (n.nodeType !== 3 || !n.textContent.trim()) continue;
+              const r = document.createRange();
+              r.selectNodeContents(n);
+              for (const x of r.getClientRects()) if (x.width > 1) tops.add(Math.round(x.top));
+            }
+            return `${b.textContent.trim()}: ${tops.size}`;
+          }),
+      );
+    const gallery = await lines();
+    check(
+      gallery.length === 2 && gallery.every((l) => l.endsWith(": 1")),
+      "F.7 gallery popover: Contaminated · auto and Suppress · auto each on one line",
+      gallery.join(" | "),
+    );
+    await page.mouse.click(5, 5);
+    await openTab(page, "Validate");
+    // The selected event's target gets automatic values (TP is a set, not
+    // a toggle, on this panel).
+    await page.getByRole("button", { name: /True positive/ }).first().click();
+    await page.waitForTimeout(800);
+    const validate = await lines();
+    check(
+      validate.length === 2 && validate.every((l) => l.endsWith(": 1")),
+      "F.7 Guided validation: the target's labelled pills each on one line",
+      validate.join(" | "),
+    );
+  }, { contextOptions: { viewport: { width: 1024, height: 900 } } });
 
   /* F.8 — an id is cut only where its table has no room left. The
      tables shared their width between their columns in proportion to
