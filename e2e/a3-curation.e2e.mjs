@@ -864,9 +864,9 @@ try {
     await openTab(page, "Samples");
     const row = sampleRow(page, "63D9");
     const clear = row.locator('button[aria-label="Clear suppress on 63D9"]');
-    const flag = row.locator('[aria-label="Suppressed but not marked Contaminated"]');
+    const flag = row.locator('[aria-label="Suppressed but marked Not contaminated"]');
     check((await clear.count()) === 1, "A3.4 the Samples row shows 63D9's Suppress");
-    check((await flag.count()) === 1, "A3.4 …flagged: suppressed but not Contaminated");
+    check((await flag.count()) === 1, "A3.4 …flagged: suppressed but Not contaminated");
     let card = await curatedCard(page);
     check(card?.kept === card?.total - 1, "A3.4 Export drops 63D9 as the row shows", JSON.stringify(card));
     await openTab(page, "Samples");
@@ -957,7 +957,7 @@ try {
     );
     check(
       (await chip(row, "Clear suppress on 63D9").count()) === 1 &&
-        (await row.locator('[aria-label="Suppressed but not marked Contaminated"]').count()) === 1,
+        (await row.locator('[aria-label="Suppressed but marked Not contaminated"]').count()) === 1,
       "Events table: that Suppress is shown, flagged, instead of a dash",
     );
     card = await curatedCard(page);
@@ -1071,12 +1071,12 @@ try {
     await row.locator("td").nth(2).click(); // open the event in Guided validation
     await page.getByText(/^Verdict on target sample$/).waitFor({ timeout: 20000 });
     const clear = page.locator('button[aria-label="Clear suppress on 63D9"]');
-    const flag = page.locator('[aria-label="Suppressed but not marked Contaminated"]');
+    const flag = page.locator('[aria-label="Suppressed but marked Not contaminated"]');
     check(
       (await page.getByText(/^Action on target sample$/).count()) === 1 &&
         (await clear.count()) === 1 &&
         (await flag.count()) === 1,
-      "Guided validation: 63D9's Suppress is shown, flagged, although it is not Contaminated",
+      "Guided validation: 63D9's Suppress is shown, flagged, as it is Not contaminated",
     );
     await clear.click();
     await page.waitForTimeout(300);
@@ -1114,7 +1114,9 @@ try {
      contaminated one too: they used to appear only once the sample was
      Contaminated (or had an action), so a sample whose events were all
      FP or Uncertain had none, in any view. Nothing is pre-selected there
-     — no rule gives an action — and a click writes the curator's own. */
+     — no rule gives an action — and a click writes the curator's own.
+     Only a Suppress on a Not contaminated sample is flagged: on an
+     Uncertain one it is a legitimate caution. */
   await scenario("A3.9 actions on every sample", async (page) => {
     await openTab(page, "Events");
     await clickEvent(page, "63D250", "63D9", "fp"); // 63D9: automatic Not contaminated, no action
@@ -1158,11 +1160,36 @@ try {
     check(
       (await r40.locator('button[aria-label="Clear keep on 63D40"]').count()) === 1 &&
         (await r9.locator('button[aria-label="Clear suppress on 63D9"]').count()) === 1 &&
-        (await r9.locator('[aria-label="Suppressed but not marked Contaminated"]').count()) === 1,
+        (await r9.locator('[aria-label="Suppressed but marked Not contaminated"]').count()) === 1,
       "A3.9 the rows show both decisions, the Suppress flagged",
     );
-    const card = await curatedCard(page);
+    let card = await curatedCard(page);
     check(card?.kept === card?.total - 1, "A3.9 Export drops 63D9 only", JSON.stringify(card));
+
+    // Suppress the Uncertain one after all: no flag on it.
+    await openTab(page, "Samples");
+    await r40.locator('button[aria-label="Suppress 63D40"]').click(); // the curator's Keep → their Suppress
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(
+      sc["63D40"]?.action === "suppress" && !sc["63D40"].actionAuto && sc["63D40"].verdict === "uncertain",
+      "A3.9 Suppress on Uncertain 63D40, as the curator's own",
+      show(sc["63D40"]),
+    );
+    const flagged = async (where) => where.locator('[aria-label="Suppressed but marked Not contaminated"]').count();
+    check(
+      (await r40.locator('button[aria-label="Clear suppress on 63D40"]').count()) === 1 &&
+        (await flagged(r40)) === 0 &&
+        (await flagged(r9)) === 1,
+      "A3.9 Samples tab: the Suppress on Uncertain 63D40 is not flagged, the one on Not contaminated 63D9 is",
+    );
+    await openTab(page, "Events");
+    check(
+      (await flagged(eventRow("63D29", "63D40"))) === 0 && (await flagged(eventRow("63D250", "63D9"))) === 1,
+      "A3.9 Events table: the same",
+    );
+    card = await curatedCard(page);
+    check(card?.kept === card?.total - 2, "A3.9 Export drops 63D9 and 63D40", JSON.stringify(card));
   });
 
   /* A3.7 A legacy session (actions stored on the events) whose events

@@ -7226,7 +7226,7 @@ const EventsTable = ({
                       {/* Offered on every target, whatever its verdict,
                           so that any decision can be finalised: only a
                           rule's action is drawn pre-selected. A Suppress
-                          on a target that is not Contaminated is flagged. */}
+                          on a target marked Not contaminated is flagged. */}
                         <div>
                           <div
                             className="flex gap-0.5 justify-center items-center"
@@ -7280,7 +7280,7 @@ const EventsTable = ({
                               );
                             })}
                             {sampleCuration?.[e.target]?.action === "suppress" &&
-                              sampleCuration[e.target].verdict !== "contaminated" && (
+                              sampleCuration[e.target].verdict === "correct" && (
                                 <SuppressedNotContaminatedFlag />
                               )}
                           </div>
@@ -7948,8 +7948,8 @@ const GalleryCard = React.memo(function GalleryCard({
             {/* Section 3 — sample-level action on the target, offered
                 whatever its verdict so that any decision can be
                 finalised; only a rule's action is drawn pre-selected (a
-                Suppress on a target that is not Contaminated still drops
-                it from the curated table: flagged). */}
+                Suppress on a target marked Not contaminated contradicts
+                its verdict: flagged). */}
               <>
                 <div
                   className="text-[9px] tracking-[0.1em] uppercase mt-1 mb-0.5"
@@ -8013,7 +8013,7 @@ const GalleryCard = React.memo(function GalleryCard({
                     );
                   })}
                   {sampleAction === "suppress" &&
-                    sampleVerdict !== "contaminated" && (
+                    sampleVerdict === "correct" && (
                       <SuppressedNotContaminatedFlag />
                     )}
                 </div>
@@ -10784,13 +10784,15 @@ function sampleActionChip(sampleId, entry, chip, opts) {
   };
 }
 
-/** The warning next to a Suppress on a sample that is not Contaminated:
-    unusual, and the sample is still dropped from the curated table. */
+/** The warning next to a Suppress on a sample marked Not contaminated:
+    the action contradicts the verdict, and the sample is dropped from
+    the curated table all the same. Not drawn on an Uncertain or Pending
+    sample, where a Suppress is a legitimate caution. */
 const SuppressedNotContaminatedFlag = () => (
   <span
     role="img"
-    aria-label="Suppressed but not marked Contaminated"
-    title="Suppressed although not marked Contaminated: this sample is still dropped from the curated abundance table. Clear the action, or change the verdict, if that is not what you meant."
+    aria-label="Suppressed but marked Not contaminated"
+    title="Suppressed although marked Not contaminated: this sample is dropped from the curated abundance table all the same. Clear the action, or change the verdict, if that is not what you meant."
     style={{ display: "inline-flex", alignSelf: "center", color: "#d97a3c" }}
   >
     <AlertCircle className="w-4 h-4" />
@@ -10801,12 +10803,13 @@ const SuppressedNotContaminatedFlag = () => (
     sample whatever its verdict (Uncertain and Pending included), so that
     the curator can always finalise the decision. Only an action a rule
     gives is drawn pre-selected: the Suppress paired with Contaminated,
-    the default Keep of a sample no event targets. A Suppress drops the
-    sample from the curated abundance table even when it is not marked
-    Contaminated, so it is flagged as unusual. What a click does is the
-    same in every view (sampleActionChip): an automatic action becomes
-    the curator's own, the curator's own one goes back to the rule.
-    Memoised. */
+    the default Keep of a sample no event targets. A Suppress on a
+    sample marked Not contaminated contradicts its verdict, yet still
+    drops it from the curated abundance table, so it is flagged; on an
+    Uncertain or Pending sample it is a legitimate caution, and is not.
+    What a click does is the same in every view (sampleActionChip): an
+    automatic action becomes the curator's own, the curator's own one
+    goes back to the rule. Memoised. */
 const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAction }) {
   const rules = React.useContext(CurationRulesContext);
   const entry = {
@@ -10864,7 +10867,7 @@ const SampleActionCell = React.memo(function SampleActionCell({ row, setSampleAc
           </MarkedChip>
         );
       })}
-      {row.action === "suppress" && row.verdict !== "contaminated" && (
+      {row.action === "suppress" && row.verdict === "correct" && (
         <SuppressedNotContaminatedFlag />
       )}
     </div>
@@ -18637,10 +18640,9 @@ const ValidateTab = ({
                 </div>
                 {/* Offered whatever the target's verdict, so that any
                     decision can be finalised; only a rule's action is
-                    drawn pre-selected. A Suppress on a target that is
-                    not Contaminated still drops it from the curated
-                    table (flagged). Same chips as elsewhere
-                    (sampleActionChip). */}
+                    drawn pre-selected. A Suppress on a target marked Not
+                    contaminated contradicts its verdict (flagged). Same
+                    chips as elsewhere (sampleActionChip). */}
                   <div>
                     <div
                       className="text-[10px] tracking-[0.15em] uppercase mb-2"
@@ -18705,7 +18707,7 @@ const ValidateTab = ({
                         );
                       })}
                       {sampleCuration?.[sel.target]?.action === "suppress" &&
-                        sampleCuration[sel.target].verdict !== "contaminated" && (
+                        sampleCuration[sel.target].verdict === "correct" && (
                           <SuppressedNotContaminatedFlag />
                         )}
                     </div>
@@ -21738,7 +21740,7 @@ const HelpTab = ({ onStartTour }) => {
                 (Keep / Suppress — offered on every target, whatever its
                 verdict, so that the decision can always be finalised;
                 only a rule's action is pre-selected, and a Suppress on a
-                target that is not Contaminated carries a warning sign).
+                target marked Not contaminated carries a warning sign).
                 Each picker writes directly to its
                 target; automatic values are tagged <em>auto</em>, as
                 on the Samples tab.
@@ -21798,11 +21800,13 @@ const HelpTab = ({ onStartTour }) => {
                 <em>Action</em> chips are always visible, so that every
                 sample's decision can be finalised, Uncertain ones
                 included; an action is pre-selected only where a rule
-                gives one. A Suppress on a sample that is not
-                Contaminated still drops it from the curated abundance
-                table, so it carries a warning sign, ready to be
-                cleared. Automatic values are drawn lighter with a
-                dashed rim and tagged under their chips:{" "}
+                gives one. A Suppress on a sample marked Not
+                contaminated contradicts its verdict, yet still drops it
+                from the curated abundance table, so it carries a warning
+                sign, ready to be cleared; on an Uncertain or Pending one
+                it is a legitimate caution, without a sign. Automatic
+                values are drawn lighter with a dashed rim and tagged
+                under their chips:{" "}
                 <em>auto</em> for a value the rule set,{" "}
                 <em>default</em> for the Not contaminated + Keep of a
                 sample no event targets — the words of the samples TSV
@@ -22187,10 +22191,11 @@ const HelpTab = ({ onStartTour }) => {
             <strong>Action pairing.</strong> A Contaminated sample with no
             action gets <em>Suppress</em> automatically; once its verdict
             is no longer Contaminated, that automatic Suppress goes away.
-            An action you set by hand stays whatever the verdict (a
-            Suppress on a sample that is not Contaminated is shown and
-            flagged wherever the action is: the sample is still dropped
-            from the curated abundance table).
+            An action you set by hand stays whatever the verdict: a
+            Suppress on a sample that is not Contaminated is shown
+            wherever the action is, and still drops the sample from the
+            curated abundance table; on a Not contaminated sample it is
+            flagged, as it contradicts the verdict.
           </p>
           <p style={{ marginTop: 6 }}>
             Automatic values are drawn lighter, with a dashed rim, and

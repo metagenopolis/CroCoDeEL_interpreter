@@ -273,18 +273,12 @@ function sampleRow(page, id) {
     .filter({ has: page.getByText(id, { exact: true }) });
 }
 
-/** A Suppress set by hand on a sample that is not Contaminated: the
-    action chips only show next to a Contaminated verdict or an action, so
-    the curator makes it Contaminated, makes the Suppress their own, and
-    hands the verdict back to the rule. */
+/** A Suppress set by hand, whatever the sample's verdict: the action
+    chips are offered on every sample (a click on an automatic Suppress
+    makes it the curator's own). */
 async function suppressByHand(page, id) {
   await openTab(page, "Samples");
-  const row = sampleRow(page, id);
-  await row.locator('button[aria-label="Set verdict to Contaminated"]').click();
-  await page.waitForTimeout(200);
-  await row.locator(`button[aria-label="Suppress ${id}"]`).click();
-  await page.waitForTimeout(200);
-  await row.locator('button[aria-label="Set verdict to Pending"]').click();
+  await sampleRow(page, id).locator(`button[aria-label="Suppress ${id}"]`).click();
   await page.waitForTimeout(200);
 }
 
