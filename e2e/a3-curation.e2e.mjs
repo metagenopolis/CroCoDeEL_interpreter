@@ -1084,8 +1084,10 @@ try {
     check(
       show(sc["63D9"]) === show({ verdict: "correct" }) &&
         (await flag.count()) === 0 &&
-        (await page.getByText(/^Action on target sample$/).count()) === 0,
-      "Guided validation: clearing it there removes the Suppress, the flag and the (no longer offered) action",
+        (await page.getByText(/^Action on target sample$/).count()) === 1 &&
+        (await page.locator('button[aria-label="Keep 63D9"]').count()) === 1 &&
+        (await page.locator('button[aria-label="Suppress 63D9"]').count()) === 1,
+      "Guided validation: clearing it there removes the Suppress and the flag; Keep / Suppress stay offered, none selected",
       show(sc["63D9"]),
     );
     // Pending on the curator's verdict: back to the automatic Contaminated + Suppress.
@@ -1105,6 +1107,62 @@ try {
     );
     const p = (await vchip("pending").getAttribute("title")) || "";
     check(/changes nothing/.test(p), "Guided validation: Pending says it changes nothing on the automatic verdict", p);
+  });
+
+  /* A3.9 Keep / Suppress are offered on every sample, whatever its
+     verdict, so that the curator can finalise an Uncertain or a Not
+     contaminated one too: they used to appear only once the sample was
+     Contaminated (or had an action), so a sample whose events were all
+     FP or Uncertain had none, in any view. Nothing is pre-selected there
+     — no rule gives an action — and a click writes the curator's own. */
+  await scenario("A3.9 actions on every sample", async (page) => {
+    await openTab(page, "Events");
+    await clickEvent(page, "63D250", "63D9", "fp"); // 63D9: automatic Not contaminated, no action
+    await clickEvent(page, "63D29", "63D40", "u"); // 63D40: automatic Uncertain, no action
+    let sc = await storedCuration(page);
+    check(
+      sc["63D9"]?.verdict === "correct" && sc["63D9"].action == null &&
+        sc["63D40"]?.verdict === "uncertain" && sc["63D40"].action == null,
+      "A3.9 63D9 is Not contaminated and 63D40 Uncertain, both without an action",
+      `${show(sc["63D9"])} ${show(sc["63D40"])}`,
+    );
+    const offered = async (where, id) =>
+      (await where.locator(`button[aria-label="Keep ${id}"]`).count()) === 1 &&
+      (await where.locator(`button[aria-label="Suppress ${id}"]`).count()) === 1;
+    const eventRow = (s, t) =>
+      page.locator("tr[data-event-row]").filter({ has: page.getByText(s, { exact: true }) })
+        .filter({ has: page.getByText(t, { exact: true }) });
+    check(
+      (await offered(eventRow("63D250", "63D9"), "63D9")) && (await offered(eventRow("63D29", "63D40"), "63D40")),
+      "A3.9 Events table: Keep / Suppress offered on both targets, none selected",
+    );
+    await openTab(page, "Samples");
+    const r9 = sampleRow(page, "63D9");
+    const r40 = sampleRow(page, "63D40");
+    check(
+      (await offered(r9, "63D9")) && (await offered(r40, "63D40")) &&
+        (await r9.locator("[data-auto-mark]").count()) === 1 &&
+        (await r40.locator("[data-auto-mark]").count()) === 1,
+      "A3.9 Samples tab: Keep / Suppress offered, none selected (only the verdicts are tagged auto)",
+    );
+    await r40.locator('button[aria-label="Keep 63D40"]').click();
+    await r9.locator('button[aria-label="Suppress 63D9"]').click();
+    await page.waitForTimeout(300);
+    sc = await storedCuration(page);
+    check(
+      sc["63D40"]?.action === "keep" && !sc["63D40"].actionAuto && sc["63D40"].verdictAuto === true &&
+        sc["63D9"]?.action === "suppress" && !sc["63D9"].actionAuto && sc["63D9"].verdictAuto === true,
+      "A3.9 a click finalises them: Keep on Uncertain 63D40, Suppress on Not contaminated 63D9, as the curator's own",
+      `${show(sc["63D9"])} ${show(sc["63D40"])}`,
+    );
+    check(
+      (await r40.locator('button[aria-label="Clear keep on 63D40"]').count()) === 1 &&
+        (await r9.locator('button[aria-label="Clear suppress on 63D9"]').count()) === 1 &&
+        (await r9.locator('[aria-label="Suppressed but not marked Contaminated"]').count()) === 1,
+      "A3.9 the rows show both decisions, the Suppress flagged",
+    );
+    const card = await curatedCard(page);
+    check(card?.kept === card?.total - 1, "A3.9 Export drops 63D9 only", JSON.stringify(card));
   });
 
   /* A3.7 A legacy session (actions stored on the events) whose events
